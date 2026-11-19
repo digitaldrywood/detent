@@ -30,6 +30,8 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 	}
 	visit(prefix + "runner")
 	visit(prefix + "workspace")
+	visit(prefix + "workspacerunner")
+	visit(prefix + "hubclient/api")
 	backend := internal[prefix+"runner"].Types.Scope().Lookup("AgentBackend").Type().Underlying().(*types.Interface)
 	for path, pkg := range internal {
 		if pkg.Imports[prefix+"runner"] == nil || strings.Contains(path, "/internal/scenariotest") {
@@ -43,7 +45,6 @@ func checkAttemptCommands(t *testing.T, packagesByPath []*packages.Package) {
 			}
 		}
 	}
-	reached[prefix+"workspacerunner"] = true
 	reached[prefix+"cli"] = true
 	for path := range reached {
 		pkg := internal[path]
@@ -107,6 +108,7 @@ func rawAttemptCommandAllowance(pkg, file, function string) int {
 		"procgroup/process_group_unix.go:startAcknowledged", "procgroup/process_group_windows.go:startWindows",
 		"procgroup/process_group_unix.go:inspectOtherUnixGroup", "procgroup/process_group_unix.go:inspectOtherUnixProcess", "procgroup/process_group_unix.go:observeProcesses",
 		"releaseaudit/sandbox_cgroup_linux.go:runSandboxCgroupCommand",
+		"workspacefiles/files.go:ignoredPaths", "workspaceterminal/pty_unix.go:startPTY", "workspaceterminal/sandbox_darwin.go:sandboxHostProbe", "workspacegit/git.go:exec", "workspaceexec/exec.go:Run",
 		"gobudget/wrapper.go:RunWrapper", "gotestreceipt/wrapper.go:runTest", "gotestreceipt/wrapper.go:run",
 		"cli/local_worker.go:runLocalWorkerLaunch", "cli/controller_process.go:startControllerProcess",
 		"cli/cli.go:defaultCommandRunner", "cli/doctor.go:resolveDoctorCommandInDir", "cli/doctor.go:runDoctorCommandInDir", "cli/doctor.go:defaultGitWorkTree", "cli/doctor.go:defaultGitRemoteURL", "cli/doctor.go:defaultGitTracked", "cli/doctor_landing_credential.go:defaultDoctorLandingCredential", "cli/runner_checkout.go:cloneRunnerRepositoryWithCommandContext", "cli/runner_checkout_refresh.go:refreshRunnerCheckout", "cli/runner_diagnostics.go:probeRunnerProviderAuth", "cli/runner_service_user.go:registerRunnerAsUser", "cli/validate.go:newValidateCommand", "cli/ssh_runner.go:WorkerHostAvailable", "cli/ssh_runner.go:callSSH":
