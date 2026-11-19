@@ -137,6 +137,7 @@ type NativeIssue struct {
 	LastActivityAt     time.Time           `json:"last_activity_at"`
 	Dependencies       []NativeWorkItemID  `json:"dependencies"`
 	Blockers           []NativeDependency  `json:"blockers"`
+	BlockersTruncated  bool                `json:"blockers_truncated,omitempty"`
 	Dependents         []NativeDependency  `json:"dependents"`
 	Related            []NativeDependency  `json:"related,omitzero"`
 	DependencyReady    bool                `json:"dependency_ready"`
@@ -567,8 +568,9 @@ type NativeClaim struct {
 }
 
 type NativeClaimDependencyFacts struct {
-	Blockers        []NativeDependency `json:"blockers"`
-	DependencyReady bool               `json:"dependency_ready"`
+	BlockersTruncated bool               `json:"blockers_truncated,omitempty"`
+	Blockers          []NativeDependency `json:"blockers"`
+	DependencyReady   bool               `json:"dependency_ready"`
 }
 
 type NativeLease struct {
