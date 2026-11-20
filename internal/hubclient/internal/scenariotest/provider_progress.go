@@ -78,8 +78,28 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 			t.Fatal(err)
 		}
 		record, checked, err := progresscheck.Check(t.Context(), request, nativeOutageProgressBackend{}, owner)
-		if err != nil || !checked || record.DefectIssueID == "" {
+		if err != nil || !checked || record.DefectIssueID == "" || record.CommentID == "" {
 			t.Fatalf("outage progress publication failed: record=%+v checked=%v error=%v", record, checked, err)
+		}
+		if defectID == "" {
+			defectID = tracker.NativeWorkItemID(record.DefectIssueID)
+		}
+		if record.DefectIssueID != string(defectID) {
+			t.Fatalf("outage created another defect: got %s want %s", record.DefectIssueID, defectID)
+		}
+		defect, err := h.admin.Issue(t.Context(), defectID)
+		if err != nil || defect.WorkItemID != defectID || defect.OrganizationID != h.organization || defect.ProjectID != h.project || defect.State != "Backlog" || defect.Title != "Shared backend protocol outage" {
+			t.Fatalf("read persisted outage defect %s: issue=%+v error=%v", defectID, defect, err)
+		}
+		comments, err := h.admin.Comments(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		link := fmt.Sprintf("System defect: [#%d](%s)", defect.Number, defect.WebURL)
+		if !slices.ContainsFunc(comments.Items, func(comment tracker.NativeComment) bool {
+			return comment.ID == record.CommentID && !comment.Deleted && strings.Contains(comment.Body, link)
+		}) {
+			t.Fatalf("persisted progress comment %s does not link to defect %s", record.CommentID, defectID)
 		}
 		var persisted corestore.RelationshipPage
 		hubclientReadPostgres(t, h.config, h.organization, func(reader tenantstore.Reader) error {
@@ -87,14 +107,11 @@ func RunNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T, factories
 			persisted, err = reader.Relationships(t.Context(), h.project, tracker.NativeWorkItemID(issue.ID), corestore.RelationshipCursor{}, 2)
 			return err
 		})
-		if len(persisted.Items) != 1 || persisted.Items[0].OrganizationID != h.organization || persisted.Items[0].ProjectID != h.project || persisted.Items[0].WorkItemID != tracker.NativeWorkItemID(issue.ID) || persisted.Items[0].Type != "dependency" || persisted.Items[0].Direction != "blocked_by" || string(persisted.Items[0].RelatedWorkItemID) != record.DefectIssueID || persisted.Items[0].RelatedProjectID != h.project || persisted.Next != (corestore.RelationshipCursor{}) {
-			t.Fatalf("missing persisted defect reference: relationships=%+v record=%+v", persisted, record)
+		if len(persisted.Items) != 0 || persisted.Next != (corestore.RelationshipCursor{}) {
+			t.Fatalf("diagnostic outage created work-item relationships: %+v", persisted)
 		}
-		if defectID == "" {
-			defectID = persisted.Items[0].RelatedWorkItemID
-		}
-		if persisted.Items[0].RelatedWorkItemID != defectID {
-			t.Fatalf("outage created another defect: got %s want %s", persisted.Items[0].RelatedWorkItemID, defectID)
+		if state := h.state(t, issue.ID); state != "In Progress" {
+			t.Fatalf("diagnostic outage moved work to %q, want In Progress", state)
 		}
 		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "In Review"); err != nil {
 			t.Fatal(err)
