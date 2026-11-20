@@ -39,7 +39,7 @@ func (e *phaseExecution) RecordPhaseReceipt(_ context.Context, _, branch, head, 
 }
 
 func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
-	for _, name := range []string{"normal", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
+	for _, name := range []string{"normal", "isolated configuration", "missing project", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "source")
@@ -69,6 +69,14 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			const ref = "refs/heads/" + branch
 			git("-C", source, "worktree", "add", "-b", branch, checkout)
 			switch name {
+			case "isolated configuration":
+				git("-C", checkout, "config", "push.pushOption", "fixture-local")
+				global := filepath.Join(dir, "global.gitconfig")
+				git("config", "--file", global, "push.pushOption", "fixture-global")
+				t.Setenv("GIT_CONFIG_GLOBAL", global)
+				t.Setenv("GIT_CONFIG_COUNT", "1")
+				t.Setenv("GIT_CONFIG_KEY_0", "push.pushOption")
+				t.Setenv("GIT_CONFIG_VALUE_0", "fixture-environment")
 			case "pushurl":
 				git("-C", checkout, "remote", "set-url", "--push", "origin", other)
 			case "insteadOf", "pushInsteadOf":
@@ -80,10 +88,14 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 
 			info := workspace.Info{Path: checkout, Key: "item", Branch: branch, PublicationBranch: branch}
 			execution := &phaseExecution{}
-			err = PublishPhase(t.Context(), execution, backend, info, workspace.Issue{Identifier: "ITEM"}, nil, "implement", "")
+			issue := workspace.Issue{Identifier: "ITEM", PublicationRepository: origin}
+			if name == "missing project" {
+				issue.PublicationRepository = ""
+			}
+			err = PublishPhase(t.Context(), execution, backend, info, issue, nil, "implement", "")
 			remoteHead := git("-C", origin, "for-each-ref", "--format=%(objectname)", ref)
 			otherHead := git("-C", other, "for-each-ref", "--format=%(objectname)", ref)
-			if name != "normal" {
+			if name != "normal" && name != "isolated configuration" {
 				var attributed interface {
 					FailureAttribution() tracker.FailureAttribution
 				}

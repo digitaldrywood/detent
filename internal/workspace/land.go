@@ -109,9 +109,10 @@ type LandOptions struct {
 	// Message is the squash or merge commit's message.
 	Message string
 	// TargetBranch is the base branch; empty means the remote's default.
-	TargetBranch string
-	Remote       string
-	Repository   string
+	TargetBranch          string
+	Remote                string
+	Repository            string
+	PublicationRepository string
 	// PushAttemptBranch also publishes the reviewed head under the worktree
 	// branch's name, so the landed history stays reachable by that name. It
 	// is best effort: a remote that refuses it does not fail the landing.

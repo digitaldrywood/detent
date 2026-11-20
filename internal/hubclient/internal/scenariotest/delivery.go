@@ -169,6 +169,7 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Blocked", "Done"}},
 				{Name: "Blocked", Transitions: []string{"Rework"}}, {Name: "Done", Terminal: true},
 			}, factories)
+			h.configureCloneURL(f.directory)
 			issue := h.createInProgress(t, "release repair")
 			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Rework"); err != nil {
 				t.Fatal(err)

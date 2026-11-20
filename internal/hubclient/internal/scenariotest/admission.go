@@ -649,6 +649,7 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	source := nativeChangeSourceRepo(t)
 	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+	h.configureCloneURL(remote)
 	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)

@@ -66,21 +66,22 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
-	reopen          func(*testing.T) *NativeClient
-	leaseHolds      atomic.Int64
-	seed            func(func(tenantstore.Writer) error)
-	projectBoard    func()
-	content         *eventstore.Content
-	sourceDirectory string
-	review          string
-	organization    tracker.OrganizationID
-	project         tracker.ProjectID
-	descriptor      policy.Descriptor
-	admin           *NativeClient
-	native          *NativeClient
-	connector       *NativeConnector
-	scheduler       *Scheduler
-	failChanges     *changeFailingTransport
+	configureCloneURL func(string)
+	reopen            func(*testing.T) *NativeClient
+	leaseHolds        atomic.Int64
+	seed              func(func(tenantstore.Writer) error)
+	projectBoard      func()
+	content           *eventstore.Content
+	sourceDirectory   string
+	review            string
+	organization      tracker.OrganizationID
+	project           tracker.ProjectID
+	descriptor        policy.Descriptor
+	admin             *NativeClient
+	native            *NativeClient
+	connector         *NativeConnector
+	scheduler         *Scheduler
+	failChanges       *changeFailingTransport
 }
 
 func (h *nativeChangeHub) leaseHold(context.Context) (func(), error) {
@@ -242,10 +243,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	var requests sync.RWMutex
+	var projectCloneURL string
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		requests.RLock()
 		defer requests.RUnlock()
-		service.Handler().ServeHTTP(w, r)
+		testsupport.ServeProjectCloneURL(w, r, service.Handler(), projectCloneURL)
 	}
 	t.Cleanup(func() {
 		requests.Lock()
@@ -274,6 +276,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{content: eventstore.NewContent(config.RunDetails), review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h.configureCloneURL = func(url string) {
+		requests.Lock()
+		defer requests.Unlock()
+		projectCloneURL = url
+	}
 	h.projectBoard = func() { testsupport.DispatchRefreshProjections(t, config, service) }
 	h.seed = func(write func(tenantstore.Writer) error) {
 		dispatchWriteFixture(t, config, write)

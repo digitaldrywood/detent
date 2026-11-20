@@ -282,6 +282,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			source := nativeChangeSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+			h.configureCloneURL(remote)
 			nativeChangeGit(t, source, "remote", "add", "origin", remote)
 			testenv.UseGitHubFixtureRemote(t, source, remote, nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
@@ -627,6 +628,7 @@ func runNativeReplacementProjectGate(t *testing.T, factories Constructors, repai
 	origin := nativeChangeSourceRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	nativeChangeGit(t, origin, "init", "--bare", "-b", "main", remote)
+	h.configureCloneURL(remote)
 	nativeChangeGit(t, origin, "remote", "add", "origin", remote)
 	testenv.UseGitHubFixtureRemote(t, origin, remote, nativeChangeRepository)
 	nativeChangeGit(t, origin, "push", "-u", "origin", "main")
@@ -644,6 +646,7 @@ func runNativeReplacementProjectGate(t *testing.T, factories Constructors, repai
 	}
 	nativeChangeGit(t, info.Path, "add", "CHANGE.md")
 	nativeChangeGit(t, info.Path, "commit", "-m", "Record implementation")
+	workspaceIssue.PublicationRepository = remote
 	branch, head, tree, err := first.PushItemPhase(t.Context(), info, workspaceIssue, owner.VerifyPhaseAuthority)
 	if err != nil {
 		t.Fatal(err)

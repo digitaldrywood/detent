@@ -235,7 +235,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			runRunnerGit(t, recovery, "add", "feature.txt")
 			runRunnerGit(t, recovery, "commit", "-m", "finish preserved source")
 			head := strings.TrimSpace(runRunnerGit(t, recovery, "rev-parse", "HEAD"))
-			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "merge", GitHubPullRequest: !native}
+			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, PublicationRepository: remote, Method: "merge", GitHubPullRequest: !native}
 			if native {
 				target.Validation = &gate.CommandResult{Command: "true", HeadSHA: head, TreeSHA: strings.TrimSpace(runRunnerGit(t, recovery, "rev-parse", "HEAD^{tree}")), DurationNS: int64(time.Second)}
 			}
@@ -689,7 +689,7 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: repository, GitHubPullRequest: true}
+			target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Method: "squash", Repository: repository, PublicationRepository: remote, GitHubPullRequest: true}
 			stub := landingStub{target: target}
 			if test.reportFailure {
 				stub.recordErr = errors.New("hub unavailable")

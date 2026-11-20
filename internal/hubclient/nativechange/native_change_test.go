@@ -78,21 +78,22 @@ const nativeChangeAdminToken = "native-change-admin"
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
-	config          hubserver.Config
-	leaseHolds      atomic.Int64
-	clock           func() time.Time
-	reopen          func(func(tenantstore.Writer) error)
-	sourceDirectory string
-	review          string
-	organization    tracker.OrganizationID
-	project         tracker.ProjectID
-	descriptor      policy.Descriptor
-	admin           *NativeClient
-	native          *NativeClient
-	connector       *NativeConnector
-	scheduler       *Scheduler
-	failChanges     *changeFailingTransport
-	otherWorker     func(*testing.T) *NativeClient
+	configureCloneURL func(string)
+	config            hubserver.Config
+	leaseHolds        atomic.Int64
+	clock             func() time.Time
+	reopen            func(func(tenantstore.Writer) error)
+	sourceDirectory   string
+	review            string
+	organization      tracker.OrganizationID
+	project           tracker.ProjectID
+	descriptor        policy.Descriptor
+	admin             *NativeClient
+	native            *NativeClient
+	connector         *NativeConnector
+	scheduler         *Scheduler
+	failChanges       *changeFailingTransport
+	otherWorker       func(*testing.T) *NativeClient
 }
 
 func (h *nativeChangeHub) leaseHold(context.Context) (func(), error) {
@@ -251,6 +252,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	var requests sync.RWMutex
+	var projectCloneURL string
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		requests.RLock()
 		defer requests.RUnlock()
@@ -268,7 +270,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 				return
 			}
 		}
-		service.Handler().ServeHTTP(w, r)
+		testsupport.ServeProjectCloneURL(w, r, service.Handler(), projectCloneURL)
 	}
 	t.Cleanup(func() {
 		requests.Lock()
@@ -296,6 +298,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), descriptor: clientTestPolicy()}
+	h.configureCloneURL = func(url string) {
+		requests.Lock()
+		defer requests.Unlock()
+		projectCloneURL = url
+	}
 	h.reopen = func(seed func(tenantstore.Writer) error) {
 		t.Helper()
 		requests.Lock()

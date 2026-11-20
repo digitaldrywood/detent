@@ -230,7 +230,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := runpkg.NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, Method: "squash", GitHubPullRequest: true}
+	target := runpkg.NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: repository, PublicationRepository: remote, Method: "squash", GitHubPullRequest: true}
 	execution := &nativeLandingJourneyExecution{target: target}
 	journey.runner, journey.execution, journey.provider = agent, execution, provider
 	journey.issue, journey.target, journey.base = issue, target, base

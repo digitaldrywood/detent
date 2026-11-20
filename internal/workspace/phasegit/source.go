@@ -15,12 +15,12 @@ type Command func(context.Context, ...string) (string, error)
 type RemoteHead func(context.Context, string, string, string) (string, bool, error)
 
 func Head(ctx context.Context, path string) (string, string, error) {
-	head, err := gitexec.Run(ctx, path, "rev-parse", "--verify", "HEAD")
+	head, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	head = strings.TrimSpace(head)
-	tree, err := gitexec.Run(ctx, path, "rev-parse", head+"^{tree}")
+	tree, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", head+"^{tree}")
 	if err != nil {
 		return "", "", fmt.Errorf("read phase tree: %w", err)
 	}
@@ -38,7 +38,7 @@ func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhas
 	return nil
 }
 
-func Push(ctx context.Context, path, branch string, verify, authorize, verifyDestination func(context.Context) error, remoteHead RemoteHead, pushError func(error, string) error) (string, string, string, error) {
+func Push(ctx context.Context, path, branch, repository string, verify, authorize, verifyDestination func(context.Context) error, pushError func(error, string) error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -59,11 +59,8 @@ func Push(ctx context.Context, path, branch string, verify, authorize, verifyDes
 	if err := verifyDestination(ctx); err != nil {
 		return "", "", "", err
 	}
-	if _, pushErr := gitexec.Run(ctx, path, "push", "--no-follow-tags", gitexec.DefaultRemote, head+":"+ref); pushErr != nil {
-		if err := verifyDestination(ctx); err != nil {
-			return "", "", "", errors.Join(err, pushError(pushErr, branch))
-		}
-		current, exists, readErr := remoteHead(ctx, path, gitexec.DefaultRemote, branch)
+	if pushErr := gitexec.PushPublication(ctx, path, repository, head+":"+ref); pushErr != nil {
+		current, exists, readErr := gitexec.PublicationBranchHead(ctx, repository, branch)
 		if readErr != nil || !exists || current != head {
 			return "", "", "", errors.Join(pushError(pushErr, branch), readErr)
 		}
