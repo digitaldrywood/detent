@@ -97,6 +97,7 @@ func (f landingFixture) absorb(t *testing.T) {
 }
 
 func TestLocalGitCreateReviewedLanding(t *testing.T) {
+	t.Run("publish phase from isolated Git metadata", verifyPhasePublication)
 	t.Parallel()
 	for _, test := range []struct {
 		name, change, refusal string

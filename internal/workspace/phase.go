@@ -14,9 +14,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", err
 	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	return phasegit.Push(ctx, info.Path, info.PublishBranch(), repository, func(ctx context.Context) error {
-		return l.VerifyReviewTree(ctx, info, issue)
-	}, authorize, func(ctx context.Context) error {
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}

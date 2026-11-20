@@ -90,7 +90,54 @@ func RunBase(ctx context.Context, source, base string, prepare func() (string, e
 }
 
 func VerifyCleanReview(ctx context.Context, path string) error {
-	changes, err := gitexec.Run(ctx, path, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
+	return verifyCleanReview(func(args ...string) (string, error) { return gitexec.Run(ctx, path, args...) })
+}
+
+func VerifyPublicationTree(ctx context.Context, path string, read func(...string) (string, error)) error {
+	if err := verifyCleanReview(read, "--ignore-submodules=dirty"); err != nil {
+		return err
+	}
+	entries, err := read("ls-files", "--stage", "-z")
+	if err != nil {
+		return err
+	}
+	for entry := range strings.SplitSeq(entries, "\x00") {
+		if !strings.HasPrefix(entry, "160000 ") {
+			continue
+		}
+		_, name, _ := strings.Cut(entry, "\t")
+		child, err := filepath.Localize(name)
+		if err != nil {
+			return fmt.Errorf("read publication submodule path: %w", err)
+		}
+		submodule := filepath.Join(path, child)
+		dir, err := os.Lstat(submodule)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !dir.IsDir() {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(submodule, ".git")); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string) error) error {
+			return VerifyPublicationTree(ctx, submodule, read)
+		}); err != nil {
+			return fmt.Errorf("verify publication submodule: %w", err)
+		}
+	}
+	return nil
+}
+
+func verifyCleanReview(read func(...string) (string, error), options ...string) error {
+	args := []string{"status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"}
+	changes, err := read(append(args, options...)...)
 	if err != nil {
 		return err
 	}

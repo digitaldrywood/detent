@@ -43,6 +43,12 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 	}
 	target, err := landing.LandingTarget(ctx)
+	if err != nil {
+		if errors.Is(err, ErrLandingNotReviewed) {
+			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
+		}
+		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
+	}
 	landingStarted := false
 	startLanding := func() error {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !landingStarted {
@@ -58,16 +64,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			runErr = errors.Join(runErr, startLanding())
 		}
 	}()
-	if err != nil {
-		if errors.Is(err, ErrLandingNotReviewed) {
-			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
-		}
-		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
-	}
-	if prepared != nil {
-		previous := *prepared
+	if previous := prepared; previous != nil {
 		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.BaseRef != target.BaseRef || previous.SourceMergeSHA != target.SourceMergeSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.PublicationRepository != target.PublicationRepository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !reflect.DeepEqual(previous.External, target.External) {
-			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
+			return r.refusedLanding(req, *previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
 		}
 	}
 	lander, ok := backend.(workspace.Lander)

@@ -9,18 +9,23 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
 type Command func(context.Context, ...string) (string, error)
 type RemoteHead func(context.Context, string, string, string) (string, bool, error)
 
 func Head(ctx context.Context, path string) (string, string, error) {
-	head, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")
+	return readHead(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) })
+}
+
+func readHead(read func(...string) (string, error)) (string, string, error) {
+	head, err := read("rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	head = strings.TrimSpace(head)
-	tree, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", head+"^{tree}")
+	tree, err := read("rev-parse", head+"^{tree}")
 	if err != nil {
 		return "", "", fmt.Errorf("read phase tree: %w", err)
 	}
@@ -38,20 +43,9 @@ func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhas
 	return nil
 }
 
-func Push(ctx context.Context, path, branch, repository string, verify, authorize, verifyDestination func(context.Context) error, pushError func(error, string) error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, authorize, verifyDestination func(context.Context) error, pushError func(error, string) error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
-	}
-	ref := "refs/heads/" + branch
-	if _, err := gitexec.Run(ctx, path, "check-ref-format", ref); err != nil {
-		return "", "", "", fmt.Errorf("validate phase publication branch: %w", err)
-	}
-	if err := verify(ctx); err != nil {
-		return "", "", "", err
-	}
-	head, tree, err := Head(ctx, path)
-	if err != nil {
-		return "", "", "", err
 	}
 	if err := authorize(ctx); err != nil {
 		return "", "", "", err
@@ -59,11 +53,33 @@ func Push(ctx context.Context, path, branch, repository string, verify, authoriz
 	if err := verifyDestination(ctx); err != nil {
 		return "", "", "", err
 	}
-	if pushErr := gitexec.PushPublication(ctx, path, repository, head+":"+ref); pushErr != nil {
-		current, exists, readErr := gitexec.PublicationBranchHead(ctx, repository, branch)
-		if readErr != nil || !exists || current != head {
-			return "", "", "", errors.Join(pushError(pushErr, branch), readErr)
+	ref := "refs/heads/" + branch
+	var head, tree string
+	err := gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), push func(string, string) error) error {
+		if _, err := read("check-ref-format", ref); err != nil {
+			return fmt.Errorf("validate phase publication branch: %w", err)
 		}
+		if err := validationcmd.VerifyPublicationTree(ctx, path, read); err != nil {
+			return err
+		}
+		var err error
+		head, tree, err = readHead(read)
+		if err != nil {
+			return err
+		}
+		if err := authorize(ctx); err != nil {
+			return err
+		}
+		if pushErr := push(repository, head+":"+ref); pushErr != nil {
+			current, exists, readErr := gitexec.PublicationBranchHead(ctx, repository, branch)
+			if readErr != nil || !exists || current != head {
+				return errors.Join(pushError(pushErr, branch), readErr)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", "", "", err
 	}
 	return branch, head, tree, nil
 }

@@ -76,7 +76,7 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 	done := make(chan completion, 10)
 	for i := range 10 {
 		head := strings.Repeat(string(rune('a'+i%6)), 40)
-		target := NativeLandingTarget{ChangeID: "change", VersionID: "version", HeadSHA: head, Repository: "https://github.com/example/repo", Method: "squash", SecurityAudit: i%2 == 0}
+		target := NativeLandingTarget{ChangeID: "change", VersionID: "version", HeadSHA: head, Repository: "https://github.com/example/repo", PublicationRepository: "https://github.com/example/repo.git", Method: "squash", SecurityAudit: i%2 == 0}
 		execution := &landingRunExecution{landingStub: landingStub{target: target}}
 		request := RunRequest{Execution: execution, LandingBatch: batch.Add()}
 		callbacks := (&Runner{}).SSHRunCallbacks(request)
@@ -108,7 +108,7 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 			return nil, nil
 		})
 		go func() {
-			result, err := remoteExecution.LandBatch(ctx, lander, workspace.LandRequest{Info: workspace.Info{Path: "remote"}, Options: workspace.LandOptions{Native: true, HeadSHA: head, Repository: target.Repository, Method: "squash", SecurityAuditRequired: target.SecurityAudit, SecurityAudit: func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
+			result, err := remoteExecution.LandBatch(ctx, lander, workspace.LandRequest{Info: workspace.Info{Path: "remote"}, Options: workspace.LandOptions{Native: true, HeadSHA: head, Repository: target.Repository, PublicationRepository: target.PublicationRepository, Method: "squash", SecurityAuditRequired: target.SecurityAudit, SecurityAudit: func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
 				if workspace.AttemptWorkspaceFromContext(ctx) != attempt || workspace.ValidationProcessOwnerFromContext(ctx) == nil {
 					return nil, errors.New("audit lost the member's process registration scope")
 				}
@@ -134,5 +134,32 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 	}
 	if calls.Load() != 1 || validated.Load() != 10 || audited.Load() != 5 {
 		t.Fatalf("remote staging operations %d, authority checks %d", calls.Load(), validated.Load())
+	}
+}
+
+func TestSSHNativeLandingBatchRefusesDifferentProjectRepository(t *testing.T) {
+	t.Parallel()
+	target := NativeLandingTarget{ChangeID: "change", VersionID: "version", HeadSHA: strings.Repeat("a", 40), Repository: "https://github.com/example/repo", PublicationRepository: "https://github.com/example/repo.git", Method: "squash"}
+	for _, repository := range []string{"", "https://github.com/example/other.git"} {
+		t.Run(repository, func(t *testing.T) {
+			t.Parallel()
+			batch := workspace.NewLandingBatch(t.Context())
+			member := batch.Add()
+			batch.Seal()
+			t.Cleanup(member.Finish)
+			callbacks := (&Runner{}).SSHRunCallbacks(RunRequest{
+				Execution: &landingRunExecution{landingStub: landingStub{target: target}}, LandingBatch: member,
+			})
+			payload, err := json.Marshal(workspace.LandRequest{Options: workspace.LandOptions{
+				Native: true, HeadSHA: target.HeadSHA, Repository: target.Repository, PublicationRepository: repository, Method: target.Method,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = callbacks.handleLandingBatch(t.Context(), "landing.submit", []json.RawMessage{payload})
+			if err == nil || !strings.Contains(err.Error(), "SSH batch differs from the reviewed native version") {
+				t.Fatalf("batch submission error = %v", err)
+			}
+		})
 	}
 }

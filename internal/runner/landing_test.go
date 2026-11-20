@@ -130,6 +130,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 		{name: "landing reuses published source without replaying interrupted provider recovery", interrupted: true, github: true, created: true, createErr: errors.New("stop at creation")},
 		{name: "approved external source", github: true, created: true, createErr: errors.New("stop at creation")},
 		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
+		{name: "unavailable project destination", github: true, targetErr: errors.New("landing requires a configured project repository")},
 		{name: "current policy disables PR landing"},
 		{name: "hydration refusal", github: true, created: true, createErr: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "external PR moved"}},
 		{name: "hydration quota retains reviewed identity and metrics", github: true, created: true, quota: true},
@@ -160,6 +161,12 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeMerge, Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#98"}})
 			if backend.created != test.created || len(execution.recorded) != 0 {
 				t.Fatalf("workspace created = %v, receipts = %#v", backend.created, execution.recorded)
+			}
+			if test.targetErr != nil && !errors.Is(test.targetErr, ErrLandingNotReviewed) {
+				if !errors.Is(err, test.targetErr) || execution.started || len(execution.landingObservations) != 0 {
+					t.Fatalf("missing target: landing started = %t, landing observations = %d, error = %v", execution.started, len(execution.landingObservations), err)
+				}
+				return
 			}
 			if test.created {
 				options := backend.createIssue.Landing
