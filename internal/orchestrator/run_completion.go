@@ -535,20 +535,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
-	if event.Request.Mode == runpkg.RunModePlan {
-		o.logWorkerLifecycle(running.Issue, "worker_"+workerOutcome(event.Err, event.Result.FinalState),
-			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
-			telemetry.DetentSessionIDKey, running.DetentSessionID,
-			telemetry.ProviderSessionIDKey, running.SessionID,
-			"attempt", running.Attempt,
-			"worker_host", strings.TrimSpace(running.WorkerHost),
-			"mode", strings.TrimSpace(event.Request.Mode),
-			"final_state", strings.TrimSpace(event.Result.FinalState),
-		)
-		o.completePlanRunning(ctx, state, event, running)
-		return
-	}
-
 	if o.completeNativeLandingRun(ctx, state, event, running) {
 		return
 	}
@@ -2091,63 +2077,6 @@ func errorString(err error) string {
 		return ""
 	}
 	return strings.TrimSpace(err.Error())
-}
-
-func (o *Orchestrator) completePlanRunning(
-	ctx context.Context,
-	state *State,
-	event runpkg.Completion,
-	running Running,
-) {
-	cfg := gate.EffectivePlan(o.cfg.Plan)
-	issueID := strings.TrimSpace(event.IssueID)
-	issue := cloneIssue(running.Issue)
-	// Checkpoint the completed worker before any remote side effect. Recovery uses
-	// the existing completion fence, never another planner session.
-	record := newDeferredCompletion(event, running, nil, o.clockNow().UTC())
-	if !o.persistDeferredCompletion(ctx, state, record) {
-		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist completed plan failed"))
-		return
-	}
-	if err := o.publishCompletedPlan(ctx, event, &running); err != nil {
-		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-		return
-	}
-	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
-		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-		return
-	}
-	issue.State = cfg.Stop
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
-
-	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
-		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
-	}
-	state.Completed[issueID] = Completed{
-		Issue:           issue,
-		SessionID:       running.SessionID,
-		StartedAt:       running.StartedAt,
-		CompletedAt:     event.CompletedAt,
-		FinalState:      issue.State,
-		Tokens:          event.Result.Tokens,
-		RuntimeIdentity: running.RuntimeIdentity,
-	}
-	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
-	if event.Result.RateLimits != nil {
-		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
-	}
-	if diffStatsPresent(event.Result.DiffStats) {
-		state.DiffStats[issueID] = event.Result.DiffStats
-	}
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-	delete(state.PriorAttempts, issueID)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      event.CompletedAt,
-		Event:   "plan_review_created",
-		Message: "created plan artifact for " + issueLabel(issue) + " and moved to " + issue.State,
-	})
 }
 
 func (o *Orchestrator) scheduleRetry(
