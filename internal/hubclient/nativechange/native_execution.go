@@ -218,8 +218,8 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	if err := e.Validate(ctx); err != nil {
 		return ctx, func() {}, err
 	}
-	bound := api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
-	guarded, cancel := context.WithCancelCause(bound)
+	live, cancel := context.WithCancelCause(ctx)
+	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
 	e.cancelMu.Lock()
 	if e.supervisionLost {
 		e.cancelMu.Unlock()

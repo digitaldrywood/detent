@@ -249,7 +249,13 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
-	return c.withinRequestBudget(ctx, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
+	var guard context.Context
+	if replayPublication {
+		if authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok {
+			guard = authority.guard
+		}
+	}
+	return c.withinRequestBudget(ctx, guard, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
 		if replayPublication {
 			if err := nativeEffectError(ctx); err != nil {
 				return err
@@ -441,7 +447,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, http.MethodGet, target, false, func() error {
+	err := c.withinRequestBudget(ctx, nil, http.MethodGet, target, false, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err
