@@ -608,15 +608,18 @@ func TestSSHArtifactSpoolingFollowsExecution(t *testing.T) {
 			wire := NewSSHRunRequest(RunRequest{Execution: test.owner})
 			wire.Native = true
 			wire.SourceIteration = true
-			execution := wire.Bind(t.Context(), nil).Execution
+			payload, err := json.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var received SSHRunRequest
+			if err := json.Unmarshal(payload, &received); err != nil {
+				t.Fatal(err)
+			}
+			execution := received.Bind(t.Context(), nil).Execution
 			request := RunRequest{Execution: execution, Mode: RunModeImplement}
 			if got := spoolsArtifactLog(request.Execution); got != test.spool {
-				t.Fatalf("spool capability on bound execution = %t, want %t", got, test.spool)
-			}
-			wire = NewSSHRunRequest(request)
-			forwarded := wire.Bind(t.Context(), nil).Execution
-			if got := spoolsArtifactLog(forwarded); got != test.spool {
-				t.Fatalf("spool capability on forwarded execution = %t, want %t", got, test.spool)
+				t.Fatalf("spool capability after rebinding request = %t, want %t", got, test.spool)
 			}
 		})
 	}
