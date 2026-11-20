@@ -418,15 +418,28 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 	} else if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
 		landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true)
+		landingLane := direct && dispatchableState(states, landing)
 		_, terminal := connector.CompletionLane(states, issue.State, "", false)
-		_, canContinue := o.nativeCompletionExecution(event).(runpkg.LandingExecution)
-		if terminal && (canContinue && o.supervisor != nil || !direct || !dispatchableState(states, landing)) {
+		_, landingExecution := o.nativeCompletionExecution(event).(runpkg.LandingExecution)
+		canContinue := landingExecution && o.supervisor != nil
+		if canContinue && !terminal && landingLane {
+			if _, allowed := connector.CompletionLane(states, landing, "", false); allowed {
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, landing, event.CompletedAt, string(AutoPromoteReasonReady), workflowLaneMetadata{}); err != nil {
+					return handoff(err)
+				}
+				issue.State = landing
+				running.Issue = cloneIssue(issue)
+				running.DispatchTargetState = landing
+				terminal = true
+			}
+		}
+		if terminal && (canContinue || !landingLane) {
 			if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
 				return handoff(err)
 			}
 			return true
 		}
-		if direct && dispatchableState(states, landing) {
+		if landingLane {
 			target, ok = landing, true
 		} else {
 			return handoff(fmt.Errorf("native workflow allows no landing path from %s", strings.TrimSpace(issue.State)))

@@ -74,11 +74,13 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 			return runner.AgentTurnResult{}, errors.New("round verdict was not an independent read-only turn")
 		}
 		a.roundVerdicts++
-		next := "merge"
+		action, next := "continue", "merge"
 		if strings.Contains(request.Prompt, "required next phase: implement") {
 			next = "implement"
+		} else if strings.Contains(request.Prompt, "required action is done") {
+			action, next = "done", ""
 		}
-		body := fmt.Sprintf(`{"action":"continue","next_phase":%q,"reason":"Fixture evaluated the passing and failing checks."}`, next)
+		body := fmt.Sprintf(`{"action":%q,"next_phase":%q,"reason":"Fixture evaluated the passing and failing checks."}`, action, next)
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
 	}
 	a.requests = append(a.requests, request)
@@ -138,12 +140,14 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		verdict      string
 		gateRepair   bool
 		loseReceipt  bool
+		land         bool
 		wantVersions int
 		wantCalls    int
 		wantReviewed bool
 	}{
 		{name: "audit repair before acceptance", audit: true, auditRework: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "old audit approval cannot approve repaired head", audit: true, limit: 6, verdict: "rework", wantVersions: 2, wantCalls: 6, wantReviewed: true},
+		{name: "accepted source lands and records completion", land: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
@@ -170,7 +174,11 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			lease := execution.Recovery().Lease
-			h.failChanges.dropPhaseReceipt.Store(test.loseReceipt)
+			phasesSupported, err := h.native.PhaseReceiptRoute(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.failChanges.dropPhaseReceipt.Store(phasesSupported && test.loseReceipt)
 			source := nativeChangeSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
@@ -202,7 +210,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				defer closePeers()
 				runExecution = remote
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: test.land})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -223,7 +231,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if n := strings.Count(string(gateLog), "checked\n"); n != wantGateRuns {
 				t.Errorf("gate ran %d times across %d checked heads, want %d", n, test.wantVersions, wantGateRuns)
 			}
-			if test.loseReceipt {
+			if phasesSupported && test.loseReceipt {
 				branch := sourceLoopGitOutput(t, provider.workspace, "branch", "--show-current")
 				if branch == "" {
 					t.Fatal("implementation lost its item branch")
@@ -238,10 +246,10 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 					t.Fatalf("phase %d reset shared budget: limit=%d want=%d", index, request.MaxTurns, test.limit-index)
 				}
 			}
-			if test.loseReceipt && h.failChanges.phaseReceiptDrops.Load() != 1 {
+			if phasesSupported && test.loseReceipt && h.failChanges.phaseReceiptDrops.Load() != 1 {
 				t.Error("runner never reconciled the lost response after recording a pushed phase")
 			}
-			if test.gateRepair || test.loseReceipt {
+			if phasesSupported && (test.gateRepair || test.loseReceipt) {
 				if provider.roundVerdicts != 2 {
 					t.Errorf("runner asked for %d verdicts, want one for each of the two rounds", provider.roundVerdicts)
 				}
@@ -330,7 +338,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				if test.sourceReview {
 					wantReviews = 3
 				}
-				if test.gateRepair {
+				if test.gateRepair || test.land {
 					wantReviews = 1
 				}
 				if len(detail.Reviews) != wantReviews {
@@ -342,8 +350,36 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			} else if test.verdict == "rework" && !strings.Contains(owner.CompletionData().CompletionBody, "shared implementation and review turn budget is exhausted") {
 				t.Fatalf("budget cause was not retained: %s", owner.CompletionData().CompletionBody)
 			}
-			if state := h.state(t, issue.ID); state != "In Progress" {
-				t.Fatalf("worker wrote lane: %s", state)
+			if test.land {
+				attempt := owner.CompletionData().AttemptID
+				landed, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeMerge, RetainItemWorkspace: true, DeferExecutionFinish: true})
+				if err != nil || landed.NativeLanding == nil || !landed.NativeLanding.Landed {
+					t.Fatalf("retained source did not land under the current lease: %+v %v", landed.NativeLanding, err)
+				}
+				if owner.CompletionData().AttemptID != attempt || loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns > 1 || sourceLoopGitOutput(t, remote, "rev-parse", "refs/heads/main") != landed.NativeLanding.MergeSHA {
+					t.Fatal("landing changed execution ownership or workspace lifecycle")
+				}
+				if phasesSupported {
+					raw, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var receipt struct {
+						Action        string `json:"action"`
+						Disposition   string `json:"disposition"`
+						PreviousRound string `json:"previous_round_id"`
+					}
+					if err := json.Unmarshal(raw, &receipt); err != nil || receipt.Action != "done" || receipt.Disposition != "landed" || receipt.PreviousRound == "" || provider.roundVerdicts != 2 {
+						t.Fatalf("landing did not record one verified completion verdict: %+v %v", receipt, err)
+					}
+				}
+			}
+			wantLane := "In Progress"
+			if test.land {
+				wantLane = "Done"
+			}
+			if state := h.state(t, issue.ID); state != wantLane {
+				t.Fatalf("item lane = %s, want %s", state, wantLane)
 			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 				t.Fatal(err)
