@@ -124,8 +124,23 @@ func SamePublicationRepository(expected, actual string) bool {
 	expectedName, expectedGitHub := strings.CutPrefix(expected, github)
 	actualName, actualGitHub := strings.CutPrefix(actual, github)
 	owner, repository, ok := strings.Cut(expectedName, "/")
-	return expectedGitHub && actualGitHub && ok && owner != "" && repository != "" &&
-		!strings.Contains(repository, "/") && strings.EqualFold(expectedName, actualName)
+	if !expectedGitHub || !actualGitHub || !ok || owner == "" || repository == "" ||
+		strings.Contains(repository, "/") || len(expectedName) != len(actualName) {
+		return false
+	}
+	for i := range len(expectedName) {
+		if foldASCIILetter(expectedName[i]) != foldASCIILetter(actualName[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func foldASCIILetter(letter byte) byte {
+	if letter >= 'A' && letter <= 'Z' {
+		return letter + ('a' - 'A')
+	}
+	return letter
 }
 
 func VerifyPublicationRemote(ctx context.Context, path, remote, repository string) error {
