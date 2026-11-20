@@ -1033,6 +1033,9 @@ func (s *AppServer) startThread(
 	params := map[string]any{
 		"cwd": req.Workspace,
 	}
+	if req.DetectToolLoops {
+		params["experimentalRawEvents"] = true
+	}
 	setOptional(params, "approvalPolicy", wireApprovalPolicy(req.ApprovalPolicy))
 	if settings := threadConfig(req); len(settings) > 0 {
 		params["config"] = settings
