@@ -11,6 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -30,7 +32,7 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	if !ok {
 		return progresscheck.RoundAssessment{}, errors.New("round verdict owner is unavailable")
 	}
-	if retry == nil && normalizeRunMode(req.Mode) == RunModeImplement {
+	if retry == nil && runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement {
 		workflow, _, _, _ := r.runtimeSnapshot()
 		retry = r.roundRetry(ctx, req, phase, nil, &progresscheck.RoundDeadlines{}, roundRetryDelay(workflow.Config.Agent.MaxRetryBackoffMS))
 	}
@@ -114,7 +116,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 			fallback.NextPhase = "merge"
 		}
 	}
-	if signal, ok := NativeCompletionSignalFromMessage(result.FinalMessage); ok && signal.Invalid == nil && signal.Status == "blocked" && strings.TrimSpace(signal.HumanAction) != "" {
+	if signal, ok := phaserecovery.CompletionSignalFromMessage(result.FinalMessage); ok && signal.Invalid == nil && signal.Status == "blocked" && strings.TrimSpace(signal.HumanAction) != "" {
 		human, _ := runtimeoutput.Diagnostic(signal.HumanAction, 1024)
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundHumanAction, HumanAction: human}
 	}
@@ -122,7 +124,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	if providerBoundary != "" {
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: phase}
 	}
-	canAskHuman := runErr == nil && result.NativeLanding == nil && normalizeRunMode(req.Mode) == RunModeImplement
+	canAskHuman := runErr == nil && result.NativeLanding == nil && runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement
 	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
 		canAskHuman = false
 	}
@@ -144,7 +146,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 		signature = policy.Digest([]byte(phase + "\n" + findings))
 	}
 	role := runtime.effectiveRunRole(RunModeImplement)
-	selection, agent, config, err := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	selection, agent, config, err := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, err
 	}

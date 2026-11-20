@@ -8,6 +8,7 @@ import (
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type Lifecycle interface {
@@ -43,7 +44,8 @@ type Lifecycle interface {
 	runner.PreStartConversationExecution
 	runner.ProcessUsageExecution
 	runner.ProviderCapacityExecution
-	SetPhaseProvider(context.Context, providercapacity.Requirement, providercapacity.Requirement) error
+	StartPhased(context.Context, tracker.NativeExecutionIdentity) error
+	SetPhaseProvider(context.Context, providercapacity.Requirement) error
 	runner.PublicationSourceExecution
 	runner.ReleaseDeliveryExecution
 	runner.RepositoryExecution

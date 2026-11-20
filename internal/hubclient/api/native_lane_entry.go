@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const nativeLaneEntryHistoryPages = 50
@@ -63,27 +65,57 @@ func (c *NativeClient) RecentWorkflowTransitions(ctx context.Context, id tracker
 		return nil, err
 	}
 	var transitions []tracker.CollaborationEvent
+	err = c.eachWorkflowTransition(ctx, path, func(event tracker.CollaborationEvent) bool {
+		transitions = append(transitions, event)
+		return len(transitions) == limit
+	})
+	return transitions, err
+}
+
+func (c *NativeClient) PlanAnswer(ctx context.Context, id tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (tracker.CollaborationEvent, error) {
+	path, err := NativeItemPath(id)
+	if err != nil {
+		return tracker.CollaborationEvent{}, err
+	}
+	var exit tracker.CollaborationEvent
+	err = c.eachWorkflowTransition(ctx, path, func(event tracker.CollaborationEvent) bool {
+		if event.Actor.Kind == "human" && event.Data.BlockerAttemptID == attempt.AttemptID && strings.EqualFold(event.Data.FromState, "Blocked") && !strings.EqualFold(event.Data.ToState, "Blocked") {
+			exit = event
+			return true
+		}
+		if !event.RecordedAt.After(attempt.UpdatedAt) {
+			return true
+		}
+		if event.Data.FromState != "" && event.Data.ToState != "" && !strings.EqualFold(event.Data.FromState, event.Data.ToState) {
+			exit = event
+		}
+		return false
+	})
+	if exit.Actor.Kind != "human" || !strings.EqualFold(exit.Data.FromState, "Blocked") || exit.Data.BlockerAttemptID != "" && exit.Data.BlockerAttemptID != attempt.AttemptID {
+		return tracker.CollaborationEvent{}, err
+	}
+	return exit, err
+}
+
+func (c *NativeClient) eachWorkflowTransition(ctx context.Context, path string, found func(tracker.CollaborationEvent) bool) error {
 	cursor := ""
 	for range nativeLaneEntryHistoryPages {
 		params := url.Values{"view": {"timeline"}, "direction": {"newest"}, "limit": {"200"}, "cursor": {cursor}}
 		var page tracker.Page[tracker.CollaborationEvent]
 		if err := c.client.request(ctx, http.MethodGet, c.base()+path+"/history?"+params.Encode(), nil, &page); err != nil {
-			return nil, err
+			return err
 		}
 		for _, event := range page.Items {
-			if event.Type == "workflow.transitioned" {
-				transitions = append(transitions, event)
-				if len(transitions) == limit {
-					return transitions, nil
-				}
+			if event.Type == "workflow.transitioned" && found(event) {
+				return nil
 			}
 		}
 		if page.NextCursor == "" {
-			return transitions, nil
+			return nil
 		}
 		cursor = page.NextCursor
 	}
-	return nil, errors.New("current lane entry history is incomplete")
+	return errors.New("current lane entry history is incomplete")
 }
 
 func (e *nativeLaneEntries) lookup(id tracker.NativeWorkItemID, revision string) (nativeLaneEntry, bool) {
@@ -103,4 +135,82 @@ func (e *nativeLaneEntries) store(id tracker.NativeWorkItemID, entry nativeLaneE
 		e.entries = make(map[tracker.NativeWorkItemID]nativeLaneEntry)
 	}
 	e.entries[id] = entry
+}
+
+func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeRecovery, policyID string, receipts []tracker.NativePhaseReceipt) (*tracker.NativePlanState, error) {
+	item := recovery.Issue.WorkItemID
+	if len(receipts) == 0 {
+		if recovery.Change != nil {
+			return nil, nil
+		}
+		if source := recovery.SourceAttempt(); source != nil {
+			if source.LeaseID == recovery.Lease.ID && source.Runtime != nil && source.Runtime.Phase == "planning" {
+				return &tracker.NativePlanState{}, nil
+			}
+			if source.Checkpoint.PreservesSource() || source.Identity != nil && source.Identity.Role == "plan" && source.Status == "succeeded" {
+				return nil, nil
+			}
+		}
+		if !strings.EqualFold(recovery.Issue.State, "Todo") {
+			workflow, err := c.RecentWorkflowTransitions(ctx, item, 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(workflow) == 0 || workflow[0].Actor.Kind != "runner" || !strings.EqualFold(workflow[0].Data.FromState, "Todo") || !strings.EqualFold(workflow[0].Data.ToState, recovery.Issue.State) {
+				return nil, nil
+			}
+		}
+		return &tracker.NativePlanState{}, nil
+	}
+
+	pinned := receipts[0]
+	if !tracker.IsPlanPhase(pinned.Phase) {
+		return nil, nil
+	}
+	result := &tracker.NativePlanState{}
+	if pinned.PolicyID != policyID || pinned.Phase == "plan_review" {
+		return result, nil
+	}
+	var owner tracker.NativeAttempt
+	for _, attempt := range recovery.Attempts {
+		if attempt.AttemptID == pinned.AttemptID {
+			owner = attempt
+			break
+		}
+	}
+	if len(owner.Steps) == 0 || pinned.Phase == "plan_draft" && owner.CompletionBody == "" {
+		var err error
+		owner, err = c.NativeAttempt(ctx, item, pinned.AttemptID)
+		if err != nil {
+			return nil, fmt.Errorf("read plan receipt attempt: %w", err)
+		}
+	}
+	if owner.AttemptID != pinned.AttemptID || owner.LeaseID != pinned.LeaseID || owner.FencingToken != pinned.FencingToken || owner.PolicyID != pinned.PolicyID {
+		return nil, errors.New("plan receipt does not match its attempt")
+	}
+	for _, step := range owner.Steps {
+		if step.Step != "plan" || step.Source.HeadSHA != pinned.HeadSHA || step.Source.WorkspaceDigest != pinned.TreeSHA ||
+			step.PolicyID != policyID || step.ReviewState != tracker.PlanIssueDigest(recovery) || step.CompletionBody == "" ||
+			tracker.PlanPhaseDigest(pinned, recovery, step) != pinned.InputDigest {
+			continue
+		}
+		if pinned.Phase == "plan" {
+			if step.PlanApproval != "" {
+				result.Draft, result.Accepted = step.CompletionBody, true
+			}
+			return result, nil
+		}
+		result.Draft = step.CompletionBody
+		signal, ok := workpad.SignalFromComment(owner.CompletionBody, "", "")
+		if owner.Status != "succeeded" || !ok || signal.Invalid != nil || signal.HumanAction != tracker.PlanApprovalQuestion {
+			return result, nil
+		}
+		answer, err := c.PlanAnswer(ctx, item, owner)
+		if err != nil {
+			return nil, fmt.Errorf("read plan approval answer: %w", err)
+		}
+		result.Answer, result.AnswerID = strings.TrimSpace(answer.Data.ReasonDetail), answer.ID
+		return result, nil
+	}
+	return result, nil
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func TestNativeConnectorCurrentLaneEntry(t *testing.T) {
@@ -259,6 +260,78 @@ func TestNativeLaneWriteWithoutLeaseIsUnauthorized(t *testing.T) {
 			}
 			if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(sent) != 0 {
 				t.Fatalf("UpdateIssueState() = %v with %d transitions, want execution authority unavailable before any write", err, len(sent))
+			}
+		})
+	}
+}
+
+func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
+	t.Parallel()
+	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	for _, name := range []string{"omitted draft owner", "changed plan body", "changed human direction", "unchanged approval"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_plan"}, Title: "Add coverage", Body: "Cover empty input"}}
+			receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "lease_plan", FencingToken: 3}, AttemptID: "attempt_plan", Phase: "plan", PolicyID: "policy_plan", HeadSHA: "head", TreeSHA: "tree"}
+			step := tracker.NativeStepReceipt{Step: "plan", Source: tracker.NativeCheckpoint{HeadSHA: "head", WorkspaceDigest: "tree"}, PolicyID: receipt.PolicyID, ReviewState: tracker.PlanIssueDigest(recovery), CompletionBody: "Test empty input.", PlanApproval: "automated:APPROVED"}
+			if name == "omitted draft owner" {
+				receipt.Phase, step.PlanApproval = "plan_draft", ""
+			}
+			receipt.InputDigest = tracker.PlanPhaseDigest(receipt, recovery, step)
+			if name == "changed plan body" {
+				step.CompletionBody = "Drop input checks."
+			}
+			if name == "changed human direction" {
+				recovery.Discussion = []tracker.NativeComment{{ID: "direction", Actor: tracker.Actor{Kind: "human"}, Body: "Preserve backward compatibility."}}
+			}
+			owner := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: receipt.AttemptID, LeaseID: receipt.LeaseID, FencingToken: receipt.FencingToken, PolicyID: receipt.PolicyID, Steps: []tracker.NativeStepReceipt{step}}, Status: "succeeded", UpdatedAt: at}
+			owner.CompletionBody = workpad.BlockedDetail(step.CompletionBody, tracker.PlanApprovalQuestion)
+			if name != "omitted draft owner" {
+				recovery.Attempts = []tracker.NativeAttempt{owner}
+			}
+			answer := tracker.CollaborationEvent{ID: "answer", Type: "workflow.transitioned", Actor: tracker.Actor{Kind: "human"}, RecordedAt: at.Add(time.Second),
+				Data: tracker.CollaborationData{FromState: "Blocked", ToState: "Todo", BlockerAttemptID: owner.AttemptID, ReasonDetail: "Approve plan"}}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/attempts/attempt_plan"):
+					if err := json.NewEncoder(w).Encode(owner); err != nil {
+						t.Error(err)
+					}
+				case strings.HasSuffix(r.URL.Path, "/history"):
+					if err := json.NewEncoder(w).Encode(tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{answer}}); err != nil {
+						t.Error(err)
+					}
+				default:
+					t.Errorf("unexpected recovery request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			client, err := New(Config{URL: server.URL, TokenSource: func() string { return "test-token" }, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scoped, err := client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := scoped.ResolvePlan(t.Context(), recovery, receipt.PolicyID, []tracker.NativePhaseReceipt{receipt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch name {
+			case "omitted draft owner":
+				if resolved.NeedsProvider() || resolved.Accepted || resolved.AnswerID != answer.ID || resolved.Draft != "Test empty input." {
+					t.Fatalf("resolved the wrong draft or answer: %+v", resolved)
+				}
+			case "unchanged approval":
+				if !resolved.Accepted || resolved.NeedsProvider() {
+					t.Fatalf("discarded bound approval: %+v", resolved)
+				}
+			default:
+				if resolved.Accepted || !resolved.NeedsProvider() {
+					t.Fatalf("accepted stale approval: %+v", resolved)
+				}
 			}
 		})
 	}

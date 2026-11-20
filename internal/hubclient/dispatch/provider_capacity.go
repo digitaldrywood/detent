@@ -74,7 +74,28 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				continue
 			}
 			if providerEnabled {
-				requirement, err := request.ProviderRequirement(discoveryCtx, candidate, reports)
+				resolve := request.ProviderRequirement
+				if request.PlanProviderRequirement != nil {
+					client := source.NativeClient()
+					receipts, err := client.ItemPhaseReceipts(discoveryCtx, issue.WorkItemID)
+					if err != nil {
+						return leases, err
+					}
+					if len(receipts) == 0 || tracker.IsPlanPhase(receipts[0].Phase) {
+						recovery, err := client.Recovery(discoveryCtx, issue.WorkItemID)
+						if err != nil {
+							return leases, err
+						}
+						plan, err := client.ResolvePlan(discoveryCtx, recovery, request.Policy.ID, receipts)
+						if err != nil {
+							return leases, err
+						}
+						if plan.NeedsProvider() {
+							resolve = request.PlanProviderRequirement
+						}
+					}
+				}
+				requirement, err := resolve(discoveryCtx, candidate, reports)
 				if err != nil {
 					waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 					continue

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"os/exec"
 	"strings"
@@ -33,7 +34,7 @@ type workerCheckpoint struct {
 
 func (r *Runner) prepareWorkerCheckpoint(ctx context.Context, req RunRequest, trackerKind string, backend workspace.Backend, info workspace.Info, issue workspace.Issue) *workerCheckpoint {
 	checkpointBackend, ok := backend.(workspace.CheckpointBackend)
-	if !ok || normalizeRunMode(req.Mode) != RunModeImplement || trackerKind == config.TrackerHubNative && req.checkpointRefs != nil {
+	if !ok || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || trackerKind == config.TrackerHubNative && req.checkpointRefs != nil {
 		return nil
 	}
 	prepareCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

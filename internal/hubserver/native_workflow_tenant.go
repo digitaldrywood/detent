@@ -164,7 +164,7 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 			return nil, err
 		}
 		var answerAttempt coordinatorMoveAnswerAttempt
-		if conversationID != "" {
+		if conversationID != "" || human && !batchRouting && strings.TrimSpace(request.ReasonDetail) != "" {
 			answerAttempt, err = s.checkCoordinatorMoveAnswer(ctx, scope, issue, request.State, request.ReasonDetail)
 			if err != nil {
 				return nil, err
@@ -368,6 +368,9 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 			return nil, err
 		}
 		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: destination, Reason: request.Reason, ReasonDetail: reasonDetail, BlockerAttemptID: request.BlockerAttemptID}
+		if answerAttempt.BlockerAttemptID != "" {
+			data.BlockerAttemptID = answerAttempt.BlockerAttemptID
+		}
 		if human && !batchRouting && (stop != nil || strings.EqualFold(request.State, "Blocked")) {
 			data.Operation = "operator_stop"
 		}

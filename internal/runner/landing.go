@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"reflect"
@@ -471,7 +472,7 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
 	landing, ok := req.Execution.(LandingExecution)
 	workflow, _, _, _ := r.runtimeSnapshot()
-	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runworkspace.RunRole(req.Mode, req.Issue) != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
 		return nil, nil
 	}
 	tools := []AgentTool{
@@ -574,7 +575,7 @@ func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentTool
 // failed read is an error rather than an unresolved answer.
 func (r *Runner) nativeReviewConversationsCleared(ctx context.Context, req RunRequest, change *NativeChange) (bool, error) {
 	landing, ok := req.Execution.(LandingExecution)
-	if !ok || req.Execution == nil || change == nil || normalizeRunMode(req.Mode) != RunModeImplement {
+	if !ok || req.Execution == nil || change == nil || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement {
 		return false, nil
 	}
 	recovery := req.Execution.Recovery()

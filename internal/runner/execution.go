@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"slices"
 	"strings"
 	"time"
@@ -17,12 +18,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
-	"github.com/digitaldrywood/detent/internal/runner/planphase"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -141,10 +140,6 @@ type LandingRuntimeExecution interface {
 // the terminal event only after those effects have completed.
 type CompletionExecution interface {
 	PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error
-}
-
-func NativeCompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
-	return phaserecovery.CompletionSignalFromMessage(message)
 }
 
 func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
@@ -357,7 +352,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	guarded = r.installDependencyReasonGenerator(guarded, req)
 	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
 	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
-	mode := normalizeRunMode(req.Mode)
+	mode := runworkspace.NormalizeRunMode(req.Mode)
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
@@ -374,14 +369,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if req.PlanPhase && !req.phaseReceipts {
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts {
 		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
 	}
-	if mode == RunModeImplement && req.phaseReceipts && workflow.Config.Plan.Enabled && req.phaseContinuation.LastPushed == nil {
-		req.PlanPhase = req.PlanPhase || planphase.Unfinished(req.Execution.Recovery(), req.Issue.State, req.phaseContinuation.Workflow)
-	}
 	sourceReviewed := false
-	if normalizeRunMode(req.Mode) == RunModeImplement {
+	if runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement {
 		workflow, _, _, _ := r.runtimeSnapshot()
 		limit := workflow.Config.Agent.MaxTurns
 		if limit <= 0 {
@@ -483,8 +475,8 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		prepareCtx, prepareCancel := finishCtx, func() {}
 		if outcome == "succeeded" {
 			workflow, runtime, _, _ := r.runtimeSnapshot()
-			role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
-			_, _, backend, routeErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+			role := runtime.effectiveRunRole(runworkspace.RunRole(req.Mode, req.Issue))
+			_, _, backend, routeErr := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 			if routeErr != nil {
 				runErr = errors.Join(runErr, routeErr)
 				outcome = "failed"
@@ -626,7 +618,7 @@ func executionCheckpointPreservingPublication(execution Execution, state *worksp
 }
 
 func (req RunRequest) publicationRecovery(mode string) bool {
-	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runRole(mode, req.Issue)) {
+	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runworkspace.RunRole(mode, req.Issue)) {
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
 			return previous.Checkpoint.UncertainForgeEffect()
 		}
@@ -1317,7 +1309,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if !cfg.Enabled {
 		return nil
 	}
-	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleValidator)
 	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
@@ -1389,7 +1381,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if !ok {
 		return false, errors.New("required native implementation review producer is unavailable")
 	}
-	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleCode)
+	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleCode)
 	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ReviewVersion(ctx)

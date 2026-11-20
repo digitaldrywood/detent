@@ -34,6 +34,7 @@ type NativeStepReceipt struct {
 	Source              NativeCheckpoint           `json:"source"`
 	Change              NativeChangeReference      `json:"change,omitzero"`
 	CompletedAt         time.Time                  `json:"completed_at"`
+	PlanApproval        string                     `json:"plan_approval,omitempty"`
 	CompletionBody      string                     `json:"completion_body,omitempty"`
 	FinalizedBaseSHA    string                     `json:"finalized_base_sha,omitempty"`
 	Validation          *gate.CommandResult        `json:"validation,omitempty"`

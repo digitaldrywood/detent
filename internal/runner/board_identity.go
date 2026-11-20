@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"slices"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ func NewBoardIdentityResolver(cfg config.Config, ctx selector.Context) (*BoardId
 	if err != nil {
 		return nil, err
 	}
-	return &BoardIdentityResolver{cfg: cfg, router: router, ctx: selectorContext(ctx, config.Workflow{Config: cfg})}, nil
+	return &BoardIdentityResolver{cfg: cfg, router: router, ctx: runworkspace.SelectorContext(ctx, config.Workflow{Config: cfg})}, nil
 }
 
 // Identity resolves each issue independently; attempt identity remains authoritative.
@@ -39,7 +40,7 @@ func (r *BoardIdentityResolver) Identity(issue connector.Issue) (agentidentity.I
 }
 
 func (r *BoardIdentityResolver) IdentityForMode(issue connector.Issue, mode string) (agentidentity.Identity, error) {
-	return r.IdentityForRole(issue, runRole(mode, issue))
+	return r.IdentityForRole(issue, runworkspace.RunRole(mode, issue))
 }
 
 // IdentityForRole previews the same stage-specific selection used by workers.

@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +20,7 @@ func TestRunnerQuarantinedRebaseReachesFirstTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue := connector.Issue{ID: "2636", Identifier: "quarantine-retry", BranchName: "detent/quarantine-retry"}
-	first, err := backend.Create(t.Context(), workspaceIssue(defaultProjectID, issue))
+	first, err := backend.Create(t.Context(), runworkspace.Issue(defaultProjectID, issue))
 	if err != nil {
 		t.Fatal(err)
 	}

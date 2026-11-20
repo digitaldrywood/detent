@@ -3618,3 +3618,18 @@ func (o *Orchestrator) completedIssueClosureComment(body string, issue connector
 	}
 	return body
 }
+
+func appendPullRequestReviewDisagreementAttrs(attrs []any, pullRequest *connector.PullRequest) []any {
+	if pullRequest == nil {
+		return attrs
+	}
+	apiState := strings.ToUpper(strings.TrimSpace(pullRequest.CodexReviewAPIState))
+	bodySeverity := strings.ToUpper(strings.TrimSpace(pullRequest.CodexReviewBodySeverity))
+	if apiState == "" || bodySeverity == "" || apiState == bodySeverity {
+		return attrs
+	}
+	return append(attrs,
+		"review_api_state", apiState,
+		"review_body_severity", bodySeverity,
+	)
+}

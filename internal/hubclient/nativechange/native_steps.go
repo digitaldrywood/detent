@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -75,25 +73,8 @@ func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepRe
 		}
 	}
 	attempts := e.claim.recovery.Attempts
-	if binding.Step == "plan" && e.phaseSource != nil {
-		owner := e.phaseSource
-		if !slices.ContainsFunc(attempts, func(attempt tracker.NativeAttempt) bool { return attempt.AttemptID == owner.AttemptID }) {
-			attempt, err := e.claim.source.NativeClient().NativeAttempt(ctx, e.claim.lease.WorkItemID, owner.AttemptID)
-			if err != nil {
-				return tracker.NativeStepReceipt{}, fmt.Errorf("read plan receipt attempt: %w", err)
-			}
-			if attempt.AttemptID != owner.AttemptID || attempt.LeaseID != owner.LeaseID ||
-				attempt.FencingToken != owner.FencingToken || attempt.PolicyID != owner.PolicyID {
-				return tracker.NativeStepReceipt{}, errors.New("plan receipt does not match its attempt")
-			}
-			attempts = append(slices.Clone(attempts), attempt)
-		}
-	}
 	for i := len(attempts) - 1; i >= 0; i-- {
 		attempt := attempts[i]
-		if binding.Step == "plan" && (e.phaseSource == nil || e.phaseSource.AttemptID != attempt.AttemptID) {
-			continue
-		}
 		for _, receipt := range attempt.Steps {
 			if receipt.Matches(binding) {
 				restored, err := e.restoreStep(ctx, receipt)
@@ -113,13 +94,9 @@ func (e *nativeExecution) stepReviewState() string {
 
 func (e *nativeExecution) stepReviewStateFor(step string) string {
 	if step == "plan" {
-		return planIssueDigest(e.Recovery())
+		return tracker.PlanIssueDigest(e.Recovery())
 	}
 	return e.stepReviewState()
-}
-
-func planIssueDigest(recovery tracker.NativeRecovery) string {
-	return tracker.NativeStepReviewState(tracker.NativeRecovery{Issue: recovery.Issue})
 }
 
 func (e *nativeExecution) stepReviewEpoch() tracker.FencingToken {
@@ -152,35 +129,27 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	e.mu.Unlock()
 	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
-	recovery := e.Recovery()
-	var workflow []tracker.CollaborationEvent
-	if gates.PlanEnabled && (len(receipts) == 0 && !strings.EqualFold(recovery.Issue.State, "Todo") && recovery.Change == nil || len(receipts) != 0 && receipts[0].Phase == "plan_draft") {
-		workflow, err = client.RecentWorkflowTransitions(ctx, lease.WorkItemID, 3)
+	continuation := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
+	if gates.PlanEnabled {
+		continuation.Plan, err = client.ResolvePlan(ctx, e.Recovery(), lease.PolicyID, receipts)
 		if err != nil {
-			return nil, fmt.Errorf("read planning workflow transitions: %w", err)
+			return nil, err
 		}
 	}
-	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
-		sameAttempt.Workflow = workflow
-		return &sameAttempt, nil
+	if len(receipts) == 0 || sameAttempt.LastPushed != nil {
+		continuation.LastPushed = sameAttempt.LastPushed
+		return &continuation, nil
 	}
 	pinned := receipts[0]
+	if continuation.Plan != nil && !continuation.Plan.Accepted {
+		continuation.LastPushed, continuation.NextPhase = &pinned, "plan"
+		return &continuation, nil
+	}
 	var phases []tracker.NativePhaseReceipt
 	requirePhase := func(phase, input string) {
-		state := reviewState
-		if planPhase(phase) {
-			state = planIssueDigest(e.Recovery())
-		}
 		phases = append(phases, tracker.NativePhaseReceipt{
-			Phase: phase, InputDigest: phaseInputDigest(phase, pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, state, input),
+			Phase: phase, InputDigest: tracker.PhaseInputDigest(phase, pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, input),
 		})
-	}
-	if gates.PlanEnabled && planPhase(pinned.Phase) {
-		if gates.PlanReview == gate.PlanReviewHuman {
-			requirePhase("plan_draft", "")
-		}
-		requirePhase("plan_review", "")
-		requirePhase("plan", "")
 	}
 	requirePhase("implement", "")
 	if command != "" {
@@ -200,24 +169,18 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		requirePhase("acceptance", version)
 	}
 	requirePhase("merge", version)
-	continuation, err := client.ItemPhaseContinuation(ctx, lease.WorkItemID, lease.PolicyID, phases)
+	source, err := client.ItemPhaseContinuation(ctx, lease.WorkItemID, lease.PolicyID, phases)
 	if err != nil {
 		return nil, err
 	}
-	if continuation.LastPushed == nil || *continuation.LastPushed != pinned {
+	if source.LastPushed == nil || *source.LastPushed != pinned {
 		return nil, errors.New("recorded phase source changed during continuation")
 	}
-	continuation.RepositoryURL = project.CloneURL
-	continuation.Workflow = workflow
+	continuation.LastPushed, continuation.NextPhase, continuation.Receipts = source.LastPushed, source.NextPhase, source.Receipts
+	if continuation.Plan != nil && continuation.Plan.Accepted {
+		continuation.Receipts = append([]tracker.NativePhaseReceipt{pinned}, continuation.Receipts...)
+	}
 	return &continuation, nil
-}
-
-func planPhase(phase string) bool {
-	return phase == "plan" || phase == "plan_draft" || phase == "plan_review"
-}
-
-func phaseInputDigest(phase, head, tree, policyID, reviewState, input string) string {
-	return policy.Digest([]byte(strings.Join([]string{phase, head, tree, policyID, reviewState, input}, "\x00")))
 }
 
 func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
@@ -235,11 +198,16 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	lease := e.claim.lease
 	e.mu.Lock()
 	attemptID, reviewState := e.data.AttemptID, e.stepReviewState()
-	e.mu.Unlock()
-	if planPhase(phase) {
-		reviewState = planIssueDigest(e.Recovery())
+	digest := tracker.PhaseInputDigest(phase, head, tree, lease.PolicyID, reviewState, input)
+	if tracker.IsPlanPhase(phase) {
+		index := slices.IndexFunc(e.data.Steps, func(step tracker.NativeStepReceipt) bool { return step.Step == "plan" })
+		if index < 0 {
+			e.mu.Unlock()
+			return errors.New("phase receipt requires a recorded plan")
+		}
+		digest = tracker.PlanPhaseDigest(tracker.NativePhaseReceipt{Phase: phase, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID}, e.Recovery(), e.data.Steps[index])
 	}
-	digest := phaseInputDigest(phase, head, tree, lease.PolicyID, reviewState, input)
+	e.mu.Unlock()
 	request := tracker.NativePhaseReceipt{
 		Mutation:  tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken},
 		AttemptID: attemptID, Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID, InputDigest: digest,

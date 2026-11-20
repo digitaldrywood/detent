@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -597,7 +598,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
 				if test.auditWait {
-					signal, ok := NativeCompletionSignalFromMessage(completion.Result.FinalMessage)
+					signal, ok := phaserecovery.CompletionSignalFromMessage(completion.Result.FinalMessage)
 					if !ok || signal == nil || signal.Status != "blocked" || !strings.Contains(signal.HumanAction, "Whether caller authenticates") {
 						t.Fatalf("returned completion lost human hold: %+v", completion.Result)
 					}

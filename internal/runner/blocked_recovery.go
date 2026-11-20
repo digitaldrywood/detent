@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -17,8 +18,8 @@ func (r *Runner) BlockedRecoverySnapshot(ctx context.Context, req RunRequest) Bl
 		ConfigFingerprint: blockedRecoveryHashYAML(workflow.Config),
 		Health:            "ready",
 	}
-	role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
-	_, _, backendConfig, err := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	role := runtime.effectiveRunRole(runworkspace.RunRole(req.Mode, req.Issue))
+	_, _, backendConfig, err := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		snapshot.Health = "route_unavailable:" + recoveryfingerprint.Hash(err.Error())
 	} else {

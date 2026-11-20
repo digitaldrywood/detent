@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"net"
 	"os"
 	"os/exec"
@@ -82,7 +83,7 @@ func TestLocalWorkerWireCompletionCarriesAuditWait(t *testing.T) {
 	if change == nil || change.VersionID != ref.VersionID || change.HeadSHA != ref.HeadSHA || change.SecurityAudit == nil || change.SecurityAudit.Verdict != "wait" {
 		t.Fatalf("wire execution lost the current audit: %+v", change)
 	}
-	signal, reported := runner.NativeCompletionSignalFromMessage(response.Result.FinalMessage)
+	signal, reported := phaserecovery.CompletionSignalFromMessage(response.Result.FinalMessage)
 	if !reported || signal == nil || signal.Invalid != nil || signal.Status != "blocked" || !strings.Contains(signal.HumanAction, question) || len(signal.Blockers) != 0 {
 		t.Fatalf("wire completion did not route the audit question to a human: %s", response.Result.FinalMessage)
 	}

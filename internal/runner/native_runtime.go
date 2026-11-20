@@ -1,5 +1,7 @@
 package runner
 
+import "github.com/digitaldrywood/detent/internal/runner/runworkspace"
+
 func nativeRuntimePhase(req RunRequest) string {
 	switch req.Mode {
 	case RunModePlan:
@@ -7,7 +9,7 @@ func nativeRuntimePhase(req RunRequest) string {
 	case RunModeMerge:
 		return "merging"
 	}
-	if runRole(req.Mode, req.Issue) == RoleRework {
+	if runworkspace.RunRole(req.Mode, req.Issue) == RoleRework {
 		return "rework"
 	}
 	return "implementation"
