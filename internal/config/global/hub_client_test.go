@@ -42,6 +42,25 @@ global:
 	}
 }
 
+func TestHubLeaseDuration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		seconds int
+		want    time.Duration
+	}{
+		{name: "default covers a short outage", want: 90 * time.Minute},
+		{name: "operator duration", seconds: 7200, want: 2 * time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := HubClient{URL: "https://hub.example.test", LeaseTTLSeconds: test.seconds}.Normalized()
+			if got := client.LeaseTTL(); got != test.want {
+				t.Errorf("lease duration = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestHubRunnerIdentityConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
