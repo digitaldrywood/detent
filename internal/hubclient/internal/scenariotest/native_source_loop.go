@@ -2,6 +2,7 @@ package scenariotest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
