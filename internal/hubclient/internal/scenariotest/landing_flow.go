@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,7 +33,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -59,6 +62,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "audited already incorporated landing", audited: "incorporated"},
 		{name: "incorporated audit excludes 200 unrelated target commits", audited: "advanced"},
 		{name: "audited already incorporated receipt retry", audited: "receipt"},
+		{name: "after_create infrastructure failure retries the reviewed merge", audited: "workspace_hook"},
 		{name: "stale audit returns to its evidence producer", refusal: "stale_audit"},
 		{name: "conflict receipt returns to Rework", refusal: "conflict"},
 		{name: "protected base holds for a human and resumes the same version", refusal: "base_protected"},
@@ -100,13 +104,17 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 
 func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, factories Constructors) {
 	t.Helper()
-	h := newPlannerHub(t, "In Review", []tracker.NativeState{
+	states := []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging"}},
 		{Name: "In Review", Transitions: []string{"Merging", "In Progress"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Progress"}},
 		{Name: "Done", Terminal: true},
-	}, factories)
+	}
+	if scenario == "workspace_hook" {
+		states[3].Transitions = append(states[3].Transitions, "Todo")
+	}
+	h := newPlannerHub(t, "In Review", states, factories)
 	next := h.descriptor
 	next.Gates.SecurityAudit, next.Gates.Validator = true, true
 	next = next.WithID()
@@ -192,6 +200,14 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	}
 	change := result.NativeChange
 	h.complete(t, issue.ID, change, true)
+	if scenario == "workspace_hook" {
+		failedBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "landing-workspaces"), SourceRoot: source, AutoBranch: true, Hooks: workspace.Hooks{AfterCreate: "exit 19"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		testWorkspaceFailurePreservesReviewedLanding(t, h, issue.ID, change, newAgent(failedBackend))
+		return
+	}
 	incorporated := scenario != "clean" && scenario != "target"
 	if incorporated {
 		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
@@ -1512,4 +1528,91 @@ func nonBatchingConstructors(factories Constructors) Constructors {
 func RunLandingScenario(t *testing.T, factories Constructors, refusal string, outage func(*testing.T, *LandingSetup)) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	testNativeExecutionLandsReviewedVersion(t, false, false, false, false, "", nil, false, nonBatchingConstructors(factories), outage, refusal)
+}
+
+func testWorkspaceFailurePreservesReviewedLanding(t *testing.T, h *nativeChangeHub, issueID string, change *runner.NativeChange, agent *runner.Runner) {
+	t.Helper()
+	item := tracker.NativeWorkItemID(issueID)
+	before, err := h.admin.Change(t.Context(), item, change.ChangeID)
+	if err != nil || len(before.Versions) != 1 || before.Change.CurrentVersion != change.VersionID {
+		t.Fatalf("reviewed Change before failure: %+v, %v", before, err)
+	}
+	candidates := h.candidatesIn(t, "Merging")
+	if len(candidates) != 1 || candidates[0].ID != issueID {
+		t.Fatalf("reviewed merge candidate: %+v", candidates)
+	}
+	source := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: candidates[0], released: make(chan error, 1)}
+	backend := &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{
+		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour,
+		MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"},
+		FailureRetryBaseDelay: time.Hour, MaxRetryBackoff: time.Hour,
+	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	wait := testenv.WaitContext(t, ctx)
+	select {
+	case completed := <-backend.completed:
+		var hook *workspace.HookError
+		if !errors.Is(completed.err, runner.ErrWorkspacePreparation) || !errors.As(completed.err, &hook) || hook.Hook != "after_create" || hook.ExitCode != 19 || completed.result.TurnStarted || completed.result.NativeLanding != nil {
+			t.Fatalf("expected pre-provider after_create failure: %+v, %v", completed.result, completed.err)
+		}
+	case <-wait.Done():
+		t.Fatal("merge runner did not finish")
+	}
+	select {
+	case err := <-source.released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-wait.Done():
+		t.Fatal("failed merge did not release its claim")
+	}
+	if got := h.state(t, issueID); got != "Merging" {
+		t.Fatalf("after_create failure moved Merging to %s", got)
+	}
+	after, err := h.admin.Change(t.Context(), item, change.ChangeID)
+	if err != nil || after.Change.CurrentVersion != change.VersionID || !reflect.DeepEqual(before.Versions, after.Versions) {
+		t.Fatalf("after_create failure altered reviewed source or receipts: before=%+v after=%+v error=%v", before, after, err)
+	}
+	recovery, err := h.admin.Recovery(t.Context(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery.Attempts) == 0 {
+		t.Fatal("missing failed landing attempt")
+	}
+	attempt := recovery.Attempts[len(recovery.Attempts)-1]
+	failure := attempt.TerminalFailure
+	if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.Finalization != nil || len(attempt.Usage) != 0 ||
+		failure == nil || failure.Attribution != "instance" || failure.ErrorClass != "workspace_hook" || failure.Stage != "workspace_preparation" {
+		t.Fatalf("failed landing attempt = %+v failure = %+v", attempt, failure)
+	}
+	candidates = h.candidatesIn(t, "Merging")
+	if len(candidates) != 1 || candidates[0].ID != issueID {
+		t.Fatalf("merge candidate did not return: %+v", candidates)
+	}
+	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	next := h.scheduler.RunExecution(issueID)
+	guarded, stop, err := next.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	target, err := next.(runner.LandingExecution).LandingTarget(guarded)
+	if err != nil || target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != change.HeadSHA {
+		t.Fatalf("retry claimed a different landing target: %+v, %v", target, err)
+	}
 }

@@ -174,6 +174,9 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 		target = terminalAttemptTodoState(o.cfg.ActiveStates)
 	}
 	reader, native := o.connector.(connector.WorkflowStateReader)
+	if native && running.Mode == runpkg.RunModeMerge && running.CompletionLane == "" {
+		target = issue.State
+	}
 	if native && running.CompletionLane == "" && (running.DispatchTargetState == "" || normalizeState(issue.State) == normalizeState(running.DispatchTargetState)) {
 		states, err := reader.WorkflowStates(ctx)
 		if err != nil {
