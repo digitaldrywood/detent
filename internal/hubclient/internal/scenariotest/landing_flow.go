@@ -64,6 +64,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "protected base holds for a human and resumes the same version", refusal: "base_protected"},
 		{name: "landing command failure receipt returns to Rework", refusal: "validation"},
 		{name: "approved GitHub PR policy", github: true},
+		{name: "case equivalent GitHub binding", github: true, refusal: "case_equivalent_binding"},
 		{name: "landing admission outage preserves claim and retries", github: true, refusal: "admission_unavailable"},
 		{name: "landing capacity refusal preserves claim and retries", github: true, refusal: "admission_refused"},
 		{name: "direct landing capacity wait resumes on another machine", github: true, refusal: "direct_capacity_wait"},
@@ -443,6 +444,10 @@ func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, factories Constructors, outage func(*testing.T, *LandingSetup), refusalKinds ...string) {
 	t.Helper()
+	caseEquivalentBinding := len(refusalKinds) > 0 && refusalKinds[0] == "case_equivalent_binding"
+	if caseEquivalentBinding {
+		refusalKinds = nil
+	}
 	completionOutage := len(refusalKinds) > 0 && refusalKinds[0] == "completion_outage"
 	if completionOutage {
 		refusalKinds = nil
@@ -483,6 +488,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	repository := nativeChangeRepository
 	if linked {
 		repository = "https://github.com/example-org/example-project"
+	} else if caseEquivalentBinding {
+		h.configureProjectCheckout(t, "Example/Native-Change")
 	} else {
 		h.configureProjectCheckout(t, repository)
 	}
@@ -983,7 +990,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if !reflect.DeepEqual(target.Validation, &sourceValidation) {
 		t.Fatalf("landing lost source receipt: %#v", target.Validation)
 	}
-	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != repository || target.PublicationRepository != repository+".git" || target.GitHubPullRequest != github {
+	publicationRepository := repository + ".git"
+	if caseEquivalentBinding {
+		publicationRepository = "https://github.com/Example/Native-Change.git"
+	}
+	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != repository || target.PublicationRepository != publicationRepository || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {
