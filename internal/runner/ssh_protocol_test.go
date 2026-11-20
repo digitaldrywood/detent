@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -47,6 +48,7 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return err.Error() == "setup: "+ErrWorkspacePreparation.Error()
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
+		{"superseded checklist", errors.Join(progresscheck.ErrChecklistSuperseded, errors.New("issue revision changed")), progresscheck.ErrChecklistSuperseded, nil},
 		{"superseded Change source", ErrChangeSourceVersionSuperseded, ErrChangeSourceVersionSuperseded, nil},
 		{"superseded Change source identities", fmt.Errorf("%w (Change %q, selected version %q, current version %q)", ErrChangeSourceVersionSuperseded, "change_example", "version_selected", "version_current"), ErrChangeSourceVersionSuperseded, func(err error) bool {
 			return strings.Contains(err.Error(), `Change "change_example", selected version "version_selected", current version "version_current"`)
