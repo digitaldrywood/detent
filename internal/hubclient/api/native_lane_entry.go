@@ -147,7 +147,10 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 			if source.LeaseID == recovery.Lease.ID && source.Runtime != nil && source.Runtime.Phase == "planning" {
 				return &tracker.NativePlanState{}, nil
 			}
-			if source.Checkpoint.PreservesSource() || source.Identity != nil && source.Identity.Role == "plan" && source.Status == "succeeded" {
+			if source.Identity != nil && source.Identity.Role == "plan" && source.Status == "succeeded" {
+				return &tracker.NativePlanState{}, nil
+			}
+			if source.Checkpoint.PreservesSource() {
 				return nil, nil
 			}
 		}

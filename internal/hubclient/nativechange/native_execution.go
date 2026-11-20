@@ -21,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
-	"github.com/digitaldrywood/detent/internal/hubclient/planner"
 	"github.com/digitaldrywood/detent/internal/hubclient/publication"
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -551,10 +550,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		}
 	}
 	e.preparedDisposition = nil
-	planning := e.role == runner.RolePlan && !e.conversationContinuation
-	if planning {
-		e.preparedDisposition = planner.CompletionDisposition(outcome, finalMessage)
-	} else if e.ownsIssueCompletion() || e.change != nil && e.change.NoChange != nil {
+	if e.ownsIssueCompletion() || e.change != nil && e.change.NoChange != nil {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
 	if e.role == runner.RoleMerge {

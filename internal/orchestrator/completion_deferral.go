@@ -268,6 +268,11 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	if r.FailureDecision != nil {
 		event.Err = runpkg.RestoreFailureDecision(event.Err, *r.FailureDecision)
 	}
+	if event.Request.Mode == runpkg.RunModePlan && event.Err == nil {
+		event.Request.Mode, event.Result.Output = runpkg.RunModeImplement, ""
+		event.Err = errors.New("standalone plan must continue under the current planning policy")
+		event.Retryable = true
+	}
 	return event
 }
 
