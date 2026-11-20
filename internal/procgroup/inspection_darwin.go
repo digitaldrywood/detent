@@ -23,7 +23,7 @@ func inspectProcess(pid int) (Identity, error) {
 	if int(info.Proc.P_pid) != pid {
 		return Identity{}, ErrProcessNotRunning
 	}
-	return Identity{PID: pid, GroupID: int(info.Eproc.Pgid), StartedAt: time.Unix(info.Proc.P_starttime.Sec, 0).UTC()}, nil
+	return Identity{PID: pid, GroupID: int(info.Eproc.Pgid), StartedAt: time.Unix(info.Proc.P_starttime.Sec, int64(info.Proc.P_starttime.Usec)*int64(time.Microsecond)).UTC()}, nil
 }
 
 func inspectProcessGroup(group int) ([]processGroupMember, error) {

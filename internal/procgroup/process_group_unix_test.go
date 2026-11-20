@@ -204,6 +204,28 @@ func TestObserveMeasuresMatchingProcessGroupAndRejectsStaleIdentity(t *testing.T
 	}
 }
 
+func TestTerminateRechecksLeaderBeforeEscalation(t *testing.T) {
+	identity := Identity{PID: 23, GroupID: 23, StartedAt: time.Unix(100, 1000)}
+	current := identity
+	killed := false
+	outcome, err := terminate(t.Context(), identity, DefaultTerminationGrace,
+		func(int) (Identity, error) { return current, nil },
+		func(int, int) bool { return true },
+		func(_, _ int, signal syscall.Signal) error {
+			killed = killed || signal == syscall.SIGKILL
+			return nil
+		},
+		func(context.Context, int, int, time.Duration) bool {
+			current.StartedAt = identity.StartedAt.Add(time.Microsecond)
+			return killed
+		},
+		func(int) ([]processGroupMember, error) { return []processGroupMember{{state: "S"}}, nil },
+	)
+	if err != nil || outcome != TerminationOutcomeStaleIdentity || killed {
+		t.Fatalf("changed leader was not fenced: outcome=%q kill=%t err=%v", outcome, killed, err)
+	}
+}
+
 func TestTerminateTree(t *testing.T) {
 	tests := []struct {
 		name string

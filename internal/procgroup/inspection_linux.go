@@ -58,7 +58,7 @@ func inspectProcess(pid int) (Identity, error) {
 			if err != nil {
 				return Identity{}, fmt.Errorf("read kernel boot seconds: %w", err)
 			}
-			return Identity{PID: pid, GroupID: group, StartedAt: time.Unix(boot+ticks/int64(cpu.ClocksPerSec), 0).UTC()}, nil
+			return Identity{PID: pid, GroupID: group, StartedAt: time.Unix(boot+ticks/int64(cpu.ClocksPerSec), ticks%int64(cpu.ClocksPerSec)*int64(time.Second)/int64(cpu.ClocksPerSec)).UTC()}, nil
 		}
 	}
 	return Identity{}, errors.New("kernel boot time is unavailable")
