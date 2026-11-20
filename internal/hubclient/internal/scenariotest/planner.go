@@ -40,7 +40,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() ([]providercapacity.Report, error)) (policy.Descriptor, *Scheduler, *Scheduler, func(string) connector.Issue) {
+func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() ([]providercapacity.Report, error)) (policy.Descriptor, *Scheduler, *Scheduler, func(string) string) {
 	t.Helper()
 	h := newPlannerHub(t, "Human Review", hubserverPlanStates(), factories)
 	previous := h.descriptor.ID
@@ -66,14 +66,11 @@ func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() (
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := func(title string) connector.Issue {
+	create := func(title string) string {
 		t.Helper()
-		issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Update the README." + issueContractTestSections})
-		if err != nil {
-			t.Fatal(err)
-		}
-		confirmIssueContract(t, h.admin, issue.ID)
-		return issue
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: title, Body: title + "." + issueContractTestSections, State: "Todo"})
+		confirmIssueContract(t, h.admin, string(issue.WorkItemID))
+		return string(issue.WorkItemID)
 	}
 	return h.descriptor, local, other, create
 }

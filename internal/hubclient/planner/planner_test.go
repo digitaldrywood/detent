@@ -49,11 +49,11 @@ func TestPlanAdmissionContention(t *testing.T) {
 			blocker := create("Hold provider capacity")
 			request := orchestrator.SchedulingRequest{Policy: descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}, ProviderRequirement: resolve(occupied)}
 			claimed, err := other.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(claimed) != 1 || claimed[0].ID != blocker.ID {
+			if err != nil || len(claimed) != 1 || claimed[0].ID != blocker {
 				t.Fatalf("competing worker did not reserve %s capacity: %v %v", occupied.Role, claimed, err)
 			}
 			t.Cleanup(func() {
-				if err := other.ReleaseClaim(context.WithoutCancel(t.Context()), blocker.ID, "failed"); err != nil {
+				if err := other.ReleaseClaim(context.WithoutCancel(t.Context()), blocker, "failed"); err != nil {
 					t.Error(err)
 				}
 			})
@@ -61,20 +61,20 @@ func TestPlanAdmissionContention(t *testing.T) {
 			request.ProviderRequirement, request.PlanProviderRequirement = resolve(code), resolve(plan)
 			capacityRefused := false
 			request.CandidateClaimObserved = func(_ context.Context, issue connector.Issue, allowed bool, predicate string, requirement *providercapacity.Requirement) {
-				capacityRefused = issue.ID == target.ID && !allowed && predicate == "hub_claim.provider_capacity" && requirement != nil && *requirement == plan
+				capacityRefused = issue.ID == target && !allowed && predicate == "hub_claim.provider_capacity" && requirement != nil && *requirement == plan
 			}
 			claimed, err = local.FetchCandidateIssues(t.Context(), request)
-			claim, found := local.ExecutionClaim(target.ID)
+			claim, found := local.ExecutionClaim(target)
 			if occupied == plan {
 				if len(claimed) != 0 || found || !capacityRefused {
 					t.Fatalf("full plan account did not refuse admission: candidates=%v claim=%t refused=%t error=%v", claimed, found, capacityRefused, err)
 				}
 				return
 			}
-			if err != nil || len(claimed) != 1 || claimed[0].ID != target.ID || !found || claim.Lease.ProviderReservation == nil || claim.Lease.ProviderReservation.Requirement != plan {
+			if err != nil || len(claimed) != 1 || claimed[0].ID != target || !found || claim.Lease.ProviderReservation == nil || claim.Lease.ProviderReservation.Requirement != plan {
 				t.Fatalf("free planning capacity was refused: candidates=%v permit=%+v error=%v", claimed, claim.Lease.ProviderReservation, err)
 			}
-			if err := local.ReleaseClaim(t.Context(), target.ID, "failed"); err != nil {
+			if err := local.ReleaseClaim(t.Context(), target, "failed"); err != nil {
 				t.Fatal(err)
 			}
 		})
