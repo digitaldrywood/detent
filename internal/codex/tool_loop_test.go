@@ -21,7 +21,10 @@ func TestStreamToolLoopControl(t *testing.T) {
 		methods                                     []string
 		stop                                        bool
 		lateAck                                     bool
+		freshThird, sealFirst                       bool
 	}{
+		{name: "response closes before final tool result", sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "third response contains new sibling evidence", freshThird: true, terminalStatus: "completed"},
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
@@ -43,6 +46,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 			if test.lateAck {
 				repeats = 7
 			}
+			if test.freshThird {
+				repeats = 3
+			}
 			for ordinal := 1; ordinal <= repeats; ordinal++ {
 				if ordinal == 1 || !test.parallel && !test.serializedSiblings {
 					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
@@ -57,21 +63,37 @@ func TestStreamToolLoopControl(t *testing.T) {
 				}
 				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal, source)
 				messages = append(messages, notificationMessage(t, "item/started", item))
+				if source == "agent" {
+					messages = append(messages, rawLoopCall(t, turn, fmt.Sprintf("tool-%d", ordinal)))
+				}
+				var sibling string
+				if test.freshEvidence || test.freshThird && ordinal == 3 {
+					messages = append(messages, rawLoopCall(t, turn, fmt.Sprintf("sibling-%d", ordinal)))
+					sibling = fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"sibling-%d","source":"agent","command":"other check","cwd":"/workspace","status":"completed","exitCode":0,"aggregatedOutput":"new result %d"}}`, turn, ordinal, ordinal)
+				}
+				sealed := notificationMessage(t, "rawResponse/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"responseId":"response-%d"}`, turn, ordinal))
+				if test.sealFirst {
+					messages = append(messages, sealed)
+				}
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
+				}
+				if !test.sealFirst {
+					messages = append(messages, sealed)
+				}
+				if sibling != "" {
+					messages = append(messages, notificationMessage(t, "item/started", sibling), notificationMessage(t, "item/completed", sibling))
 				}
 				if ordinal == 3 && !test.lateAck && test.steerResult != "" {
 					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
 				}
-				if test.freshEvidence {
-					sibling := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"sibling-%d","source":"agent","command":"other check","cwd":"/workspace","status":"completed","exitCode":0,"aggregatedOutput":"new result %d"}}`, turn, ordinal, ordinal)
-					messages = append(messages, notificationMessage(t, "item/started", sibling), notificationMessage(t, "item/completed", sibling))
-				}
 			}
 			if test.parallel {
 				for _, message := range slices.Clone(messages) {
-					message.Method = "item/completed"
-					messages = append(messages, message)
+					if message.Method == "item/started" {
+						message.Method = "item/completed"
+						messages = append(messages, message)
+					}
 				}
 			}
 			marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-next"}}`, turn)
@@ -119,4 +141,8 @@ func TestStreamToolLoopControl(t *testing.T) {
 			}
 		})
 	}
+}
+
+func rawLoopCall(t *testing.T, turn, call string) Message {
+	return notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"function_call","call_id":%q}}`, turn, call))
 }

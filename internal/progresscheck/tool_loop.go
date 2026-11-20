@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 )
 
@@ -137,19 +136,6 @@ func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence
 		return ToolLoopEvidence{}
 	}
 	return ToolLoopEvidence{}
-}
-
-func (l *ToolLoop) PreviewSteer(sequence uint64, fingerprint string) ToolLoopEvidence {
-	preview := ToolLoop{history: slices.Clone(l.history), steers: maps.Clone(l.steers)}
-	evidence := preview.Observe(sequence, fingerprint)
-	if evidence.Action != ToolLoopSteer {
-		return ToolLoopEvidence{}
-	}
-	if l.steers == nil {
-		l.steers = make(map[string]toolSteer)
-	}
-	l.steers[evidence.Fingerprint] = toolSteer{first: sequence}
-	return evidence
 }
 
 func (l *ToolLoop) Acknowledge(fingerprint string, lastStarted uint64) {
