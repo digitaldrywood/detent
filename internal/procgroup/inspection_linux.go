@@ -92,3 +92,5 @@ func inspectProcessGroup(group int) ([]processGroupMember, error) {
 	}
 	return members, nil
 }
+
+func reapedProcessGroupEmpty(int) bool { return false }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -43,4 +44,12 @@ func inspectProcessGroup(group int) ([]processGroupMember, error) {
 		members = append(members, processGroupMember{pid: strconv.Itoa(int(info.Proc.P_pid)), ppid: strconv.Itoa(int(info.Eproc.Ppid)), state: state, command: unix.ByteSliceToString(info.Proc.P_comm[:])})
 	}
 	return members, nil
+}
+
+func reapedProcessGroupEmpty(group int) bool {
+	const procInfoListPIDs = 1
+	const procGroupOnly = 2
+	var member int32
+	size, _, err := unix.Syscall6(unix.SYS_PROC_INFO, procInfoListPIDs, procGroupOnly, uintptr(group), 0, uintptr(unsafe.Pointer(&member)), unsafe.Sizeof(member))
+	return err == 0 && size == 0
 }
