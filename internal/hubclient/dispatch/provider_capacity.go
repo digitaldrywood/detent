@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -81,7 +82,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 					if err != nil {
 						return leases, err
 					}
-					if len(receipts) == 0 || tracker.IsPlanPhase(receipts[0].Phase) {
+					if len(receipts) == 0 || slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool { return tracker.IsPlanPhase(receipt.Phase) }) {
 						recovery, err := client.Recovery(discoveryCtx, issue.WorkItemID)
 						if err != nil {
 							return leases, err

@@ -208,9 +208,14 @@ func (q *Queries) NativePhaseReceiptByKey(ctx context.Context, arg NativePhaseRe
 }
 
 const recentNativePhaseReceipts = `-- name: RecentNativePhaseReceipts :many
-SELECT organization_id, project_id, issue_id, position, idempotency_key, lease_id, fencing_token, attempt_id, phase, branch, head_sha, tree_sha, policy_id, input_digest FROM native_phase_receipts
-WHERE organization_id = $1 AND project_id = $2 AND issue_id = $3
-ORDER BY position DESC LIMIT 64
+(SELECT recent.organization_id, recent.project_id, recent.issue_id, recent.position, recent.idempotency_key, recent.lease_id, recent.fencing_token, recent.attempt_id, recent.phase, recent.branch, recent.head_sha, recent.tree_sha, recent.policy_id, recent.input_digest FROM native_phase_receipts recent
+ WHERE recent.organization_id = $1 AND recent.project_id = $2 AND recent.issue_id = $3
+ ORDER BY recent.position DESC LIMIT 64)
+UNION
+(SELECT plan.organization_id, plan.project_id, plan.issue_id, plan.position, plan.idempotency_key, plan.lease_id, plan.fencing_token, plan.attempt_id, plan.phase, plan.branch, plan.head_sha, plan.tree_sha, plan.policy_id, plan.input_digest FROM native_phase_receipts plan
+ WHERE plan.organization_id = $1 AND plan.project_id = $2 AND plan.issue_id = $3
+ AND plan.phase IN ('plan', 'plan_draft', 'plan_review') ORDER BY plan.position DESC LIMIT 1)
+ORDER BY position DESC
 `
 
 type RecentNativePhaseReceiptsParams struct {

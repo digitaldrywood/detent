@@ -141,7 +141,7 @@ func TestLivePlanContinuationKeepsSameAttemptReceipt(t *testing.T) {
 	data := tracker.NativeRunData{AttemptID: "attempt_plan", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Steps: []tracker.NativeStepReceipt{step}}
 	recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: data, Status: "running"}}
 	receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken}, Phase: "plan", AttemptID: data.AttemptID, PolicyID: lease.PolicyID, HeadSHA: "head", TreeSHA: "tree"}
-	receipt.InputDigest = tracker.PlanPhaseDigest(receipt, recovery, step)
+	receipt.InputDigest = tracker.PlanPhaseDigest(receipt, step)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var payload any = tracker.NativeProject{}
 		if strings.HasSuffix(req.URL.Path, "/phases") {

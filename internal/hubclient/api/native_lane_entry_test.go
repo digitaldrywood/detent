@@ -268,21 +268,21 @@ func TestNativeLaneWriteWithoutLeaseIsUnauthorized(t *testing.T) {
 func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	for _, name := range []string{"omitted draft owner", "changed plan body", "changed human direction", "unchanged approval"} {
+	for _, name := range []string{"omitted draft owner", "changed plan body", "changed draft body", "changed human direction", "changed draft direction", "unbound answer", "changed direction after implementation", "unchanged approval", "unchanged approval after implementation"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_plan"}, Title: "Add coverage", Body: "Cover empty input"}}
 			receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "lease_plan", FencingToken: 3}, AttemptID: "attempt_plan", Phase: "plan", PolicyID: "policy_plan", HeadSHA: "head", TreeSHA: "tree"}
 			step := tracker.NativeStepReceipt{Step: "plan", Source: tracker.NativeCheckpoint{HeadSHA: "head", WorkspaceDigest: "tree"}, PolicyID: receipt.PolicyID, ReviewState: tracker.PlanIssueDigest(recovery), CompletionBody: "Test empty input.", PlanApproval: "automated:APPROVED"}
-			if name == "omitted draft owner" {
+			if name == "omitted draft owner" || name == "changed draft body" || name == "changed draft direction" || name == "unbound answer" {
 				receipt.Phase, step.PlanApproval = "plan_draft", ""
 			}
-			receipt.InputDigest = tracker.PlanPhaseDigest(receipt, recovery, step)
-			if name == "changed plan body" {
+			receipt.InputDigest = tracker.PlanPhaseDigest(receipt, step)
+			if name == "changed plan body" || name == "changed draft body" {
 				step.CompletionBody = "Drop input checks."
 			}
-			if name == "changed human direction" {
-				recovery.Discussion = []tracker.NativeComment{{ID: "direction", Actor: tracker.Actor{Kind: "human"}, Body: "Preserve backward compatibility."}}
+			if name == "changed human direction" || name == "changed draft direction" || name == "changed direction after implementation" {
+				recovery.HumanDiscussionSequence = 42
 			}
 			owner := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: receipt.AttemptID, LeaseID: receipt.LeaseID, FencingToken: receipt.FencingToken, PolicyID: receipt.PolicyID, Steps: []tracker.NativeStepReceipt{step}}, Status: "succeeded", UpdatedAt: at}
 			owner.CompletionBody = workpad.BlockedDetail(step.CompletionBody, tracker.PlanApprovalQuestion)
@@ -291,6 +291,13 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 			}
 			answer := tracker.CollaborationEvent{ID: "answer", Type: "workflow.transitioned", Actor: tracker.Actor{Kind: "human"}, RecordedAt: at.Add(time.Second),
 				Data: tracker.CollaborationData{FromState: "Blocked", ToState: "Todo", BlockerAttemptID: owner.AttemptID, ReasonDetail: "Approve plan"}}
+			if name == "unbound answer" {
+				answer.Data.BlockerAttemptID = ""
+			}
+			receipts := []tracker.NativePhaseReceipt{receipt}
+			if strings.HasSuffix(name, " after implementation") {
+				receipts = append([]tracker.NativePhaseReceipt{{Phase: "implement", HeadSHA: "implemented", TreeSHA: "implemented-tree", PolicyID: receipt.PolicyID}}, receipts...)
+			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/attempts/attempt_plan"):
@@ -315,7 +322,7 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resolved, err := scoped.ResolvePlan(t.Context(), recovery, receipt.PolicyID, []tracker.NativePhaseReceipt{receipt})
+			resolved, err := scoped.ResolvePlan(t.Context(), recovery, receipt.PolicyID, receipts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -324,12 +331,16 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 				if resolved.NeedsProvider() || resolved.Accepted || resolved.AnswerID != answer.ID || resolved.Draft != "Test empty input." {
 					t.Fatalf("resolved the wrong draft or answer: %+v", resolved)
 				}
-			case "unchanged approval":
-				if !resolved.Accepted || resolved.NeedsProvider() {
+			case "unbound answer":
+				if resolved == nil || resolved.AnswerID != "" || resolved.Draft == "" {
+					t.Fatalf("accepted an unbound answer: %+v", resolved)
+				}
+			case "unchanged approval", "unchanged approval after implementation":
+				if resolved == nil || !resolved.Accepted || resolved.NeedsProvider() {
 					t.Fatalf("discarded bound approval: %+v", resolved)
 				}
 			default:
-				if resolved.Accepted || !resolved.NeedsProvider() {
+				if resolved == nil || resolved.Accepted || !resolved.NeedsProvider() {
 					t.Fatalf("accepted stale approval: %+v", resolved)
 				}
 			}

@@ -1839,7 +1839,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	var phaseSource *tracker.NativePhaseReceipt
 	if req.NativeLandingRework != nil {
 		reviewRecovery, turnRecovery, repairResume = nil, nil, false
-	} else if mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
+	} else if continuation := req.phaseContinuation; mode == RunModeImplement && continuation != nil && continuation.NextPhase == RunModePlan {
+		reviewRecovery, turnRecovery, repairResume = nil, nil, false
+	}
+	if req.NativeLandingRework == nil && mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
 		phaseSource = req.phaseContinuation.LastPushed
 		if phaseSource != nil {
 			recovery := req.Execution.Recovery()
@@ -1851,7 +1854,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if phaseSource != nil {
 			turnRecovery, repairResume = nil, false
-			if !tracker.IsPlanPhase(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement {
+			if !tracker.IsPlanPhase(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement && req.phaseContinuation.NextPhase != RunModePlan {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
 			}
 			req.ResumeState = store.AgentResumeState{}
@@ -2422,8 +2425,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	if planPhase {
 		plan, wait, err := r.runPlanPhase(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
+		if err == nil && wait == "" && sourceBudgetRemaining(ctx) == 0 {
+			err = ErrSessionTurnLimitExceeded
+		}
 		if err != nil {
 			afterRunPending = false
+			if errors.Is(err, ErrSessionTurnLimitExceeded) {
+				return RunResult{}, errors.Join(ErrNativeRecoveryRequired, err)
+			}
 			return RunResult{}, err
 		}
 		if wait != "" {

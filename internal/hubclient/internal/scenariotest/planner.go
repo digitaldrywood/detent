@@ -40,7 +40,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() ([]providercapacity.Report, error)) (policy.Descriptor, *Scheduler, *Scheduler, func(string) string) {
+func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() ([]providercapacity.Report, error)) (policy.Descriptor, *Scheduler, *Scheduler, func(string) string, *NativeClient) {
 	t.Helper()
 	h := newPlannerHub(t, "Human Review", hubserverPlanStates(), factories)
 	previous := h.descriptor.ID
@@ -72,7 +72,7 @@ func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() (
 		confirmIssueContract(t, h.admin, string(issue.WorkItemID))
 		return string(issue.WorkItemID)
 	}
-	return h.descriptor, local, other, create
+	return h.descriptor, local, other, create, h.admin
 }
 
 // Replay Cloud retiring a lease on run.finished. The real runner must leave
@@ -96,6 +96,7 @@ func RunPlannerAutomaticHandoff(t *testing.T, factories Constructors) {
 		{name: "both plan reviews retain the human gate", planReview: gate.PlanReviewBoth},
 		{name: "human plan approval survives unrelated transitions", planReview: gate.PlanReviewHuman, answerHistory: true},
 		{name: "lost lease resumes after approved plan", planReview: gate.PlanReviewAutomated, loseLease: true},
+		{name: "replacement approval binds the published draft", planReview: gate.PlanReviewHuman, loseLease: true, answerHistory: true},
 		{name: "workspace hook failure before provider", failure: "workspace"},
 		{name: "provider failure settles before lease retirement", failure: "provider"},
 		{name: "refused start retains fenced accounting", failure: "refused"},
@@ -329,6 +330,10 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	finished := make(chan nativePlanFinish, 4)
 	transport := &nativePlanTransport{next: h.failChanges, native: h.native, item: tracker.NativeWorkItemID(issue.ID), realRelease: failure == "", finished: finished, lost: make(chan nativePlanFinish, 1)}
 	transport.loseLease.Store(loseLease)
+	transport.lossPhase = "plan"
+	if humanPlan {
+		transport.lossPhase = "plan_draft"
+	}
 	if checkProvider {
 		provider.checkProvider = func(_ context.Context, role string) error {
 			if active, _ := transport.providerRole.Load().(string); active != role {
@@ -417,49 +422,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		wantStates = []string{"Todo"}
 	}
-	if humanPlan {
-		select {
-		case got := <-finished:
-			if got.err != nil || got.state != "Blocked" {
-				t.Fatalf("plan did not release in the human wait lane: %+v", got)
-			}
-		case <-testenv.WaitContext(t, t.Context()).Done():
-			t.Fatal("plan did not release for human approval")
-		}
-		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].Disposition == nil || !current.Attempts[0].Disposition.HumanAction ||
-			provider.plans.Load() != 1 || provider.implementations.Load() != 0 || len(h.candidates(t)) != 0 {
-			t.Fatalf("plan approval did not hold code: attempts=%+v error=%v", current.Attempts, err)
-		}
-		stopOrchestrator()
-		direction, err := h.admin.Transition(t.Context(), current.Issue.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Issue.Revision, State: "Todo", Reason: "user_requested", ReasonDetail: "Approve plan"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if answerHistory {
-			transitions, err := h.admin.RecentWorkflowTransitions(t.Context(), direction.WorkItemID, 1)
-			if err != nil || len(transitions) != 1 || transitions[0].Data.BlockerAttemptID != current.Attempts[0].AttemptID {
-				t.Fatalf("answer did not record the draft attempt identity: %v %v", transitions, err)
-			}
-			for _, state := range []string{"In Progress", "Todo", "In Progress", "Todo"} {
-				direction, err = h.admin.Transition(t.Context(), direction.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: direction.Revision, State: state, Reason: "user_requested"})
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-	}
-	if loseLease {
-		select {
-		case got := <-transport.lost:
-			if got.err != nil || got.state != "In Progress" {
-				t.Fatalf("could not lose the lease after the plan receipt: %+v", got)
-			}
-		case <-testenv.WaitContext(t, t.Context()).Done():
-			t.Fatal("the approved plan receipt was not published")
-		}
-	}
-	if humanPlan || loseLease {
+	restart := func() {
 		stopOrchestrator()
 		h.native.ApplyHeartbeatChanges(nil)
 		replacementSource := filepath.Join(t.TempDir(), "source")
@@ -479,7 +442,69 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if err != nil {
 			t.Fatal(err)
 		}
-		startOrchestrator(orch)
+		stopOrchestrator = startOrchestrator(orch)
+	}
+	if loseLease {
+		select {
+		case got := <-transport.lost:
+			if got.err != nil || got.state != "In Progress" {
+				t.Fatalf("could not lose the lease after the plan receipt: %+v", got)
+			}
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("the plan receipt was not published")
+		}
+		restart()
+	}
+	if humanPlan {
+		select {
+		case got := <-finished:
+			if got.err != nil || got.state != "Blocked" {
+				t.Fatalf("plan did not release in the human wait lane: %+v", got)
+			}
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("plan did not release for human approval")
+		}
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(current.Attempts) == 0 || current.Attempts[len(current.Attempts)-1].Disposition == nil || !current.Attempts[len(current.Attempts)-1].Disposition.HumanAction ||
+			provider.plans.Load() != 1 || provider.implementations.Load() != 0 || len(h.candidates(t)) != 0 {
+			t.Fatalf("plan approval did not hold code: attempts=%+v error=%v", current.Attempts, err)
+		}
+		if loseLease {
+			receipts, err := h.admin.ItemPhaseReceipts(t.Context(), current.Issue.WorkItemID)
+			if err != nil || len(receipts) < 2 || receipts[0].Phase != "plan_draft" || receipts[0].AttemptID != current.Attempts[len(current.Attempts)-1].AttemptID || receipts[0].InputDigest != receipts[1].InputDigest {
+				t.Fatalf("replacement question is not bound to the same draft: %+v, %v", receipts, err)
+			}
+		}
+		stopOrchestrator()
+		direction, err := h.admin.Transition(t.Context(), current.Issue.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Issue.Revision, State: "Todo", Reason: "user_requested", ReasonDetail: "Approve plan"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if answerHistory {
+			transitions, err := h.admin.RecentWorkflowTransitions(t.Context(), direction.WorkItemID, 1)
+			if err != nil || len(transitions) != 1 || transitions[0].Data.BlockerAttemptID != current.Attempts[len(current.Attempts)-1].AttemptID {
+				t.Fatalf("answer did not record the draft attempt identity: %v %v", transitions, err)
+			}
+			for _, state := range []string{"In Progress", "Todo", "In Progress", "Todo"} {
+				direction, err = h.admin.Transition(t.Context(), direction.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: direction.Revision, State: state, Reason: "user_requested"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		recovery, err := h.admin.Recovery(t.Context(), direction.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipts, err := h.admin.ItemPhaseReceipts(t.Context(), direction.WorkItemID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor.ID, receipts)
+		if err != nil || resolved == nil || resolved.Answer != "Approve plan" {
+			t.Fatalf("recorded answer did not resolve: %+v, %v", resolved, err)
+		}
+		restart()
 	}
 	if failure == "refused" || failure == "workspace" {
 		wantStates = []string{"Todo"}
@@ -672,8 +697,11 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		item := tracker.NativeWorkItemID(issue.ID)
 		records, err := h.admin.Attempts(t.Context(), item, "")
 		wantAttempts := 1
-		if humanPlan || loseLease {
-			wantAttempts = 2
+		if humanPlan {
+			wantAttempts++
+		}
+		if loseLease {
+			wantAttempts++
 		}
 		if err != nil || len(records.Items) != wantAttempts {
 			t.Fatalf("attempts = %d, want %d, error=%v", len(records.Items), wantAttempts, err)
@@ -688,7 +716,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		attempt := records.Items[wantAttempts-1]
 		for _, phase := range []string{"plan", "implement"} {
 			expected := attempt
-			if loseLease && phase != "implement" {
+			if loseLease && !humanPlan && phase != "implement" {
 				expected = records.Items[0]
 			}
 			want := phase == "implement" || plan.Enabled
@@ -713,7 +741,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if err != nil || len(strings.Fields(string(worktrees))) != wantAttempts {
 			t.Fatalf("workspace creation hooks=%q, want %d paths, error=%v", worktrees, wantAttempts, err)
 		}
-		if wantAttempts == 2 && (records.Items[0].LeaseID == attempt.LeaseID || records.Items[0].FencingToken >= attempt.FencingToken) {
+		if wantAttempts > 1 && (records.Items[0].LeaseID == attempt.LeaseID || records.Items[0].FencingToken >= attempt.FencingToken) {
 			t.Fatal("replacement did not take a new fence")
 		}
 	}
@@ -884,6 +912,7 @@ type nativePlanTransport struct {
 	lost         chan nativePlanFinish
 	loseLease    atomic.Bool
 	lostLease    atomic.Value
+	lossPhase    string
 	providerRole atomic.Value
 }
 
@@ -898,7 +927,7 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		if err := json.NewDecoder(body).Decode(&receipt); err != nil {
 			return nil, err
 		}
-		if receipt.Phase == "plan" && t.loseLease.Swap(false) {
+		if receipt.Phase == t.lossPhase && t.loseLease.Swap(false) {
 			response, err := t.next.RoundTrip(req)
 			if err == nil && response.StatusCode == http.StatusOK {
 				item := tracker.NativeWorkItemID(strings.Split(strings.TrimSuffix(req.URL.Path, "/phases"), "/work-items/")[1])

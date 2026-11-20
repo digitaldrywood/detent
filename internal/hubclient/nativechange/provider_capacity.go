@@ -32,6 +32,8 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
 		return e.unavailable(err)
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	identity := tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
 	var expected providercapacity.Requirement
 	if active := e.ProviderCapacity(); active != nil {
@@ -40,16 +42,12 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 			return e.validateProviderStart(identity)
 		}
 	}
-	e.mu.Lock()
-	err := e.flush(ctx)
-	sequence := e.data.Sequence
-	e.mu.Unlock()
-	if err != nil {
+	if err := e.flushObservations(ctx); err != nil {
 		return e.unavailable(err)
 	}
 	client, lease := e.claim.source.NativeClient(), e.claim.lease
 	ttl := int64(e.scheduler.host.LeaseDuration() / time.Second)
-	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: sequence})
+	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: e.data.Sequence})
 	if err != nil {
 		return e.unavailable(e.executionError(ctx, err))
 	}

@@ -11,9 +11,14 @@ WHERE organization_id = $1 AND project_id = $2 AND issue_id = $3
   AND fencing_token = $4 AND idempotency_key = $5;
 
 -- name: RecentNativePhaseReceipts :many
-SELECT * FROM native_phase_receipts
-WHERE organization_id = $1 AND project_id = $2 AND issue_id = $3
-ORDER BY position DESC LIMIT 64;
+(SELECT recent.* FROM native_phase_receipts recent
+ WHERE recent.organization_id = $1 AND recent.project_id = $2 AND recent.issue_id = $3
+ ORDER BY recent.position DESC LIMIT 64)
+UNION
+(SELECT plan.* FROM native_phase_receipts plan
+ WHERE plan.organization_id = $1 AND plan.project_id = $2 AND plan.issue_id = $3
+ AND plan.phase IN ('plan', 'plan_draft', 'plan_review') ORDER BY plan.position DESC LIMIT 1)
+ORDER BY position DESC;
 
 -- name: NativePhaseContinuation :many
 WITH last_pushed AS (

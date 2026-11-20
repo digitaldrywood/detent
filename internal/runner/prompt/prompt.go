@@ -108,7 +108,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
 	rendered = appendWorkspaceRecoveryBlock(rendered, opts.RecoveryState, native)
 	if opts.PlanOnly {
-		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan, native)
+		rendered = appendPlanOnlyBlock(rendered)
 	}
 
 	rendered, err = appendLessonsBlock(rendered, workflow.Config.Agent.Lessons, opts.WorkspacePath)
@@ -791,17 +791,11 @@ func promptDeliverableKind(cfg config.Deliverable) string {
 	}
 }
 
-func appendPlanOnlyBlock(prompt string, cfg gate.PlanConfig, native bool) string {
-	cfg = gate.EffectivePlan(cfg)
-	approval := "Human plan approval uses label `" + cfg.ApprovalLabel + "`; automated plan review should be posted as a `## Detent Plan Review` issue comment."
-	if native {
-		approval = "Return the plan in your final result. The runner sends the plan for independent review under the configured policy. Do not approve the plan yourself, post tracker comments, or request human approval."
-	}
+func appendPlanOnlyBlock(prompt string) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Plan approval stop\n\n" +
 		"This dispatch is plan-only. Produce a structured implementation plan as a Markdown artifact for issue review. " +
 		"Do not modify files. Do not run mutating commands. Do not commit. Do not push. Do not open or update a pull request. Do not move tracker state. " +
-		"Follow the project's workflow for the plan's contents. " +
-		approval
+		"Follow the project's workflow for the plan's contents. Return the plan in your final result. The runner sends the plan for independent review under the configured policy. Do not approve the plan yourself, post tracker comments, or request human approval."
 }
 
 func AppendFollowupsBlock(prompt string, cfg config.Followups) string {
