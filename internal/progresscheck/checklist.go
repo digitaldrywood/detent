@@ -3,6 +3,7 @@ package progresscheck
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -79,6 +80,37 @@ func referencesOnlyCheck(criterion, command string) bool {
 	}
 	fields := strings.Split(criterion, "`")
 	return len(fields) == 3 && fields[1] == command
+}
+
+func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) *gate.CommandResult {
+	if current.Runtime == nil || current.Runtime.Validation == nil || current.Runtime.Validation.ReceiptID == "" {
+		return nil
+	}
+	command := current.Runtime.Validation
+	if previous == nil || previous.Runtime == nil || previous.Runtime.Validation == nil || previous.Runtime.Validation.ReceiptID != command.ReceiptID {
+		return command
+	}
+	for _, step := range current.Steps {
+		if step.Step != "validator" && step.Step != "security_audit" {
+			continue
+		}
+		if !slices.ContainsFunc(previous.Steps, func(old tracker.NativeStepReceipt) bool {
+			return old.Step == step.Step && reflect.DeepEqual(old, step)
+		}) {
+			return command
+		}
+	}
+	return nil
+}
+
+func ApplyChecklistChanges(checks []tracker.ExecutionCheck, changes []tracker.ExecutionCheckUpdate) {
+	for _, change := range changes {
+		index := slices.IndexFunc(checks, func(check tracker.ExecutionCheck) bool { return check.Ordinal == change.Ordinal })
+		if index >= 0 {
+			check := &checks[index]
+			check.Status, check.Tree, check.Receipt = change.Status, change.Tree, change.Receipt
+		}
+	}
 }
 
 func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, command *gate.CommandResult, steps []tracker.NativeStepReceipt) []tracker.ExecutionCheckUpdate {
