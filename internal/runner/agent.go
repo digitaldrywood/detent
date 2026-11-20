@@ -1865,7 +1865,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
-	sourceErr := recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
+	retainedLanding := nativeLanding && req.RetainItemWorkspace
+	workspaceIssue.RetainedLanding = retainedLanding
+	var sourceErr error
+	if !retainedLanding {
+		sourceErr = recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
+	}
 	workspaceIssue.RequireCheckpoint = sourceErr != nil
 	if reviewRecovery != nil && !repairResume && workspaceIssue.Source != nil {
 		workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
@@ -2005,8 +2010,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
-		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
+	if !retainedLanding {
+		if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
+			return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
+		}
 	}
 	r.logWorkerEvent(req.Issue, "worker_before_run_finished",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID,
@@ -2047,10 +2054,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 			}
 		}
-		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); afterErr != nil && err == nil {
-			err = afterErr
-		}
-		return result, err
+		cleanup, afterErr := r.prepareExecutionCompletion(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false)
+		r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanup && !retainedLanding)
+		return result, errors.Join(err, afterErr)
 	}
 	if mode == RunModeMerge {
 		if req.MergePrecheck != nil {

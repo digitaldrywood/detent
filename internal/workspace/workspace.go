@@ -251,6 +251,7 @@ type Issue struct {
 	Checkpoint              *CheckpointRef
 	RetainedCheckpoint      *CheckpointRef
 	RequireCheckpoint       bool
+	RetainedLanding         bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
 	NativeRework            bool
@@ -661,6 +662,23 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	info, err := l.infoForIssue(issue)
 	if err != nil {
 		return Info{}, err
+	}
+	if issue.Landing != nil && issue.RetainedLanding {
+		target := *issue.Landing
+		if target.Repository == "" || !validLandingHead(target.HeadSHA) {
+			return Info{}, refuse(LandRefusalMissingHead, "retained landing requires an exact repository and head")
+		}
+		if err := l.verifyLandingWorktree(ctx, info, issue, target); err != nil {
+			return Info{}, err
+		}
+		head, err := l.Head(ctx, info, issue)
+		if err != nil {
+			return Info{}, err
+		}
+		if head != target.HeadSHA {
+			return Info{}, refuse(LandRefusalHeadMoved, "the retained item worktree differs from the reviewed head")
+		}
+		return info, nil
 	}
 	localHead, err := l.verifiedLocalCheckpointHead(ctx, info, issue)
 	if err != nil {
@@ -1132,7 +1150,7 @@ func (l *LocalGit) workspacePath(key string) (string, error) {
 }
 
 func (l *LocalGit) workspacePathForIssue(issue Issue, key string) (string, error) {
-	if issue.Landing == nil {
+	if issue.Landing == nil || issue.RetainedLanding {
 		return l.workspacePath(key)
 	}
 	if !validLandingHead(issue.Landing.HeadSHA) {
@@ -1145,7 +1163,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
 	}
-	if issue.Landing != nil {
+	if issue.Landing != nil && !issue.RetainedLanding {
 		return autoBranchPrefix + "landing/" + strings.ToLower(key) + "/" + issue.Landing.HeadSHA
 	}
 	if issue.WorkspaceSession {
@@ -1163,7 +1181,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 
 func (l *LocalGit) publicationBranch(issue Issue, key string) string {
 	scope, _ := splitCheckoutIssueKey(key)
-	if scope == "" || !l.autoBranch || issue.Landing != nil || issue.WorkspaceSession || issue.ReviewVersionID != "" {
+	if scope == "" || !l.autoBranch || (issue.Landing != nil && !issue.RetainedLanding) || issue.WorkspaceSession || issue.ReviewVersionID != "" {
 		return ""
 	}
 	return l.branchName(issue, issueKey(issue))
