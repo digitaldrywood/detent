@@ -181,7 +181,6 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				{Name: "Done", Terminal: true},
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging"}},
 			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
-			fixtureConfigureScheduler(t, h, func(config *SchedulerConfig) { config.Machine.Capacity = 8 })
 			gateCommand := "true"
 			gateMarker := filepath.Join(t.TempDir(), "source-gate")
 			if test.hostHandoff || test.name == "healthy" {
@@ -217,6 +216,30 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			provider, completions := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed, retryReleased: make(chan struct{})}, scenariohooks.NewGatedScheduler(t, h.scheduler)
+			var gateReceiptPosts atomic.Int32
+			if test.name == "healthy" {
+				transport := fixtureClient(h.native.Transport()).requests.Load()
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/phases") {
+						raw, err := io.ReadAll(request.Body)
+						if err != nil {
+							return nil, err
+						}
+						request.Body = io.NopCloser(bytes.NewReader(raw))
+						var receipt tracker.NativePhaseReceipt
+						if err := json.Unmarshal(raw, &receipt); err != nil {
+							return nil, err
+						}
+						if receipt.Phase == "project_gate" && gateReceiptPosts.Add(1) <= 2 {
+							return &http.Response{StatusCode: http.StatusTooManyRequests,
+								Header: http.Header{"Retry-After": {"1"}},
+								Body:   io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)),
+							}, nil
+						}
+					}
+					return transport.RoundTrip(request)
+				}))
+			}
 			var finalizationFaulted atomic.Bool
 			var finalizationSession atomic.Int64
 			var reconciledPublication atomic.Int32
@@ -761,6 +784,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				if err != nil {
 					t.Fatalf("read recovery: deferred=%v source=%d security=%d validator=%d error=%v", deferred, provider.sourceCalls.Load(), provider.securityCalls.Load(), provider.validatorCalls.Load(), err)
 				}
+				if test.name == "healthy" && current.State == "Rework" {
+					t.Fatalf("completed work went to Rework after %d gate receipt posts", gateReceiptPosts.Load())
+				}
 				if test.verdict == "rework" && current.State == "Rework" {
 					detail, err := h.admin.CurrentChange(deadline, current.WorkItemID)
 					if err != nil {
@@ -831,6 +857,21 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						output, err := os.ReadFile(gateMarker)
 						if err != nil || string(output) != "gate" {
 							t.Fatalf("expected independent reviews to reuse the successful finalization command: output=%q error=%v", output, err)
+						}
+					}
+					if test.name == "healthy" {
+						receipts, err := h.admin.ItemPhaseReceipts(deadline, current.WorkItemID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						gateReceipts := 0
+						for _, receipt := range receipts {
+							if receipt.Phase == "project_gate" && receipt.HeadSHA == version.HeadSHA {
+								gateReceipts++
+							}
+						}
+						if gateReceiptPosts.Load() != 3 || gateReceipts != 1 {
+							t.Fatalf("gate receipt posts = %d, recorded receipts = %d", gateReceiptPosts.Load(), gateReceipts)
 						}
 					}
 					sessions := map[int64]bool{}
