@@ -638,7 +638,6 @@ type RunRequest struct {
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish     bool
-	DeferExecutionFinish     bool
 	NativeReviewContinuation *NativeReviewContinuation
 	TriageContext            string
 
