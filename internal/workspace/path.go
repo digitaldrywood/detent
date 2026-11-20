@@ -22,6 +22,13 @@ func canonicalExistingPath(path string) (string, error) { return workpath.Canoni
 func expandPath(path string) (string, error)            { return workpath.ExpandPath(path) }
 func pathWithin(root, path string) bool                 { return workpath.PathWithin(root, path) }
 
+func ensurePrivateDirectories(base, path string) error {
+	return workpath.EnsurePrivateDirectories(base, path)
+}
+
+func pathExists(path string) (bool, bool, error) { return workpath.PathExists(path) }
+func dirIsEmpty(path string) (bool, error)       { return workpath.DirIsEmpty(path) }
+
 type AttemptWorkspace struct {
 	Organization string
 	Project      string

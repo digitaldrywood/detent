@@ -51,7 +51,7 @@ const quarantineAccumulationWarningThreshold = 5
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
 	ErrMissingWorkspace   = errors.New("workspace missing")
-	ErrUnsafePath         = errors.New("unsafe workspace path")
+	ErrUnsafePath         = workpath.ErrUnsafePath
 	ErrUnsupportedBackend = errors.New("unsupported workspace backend")
 	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
 )
@@ -317,19 +317,7 @@ type LocalGit struct {
 	scanWorkspacePaths workspaceProcessScanner
 }
 
-type PathError struct {
-	Path   string
-	Root   string
-	Reason string
-}
-
-func (e *PathError) Error() string {
-	return fmt.Sprintf("%s: %s is not safe under %s: %s", ErrUnsafePath, e.Path, e.Root, e.Reason)
-}
-
-func (e *PathError) Unwrap() error {
-	return ErrUnsafePath
-}
+type PathError = workpath.PathError
 
 type HookError struct {
 	Hook     string
@@ -669,6 +657,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	if retry, err := l.uses.CheckWorkspaceSetup(l.root, info.Path); err != nil {
+		if retry {
+			err = l.preserveFailedWorkspace(ctx, info.Path, err)
+		}
+		return Info{}, err
+	}
 	if issue.Landing != nil && issue.RetainedLanding {
 		target := *issue.Landing
 		if target.Repository == "" || !validLandingHead(target.HeadSHA) {
@@ -755,7 +749,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			}
 			info.Created = created
 			if created {
-				if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
+				if err := l.runAfterCreate(ctx, info, issue); err != nil {
 					return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 				}
 			}
@@ -791,9 +785,11 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		}
 		created, err = l.createWorktree(ctx, info, issue.FreshCheckout, head)
 	}
+	preservationAttempted := false
 	if issue.Landing != nil && created {
 		defer func() {
-			if returnErr != nil {
+			if returnErr != nil && !preservationAttempted {
+				l.uses.SetSetupFailed(info.Path, true)
 				returnErr = errors.Join(returnErr, l.CleanupLanding(context.WithoutCancel(ctx), info, issue))
 			}
 		}()
@@ -813,6 +809,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
+			preservationAttempted = true
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
 	}
@@ -841,12 +838,19 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 
 	if info.Created {
-		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
+		if err := l.runAfterCreate(ctx, info, issue); err != nil {
+			preservationAttempted = true
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
 	}
 
 	return info, nil
+}
+
+func (l *LocalGit) runAfterCreate(ctx context.Context, info Info, issue Issue) error {
+	return hookproc.RunWorkspaceSetup(ctx, l.root, info.Path, l.hooks.AfterCreate, func(ctx context.Context) error {
+		return l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue)
+	})
 }
 
 func (l *LocalGit) createWorktree(ctx context.Context, info Info, fresh bool, baseRef string) (bool, error) {
@@ -989,7 +993,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	if err := l.uses.CheckRemoval(ctx, info.Path); err != nil {
+	if err := errors.Join(l.uses.CheckRemoval(ctx, info.Path), l.uses.CheckWorkspaceSetupRemoval(l.root, info.Path)); err != nil {
 		return result, err
 	}
 	var hookErr error
@@ -1248,6 +1252,9 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 		return false, fmt.Errorf("create workspace parent: %w", err)
 	}
 
+	if err := hookproc.MarkWorkspaceSetupPending(l.root, path, l.hooks.AfterCreate); err != nil {
+		return false, err
+	}
 	if l.autoBranch {
 		if err := l.addBranchedWorktree(ctx, path, branch, baseRef); err != nil {
 			return false, &worktreeCreationError{err: err}
@@ -1635,6 +1642,9 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, path); err != nil {
+		return err
+	}
 	if err := l.uses.Stop(ctx, path); err != nil {
 		return err
 	}
@@ -1665,7 +1675,13 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
 	}
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, path); err != nil {
+		return "", err
+	}
+	if err := l.uses.StopBounded(ctx, path); err != nil {
+		return "", err
+	}
+	if err := hookproc.MarkWorkspaceSetupRetired(l.root, path); err != nil {
 		return "", err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
@@ -1691,10 +1707,15 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 }
 
 func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cause error) error {
-	preservationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+	l.uses.SetSetupFailed(path, true)
+	preservationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
 	quarantinePath, preserved, err := l.quarantineFailedWorkspace(preservationCtx, path)
+	if err == nil || preserved {
+		l.uses.SetSetupFailed(path, false)
+		err = errors.Join(err, hookproc.ClearWorkspaceSetupPending(l.root, path))
+	}
 	if err != nil {
 		l.logger.Warn(
 			"failed to quarantine workspace failure state",
@@ -1747,7 +1768,7 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 		return "", false, err
 	}
 	if !exists {
-		return "", false, l.uses.Stop(ctx, path)
+		return "", false, l.uses.StopBounded(ctx, path)
 	}
 	linkedWorktree := false
 	if isDir {
@@ -1765,7 +1786,7 @@ func (l *LocalGit) quarantineFailedWorkspace(ctx context.Context, path string) (
 	if err != nil {
 		return "", false, err
 	}
-	if err := l.uses.Stop(ctx, path); err != nil {
+	if err := l.uses.StopBounded(ctx, path); err != nil {
 		return "", false, err
 	}
 	quarantinePath, err := l.nextQuarantinePath(path)
@@ -2245,40 +2266,6 @@ func RemoveWorkerScratchRoot(workspacePath string) error {
 // ensurePrivateDirectories creates base and every directory down to path, and
 // refuses any component that is a symlink or writable by others, because the
 // OS temp root may be shared between users.
-func ensurePrivateDirectories(base string, path string) error {
-	if !pathWithin(base, path) {
-		return &PathError{Path: path, Root: base, Reason: "directory escapes root"}
-	}
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return err
-	}
-	current := base
-	components := []string{current}
-	if rel != "." {
-		for _, part := range strings.Split(rel, string(filepath.Separator)) {
-			current = filepath.Join(current, part)
-			components = append(components, current)
-		}
-	}
-	for _, component := range components {
-		if err := os.Mkdir(component, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
-		info, err := os.Lstat(component)
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			return &PathError{Path: component, Root: base, Reason: "scratch directory is not a directory"}
-		}
-		if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
-			return &PathError{Path: component, Root: base, Reason: "scratch directory is writable by others"}
-		}
-	}
-	return nil
-}
-
 func WorkerArtifactCleanupRoot(workspacePath, cleanupPath string) (string, error) {
 	if strings.TrimSpace(workspacePath) == "" || strings.TrimSpace(cleanupPath) == "" {
 		return workspacePath, nil
@@ -2475,14 +2462,13 @@ func (l *LocalGit) executeHook(ctx context.Context, name string, command string,
 	} else {
 		output, err = runHookCommand(hookCtx, command, l.hooks, info, issue)
 	}
-	err = errors.Join(err, owner.CommandFinished(ctx, err))
-	if err == nil {
-		return nil
-	}
-
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
 		exitCode = exitErr.ExitCode()
+	}
+	err = errors.Join(err, owner.CommandFinished(ctx, err))
+	if err == nil {
+		return nil
 	}
 
 	logPath, logErr := l.writeHookLog(name, command, info, exitCode, err, output)
@@ -2812,25 +2798,6 @@ func validateWorkspacePath(root string, path string) (string, error) {
 	}
 
 	return clean, nil
-}
-
-func pathExists(path string) (bool, bool, error) {
-	info, err := os.Lstat(path)
-	if err == nil {
-		return true, info.IsDir(), nil
-	}
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, false, nil
-	}
-	return false, false, fmt.Errorf("inspect path: %w", err)
-}
-
-func dirIsEmpty(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return false, fmt.Errorf("read workspace directory: %w", err)
-	}
-	return len(entries) == 0, nil
 }
 
 type Info = model.Info

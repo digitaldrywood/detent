@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -566,6 +567,92 @@ func TestWorkspaceScanOutputCancellationWithInheritedPipes(t *testing.T) {
 	}
 }
 
+func TestHookDiscoveryDoesNotExhaustRetirementBudget(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("partial=%t", partial), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				parent, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+				defer cancel()
+				ctx := (&Lifetime{}).withOwner(parent, "fixture")
+				const pid = 999
+				discovered := false
+				wantSignals := []syscall.Signal{syscall.SIGTERM}
+				if partial {
+					wantSignals = append(wantSignals, syscall.SIGKILL)
+				}
+				scan := func(ctx context.Context, _ string) ([]int, error) {
+					if !discovered {
+						discovered = true
+						<-ctx.Done()
+						if partial {
+							return []int{pid}, ctx.Err()
+						}
+					}
+					return []int{pid}, nil
+				}
+				var signals []syscall.Signal
+				signal := func(target int, signal syscall.Signal) error {
+					if target != pid {
+						t.Fatalf("signaled unexpected PID %d", target)
+					}
+					signals = append(signals, signal)
+					return nil
+				}
+				wait := func(ctx context.Context, _ string, _ time.Duration, _ Scanner) ([]int, error) {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					if partial && len(signals) == 1 {
+						return []int{pid}, nil
+					}
+					return nil, nil
+				}
+				n, err := reapProcessesWithWait(ctx, t.TempDir(), defaultProcessTerminationGrace, scan, signal, wait)
+				if n != 1 || !reflect.DeepEqual(signals, wantSignals) || partial && !errors.Is(err, context.DeadlineExceeded) || !partial && err != nil {
+					t.Fatalf("retirement after discovery expiry: signals=%v count=%d error=%v", signals, n, err)
+				}
+			})
+		})
+	}
+}
+
+func TestHookRetirementEscalatesKnownPIDWhenRefreshTimesOut(t *testing.T) {
+	ctx := (&Lifetime{}).withOwner(t.Context(), "fixture")
+	const pid = 999
+	scan := func(ctx context.Context, _ string) ([]int, error) {
+		if ctx.Value(refreshHookProcessesKey{}) != nil {
+			return []int{pid}, context.DeadlineExceeded
+		}
+		return []int{pid}, nil
+	}
+	var signals []syscall.Signal
+	n, err := reapProcessesWithWait(ctx, t.TempDir(), defaultProcessTerminationGrace, scan, func(target int, sig syscall.Signal) error {
+		if target != pid {
+			t.Fatalf("signaled unexpected PID %d", target)
+		}
+		signals = append(signals, sig)
+		return nil
+	}, func(context.Context, string, time.Duration, Scanner) ([]int, error) {
+		return []int{pid}, nil
+	})
+	if n != 1 || !reflect.DeepEqual(signals, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retirement after incomplete refresh: signals=%v count=%d error=%v", signals, n, err)
+	}
+}
+
+func TestHookQuarantineDeadlineBoundsOwnerLockWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		owner := &Owner{lock: make(chan struct{}, 1)}
+		owner.lock <- struct{}{}
+		registry := &Registry{hooks: map[string]map[*Owner]struct{}{"/workspace": {owner: {}}}}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := registry.StopBounded(ctx, "/workspace"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("quarantine did not respect the owner deadline: %v", err)
+		}
+	})
+}
+
 func TestParseLsofCwdProcessIDs(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(string(filepath.Separator), "ws", "detent-issue-1")
@@ -587,28 +674,6 @@ func TestParseLsofCwdProcessIDs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("pids = %v, want %v", got, want)
 		}
-	}
-}
-
-func TestParseLsofFIFOWriterIDs(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		pid  string
-		want []int
-	}{
-		{name: "valid writer", pid: "101", want: []int{101}},
-		{name: "out of range writer", pid: strings.Repeat("9", 32)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			output := strings.Join([]string{
-				"p100", "f7\x00ar\x00i42\x00n/tmp/example-fifo\x00tFIFO",
-				"p" + test.pid, "f4\x00aw\x00i42\x00n/tmp/example-fifo\x00tFIFO",
-			}, "\x00\n")
-			got, err := parseLsofFIFOWriterIDs(output, 100, "7")
-			if err != nil || !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("writer IDs = %v, error = %v, want %v", got, err, test.want)
-			}
-		})
 	}
 }
 
