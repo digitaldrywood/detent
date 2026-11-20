@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-func Start(ctx context.Context, authorityLost error, report func(error)) (context.Context, func(func(context.Context) error) bool, func() error) {
+func Start(ctx context.Context, authorityLost error, report func(error)) (context.Context, func(func(context.Context) error), func() error) {
 	turnCtx, cancelTurn := context.WithCancelCause(ctx)
 	observationCtx, stop := context.WithCancel(turnCtx)
 	pending := make(chan func(context.Context) error, 32)
@@ -17,22 +17,21 @@ func Start(ctx context.Context, authorityLost error, report func(error)) (contex
 			case <-observationCtx.Done():
 				return
 			case observe := <-pending:
-				if err := observe(observationCtx); err != nil && observationCtx.Err() == nil {
-					if errors.Is(err, authorityLost) {
-						cancelTurn(err)
-						return
-					}
+				err := observe(observationCtx)
+				if errors.Is(err, authorityLost) {
+					cancelTurn(err)
+					return
+				}
+				if err != nil && observationCtx.Err() == nil {
 					report(err)
 				}
 			}
 		}
 	}()
-	return turnCtx, func(observe func(context.Context) error) bool {
+	return turnCtx, func(observe func(context.Context) error) {
 			select {
 			case pending <- observe:
-				return true
 			default:
-				return false
 			}
 		}, func() error {
 			stop()

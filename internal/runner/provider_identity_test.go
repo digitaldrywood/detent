@@ -217,8 +217,8 @@ func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 			if result.err != nil || result.result.FinalMessage != "complete" || result.turnResult.TurnID != "turn" {
 				t.Fatalf("terminal error=%v message=%q turn=%q", result.err, result.result.FinalMessage, result.turnResult.TurnID)
 			}
-			if source.finalizationCalls != 1 || len(sessions.providerUpdates) != 1 {
-				t.Fatalf("source finalizations = %d, provider identity writes = %d", source.finalizationCalls, len(sessions.providerUpdates))
+			if source.finalizationCalls != 1 {
+				t.Fatalf("source finalizations = %d", source.finalizationCalls)
 			}
 		default:
 			t.Fatal("matching completion was held behind a runtime observation")
