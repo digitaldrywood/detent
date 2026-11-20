@@ -625,7 +625,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if test.controller {
+			if test.controller || test.localWorker && !test.staleProcess {
 				_, stop, err := execution.Guard(t.Context())
 				if err != nil {
 					t.Fatal(err)
