@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -106,12 +107,31 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		return &tracker.NativePhaseContinuation{}, nil
 	}
 	pinned := receipts[0]
-	phases := []tracker.NativePhaseReceipt{
-		{Phase: "implement", InputDigest: phaseInputDigest("implement", pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, "")},
+	var phases []tracker.NativePhaseReceipt
+	requirePhase := func(phase, input string) {
+		phases = append(phases, tracker.NativePhaseReceipt{
+			Phase: phase, InputDigest: phaseInputDigest(phase, pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, input),
+		})
 	}
+	requirePhase("implement", "")
 	if command != "" {
-		phases = append(phases, tracker.NativePhaseReceipt{Phase: "project_gate", InputDigest: phaseInputDigest("project_gate", pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, command)})
+		requirePhase("project_gate", command)
 	}
+	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
+	version := ""
+	if current := e.claim.recovery.Change; current != nil && current.HeadSHA == pinned.HeadSHA {
+		version = current.VersionID
+	}
+	if gates.SecurityAudit {
+		requirePhase("security_audit", "")
+	}
+	if gates.AutomatedReview == gate.AutomatedReviewRequired {
+		requirePhase("implementation_review", version)
+	}
+	if gates.Validator {
+		requirePhase("acceptance", version)
+	}
+	requirePhase("merge", version)
 	continuation, err := client.ItemPhaseContinuation(ctx, lease.WorkItemID, lease.PolicyID, phases)
 	if err != nil {
 		return nil, err
