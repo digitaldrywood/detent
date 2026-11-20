@@ -45,6 +45,11 @@ type turnToolLoop struct {
 	decisions      []string
 	decisionCalls  int
 	decisionResult string
+	decisionToolID string
+	rawToolID      string
+	rawMultiple    bool
+	rawClosed      bool
+	responses      []string
 	active         map[string]struct{}
 	completed      []string
 	uncertain      bool
@@ -72,7 +77,14 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		l.interrupted = progresscheck.ToolLoopEvidence{}
 		return nil
 	}
-	if l.uncertain || l.interrupted.Action != "" || message.Method != "item/started" && message.Method != "item/completed" {
+	if l.uncertain || l.interrupted.Action != "" {
+		return nil
+	}
+	switch message.Method {
+	case "rawResponseItem/completed", "rawResponse/completed":
+		return l.observeResponse(ctx, transport, message)
+	case "item/started", "item/completed":
+	default:
 		return nil
 	}
 	var params struct {
@@ -97,7 +109,8 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		l.rememberID(&l.decisions, item.ID)
 		l.sequence++
 		l.decisionCalls = 0
-		l.decisionResult = ""
+		l.decisionResult, l.decisionToolID, l.rawToolID = "", "", ""
+		l.rawMultiple, l.rawClosed = false, false
 		return nil
 	}
 	if !toolItemType(item.Type) || item.Source == "userShell" || slices.Contains(l.completed, item.ID) {
@@ -134,13 +147,49 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		experiment.Source = l.source(probeCtx, l.workspace)
 		cancel()
 		l.decisionResult = experiment.Fingerprint()
-		if l.pendingSteer.Action == "" && l.decisionResult != "" {
-			if evidence := l.observer.PreviewSteer(l.sequence, l.decisionResult); evidence.Action != "" {
-				return l.intervene(ctx, transport, evidence)
-			}
+		l.decisionToolID = item.ID
+	}
+	return l.finishConfirmedResponse(ctx, transport)
+}
+
+func (l *turnToolLoop) observeResponse(ctx context.Context, transport Transport, message Message) error {
+	var params struct {
+		ThreadID   string
+		TurnID     string
+		ResponseID string
+		Item       struct {
+			ID     string
+			CallID string `json:"call_id"`
+			Type   string
 		}
 	}
+	if json.Unmarshal(message.Params, &params) != nil || params.ThreadID != l.thread || params.TurnID != l.turn || l.sequence == 0 {
+		return nil
+	}
+	if message.Method == "rawResponse/completed" {
+		if params.ResponseID == "" || slices.Contains(l.responses, params.ResponseID) {
+			return nil
+		}
+		l.rememberID(&l.responses, params.ResponseID)
+		l.rawClosed = true
+		return l.finishConfirmedResponse(ctx, transport)
+	}
+	switch params.Item.Type {
+	case "function_call", "local_shell_call", "custom_tool_call", "tool_search_call", "web_search_call", "image_generation_call":
+		id := firstNonBlank(params.Item.CallID, params.Item.ID)
+		if id == "" || l.rawToolID != "" && l.rawToolID != id {
+			l.rawMultiple = true
+		}
+		l.rawToolID = id
+	}
 	return nil
+}
+
+func (l *turnToolLoop) finishConfirmedResponse(ctx context.Context, transport Transport) error {
+	if !l.rawClosed || l.rawMultiple || l.decisionToolID == "" || l.rawToolID != l.decisionToolID || len(l.active) != 0 {
+		return nil
+	}
+	return l.finishDecision(ctx, transport)
 }
 
 func (l *turnToolLoop) rememberID(ids *[]string, id string) {
