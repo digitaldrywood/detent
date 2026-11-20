@@ -417,13 +417,17 @@ func (o *Orchestrator) completeNativeChangeRun(
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", strings.TrimSpace(issue.State), review))
 		}
 	} else if changed && change.Reviewed && !needsReview && !unfinished && !autoPromoteOptoutLabel(issue, cfg) {
-		if landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true); direct && dispatchableState(states, landing) {
-			target, ok = landing, true
-		} else if _, allowed := connector.CompletionLane(states, issue.State, "", false); allowed {
+		landing, direct := connector.CompletionLane(states, issue.State, autoPromoteMergingState, true)
+		_, terminal := connector.CompletionLane(states, issue.State, "", false)
+		_, canContinue := o.nativeCompletionExecution(event).(runpkg.LandingExecution)
+		if terminal && (canContinue && o.supervisor != nil || !direct || !dispatchableState(states, landing)) {
 			if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
 				return handoff(err)
 			}
 			return true
+		}
+		if direct && dispatchableState(states, landing) {
+			target, ok = landing, true
 		} else {
 			return handoff(fmt.Errorf("native workflow allows no landing path from %s", strings.TrimSpace(issue.State)))
 		}
