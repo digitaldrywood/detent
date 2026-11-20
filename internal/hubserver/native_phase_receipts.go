@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -61,22 +62,44 @@ func (s *Service) nativeExecutionItem(ctx context.Context, r tenantstore.Reader,
 	return item, nil
 }
 
-func (s *Service) lockNativeExecutionAttempt(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation) (leasestore.Attempt, error) {
+func (s *Service) lockNativeExecution(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, id tracker.NativeWorkItemID, attemptID, policyID string, fence tracker.Mutation) (corestore.WorkItem, leasestore.Attempt, error) {
+	item, err := s.nativeExecutionItem(ctx, w, scope, id, true)
+	if err != nil {
+		return item, leasestore.Attempt{}, err
+	}
+	if scope.Credential.Scope != hubapi.APIScopeWorker {
+		return item, leasestore.Attempt{}, hubscope.RunnerUnauthorized()
+	}
 	stale := hubapi.NativeStaleExecution("The item lease is no longer current")
+	owner, err := w.RunnerForLease(ctx, string(fence.LeaseID))
+	if errors.Is(err, corestore.ErrNotFound) {
+		err = stale
+	}
+	if err != nil {
+		return item, leasestore.Attempt{}, err
+	}
+	item, err = w.LockWorkItem(ctx, scope.Project, item.NativeID)
+	if err == nil && item.Archived {
+		err = corestore.ErrNotFound
+	}
+	if err != nil {
+		return item, leasestore.Attempt{}, err
+	}
 	locker, ok := w.(leasestore.FencedLeaseLocker)
 	if !ok {
-		return leasestore.Attempt{}, hubapi.NativeWorkItemStorageUnavailable()
+		return item, leasestore.Attempt{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
 	if _, err := locker.LockLease(ctx, string(fence.LeaseID)); err != nil {
 		if errors.Is(err, corestore.ErrNotFound) || errors.Is(err, tracker.ErrLeaseNotFound) {
-			return leasestore.Attempt{}, stale
+			err = stale
 		}
-		return leasestore.Attempt{}, err
+		return item, leasestore.Attempt{}, err
 	}
-	return s.nativeExecutionAttempt(ctx, w, scope, item, attemptID, policyID, fence)
+	attempt, err := s.nativeExecutionAttempt(ctx, w, scope, item, attemptID, policyID, fence, &owner)
+	return item, attempt, err
 }
 
-func (s *Service) nativeExecutionAttempt(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation) (leasestore.Attempt, error) {
+func (s *Service) nativeExecutionAttempt(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation, owner *runnerstore.Identity) (leasestore.Attempt, error) {
 	stale := hubapi.NativeStaleExecution("The item lease is no longer current")
 	attempt, err := r.Attempt(ctx, attemptID)
 	if errors.Is(err, corestore.ErrNotFound) || (err == nil && attempt.IssueID != item.ID) {
@@ -85,7 +108,7 @@ func (s *Service) nativeExecutionAttempt(ctx context.Context, r tenantstore.Read
 	if err != nil {
 		return leasestore.Attempt{}, err
 	}
-	if err := s.authorizeProgressRunner(ctx, r, scope, attempt, &fence); err != nil {
+	if err := s.authorizeProgressRunner(ctx, r, scope, attempt, &fence, owner); err != nil {
 		if errors.Is(err, tracker.ErrStaleFencingToken) {
 			return leasestore.Attempt{}, stale
 		}
@@ -116,18 +139,7 @@ func (s *Service) publishNativePhaseReceipt(c echo.Context) error {
 	itemID := tracker.NativeWorkItemID(c.Param("item"))
 	var recorded tracker.NativePhaseReceipt
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		item, err := s.nativeExecutionItem(ctx, w, scope, itemID, true)
-		if err != nil {
-			return err
-		}
-		item, err = w.LockWorkItem(ctx, scope.Project, item.NativeID)
-		if err != nil {
-			return err
-		}
-		if item.Archived {
-			return corestore.ErrNotFound
-		}
-		attempt, err := s.lockNativeExecutionAttempt(ctx, w, scope, item, input.AttemptID, input.PolicyID, input.Mutation)
+		item, attempt, err := s.lockNativeExecution(ctx, w, scope, itemID, input.AttemptID, input.PolicyID, input.Mutation)
 		if err != nil {
 			return err
 		}
@@ -169,7 +181,7 @@ func (s *Service) getNativePhaseReceipts(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := s.authorizeProgressRunner(ctx, r, scope, leasestore.Attempt{}, nil); err != nil {
+		if err := s.authorizeProgressRunner(ctx, r, scope, leasestore.Attempt{}, nil, nil); err != nil {
 			return err
 		}
 		owner, ok := r.(leasestore.PhaseReceiptReader)

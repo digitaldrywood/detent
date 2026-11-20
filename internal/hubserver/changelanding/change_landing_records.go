@@ -253,6 +253,11 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 	changeRecord.Revision = changeRow.Revision
 	for {
 		err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if scope.Credential.Scope == hubapi.APIScopeWorker {
+				if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
+					return err
+				}
+			}
 			if err := s.deps.AuthorizeAccessScope(ctx, w, scope, true); err != nil {
 				return err
 			}
@@ -281,7 +286,11 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 			if !reflect.DeepEqual(currentVersion, versionRow) {
 				return corestore.ErrRevisionConflict
 			}
-			currentItem, err := w.WorkItem(ctx, scope.Project, change.WorkItemID)
+			readItem := w.WorkItem
+			if scope.Credential.Scope == hubapi.APIScopeWorker && nextIssue != nil {
+				readItem = w.LockWorkItem
+			}
+			currentItem, err := readItem(ctx, scope.Project, change.WorkItemID)
 			if err != nil {
 				return err
 			}

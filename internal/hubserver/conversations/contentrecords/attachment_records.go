@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
@@ -199,6 +200,9 @@ func (s AttachmentRecords) PrepareCloudAttachmentTenant(c echo.Context, input at
 			return s.deps.APIError(c, err)
 		}
 		err = s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := executionapi.LockRunnerCredential(ctx, w, scope); err != nil {
+				return err
+			}
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
@@ -390,6 +394,9 @@ func (s AttachmentRecords) RecordCloudAttachmentTenant(c echo.Context, input att
 			return s.deps.APIError(c, err)
 		}
 		err = s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := executionapi.LockRunnerCredential(ctx, w, scope); err != nil {
+				return err
+			}
 			if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
@@ -671,6 +678,10 @@ func (s AttachmentRecords) AuthorizeWorkerItemFence(ctx context.Context, w tenan
 }
 
 func (s AttachmentRecords) AuthorizeAttachmentCommentLease(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, row corestore.WorkItem, command tracker.Mutation) error {
+	identity, err := w.RunnerForLease(ctx, string(command.LeaseID))
+	if err != nil {
+		return err
+	}
 	current, err := w.LockWorkItem(ctx, scope.Project, row.NativeID)
 	if err != nil {
 		return err
@@ -681,10 +692,6 @@ func (s AttachmentRecords) AuthorizeAttachmentCommentLease(ctx context.Context, 
 	locker, ok := w.(leasestore.FencedLeaseLocker)
 	if !ok {
 		return hubapi.NativeWorkItemStorageUnavailable()
-	}
-	identity, err := w.RunnerForLease(ctx, string(command.LeaseID))
-	if err != nil {
-		return err
 	}
 	lease, err := locker.LockLease(ctx, string(command.LeaseID))
 	if err != nil {
@@ -730,6 +737,11 @@ func (s AttachmentRecords) ReferenceCloudAttachmentTenant(ctx context.Context, s
 		return err
 	}
 	return s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if scope.Credential.Scope == hubapi.APIScopeWorker && fence.LeaseID != "" {
+			if _, err := w.RunnerForLease(ctx, string(fence.LeaseID)); err != nil {
+				return err
+			}
+		}
 		if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 			return err
 		}
@@ -758,6 +770,9 @@ func (s AttachmentRecords) ReferenceCloudAttachmentTenant(ctx context.Context, s
 func (s AttachmentRecords) DeleteCloudAttachmentTenant(ctx context.Context, scope hubscope.NativeScope, id string) error {
 	scope.Action = operatortool.DeleteAttachment
 	err := s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := executionapi.LockRunnerCredential(ctx, w, scope); err != nil {
+			return err
+		}
 		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
 			return err
 		}

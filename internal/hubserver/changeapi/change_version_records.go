@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -183,7 +185,14 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	}
 	for {
 		err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			if err := s.deps.LockRunnerCredential(ctx, w, scope); err != nil {
+			var sourceRunner runnerstore.Identity
+			if sourceRun != nil {
+				var err error
+				sourceRunner, err = w.RunnerForLease(ctx, sourceRun.lease.LeaseID)
+				if err != nil {
+					return err
+				}
+			} else if err := s.deps.LockRunnerCredential(ctx, w, scope); err != nil {
 				return err
 			}
 			transitionReady, err := s.deps.LockChangeWorkflowTransition(ctx, w, scope, transition)
@@ -211,15 +220,26 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 			if current.Revision != int64(change.Revision) || current.CurrentVersionID != nil && *current.CurrentVersionID != change.CurrentVersion {
 				return corestore.ErrRevisionConflict
 			}
+			if sourceRun != nil {
+				linked := slices.Clone(change.LinkedIssues)
+				slices.Sort(linked)
+				for _, item := range linked {
+					if _, err := w.LockWorkItem(ctx, scope.Project, item); err != nil {
+						return err
+					}
+				}
+			}
 			if err := authority.Authorize(ctx, w, scope, change, request, approval, now); err != nil {
 				return err
 			}
-			if err := s.recheckChangeVersionRun(ctx, w, sourceRun); err != nil {
+			if err := s.recheckChangeVersionRun(ctx, w, sourceRun, sourceRunner); err != nil {
 				return err
 			}
-			for _, item := range change.LinkedIssues {
-				if _, err := w.WorkItem(ctx, scope.Project, item); err != nil {
-					return err
+			if sourceRun == nil {
+				for _, item := range change.LinkedIssues {
+					if _, err := w.WorkItem(ctx, scope.Project, item); err != nil {
+						return err
+					}
 				}
 			}
 			if _, err := w.CreateVersion(ctx, versionRecord); err != nil {

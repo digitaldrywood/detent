@@ -116,7 +116,7 @@ func (s *Service) getNativeRoundVerdict(c echo.Context, scope hubscope.NativeSco
 		if err != nil {
 			return err
 		}
-		if err := s.authorizeProgressRunner(ctx, r, scope, leasestore.Attempt{}, nil); err != nil {
+		if err := s.authorizeProgressRunner(ctx, r, scope, leasestore.Attempt{}, nil, nil); err != nil {
 			return err
 		}
 		if round == "latest" {
@@ -199,7 +199,7 @@ func (o nativeRoundOwner) readFacts(ctx context.Context, input progresscheck.Pub
 		if err != nil {
 			return err
 		}
-		attempt, err := o.service.nativeExecutionAttempt(ctx, r, o.scope, item, input.AttemptID, input.PolicyID, input.Mutation)
+		attempt, err := o.service.nativeExecutionAttempt(ctx, r, o.scope, item, input.AttemptID, input.PolicyID, input.Mutation, nil)
 		if err != nil {
 			return err
 		}
@@ -256,18 +256,7 @@ func (o nativeRoundOwner) replay(ctx context.Context, row eventstore.Receipt, ha
 func (o nativeRoundOwner) commit(ctx context.Context, input progresscheck.Publication, facts nativeRoundFacts, record progresscheck.RoundVerdict, receipt eventstore.Receipt) (eventstore.Receipt, error) {
 	var replay eventstore.Receipt
 	err := o.service.config.TenantRepository.WriteTenant(ctx, o.scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		item, err := o.service.nativeExecutionItem(ctx, w, o.scope, o.item, true)
-		if err != nil {
-			return err
-		}
-		item, err = w.LockWorkItem(ctx, o.scope.Project, item.NativeID)
-		if err != nil {
-			return err
-		}
-		if item.Archived {
-			return corestore.ErrNotFound
-		}
-		attempt, err := o.service.lockNativeExecutionAttempt(ctx, w, o.scope, item, input.AttemptID, input.PolicyID, input.Mutation)
+		item, attempt, err := o.service.lockNativeExecution(ctx, w, o.scope, o.item, input.AttemptID, input.PolicyID, input.Mutation)
 		if err != nil {
 			return err
 		}

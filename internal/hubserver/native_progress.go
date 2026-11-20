@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -734,7 +735,7 @@ type terminalProgressFacts struct {
 	landing      bool
 }
 
-func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, input *progresscheck.Publication) (terminalProgressFacts, error) {
+func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, input *progresscheck.Publication, owner *runnerstore.Identity) (terminalProgressFacts, error) {
 	var facts terminalProgressFacts
 	if err := o.service.authorizeAccessScope(ctx, r, o.scope, input != nil); err != nil {
 		return facts, err
@@ -764,7 +765,7 @@ func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, 
 	if input != nil {
 		fence = &tracker.Mutation{LeaseID: input.LeaseID, FencingToken: input.FencingToken}
 	}
-	if err := o.service.authorizeProgressRunner(ctx, r, o.scope, facts.attempt, fence); err != nil {
+	if err := o.service.authorizeProgressRunner(ctx, r, o.scope, facts.attempt, fence, owner); err != nil {
 		return facts, err
 	}
 	if facts.attempt.Status == "running" {
@@ -806,7 +807,7 @@ func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, 
 	return facts, nil
 }
 
-func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, attempt leasestore.Attempt, input *tracker.Mutation) error {
+func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, attempt leasestore.Attempt, input *tracker.Mutation, owner *runnerstore.Identity) error {
 	if scope.Credential.Scope != hubapi.APIScopeWorker {
 		if input != nil {
 			return hubscope.RunnerUnauthorized()
@@ -814,9 +815,15 @@ func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Rea
 		return nil
 	}
 	now := s.config.Clock().UTC()
-	identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
-	if err != nil {
-		return err
+	var identity runnerstore.Identity
+	if owner != nil {
+		identity = *owner
+	} else {
+		var err error
+		identity, err = r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
+		if err != nil {
+			return err
+		}
 	}
 	runner := scope.Credential.Runner
 	if !runnerIdentityMatchesHeldLease(identity, scope.Organization, runner.RunnerID, scope.Credential.ID, runner.MachineID, now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
@@ -835,11 +842,16 @@ func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Rea
 	if string(input.LeaseID) != attempt.LeaseID || int64(input.FencingToken) != attempt.FencingToken {
 		return tracker.ErrStaleFencingToken
 	}
-	assigned, err := r.RunnerForLease(ctx, attempt.LeaseID)
-	if err != nil {
-		return err
+	if owner == nil {
+		assigned, err := r.RunnerForLease(ctx, attempt.LeaseID)
+		if err != nil {
+			return err
+		}
+		if assigned.RunnerID != identity.RunnerID {
+			return hubscope.RunnerUnauthorized()
+		}
 	}
-	if assigned.RunnerID != identity.RunnerID || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+	if !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 		return hubscope.RunnerUnauthorized()
 	}
 	lease, err := r.Lease(ctx, attempt.LeaseID)
@@ -864,7 +876,7 @@ func (o terminalProgressOwner) readFacts(ctx context.Context, input *progressche
 	}
 	err := repository.ReadTenantSnapshot(ctx, o.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
-		facts, err = o.facts(ctx, r, input)
+		facts, err = o.facts(ctx, r, input, nil)
 		return err
 	})
 	return facts, hubapi.ProjectRecordError(err)
@@ -1009,6 +1021,10 @@ func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.
 		if err := o.service.authorizeAccessScope(ctx, w, o.scope, true); err != nil {
 			return err
 		}
+		runner, err := w.RunnerForLease(ctx, string(input.LeaseID))
+		if err != nil {
+			return err
+		}
 		if _, err := w.LockWorkItem(ctx, o.scope.Project, o.item); err != nil {
 			return err
 		}
@@ -1019,7 +1035,7 @@ func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.
 		if _, err := locker.LockLease(ctx, string(input.LeaseID)); err != nil {
 			return err
 		}
-		current, err := o.facts(ctx, w, &input)
+		current, err := o.facts(ctx, w, &input, &runner)
 		if err != nil {
 			return err
 		}

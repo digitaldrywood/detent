@@ -693,6 +693,11 @@ func (o *Operations) mutateWorkspaceWorker(ctx context.Context, scope hubscope.N
 			if err := writer.LockWorkItemProject(ctx, scope.Project); err != nil {
 				return err
 			}
+			if closure.move {
+				if _, err := writer.LockWorkItem(ctx, scope.Project, closure.plan.Issue.WorkItemID); err != nil {
+					return err
+				}
+			}
 			locker, ok := writer.(interface {
 				LockLease(context.Context, string) (leasestore.Lease, error)
 			})

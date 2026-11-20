@@ -660,6 +660,11 @@ func (s *Service) projectNativeSummaryRecordCommand(ctx context.Context, scope h
 		Status string `json:"status"`
 	}{"pending"}
 	return s.tenantReceiptMutation(ctx, scope, options.OperationID, request.Mutation, request, result, func(w tenantstore.Writer) error {
+		if scope.Credential.Scope == hubapi.APIScopeWorker {
+			if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
+				return err
+			}
+		}
 		if err := hubapi.FromFeatureError(s.database.plansService().RequireFeatureRecord(ctx, w, options.Feature, s.config.Clock())); err != nil {
 			return err
 		}

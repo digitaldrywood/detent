@@ -936,6 +936,11 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			}
 		}
 		write := func(w tenantstore.Writer) error {
+			if scope.Credential.Scope == hubapi.APIScopeWorker && command.LeaseID != "" {
+				if _, err := w.RunnerForLease(ctx, string(command.LeaseID)); err != nil {
+					return err
+				}
+			}
 			if scope.IntegrationRepository != "" || scope.ScheduledRepair != nil {
 				if err := w.LockAccessOrganization(ctx); err != nil {
 					return err
@@ -1129,7 +1134,11 @@ func (s *Service) runWorkItemRecordMutation(ctx context.Context, scope hubscope.
 			if plan.Existing {
 				switch request := input.(type) {
 				case tracker.UpdateIssue:
-					current, err := w.WorkItem(ctx, scope.Project, plan.Issue.WorkItemID)
+					readItem := w.WorkItem
+					if scope.Credential.Scope == hubapi.APIScopeWorker && command.LeaseID != "" {
+						readItem = w.LockWorkItem
+					}
+					current, err := readItem(ctx, scope.Project, plan.Issue.WorkItemID)
 					if err != nil {
 						return err
 					}

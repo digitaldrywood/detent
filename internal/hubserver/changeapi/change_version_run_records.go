@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -111,7 +112,7 @@ func (s *VersionPublication) PrepareChangeVersionRun(ctx context.Context, scope 
 	return prepared, nil
 }
 
-func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *PreparedVersionRun) error {
+func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tenantstore.Writer, prepared *PreparedVersionRun, identity runnerstore.Identity) error {
 	if prepared == nil {
 		return nil
 	}
@@ -132,10 +133,6 @@ func (s *VersionPublication) recheckChangeVersionRun(ctx context.Context, w tena
 	locker, ok := w.(leasestore.FencedLeaseLocker)
 	if !ok {
 		return hubapi.NativeRunEventStorageUnavailable()
-	}
-	identity, err := w.RunnerForLease(ctx, prepared.lease.LeaseID)
-	if err != nil {
-		return err
 	}
 	lease, err := locker.LockLease(ctx, prepared.lease.LeaseID)
 	if err != nil {

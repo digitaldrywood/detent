@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/executionapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -123,6 +124,9 @@ func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 	row.RequestKey = request.RequestID
 	row.RequestHash = hash
 	err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := executionapi.LockRunnerCredential(ctx, w, scope); err != nil {
+			return err
+		}
 		if err := s.deps.AuthorizeAccessScope(ctx, w, scope, true); err != nil {
 			return err
 		}

@@ -273,12 +273,12 @@ prepareReview:
 				return err
 			}
 			var lockedItem corestore.WorkItem
-			if instructions != nil {
+			if prepared != nil || instructions != nil {
 				lockedItem, err = w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(item))
 				if err != nil {
 					return err
 				}
-				if lockedItem.Revision != instructions.item.Revision || lockedItem.EventSequence != instructions.item.EventSequence {
+				if instructions != nil && (lockedItem.Revision != instructions.item.Revision || lockedItem.EventSequence != instructions.item.EventSequence) {
 					return corestore.ErrRevisionConflict
 				}
 			}

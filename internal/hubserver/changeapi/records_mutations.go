@@ -590,12 +590,7 @@ func (s *RecordMutations) CreateChangeRecordCommand(ctx context.Context, scope h
 			return corestore.ErrNotFound
 		}
 		for _, linkedID := range linked {
-			var item corestore.WorkItem
-			if scope.Credential.Scope == hubapi.APIScopeWorker {
-				item, err = w.WorkItem(ctx, scope.Project, linkedID)
-			} else {
-				item, err = w.LockWorkItem(ctx, scope.Project, linkedID)
-			}
+			item, err := w.LockWorkItem(ctx, scope.Project, linkedID)
 			if err != nil {
 				return err
 			}
@@ -718,6 +713,11 @@ func (s *RecordMutations) CreateChangeRecordCommand(ctx context.Context, scope h
 	}
 	for {
 		err = s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			if workerAttempt != nil {
+				if _, err := w.RunnerForLease(ctx, string(request.LeaseID)); err != nil {
+					return err
+				}
+			}
 			if err := authorizeLinked(w); err != nil {
 				return err
 			}
