@@ -595,6 +595,33 @@ func TestResolveSSHWorkflowPreservesHookShell(t *testing.T) {
 	}
 }
 
+func TestSSHArtifactSpoolingFollowsExecution(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		owner Execution
+		spool bool
+	}{
+		{name: "legacy owner", owner: &finalizingTestExecution{}},
+		{name: "spool-capable owner", owner: &spooledRoundExecution{}, spool: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			wire := NewSSHRunRequest(RunRequest{Execution: test.owner})
+			wire.Native = true
+			wire.SourceIteration = true
+			execution := wire.Bind(t.Context(), nil).Execution
+			request := RunRequest{Execution: execution, Mode: RunModeImplement}
+			if got := spoolsArtifactLog(request.Execution); got != test.spool {
+				t.Fatalf("spool capability on bound execution = %t, want %t", got, test.spool)
+			}
+			wire = NewSSHRunRequest(request)
+			forwarded := wire.Bind(t.Context(), nil).Execution
+			if got := spoolsArtifactLog(forwarded); got != test.spool {
+				t.Fatalf("spool capability on forwarded execution = %t, want %t", got, test.spool)
+			}
+		})
+	}
+}
+
 type sshReleaseDeliveryTestExecution struct {
 	*readToolTestExecution
 	result ReleaseDeliveryResult

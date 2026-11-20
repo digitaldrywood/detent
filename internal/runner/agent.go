@@ -1890,7 +1890,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
 	mode := normalizeRunMode(req.Mode)
-	if _, ok := req.Execution.(spooledArtifactExecution); ok && req.observationPeer == nil && mode == RunModeImplement {
+	if mode == RunModeImplement && spoolsArtifactLog(req.Execution) {
 		req.artifactSpool = &sourceArtifactSpool{}
 	}
 	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {

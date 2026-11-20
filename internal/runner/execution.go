@@ -205,6 +205,14 @@ type spooledArtifactExecution interface {
 	FinalizeArtifactsWithSpoolCount(context.Context, string, int) error
 }
 
+func spoolsArtifactLog(execution Execution) bool {
+	if remote, ok := execution.(interface{ canSpoolArtifactLog() bool }); ok {
+		return remote.canSpoolArtifactLog()
+	}
+	_, ok := execution.(spooledArtifactExecution)
+	return ok
+}
+
 // ArtifactSourceExecution keeps the upload journal on the execution owner while
 // capturing Git data on the host that owns the checkout. A nil source restores
 // local capture. The journal root is supplied by the central runner, never SSH.

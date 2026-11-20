@@ -280,6 +280,7 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 
 type sshNativeExecution struct {
 	batchedLanding bool
+	spoolArtifacts bool
 	*sshExecution
 	sources  *SSHExecutionSources
 	capacity *providercapacity.Reservation
@@ -367,6 +368,10 @@ func (e *sshNativeExecution) PrepareArtifacts(ctx context.Context, directory str
 
 func (e *sshNativeExecution) ArtifactLog(ctx context.Context, delta string) error {
 	return e.peer.Call(ctx, "execution.ArtifactLog", nil, delta)
+}
+
+func (e *sshNativeExecution) canSpoolArtifactLog() bool {
+	return e.spoolArtifacts
 }
 
 func (e *sshNativeExecution) SpoolArtifactLog(ctx context.Context, delta string) error {
