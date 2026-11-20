@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -694,7 +695,11 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if capacityPaused {
 		return dispatchIssueOutcome{reason: dispatchIssueFailureBackendCapacityPaused}
 	}
-	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
+	startIssue := issue
+	if o.scheduling != nil && o.nativeWorkflow() && o.cfg.Plan.Enabled && strings.EqualFold(o.cfg.Plan.Stop, issue.State) {
+		startIssue.State = "Todo"
+	}
+	targetState := dispatchStartTransitionState(startIssue, runMode, o.cfg.ActiveStates)
 	slotIssue := issue
 	if targetState != "" {
 		slotIssue = cloneIssue(issue)
@@ -1045,6 +1050,13 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
 		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
 		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
+	}
+	if deferred := state.deferredCompletions[issue.ID]; deferred.LegacyReady && runMode == runpkg.RunModeImplement {
+		request.LegacyPlan = tracker.NativeLegacyPlanOutput(deferred.Result.Output, "deferred")
+		if issue.Title != deferred.Running.Issue.Title || issue.Description != deferred.Running.Issue.Description {
+			request.LegacyPlan.LegacySource = ""
+			request.LegacyPlan.ReviewPending = true
+		}
 	}
 	if runMode != runpkg.RunModeTriage {
 		o.attachMachineIssueTool(&request)

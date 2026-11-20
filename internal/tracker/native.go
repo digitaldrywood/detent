@@ -551,6 +551,7 @@ type NativeProject struct {
 }
 
 type NativeClaim struct {
+	LegacyPlanStop          string                    `json:"legacy_plan_stop,omitempty"`
 	LandingCapacity         int                       `json:"landing_capacity,omitempty"`
 	DispatchPriorityByState []string                  `json:"dispatch_priority_by_state,omitempty"`
 	DispatchPriorityByLabel []string                  `json:"dispatch_priority_by_label,omitempty"`

@@ -52,14 +52,30 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 			o.logger.Warn("orphaned agent session lookup failed", "project_id", projectID, "error", err)
 		}
 	}
-	o.expireOrphanedWorkAttempts(ctx, state, now)
-
 	active, err := o.workAttempts.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ProjectID: projectID, ExcludeLiveForeignGenerations: true})
+	var legacyPlans []int64
+	if o.cfg.Plan.Enabled {
+		for _, attempt := range active {
+			if attempt.Phase != deferredCompletionPhase {
+				continue
+			}
+			if saved, err := decodeDeferredCompletion(attempt); err == nil && saved.standalonePlan() {
+				legacyPlans = append(legacyPlans, attempt.ID)
+			}
+		}
+	}
+	var expired []int64
+	if err == nil || !o.cfg.Plan.Enabled {
+		expired = o.expireOrphanedWorkAttempts(ctx, state, now, legacyPlans...)
+	}
 	if err != nil {
 		if o.logger != nil {
 			o.logger.Warn("deferred completion recovery lookup failed", "project_id", projectID, "error", err)
 		}
 	} else {
+		active = slices.DeleteFunc(active, func(attempt store.WorkAttempt) bool {
+			return slices.Contains(expired, attempt.ID)
+		})
 		o.recoverDeferredCompletions(ctx, state, active, now)
 	}
 	o.recoverPendingWorkAttemptCapacityReleases(ctx, state, projectID, now)
@@ -120,18 +136,26 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	o.recoverPendingOperatorStops(ctx, state, now)
 }
 
-func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *State, now time.Time) {
+func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *State, now time.Time, protected ...int64) []int64 {
 	if o == nil || o.workAttempts == nil || state == nil {
-		return
+		return nil
 	}
 	projectID := strings.TrimSpace(o.cfg.Project.ID)
 	if projectID == "" {
-		return
+		return nil
 	}
-	runningIDs := make([]int64, 0, len(state.Running))
+	runningIDs := protected
 	for _, running := range state.Running {
 		if running.WorkAttemptID > 0 {
 			runningIDs = append(runningIDs, running.WorkAttemptID)
+		}
+	}
+	for _, deferred := range state.deferredCompletions {
+		if deferred.standalonePlan() {
+			runningIDs = append(runningIDs, deferred.Running.WorkAttemptID)
+		}
+		if deferred.PriorLegacyPlan != nil {
+			runningIDs = append(runningIDs, deferred.PriorLegacyPlan.Running.WorkAttemptID)
 		}
 	}
 	timedOut, err := o.workAttempts.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
@@ -145,12 +169,15 @@ func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *St
 	if err != nil && o.logger != nil {
 		o.logger.Warn("work attempt timeout recovery failed", "project_id", projectID, "error", err)
 	}
+	expired := make([]int64, 0, len(timedOut))
 	for _, attempt := range timedOut {
+		expired = append(expired, attempt.ID)
 		if deferred, ok := state.deferredCompletions[attempt.IssueID]; ok && deferred.Running.WorkAttemptID == attempt.ID {
 			o.clearLiveWorkAttemptState(state, telemetryWorkAttempt(attempt, now))
 		}
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
+	return expired
 }
 
 func (o *Orchestrator) recoverPendingWorkAttemptCapacityReleases(ctx context.Context, state *State, projectID string, now time.Time) {

@@ -25,7 +25,9 @@ func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow conf
 	if !ok {
 		return "", "", errors.New("native planning requires phase and step receipts")
 	}
-	review := gate.EffectivePlan(workflow.Config.Plan).Review
+	planConfig := gate.EffectivePlan(workflow.Config.Plan)
+	req.phaseContinuation.Plan.ResolveLegacyReview(planConfig, req.Issue.Labels)
+	review := planConfig.Review
 	return planphase.Run(ctx, planphase.Request{
 		Execution: execution, Continuation: req.phaseContinuation, Backend: backend, Info: info, Issue: issue,
 		Description: req.Issue.Description, HumanReview: review != gate.PlanReviewAutomated, AutomatedReview: review != gate.PlanReviewHuman, Now: r.now,

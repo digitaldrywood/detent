@@ -635,6 +635,7 @@ type sourceArtifactSpool struct {
 }
 
 type RunRequest struct {
+	LegacyPlan          *tracker.NativePlanState                 `json:",omitempty"`
 	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
 	workspacePrepared   bool
@@ -816,6 +817,7 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	AdoptedLegacyPlan          bool `json:",omitempty"`
 	retainedReview             *retainedReviewWorkspace
 	BillingMode                string
 	ReportedCostMicros         *int64

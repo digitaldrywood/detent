@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/claim"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -509,6 +510,12 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		MachineID:               s.machine.ID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2,
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
+	}
+	if request.Policy.Gates.PlanEnabled && request.Plan.Stop != "" && request.Policy.Gates.PlanStopDigest == policy.Digest([]byte(request.Plan.Stop)) {
+		claimRequest.LegacyPlanStop = request.Plan.Stop
+		if len(claimRequest.WorkflowStates) != 0 {
+			claimRequest.WorkflowStates = append(slices.Clone(claimRequest.WorkflowStates), request.Plan.Stop)
+		}
 	}
 	landingCapacitySupported, err := source.NativeClient().HubFeature(ctx, tracker.NativeLandingCapacityCapability)
 	if err != nil {

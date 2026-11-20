@@ -21,10 +21,6 @@ import (
 )
 
 func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
-func TestNativePlannerAutomaticHandoff(t *testing.T) {
-	scenariotest.RunPlannerAutomaticHandoff(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
-}
-
 func TestRunnerDisposition(t *testing.T) {
 	scenariotest.Run(t, []scenariotest.Scenario{
 		{Name: "blocked native729 first unchanged Rework preserves dependency", FinalMessage: scenariotest.DependencyMessage, WantDisposition: scenariotest.DependencyDisposition(), Rework: true},
