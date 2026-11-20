@@ -4383,7 +4383,36 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	worker := &sessionWorkerRegistration{sessionID: sessionID, cleanupRoot: info.Path}
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(sessionCtx, backend, AgentTurnRequest{
+	turnCtx := sessionCtx
+	var observe func(func(context.Context) error)
+	var finishObservations func() error
+	var offerIdentity func(store.SessionProviderIdentity)
+	var finishIdentity func()
+	if req.NativeVersion != nil && backendConfig.Kind == config.AgentBackendCodex {
+		turnCtx, observe, finishObservations = runobserve.Start(sessionCtx, ErrExecutionAuthorityUnavailable, func(err error) {
+			r.logger.Warn("turn observation deferred", "issue_id", req.Issue.ID, "error", err)
+		})
+		if providerStore, ok := r.store.(sessionProviderStore); ok && sessionID > 0 {
+			offerIdentity, _, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
+				return providerStore.UpdateSessionProviderIdentity(ctx, sessionID, identity)
+			}, func(err error) {
+				r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", sessionID, "error", err)
+			})
+		}
+		if peer := req.observationPeer; peer != nil && runReq.OnUsageUpdate != nil {
+			var diffProgress agentRunProgress
+			runReq.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
+				observe(func(ctx context.Context) error {
+					if stat, ok := r.liveDiffStats(ctx, runWorkspace, info, workspaceIssue, &diffProgress, at); ok {
+						usage.DiffStats = stat
+					}
+					return peer.Call(ctx, "usage", nil, usage)
+				})
+				return nil
+			}
+		}
+	}
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(turnCtx, backend, AgentTurnRequest{
 		acknowledgeProcess:  r.acknowledgeProviderProcess(sessionCtx, worker, ""),
 		ReadOnly:            req.NativeVersion != nil,
 		SupplementalTools:   req.NativeVersion != nil,
@@ -4422,7 +4451,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
-		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
+		if observe == nil {
+			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
+		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
+			offerIdentity(store.SessionProviderIdentity{ThreadID: strings.TrimSpace(update.ThreadID), SessionID: strings.TrimSpace(update.ProviderSessionID)})
+		}
 		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
 		}
@@ -4435,12 +4468,21 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			runResult.TurnStarted = true
 		}
 		if update.Type == AgentUpdateTokenUsage {
-			if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, false); err != nil {
+			sample := runResult
+			report := func(ctx context.Context) error {
+				return usageReport.report(ctx, req.usageExecution, sample, sessionModel, backendConfig.Kind, r.usageCostUSD, false)
+			}
+			if observe != nil {
+				observe(report)
+			} else if err := report(updateCtx); err != nil {
 				return err
 			}
 		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+			identity := runResult.RuntimeIdentity
+			if observe != nil {
+				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, sessionID, identity) })
+			} else if err := r.persistSessionIdentity(updateCtx, sessionID, identity); err != nil {
 				return err
 			}
 			if runResult.RuntimeIdentity.HasRuntimeValues() {
@@ -4459,6 +4501,12 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		return nil
 	}, r.turnLimit)
+	if finishIdentity != nil {
+		finishIdentity()
+	}
+	if finishObservations != nil {
+		turnErr = errors.Join(turnErr, finishObservations())
+	}
 	runResult.Compute = stopCompute()
 	runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)

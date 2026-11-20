@@ -9,9 +9,13 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -177,6 +181,89 @@ type implementationReviewBackend struct {
 	discussion        *NativeReviewDiscussion
 	securityAudit     *NativeSecurityAuditEvidence
 	validatorResponse string
+}
+
+func TestNativeReviewToolDispatchSurvivesSlowSessionWrite(t *testing.T) {
+	for _, review := range []bool{true, false} {
+		name := "acceptance validation"
+		if review {
+			name = "implementation review"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var events []string
+				head := strings.Repeat("a", 40)
+				owner := &implementationReviewExecution{events: &events, head: head}
+				input, err := owner.ReviewVersion(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				release := make(chan struct{})
+				wait := &slowTurnObservation{observing: make(chan struct{}), release: release}
+				sessions := &slowReviewSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 42}, wait: wait}
+				backend := &reviewDispatchBackend{observing: wait.observing, read: make(chan bool, 1)}
+				source := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace: reviewMutationWorkspace{
+					fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+					heads:                []string{head},
+				}}}
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: backend,
+					Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.sleepInhibitor = nil
+				finished := make(chan error, 1)
+				go func() {
+					_, err := r.Validate(t.Context(), ValidatorRequest{usageExecution: owner, implementationReview: review,
+						NativeVersion: input.Version, Diff: input.Diff, Issue: connector.Issue{ID: "test", Identifier: "TEST-1"}})
+					finished <- err
+				}()
+				synctest.Wait()
+				var readOK bool
+				select {
+				case readOK = <-backend.read:
+				default:
+				}
+				close(release)
+				err = <-finished
+				if !readOK {
+					t.Fatalf("pinned source read did not succeed before releasing the provider identity write (turn error: %v)", err)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+		})
+	}
+}
+
+type slowReviewSessionStore struct {
+	*fakeSessionStore
+	wait *slowTurnObservation
+}
+
+func (s *slowReviewSessionStore) UpdateSessionProviderIdentity(ctx context.Context, _ int64, _ store.SessionProviderIdentity) error {
+	return s.wait.block(ctx)
+}
+
+type reviewDispatchBackend struct {
+	fakeCodexClient
+	observing <-chan struct{}
+	read      chan bool
+}
+
+func (b *reviewDispatchBackend) RunTurnWithTools(ctx context.Context, _ AgentTurnRequest, _ []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: "review-thread", TurnID: "review-turn"}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	<-b.observing
+	reply, err := handle(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"list","revision":"head","path":"."}`)})
+	b.read <- err == nil && reply.Success
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	err = update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"Reviewed the immutable source.","criteria_evidence":[]}`})
+	return AgentTurnResult{ThreadID: "review-thread"}, err
 }
 
 type implementationReviewWorkspace struct {
