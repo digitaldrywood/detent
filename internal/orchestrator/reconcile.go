@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/staleness"
@@ -16,9 +15,6 @@ import (
 
 func (o *Orchestrator) schedulerObservedStates() []string {
 	states := append([]string{blockedStatusState}, autoPromoteFetchStates(o.cfg.AutoPromote)...)
-	if cfg := gate.EffectivePlan(o.cfg.Plan); cfg.Enabled {
-		states = append(states, cfg.Stop)
-	}
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)

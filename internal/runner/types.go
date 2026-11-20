@@ -658,7 +658,6 @@ type RunRequest struct {
 	WorkAttemptID             int64
 	Generation                uint64
 	Mode                      string
-	PlanPhase                 bool
 	DispatchSourceState       string
 	DispatchTargetState       string
 	PriorAttempt              PriorAttempt

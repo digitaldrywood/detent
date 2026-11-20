@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
@@ -17,7 +18,7 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 	var result RunResult
 	resolved, err := source.ResolveLandingConflict(ctx, info, issue, opts, func(ctx context.Context, path string, files []string) (turnErr error) {
 		workflow, runtime, budgetChecker, estimator := r.runtimeSnapshot()
-		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), RoleMerge)
+		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleMerge)
 		if err != nil {
 			return err
 		}
@@ -120,7 +121,7 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 			Environment:         environment,
 			AllowLocalBinding:   workflow.Config.Worker.EffectiveAllowLocalBinding(),
 			ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains,
-			ExtraWritableRoots:  extraWritableRootsForWorkspace(ctx, workflow.Config.Workspace.Kind, path, true, r.logger),
+			ExtraWritableRoots:  runworkspace.ExtraWritableRootsForWorkspace(ctx, workflow.Config.Workspace.Kind, path, true, r.logger),
 			MaxRSSBytes:         r.maxAgentRSSBytes,
 			RSSPollInterval:     r.rssPollInterval,
 			processRSS:          r.processRSS,

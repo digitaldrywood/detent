@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"strings"
 	"time"
 
@@ -74,9 +75,9 @@ type CapacityStatusController interface {
 
 func (r *Runner) CapacityScope(req RunRequest) (backendcapacity.Scope, bool) {
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runRole(req.Mode, req.Issue)
+	role := runworkspace.RunRole(req.Mode, req.Issue)
 	routeRole := runtime.effectiveRunRole(role)
-	selection, _, backendConfig, err := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
+	selection, _, backendConfig, err := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
 		return backendcapacity.Scope{}, false
 	}
@@ -93,9 +94,9 @@ func (r *Runner) ClassifyCapacityError(
 		return nil, false
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runRole(req.Mode, req.Issue)
+	role := runworkspace.RunRole(req.Mode, req.Issue)
 	routeRole := runtime.effectiveRunRole(role)
-	selection, backend, backendConfig, selectionErr := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), routeRole)
+	selection, backend, backendConfig, selectionErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if selectionErr != nil {
 		return nil, false
 	}
@@ -108,7 +109,7 @@ func (r *Runner) ValidatorCapacityScope(req ValidatorRequest) (backendcapacity.S
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	selection, _, backendConfig, err := runtime.selectBackendForRole(
 		req.Issue,
-		selectorContext(req.SelectorContext, workflow),
+		runworkspace.SelectorContext(req.SelectorContext, workflow),
 		RoleValidator,
 	)
 	if err != nil {

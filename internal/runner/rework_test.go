@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"os"
@@ -377,7 +378,7 @@ func TestDirtyCheckpointReworkMakesProgress(t *testing.T) {
 			gitfixture.AddOrigin(t, source, runRunnerGit)
 			backend := newReworkWorkspace(t, source, filepath.Join(t.TempDir(), "workspaces"))
 			issue := connector.Issue{ID: "work", Identifier: "example#1", State: "Rework"}
-			ownedIssue := workspaceIssue("default", issue)
+			ownedIssue := runworkspace.Issue("default", issue)
 			info, err := backend.Create(t.Context(), ownedIssue)
 			if err != nil {
 				t.Fatal(err)
@@ -570,7 +571,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if test.normal {
 				issue.State = "In Progress"
 			}
-			ownedIssue := workspaceIssue("default", issue)
+			ownedIssue := runworkspace.Issue("default", issue)
 			if test.sameMachine && !test.resolvedPause {
 				ownedIssue.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "default", Attempt: "attempt_11111111111111111111111111111111"}
 			}
@@ -932,7 +933,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 
 			prepareConflict := (test.refusal == workspace.LandRefusalConflict || test.baseRefresh) && !test.historical && test.laterRefusal == ""
 			if test.refusal != "" {
-				local, err := backend.RecoveryState(t.Context(), info, workspaceIssue("default", issue))
+				local, err := backend.RecoveryState(t.Context(), info, runworkspace.Issue("default", issue))
 				if err != nil {
 					t.Fatal(err)
 				}

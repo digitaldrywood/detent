@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"net"
 	"os"
 	"path/filepath"
@@ -82,7 +83,7 @@ func TestNativeReviewPreservesImplementingSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", BranchName: "detent/implementing"}
-			implementing, err := local.Create(t.Context(), workspaceIssue(defaultProjectID, issue))
+			implementing, err := local.Create(t.Context(), runworkspace.Issue(defaultProjectID, issue))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -33,9 +33,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
-	"github.com/digitaldrywood/detent/internal/runner/planphase"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -645,18 +645,6 @@ func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 	return out
 }
 
-func selectorContext(ctx selector.Context, workflow config.Workflow) selector.Context {
-	return runworkspace.SelectorContext(ctx, workflow)
-}
-
-func normalizeRunMode(mode string) string {
-	return runworkspace.NormalizeRunMode(mode)
-}
-
-func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string) (string, string) {
-	return runworkspace.AgentTurnDeliverable(cfg, issue, mode)
-}
-
 func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
 	identifier := strings.TrimSpace(issue.Identifier)
 	if githubIssueNumber(identifier) != "" {
@@ -666,14 +654,6 @@ func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
 		}
 	}
 	return strings.TrimSpace(cfg.Tracker.Repository)
-}
-
-func runRole(mode string, issue connector.Issue) string {
-	return runworkspace.RunRole(mode, issue)
-}
-
-func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, hostCommits bool, logger *slog.Logger) []string {
-	return runworkspace.ExtraWritableRootsForWorkspace(ctx, workspaceKind, workspacePath, hostCommits, logger)
 }
 
 func (r *Runner) prepareMergeFastPath(
@@ -1551,7 +1531,7 @@ func automaticAgentResumeLookup(
 	backendKind string,
 	agentRole string,
 ) (store.AgentResumeLookup, bool) {
-	if !cfg.ExperimentalThreadResume || normalizeRunMode(req.Mode) != RunModeImplement {
+	if !cfg.ExperimentalThreadResume || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement {
 		return store.AgentResumeLookup{}, false
 	}
 	reworkState := strings.TrimSpace(cfg.AutoPromote.ReworkState)
@@ -1835,7 +1815,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
-	mode := normalizeRunMode(req.Mode)
+	mode := runworkspace.NormalizeRunMode(req.Mode)
 	if mode == RunModeImplement && spoolsArtifactLog(req.Execution) {
 		req.artifactSpool = &sourceArtifactSpool{}
 	}
@@ -1870,14 +1850,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if phaseSource != nil {
 			recovery := req.Execution.Recovery()
 			previous := recovery.SourceAttempt()
-			explicitRework := runRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
-			if explicitRework && !planphase.IsPlan(phaseSource.Phase) || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
+			explicitRework := runworkspace.RunRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
+			if explicitRework && !tracker.IsPlanPhase(phaseSource.Phase) || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
 				phaseSource = nil
 			}
 		}
 		if phaseSource != nil {
 			turnRecovery, repairResume = nil, false
-			if !planphase.IsPlan(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement {
+			if !tracker.IsPlanPhase(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
 			}
 			req.ResumeState = store.AgentResumeState{}
@@ -1924,7 +1904,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		runWorkspace = &admissionWorkspace{logger: r.logger, leaks: &r.admissionLeaks}
 	}
 	req.workspaceBackend = runWorkspace
-	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue := runworkspace.Issue(r.projectID, req.Issue)
 	workspaceIssue.AttemptWorkspace = req.AttemptWorkspace
 	if req.phaseContinuation != nil {
 		workspaceIssue.PublicationRepository = req.phaseContinuation.RepositoryURL
@@ -1939,7 +1919,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && (req.NativeLandingRework != nil || phaserecovery.LandingNeedsRework(req.Execution.Recovery()))
-	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runworkspace.RunRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding
 	var sourceErr error
@@ -2250,9 +2230,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement && req.Execution != nil {
 		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
 	}
-	role := runRole(req.Mode, req.Issue)
+	role := runworkspace.RunRole(req.Mode, req.Issue)
 	routeRole := agentRuntime.effectiveRunRole(role)
-	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), routeRole)
+	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -2356,7 +2336,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
 		}
 	}
+	planPhase := mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil
 	if req.Execution != nil {
+		start := req.Execution.Start
+
+		if planPhase {
+			phased, ok := req.Execution.(phasedProviderExecution)
+			if !ok {
+				return RunResult{}, errors.New("native planning requires a fenced phase provider")
+			}
+			start = phased.StartPhased
+		}
 		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
 		preStartBinding := true
 		if _, binds := req.Execution.(ConversationExecution); binds {
@@ -2373,7 +2363,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel, ReasoningEffort: turnRequest.ReasoningEffort}
 		if !preStartBinding {
 			executionIdentity = nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnRequest)
-			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+			if err := start(ctx, executionIdentity); err != nil {
 				return RunResult{}, err
 			}
 			afterRunPending = true
@@ -2417,7 +2407,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		if preStartBinding {
-			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+			if err := start(ctx, executionIdentity); err != nil {
 				return RunResult{}, err
 			}
 		}
@@ -2436,7 +2426,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	if mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && (req.PlanPhase || phaseSource != nil && planphase.IsPlan(phaseSource.Phase)) {
+	if planPhase {
 		plan, wait, err := r.runPlanPhase(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
 		if err != nil {
 			afterRunPending = false
@@ -2445,6 +2435,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if wait != "" {
 			afterRunPending = false
 			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait}, nil
+		}
+		if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
+			afterRunPending = false
+			return RunResult{}, err
 		}
 		if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
 			afterRunPending = false
@@ -2718,9 +2712,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var extraWritableRoots []string
 	if req.Admission == nil {
-		extraWritableRoots = extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, req.Execution != nil && mode == RunModeImplement, r.logger)
+		extraWritableRoots = runworkspace.ExtraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, req.Execution != nil && mode == RunModeImplement, r.logger)
 	}
-	deliverableKind, deliverableRepository := agentTurnDeliverable(workflow.Config, req.Issue, mode)
+	deliverableKind, deliverableRepository := runworkspace.AgentTurnDeliverable(workflow.Config, req.Issue, mode)
 	turnRequest = AgentTurnRequest{
 		AllowLocalBinding:     workflow.Config.Worker.EffectiveAllowLocalBinding(),
 		ExtraNetworkDomains:   workflow.Config.Worker.ExtraNetworkDomains,
@@ -3035,7 +3029,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
-		signal, _ := NativeCompletionSignalFromMessage(result.FinalMessage)
+		signal, _ := phaserecovery.CompletionSignalFromMessage(result.FinalMessage)
 		_, _, workspaceIssue.NoChangeNeeded = workpad.NoChangeCompletion(signal)
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
@@ -4083,7 +4077,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		return gate.ValidatorResult{}, err
 	}
 
-	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	workspaceIssue := runworkspace.Issue(r.projectID, req.Issue)
 	workspaceIssue.AttemptWorkspace = workspace.AttemptWorkspaceFromContext(ctx)
 	var info workspace.Info
 	if retained := req.retainedReview; retained != nil {
@@ -4223,7 +4217,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		promptOptions.DiffTruncated = promptOptions.DiffTruncated || req.Diff.Patch == ""
 	}
 	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
-	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -4391,7 +4385,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		MaxTurns:            workflow.Config.Agent.MaxTurns,
 		TurnTimeout:         durationFromMillis(validator.TurnTimeoutMS),
 		MaxDuration:         durationFromMillis(workflow.Config.Agent.MaxTurnDurationMS),
-		ExtraWritableRoots:  extraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, false, r.logger),
+		ExtraWritableRoots:  runworkspace.ExtraWritableRootsForWorkspace(sessionCtx, workflow.Config.Workspace.Kind, info.Path, false, r.logger),
 		Environment:         baseEnvironment,
 		MaxRSSBytes:         r.maxAgentRSSBytes,
 		RSSPollInterval:     r.rssPollInterval,
@@ -4702,7 +4696,7 @@ func validatorPromptOptionsForPR(info workspace.Info, diff connector.ValidationD
 }
 
 func workerServiceEnvironment(mode string, connection serviceapi.Connection, info workspace.Info, issue workspace.Issue) procgroup.Environment {
-	if normalizeRunMode(mode) != RunModeImplement {
+	if runworkspace.NormalizeRunMode(mode) != RunModeImplement {
 		return workerEnvironment(serviceapi.RestrictedEnvironment(), info, issue)
 	}
 	return workerEnvironment(connection.Environment(), info, issue)
@@ -4802,7 +4796,7 @@ func (r *Runner) reapWorkspace(ctx context.Context, issue connector.Issue) (Work
 		ctx = context.Background()
 	}
 
-	workspaceIssue := workspaceIssue(r.projectID, issue)
+	workspaceIssue := runworkspace.Issue(r.projectID, issue)
 	workspaceIssue.AttemptWorkspace = workspace.AttemptWorkspaceFromContext(ctx)
 	backend := r.workspaceSnapshot()
 	if cleaner, ok := backend.(workspace.IssueCleaner); ok {
@@ -4830,7 +4824,7 @@ func (r *Runner) reconcileWorkspaces(ctx context.Context, activeIssues []connect
 	}
 	active := make([]workspace.Issue, 0, len(activeIssues))
 	for _, issue := range activeIssues {
-		active = append(active, workspaceIssue(r.projectID, issue))
+		active = append(active, runworkspace.Issue(r.projectID, issue))
 	}
 	result, err := reconciler.ReconcileResiduals(ctx, active)
 	failures := make([]WorkspaceCleanupFailure, 0, len(result.Failures))
@@ -5547,10 +5541,6 @@ func effectiveModel(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
-	return runworkspace.Issue(projectID, issue)
 }
 
 func applyAgentUpdate(result *RunResult, update AgentUpdate) {

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -137,7 +136,7 @@ func TestStrandedActiveIssueSnapshots(t *testing.T) {
 	}
 }
 
-func TestTickDispatchesPlanApprovedIssueAfterLongRefresh(t *testing.T) {
+func TestTickDispatchesWorkingIssueAfterLongRefresh(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		interval time.Duration
@@ -154,24 +153,17 @@ func TestTickDispatchesPlanApprovedIssueAfterLongRefresh(t *testing.T) {
 			issue.ID = "issue-3238"
 			issue.Identifier = "digitaldrywood/detent#3238"
 			issue.URL = "https://github.test/digitaldrywood/detent/issues/3238"
-			issue.Title = "Dispatch approved plan"
-			issue.State = gate.DefaultPlanStop
-			issue.Labels = []string{"plan-approved"}
+			issue.Title = "Dispatch working item"
+			issue.State = "In Progress"
 			issue.PullRequest = tt.pr
-			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done", "Cancelled"}, StrandedActiveThreshold: 10 * time.Minute, Plan: gate.PlanConfig{Enabled: true, Review: gate.PlanReviewHuman, Stop: gate.DefaultPlanStop}})
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done", "Cancelled"}, StrandedActiveThreshold: 10 * time.Minute})
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state := newState(cfg)
 			defer orch.releaseRunningSlots(&state)
-			if transitioned := orch.reviewPlanIssues(t.Context(), &state, []connector.Issue{issue}, approvedAt); len(transitioned) != 1 {
-				t.Fatalf("plan approval = %#v, want transition to In Progress", transitioned)
-			}
-			if len(tracker.updates) != 1 || tracker.updates[0].state != "In Progress" {
-				t.Fatalf("plan approval updates = %#v, want In Progress", tracker.updates)
-			}
 			tracker.stateIssues[0].StageUpdatedAt = &approvedAt
 			orch.tick(t.Context(), &state, now)
-			if len(tracker.updates) != 1 {
+			if len(tracker.updates) != 0 {
 				t.Fatalf("lane updates = %#v, want no stranded recovery transition", tracker.updates)
 			}
 			if _, ok := state.Running[issue.ID]; !ok {

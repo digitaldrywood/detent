@@ -41,6 +41,91 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func RunPlanAdmissionContention(t *testing.T, factories Constructors) {
+	code := providercapacity.Requirement{Role: runner.RoleCode, Backend: "coder", Model: "test"}
+	plan := providercapacity.Requirement{Role: runner.RolePlan, Backend: "planner", Model: "test"}
+	for _, occupied := range []providercapacity.Requirement{code, plan} {
+		t.Run(occupied.Role+" account busy", func(t *testing.T) {
+			t.Parallel()
+			h := newPlannerHub(t, "Human Review", hubserverPlanStates(), factories)
+			previous := h.descriptor.ID
+			h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = true, gate.PlanReviewAutomated
+			h.descriptor = h.descriptor.WithID()
+			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+				t.Fatal(err)
+			}
+			base, _ := schedulerFixtures.Load(h.scheduler)
+			cfg := base.(*schedulerFixture).config
+			cfg.ProviderReports = func() ([]providercapacity.Report, error) {
+				now := time.Now().UTC()
+				return []providercapacity.Report{
+					{Provider: "openai", Backend: code.Backend, AccountAlias: "code", SharedAccountAlias: "code", Models: []string{"test"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now},
+					{Provider: "openai", Backend: plan.Backend, AccountAlias: "plan", SharedAccountAlias: "plan", Models: []string{"test"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now},
+				}, nil
+			}
+			local, err := newTestScheduler(h.native.Transport(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			competitor := h.otherWorker(t)
+			identity, err := competitor.Transport().RunnerIdentity(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Machine.ID, cfg.Machine.Hostname = identity.MachineID, "competing-worker"
+			other, err := newTestScheduler(competitor.Transport(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolve := func(requirement providercapacity.Requirement) func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				return func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+					return requirement, nil
+				}
+			}
+			create := func(title string) connector.Issue {
+				t.Helper()
+				issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Update the README." + issueContractTestSections})
+				if err != nil {
+					t.Fatal(err)
+				}
+				confirmIssueContract(t, h.admin, issue.ID)
+				return issue
+			}
+			blocker := create("Hold provider capacity")
+			request := orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}, ProviderRequirement: resolve(occupied)}
+			claimed, err := other.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(claimed) != 1 || claimed[0].ID != blocker.ID {
+				t.Fatalf("competing worker did not reserve %s capacity: %v %v", occupied.Role, claimed, err)
+			}
+			t.Cleanup(func() {
+				if err := other.ReleaseClaim(context.WithoutCancel(t.Context()), blocker.ID, "failed"); err != nil {
+					t.Error(err)
+				}
+			})
+			target := create("Plan before implementation")
+			request.ProviderRequirement, request.PlanProviderRequirement = resolve(code), resolve(plan)
+			capacityRefused := false
+			request.CandidateClaimObserved = func(_ context.Context, issue connector.Issue, allowed bool, predicate string, requirement *providercapacity.Requirement) {
+				capacityRefused = issue.ID == target.ID && !allowed && predicate == "hub_claim.provider_capacity" && requirement != nil && *requirement == plan
+			}
+			claimed, err = local.FetchCandidateIssues(t.Context(), request)
+			claim, found := local.ExecutionClaim(target.ID)
+			if occupied == plan {
+				if len(claimed) != 0 || found || !capacityRefused {
+					t.Fatalf("full plan account did not refuse admission: candidates=%v claim=%t refused=%t error=%v", claimed, found, capacityRefused, err)
+				}
+				return
+			}
+			if err != nil || len(claimed) != 1 || claimed[0].ID != target.ID || !found || claim.Lease.ProviderReservation == nil || claim.Lease.ProviderReservation.Requirement != plan {
+				t.Fatalf("free planning capacity was refused: candidates=%v permit=%+v error=%v", claimed, claim.Lease.ProviderReservation, err)
+			}
+			if err := local.ReleaseClaim(t.Context(), target.ID, "failed"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func RunPlanContinuation(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	for _, test := range []struct {
@@ -164,6 +249,7 @@ func RunPlannerAutomaticHandoff(t *testing.T, factories Constructors) {
 	for _, test := range []struct {
 		name             string
 		planReview       string
+		answerHistory    bool
 		loseLease        bool
 		failure          string
 		planRecoveryRole string
@@ -172,6 +258,8 @@ func RunPlannerAutomaticHandoff(t *testing.T, factories Constructors) {
 		{name: "automatic plan and code share a claim", planReview: gate.PlanReviewAutomated},
 		{name: "planning disabled"},
 		{name: "human plan approval resumes at code", planReview: gate.PlanReviewHuman},
+		{name: "both plan reviews retain the human gate", planReview: gate.PlanReviewBoth},
+		{name: "human plan approval survives unrelated transitions", planReview: gate.PlanReviewHuman, answerHistory: true},
 		{name: "lost lease resumes after approved plan", planReview: gate.PlanReviewAutomated, loseLease: true},
 		{name: "workspace hook failure before provider", failure: "workspace"},
 		{name: "provider failure settles before lease retirement", failure: "provider"},
@@ -189,12 +277,12 @@ func RunPlannerAutomaticHandoff(t *testing.T, factories Constructors) {
 			if test.failure != "workspace" {
 				t.Parallel()
 			}
-			testNativePlannerHandoff(t, test.planReview, test.loseLease, test.failure, test.planRecoveryRole, test.resumeCase, factories)
+			testNativePlannerHandoff(t, test.planReview, test.answerHistory, test.loseLease, test.failure, test.planRecoveryRole, test.resumeCase, factories)
 		})
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, failure, planRecoveryRole, resumeCase string, factories Constructors) {
+func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, loseLease bool, failure, planRecoveryRole, resumeCase string, factories Constructors) {
 	t.Helper()
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
@@ -204,7 +292,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, f
 		refusalMode, dispatchState = runner.RunModeImplement, "In Progress"
 	}
 	states := hubserverPlanStates()
-	humanPlan := planReview == gate.PlanReviewHuman
+	humanPlan := planReview == gate.PlanReviewHuman || planReview == gate.PlanReviewBoth
 	if humanPlan || failure == "recovery" {
 		states[0].Transitions = append(states[0].Transitions, "Blocked")
 		states[1].Transitions = append(states[1].Transitions, "Blocked")
@@ -383,7 +471,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, f
 		h.descriptor = requestedPolicy
 	}
 	plan := gate.PlanConfig{Enabled: h.descriptor.Gates.PlanEnabled, Review: h.descriptor.Gates.PlanReview}
-	provider := &nativePlanningAgent{failure: failure}
+	provider := &nativePlanningAgent{failure: failure, humanReview: planReview == gate.PlanReviewBoth}
 	workflowConfig := config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}
 	if failure == "provider" || failure == "refused" {
 		workflowConfig.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}
@@ -407,7 +495,6 @@ func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, f
 	transport := &nativePlanTransport{next: h.failChanges, native: h.native, item: tracker.NativeWorkItemID(issue.ID), realRelease: failure == "", finished: finished, lost: make(chan nativePlanFinish, 1)}
 	transport.loseLease.Store(loseLease)
 	if checkProvider {
-		transport.providerRole.Store(runner.RoleCode)
 		provider.checkProvider = func(_ context.Context, role string) error {
 			if active, _ := transport.providerRole.Load().(string); active != role {
 				return fmt.Errorf("active provider permit belongs to %s, want %s", active, role)
@@ -510,8 +597,21 @@ func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, f
 			t.Fatalf("plan approval did not hold code: attempts=%+v error=%v", current.Attempts, err)
 		}
 		stopOrchestrator()
-		if _, err := h.admin.Transition(t.Context(), current.Issue.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Issue.Revision, State: "Todo", Reason: "user_requested", ReasonDetail: "Approve plan"}); err != nil {
+		direction, err := h.admin.Transition(t.Context(), current.Issue.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Issue.Revision, State: "Todo", Reason: "user_requested", ReasonDetail: "Approve plan"})
+		if err != nil {
 			t.Fatal(err)
+		}
+		if answerHistory {
+			transitions, err := h.admin.RecentWorkflowTransitions(t.Context(), direction.WorkItemID, 1)
+			if err != nil || len(transitions) != 1 || transitions[0].Data.BlockerAttemptID != current.Attempts[0].AttemptID {
+				t.Fatalf("answer did not record the draft attempt identity: %v %v", transitions, err)
+			}
+			for _, state := range []string{"In Progress", "Todo", "In Progress", "Todo"} {
+				direction, err = h.admin.Transition(t.Context(), direction.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: direction.Revision, State: state, Reason: "user_requested"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 	if loseLease {
@@ -751,7 +851,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, loseLease bool, f
 			t.Fatal(err)
 		}
 		attempt := records.Items[wantAttempts-1]
-		for _, phase := range []string{"plan", "plan_review", "implement"} {
+		for _, phase := range []string{"plan", "implement"} {
 			expected := attempt
 			if loseLease && phase != "implement" {
 				expected = records.Items[0]
@@ -809,6 +909,7 @@ func hubserverPlanStates() []tracker.NativeState {
 type nativePlanningAgent struct {
 	checkProvider   func(context.Context, string) error
 	failure         string
+	humanReview     bool
 	calls           atomic.Int64
 	verdictCalls    atomic.Int64
 	plans           atomic.Int64
@@ -872,6 +973,9 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 	if review {
 		if !req.ReadOnly || req.Resume != (runner.AgentResume{}) || req.Workspace != a.planWorkspace {
 			return runner.AgentTurnResult{}, errors.New("plan review did not inspect the retained worktree independently")
+		}
+		if a.humanReview {
+			return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "HUMAN REVIEW"})
 		}
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "APPROVED"})
 	}
@@ -972,6 +1076,21 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 	}
 	response, err := t.next.RoundTrip(req)
+	if err == nil && response.StatusCode == http.StatusOK && req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/claims") {
+		raw, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		response.Body = io.NopCloser(strings.NewReader(string(raw)))
+		var lease tracker.NativeLease
+		if err := json.Unmarshal(raw, &lease); err != nil {
+			return nil, err
+		}
+		if lease.ProviderReservation != nil {
+			t.providerRole.Store(lease.ProviderReservation.Role)
+		}
+	}
 	if err == nil && response.StatusCode < 300 && req.Method == http.MethodPost && (strings.HasSuffix(req.URL.Path, "/renew") || t.realRelease && strings.HasSuffix(req.URL.Path, "/release")) {
 		body, readErr := req.GetBody()
 		if readErr == nil {

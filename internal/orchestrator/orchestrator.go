@@ -176,6 +176,7 @@ type SchedulingRequest struct {
 	CandidateLimit          int
 	AdmissionLimit          int
 	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
+	PlanProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
 	Policy                  policy.Descriptor
 	ProjectID               string
 	Repository              string

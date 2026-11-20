@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"math"
@@ -5567,9 +5568,9 @@ func TestRunRoleDerivesStageFromModeAndState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := runRole(tt.mode, connector.Issue{State: tt.state})
+			got := runworkspace.RunRole(tt.mode, connector.Issue{State: tt.state})
 			if got != tt.want {
-				t.Fatalf("runRole(%q, %q) = %q, want %q", tt.mode, tt.state, got, tt.want)
+				t.Fatalf("runworkspace.RunRole(%q, %q) = %q, want %q", tt.mode, tt.state, got, tt.want)
 			}
 		})
 	}
@@ -8629,7 +8630,7 @@ func TestWorkspaceIssuePullRequestComparison(t *testing.T) {
 	t.Parallel()
 	for _, state := range []string{"OPEN", "CLOSED", "MERGED", " closed "} {
 		t.Run(state, func(t *testing.T) {
-			got := workspaceIssue("project", connector.Issue{PullRequest: &connector.PullRequest{
+			got := runworkspace.Issue("project", connector.Issue{PullRequest: &connector.PullRequest{
 				State: state, HeadSHA: "old-head", BaseSHA: "old-base", BaseRef: "main",
 			}})
 			if state == "OPEN" {
@@ -8677,7 +8678,7 @@ func TestRunnerReapSquashLandedWorkspace(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue := connector.Issue{ID: "wi_1", Identifier: "repo#1", State: "Done", Closed: true}
-			info, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			info, err := backend.Create(t.Context(), runworkspace.Issue("project", issue))
 			if err != nil {
 				t.Fatal(err)
 			}

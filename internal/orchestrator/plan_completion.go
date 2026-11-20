@@ -40,3 +40,24 @@ func (o *Orchestrator) publishCompletedPlan(ctx context.Context, event runpkg.Co
 	running.PlanArtifactPublished = true
 	return nil
 }
+
+func planArtifactComment(issue connector.Issue, output string) string {
+	var b strings.Builder
+	b.WriteString("## Detent Plan")
+	if strings.TrimSpace(issue.Identifier) != "" {
+		b.WriteString("\n\n- issue: ")
+		b.WriteString(strings.TrimSpace(issue.Identifier))
+	}
+	if strings.TrimSpace(issue.Title) != "" {
+		b.WriteString("\n- title: ")
+		b.WriteString(strings.TrimSpace(issue.Title))
+	}
+	b.WriteString("\n\n### Artifact\n\n")
+	output = strings.TrimSpace(output)
+	if output == "" {
+		output = "The plan run completed without assistant text."
+	}
+	b.WriteString(output)
+	b.WriteString("\n")
+	return b.String()
+}

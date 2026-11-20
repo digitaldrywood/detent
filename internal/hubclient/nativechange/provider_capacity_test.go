@@ -87,3 +87,27 @@ func TestLocalProviderRevalidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordedAttemptChecksProviderBeforeRestart(t *testing.T) {
+	t.Parallel()
+	identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}
+	for _, role := range []string{"", "plan"} {
+		t.Run("reserved "+role, func(t *testing.T) {
+			var permit *providercapacity.Reservation
+			if role != "" {
+				permit = &providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: role, Backend: "codex", Model: "test"}}
+			}
+			e := &nativeExecution{
+				claim: nativeClaim{lease: tracker.NativeLease{ProviderReservation: permit}},
+				scheduler: &executionAuthority{
+					now:             time.Now,
+					providerReports: func() ([]providercapacity.Report, error) { return nil, nil },
+				},
+				data: tracker.NativeRunData{Identity: &identity, Sequence: 1},
+			}
+			if err := e.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("stored attempt can start code without its provider permit: %v", err)
+			}
+		})
+	}
+}

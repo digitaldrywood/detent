@@ -397,10 +397,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if nativeCompletion {
-		if event.Err == nil && event.Result.Output == runpkg.RunOutputPlanApprovalWait {
-			o.completePlanApprovalWait(ctx, state, event, running)
-			return
-		}
 		if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
 			return
 		}
@@ -2127,7 +2123,6 @@ func (o *Orchestrator) completePlanRunning(
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
 	}
-	delete(state.planRework, issueID)
 	state.Completed[issueID] = Completed{
 		Issue:           issue,
 		SessionID:       running.SessionID,
