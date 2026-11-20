@@ -2,15 +2,14 @@ package nativechange
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -110,31 +109,32 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	attemptID := e.data.AttemptID
 	e.mu.Unlock()
 	digest := policy.Digest([]byte(strings.Join([]string{phase, head, tree, lease.PolicyID, input}, "\x00")))
-	mutation := tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken}
-	payload := map[string]any{
-		"idempotency_key": mutation.IdempotencyKey, "lease_id": mutation.LeaseID, "fencing_token": strconv.FormatInt(int64(mutation.FencingToken), 10),
-		"attempt_id": attemptID, "phase": phase, "branch": branch, "head_sha": head, "tree_sha": tree,
-		"policy_id": lease.PolicyID, "input_digest": digest,
+	request := tracker.NativePhaseReceipt{
+		Mutation:  tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken},
+		AttemptID: attemptID, Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID, InputDigest: digest,
 	}
 	client := e.claim.source.NativeClient()
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
 		return err
 	}
-	err := client.PublishPhaseReceipt(ctx, lease.WorkItemID, payload)
+	recorded, err := client.PublishPhaseReceipt(ctx, lease.WorkItemID, request)
 	if nativeTransportUnavailable(err) && ctx.Err() == nil {
 		if authorityErr := e.VerifyPhaseAuthority(ctx); authorityErr != nil {
 			return errors.Join(err, authorityErr)
 		}
-		err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, payload)
+		recorded, err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, request)
+	}
+	if err == nil && recorded != request {
+		return errors.New("Hub phase receipt differs from the published source")
 	}
 	return e.executionError(ctx, err)
 }
 
-func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (json.RawMessage, error) {
+func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (*progresscheck.RoundVerdict, error) {
 	return e.claim.source.NativeClient().LatestRoundVerdict(ctx, e.claim.lease.WorkItemID)
 }
 
-func (e *nativeExecution) RecordRoundVerdict(ctx context.Context, payload map[string]any) error {
+func (e *nativeExecution) RecordRoundVerdict(ctx context.Context, input progresscheck.RoundInput) error {
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
 		return err
 	}
@@ -145,20 +145,20 @@ func (e *nativeExecution) RecordRoundVerdict(ctx context.Context, payload map[st
 	e.mu.Lock()
 	attempt := e.data.AttemptID
 	e.mu.Unlock()
-	round, ok := payload["round_id"].(string)
-	if !ok || round == "" {
-		return errors.New("round verdict requires a round ID")
+	request := progresscheck.Publication{
+		Mutation:  tracker.Mutation{IdempotencyKey: attempt + ":round:" + input.RoundID, LeaseID: lease.ID, FencingToken: lease.FencingToken},
+		AttemptID: attempt, PolicyID: lease.PolicyID, RoundInput: input,
 	}
-	payload["attempt_id"], payload["policy_id"] = attempt, lease.PolicyID
-	payload["lease_id"], payload["fencing_token"] = lease.ID, strconv.FormatInt(int64(lease.FencingToken), 10)
-	payload["idempotency_key"] = attempt + ":round:" + round
 	client := e.claim.source.NativeClient()
-	err := client.PublishRoundVerdict(ctx, lease.WorkItemID, payload)
+	recorded, err := client.PublishRoundVerdict(ctx, lease.WorkItemID, request)
 	if nativeTransportUnavailable(err) && ctx.Err() == nil {
 		if authorityErr := e.VerifyPhaseAuthority(ctx); authorityErr != nil {
 			return errors.Join(err, authorityErr)
 		}
-		err = client.PublishRoundVerdict(ctx, lease.WorkItemID, payload)
+		recorded, err = client.PublishRoundVerdict(ctx, lease.WorkItemID, request)
+	}
+	if err == nil && (recorded.RoundID != input.RoundID || recorded.AttemptID != attempt || recorded.PolicyID != lease.PolicyID || recorded.Action != input.Action || recorded.NextPhase != input.NextPhase || recorded.HeadSHA != input.HeadSHA || recorded.TreeSHA != input.TreeSHA) {
+		return errors.New("Hub round verdict differs from the completed round")
 	}
 	return e.executionError(ctx, err)
 }

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +17,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -107,7 +107,7 @@ func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, er
 }
 
 func (c *NativeClient) PhaseReceiptRoute(ctx context.Context, item tracker.NativeWorkItemID) (bool, error) {
-	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", nil, nil)
+	_, err := c.ItemPhaseReceipts(ctx, item)
 	var refusal *APIError
 	if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "" {
 		return false, nil
@@ -115,18 +115,28 @@ func (c *NativeClient) PhaseReceiptRoute(ctx context.Context, item tracker.Nativ
 	return err == nil, err
 }
 
-func (c *NativeClient) PublishPhaseReceipt(ctx context.Context, item tracker.NativeWorkItemID, input map[string]any) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", input, nil)
+func (c *NativeClient) ItemPhaseReceipts(ctx context.Context, item tracker.NativeWorkItemID) ([]tracker.NativePhaseReceipt, error) {
+	var output []tracker.NativePhaseReceipt
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", nil, &output)
+	return output, err
 }
 
-func (c *NativeClient) LatestRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID) (json.RawMessage, error) {
-	var output json.RawMessage
+func (c *NativeClient) PublishPhaseReceipt(ctx context.Context, item tracker.NativeWorkItemID, input tracker.NativePhaseReceipt) (tracker.NativePhaseReceipt, error) {
+	var output tracker.NativePhaseReceipt
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", input, &output)
+	return output, err
+}
+
+func (c *NativeClient) LatestRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID) (*progresscheck.RoundVerdict, error) {
+	var output *progresscheck.RoundVerdict
 	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress?round=latest", nil, &output)
 	return output, err
 }
 
-func (c *NativeClient) PublishRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID, input map[string]any) error {
-	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, nil)
+func (c *NativeClient) PublishRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID, input progresscheck.Publication) (progresscheck.RoundVerdict, error) {
+	var output progresscheck.RoundVerdict
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, &output)
+	return output, err
 }
 
 // HubFeature reports whether the hub advertises a feature on its capability

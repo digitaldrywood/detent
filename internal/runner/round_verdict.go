@@ -17,8 +17,8 @@ import (
 )
 
 type RoundVerdictExecution interface {
-	LatestRoundVerdict(context.Context) (json.RawMessage, error)
-	RecordRoundVerdict(context.Context, map[string]any) error
+	LatestRoundVerdict(context.Context) (*progresscheck.RoundVerdict, error)
+	RecordRoundVerdict(context.Context, progresscheck.RoundInput) error
 }
 
 type roundAssessment struct {
@@ -51,7 +51,7 @@ func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspa
 	if err != nil {
 		return "", fmt.Errorf("read prior round verdict: %w", err)
 	}
-	action, next, human := "continue", "implement", ""
+	action, next, human := progresscheck.RoundContinue, "implement", ""
 	var criteria []gate.CriterionEvidence
 	var findings string
 	if change := result.NativeChange; change != nil {
@@ -77,13 +77,13 @@ func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspa
 		phase = "merge"
 		findings = landing.Refusal
 		if landing.Landed && runErr == nil && landing.HeadSHA == head {
-			action, next = "done", ""
+			action, next = progresscheck.RoundDone, ""
 		} else if !landing.RequiresRework() {
 			next = "merge"
 		}
 	}
 	if signal, ok := NativeCompletionSignalFromMessage(result.FinalMessage); ok && signal.Invalid == nil && signal.Status == "blocked" && strings.TrimSpace(signal.HumanAction) != "" {
-		action, next = "human_action", ""
+		action, next = progresscheck.RoundHumanAction, ""
 		human, _ = runtimeoutput.Diagnostic(signal.HumanAction, 1024)
 	}
 	signature := ""
@@ -102,7 +102,11 @@ func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspa
 	if err != nil {
 		return "", err
 	}
-	boundedPrevious, _ := runtimeoutput.Diagnostic(string(previous), progresscheck.MaxOutputBytes)
+	previousEvidence, err := json.Marshal(previous)
+	if err != nil {
+		return "", err
+	}
+	boundedPrevious, _ := runtimeoutput.Diagnostic(string(previousEvidence), progresscheck.MaxOutputBytes)
 	body, _ := runtimeoutput.Diagnostic(req.Issue.Description, 16<<10)
 	diagnostics, _ := runtimeoutput.Diagnostic(strings.TrimSpace(findings+"\n"+feedback), 12<<10)
 	criteriaEvidence, _ := runtimeoutput.Diagnostic(string(evidence), 12<<10)
@@ -129,14 +133,12 @@ func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspa
 	if assessment.Action != action || assessment.NextPhase != next || assessment.Reason == "" || len(assessment.Reason) > 512 {
 		return "", errors.New("round verdict differs from the verified outcome or has no valid reason")
 	}
-	payload := map[string]any{
-		"round_id": uuid.NewString(), "phase": phase, "action": action, "head_sha": head, "tree_sha": tree,
-		"reason": assessment.Reason, "next_phase": next, "failure_signature": signature, "human_action": human,
+	input := progresscheck.RoundInput{
+		RoundID: uuid.NewString(), Phase: phase, Action: action, HeadSHA: head, TreeSHA: tree,
+		Reason: assessment.Reason, NextPhase: next, FailureSignature: signature, HumanAction: human,
+		Criteria: criteria[:min(len(criteria), progresscheck.MaxReceipts)],
 	}
-	if len(criteria) > 0 {
-		payload["criterion_evidence"] = criteria[:min(len(criteria), progresscheck.MaxReceipts)]
-	}
-	if err := execution.RecordRoundVerdict(ctx, payload); err != nil {
+	if err := execution.RecordRoundVerdict(ctx, input); err != nil {
 		return "", fmt.Errorf("publish round verdict: %w", err)
 	}
 	return assessment.Reason, nil

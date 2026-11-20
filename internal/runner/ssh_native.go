@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -507,12 +508,12 @@ func (e *sshNativeExecution) RecordPhaseReceipt(ctx context.Context, phase, bran
 	return e.peer.Call(ctx, "execution.RecordPhaseReceipt", nil, phase, branch, head, tree, input)
 }
 
-func (e *sshNativeExecution) LatestRoundVerdict(ctx context.Context) (json.RawMessage, error) {
-	var output json.RawMessage
+func (e *sshNativeExecution) LatestRoundVerdict(ctx context.Context) (*progresscheck.RoundVerdict, error) {
+	var output *progresscheck.RoundVerdict
 	err := e.peer.Call(ctx, "execution.LatestRoundVerdict", &output)
 	return output, err
 }
 
-func (e *sshNativeExecution) RecordRoundVerdict(ctx context.Context, payload map[string]any) error {
+func (e *sshNativeExecution) RecordRoundVerdict(ctx context.Context, payload progresscheck.RoundInput) error {
 	return e.peer.Call(ctx, "execution.RecordRoundVerdict", nil, payload)
 }
