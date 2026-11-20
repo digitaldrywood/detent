@@ -216,7 +216,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				t.Fatal(err)
 			}
 			provider, completions := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: test.stage, malformed: test.malformed, retryReleased: make(chan struct{})}, scenariohooks.NewGatedScheduler(t, h.scheduler)
-			var gateReceiptPosts atomic.Int32
+			const injectedGateRefusals = 2
+			var gateReceiptPosts, acceptedGateReceiptPosts atomic.Int32
 			if test.name == "healthy" {
 				transport := fixtureClient(h.native.Transport()).requests.Load()
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -230,12 +231,23 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						if err := json.Unmarshal(raw, &receipt); err != nil {
 							return nil, err
 						}
-						if receipt.Phase == "project_gate" && gateReceiptPosts.Add(1) <= 2 {
+						if receipt.Phase != "project_gate" {
+							return transport.RoundTrip(request)
+						}
+						if acceptedGateReceiptPosts.Load() != 0 {
+							t.Error("project gate receipt was posted again after acceptance")
+						}
+						if gateReceiptPosts.Add(1) <= injectedGateRefusals {
 							return &http.Response{StatusCode: http.StatusTooManyRequests,
 								Header: http.Header{"Retry-After": {"1"}},
 								Body:   io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)),
 							}, nil
 						}
+						response, err := transport.RoundTrip(request)
+						if err == nil && response.StatusCode == http.StatusOK {
+							acceptedGateReceiptPosts.Add(1)
+						}
+						return response, err
 					}
 					return transport.RoundTrip(request)
 				}))
@@ -866,12 +878,15 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 						}
 						gateReceipts := 0
 						for _, receipt := range receipts {
-							if receipt.Phase == "project_gate" && receipt.HeadSHA == version.HeadSHA {
+							if receipt.Phase == "project_gate" {
+								if receipt.HeadSHA != version.HeadSHA {
+									t.Fatal("project gate receipt was recorded for a different head")
+								}
 								gateReceipts++
 							}
 						}
-						if gateReceiptPosts.Load() != 3 || gateReceipts != 1 {
-							t.Fatalf("gate receipt posts = %d, recorded receipts = %d", gateReceiptPosts.Load(), gateReceipts)
+						if posts, accepted := gateReceiptPosts.Load(), acceptedGateReceiptPosts.Load(); posts < injectedGateRefusals+1 || accepted != 1 || gateReceipts != 1 {
+							t.Fatalf("gate receipt posts = %d, accepted posts = %d, recorded receipts = %d", posts, accepted, gateReceipts)
 						}
 					}
 					sessions := map[int64]bool{}
