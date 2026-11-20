@@ -99,6 +99,7 @@ type NativeClaimCandidateScan struct {
 	Replay   *hubrecords.NativeClaimPlan
 	PageNext claimstore.CandidateCursor
 	Cursor   claimstore.SelectionCursor
+	Wrapped  bool
 }
 
 var errClaimHostSlotTaken = fmt.Errorf("runner host slot taken: %w", ErrNoClaimableWork)
@@ -224,7 +225,7 @@ func (d Deps) ClaimNativeIssueTenant(ctx context.Context, scope hubscope.NativeS
 			}
 			return lease, err
 		}
-		if len(scan.Plans) == 0 && scan.Cursor.Position == (claimstore.CandidateCursor{}) && scan.PageNext == (claimstore.CandidateCursor{}) {
+		if len(scan.Plans) == 0 && !scan.Wrapped && scan.Cursor.Position == (claimstore.CandidateCursor{}) && scan.PageNext == (claimstore.CandidateCursor{}) {
 			return leasestore.Lease{}, ErrNoClaimableWork
 		}
 		scan.Cursor.Position = scan.PageNext
@@ -709,23 +710,30 @@ func (d Deps) ReadNativeClaimCandidates(ctx context.Context, scope hubscope.Nati
 				return err
 			}
 		}
-		query.Limit = max(1, NativeClaimCandidatePageSize/max(1, ranking.Reachable))
+		limit := max(1, NativeClaimCandidatePageSize/max(1, ranking.Reachable))
+		query.Limit = limit
 		query.After = cursor.Position
 		page, err := r.CandidatePage(ctx, query)
 		if err != nil {
 			return err
 		}
-		if len(page.Items) == 0 && query.After.WorkItemID != "" {
+		wrapped := len(page.Items) == 0 && query.After.WorkItemID != ""
+		if wrapped {
 			query.After = claimstore.CandidateCursor{}
+			query.Limit = limit + 1
 			page, err = r.CandidatePage(ctx, query)
 			if err != nil {
 				return err
 			}
-			if len(page.Items) > 0 {
-				cursor.Position = query.After
+			cursor.Position = query.After
+			if len(page.Items) > limit {
+				page.Items = page.Items[:limit]
+				page.Next = ClaimCandidateCursor(page.Items[limit-1])
+			} else {
+				page.Next = claimstore.CandidateCursor{}
 			}
 		}
-		scan = NativeClaimCandidateScan{PageNext: page.Next, Cursor: cursor}
+		scan = NativeClaimCandidateScan{PageNext: page.Next, Cursor: cursor, Wrapped: wrapped}
 		if len(page.Items) == 0 {
 			return nil
 		}
