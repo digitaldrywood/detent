@@ -13,6 +13,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
+var ErrRoundVerdictRejected = errors.New("round verdict publication rejected")
+
 type RoundDeadlines struct {
 	attempts int
 	filed    map[sessiontimeout.Kind]bool
@@ -106,6 +108,9 @@ func RunRound(ctx context.Context, retry func(error) error, verify func(context.
 		}
 		if err == nil {
 			if err = publish(bounded, input); err != nil {
+				if errors.Is(err, ErrRoundVerdictRejected) {
+					input = RoundInput{}
+				}
 				err = fmt.Errorf("publish round verdict: %w", err)
 			}
 		}

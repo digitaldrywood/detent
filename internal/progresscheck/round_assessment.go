@@ -76,7 +76,19 @@ func AssessRound(ctx context.Context, e RoundEvidence, fallback RoundAssessment,
 	if errors.As(e.ProviderError, &providerTimeout) && providerTimeout.Valid() {
 		input.ProviderTimeout = providerTimeout
 	}
-	return assessment, input, nil
+	for {
+		serialized, err := json.Marshal(input)
+		if err != nil {
+			return RoundAssessment{}, RoundInput{}, fmt.Errorf("encode round verdict: %w", err)
+		}
+		if len(serialized) <= MaxOutputBytes {
+			return assessment, input, nil
+		}
+		if len(input.Criteria) == 0 {
+			return RoundAssessment{}, RoundInput{}, errors.New("round verdict exceeds the publication bound")
+		}
+		input.Criteria = input.Criteria[:len(input.Criteria)-1]
+	}
 }
 
 func (v *RoundAssessment) validate(fallback RoundAssessment, phases []string, canAskHuman bool) string {
