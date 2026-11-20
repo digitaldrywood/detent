@@ -25,6 +25,7 @@ type sourceRepairAgent struct {
 	auditRework    bool
 	requests       []runner.AgentTurnRequest
 	workspaceHooks *sourceLoopWorkspace
+	gateRepair     bool
 }
 
 type sourceLoopWorkspace struct {
@@ -70,8 +71,8 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		return runner.AgentTurnResult{}, errors.New("source workspace hooks ran outside the enclosing execution lifecycle")
 	}
 	review := strings.Contains(request.Prompt, "Detent validator-agent") || strings.Contains(request.Prompt, "independent Detent implementation reviewer")
-	if review && (request.Workspace == a.workspace || a.workspaceHooks.reviewBeforeRuns != a.workspaceHooks.reviewAfterRuns+1) {
-		return runner.AgentTurnResult{}, errors.New("review workspace hooks ran outside the independent review lifecycle")
+	if review && (!request.ReadOnly || request.Workspace != a.workspace) {
+		return runner.AgentTurnResult{}, errors.New("independent reviewer did not receive the retained source with read-only access")
 	}
 	if strings.Contains(request.Prompt, "Detent's independent security auditor") {
 		a.calls++
@@ -91,7 +92,8 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		return runner.AgentTurnResult{ThreadID: "thread-audit", TurnID: "audit-turn", AuthenticationMode: "api_key"}, nil
 	}
 	if !review && a.writableCalls > 0 {
-		if request.Resume.ThreadID != "thread-native" || !strings.Contains(request.Prompt, "Checked") {
+		if request.Workspace != a.workspace || request.Resume.ThreadID != "thread-native" ||
+			(!strings.Contains(request.Prompt, "Checked") && !(a.gateRepair && strings.Contains(request.Prompt, "repair required"))) {
 			return runner.AgentTurnResult{}, errors.New("repair lost implementation resume or review findings")
 		}
 		if err := os.WriteFile(filepath.Join(request.Workspace, "REPAIR.md"), []byte("repaired\n"), 0o600); err != nil {
@@ -119,12 +121,14 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		ssh          bool
 		limit        int
 		verdict      string
+		gateRepair   bool
 		wantVersions int
 		wantCalls    int
 		wantReviewed bool
 	}{
 		{name: "audit repair before acceptance", audit: true, auditRework: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "old audit approval cannot approve repaired head", audit: true, limit: 6, verdict: "rework", wantVersions: 2, wantCalls: 6, wantReviewed: true},
+		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
@@ -162,11 +166,16 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			}
 			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
 			sessions := api.NewRunnerSessions(h.native)
-			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: "git push origin HEAD", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			gateRuns := filepath.Join(t.TempDir(), "gate-runs")
+			command := "printf '%s\\n' checked >> '" + strings.ReplaceAll(gateRuns, "'", "'\\''") + "'"
+			if test.gateRepair {
+				command += " && { test -f REPAIR.md || { printf '%s\\n' 'repair required'; exit 1; }; }"
+			}
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,11 +189,22 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns != 1 {
+			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns > 1 {
 				t.Fatalf("workspace lifecycle: before=%d after=%d", loopWorkspace.beforeRuns, loopWorkspace.afterRuns)
 			}
-			if loopWorkspace.reviewBeforeRuns == 0 || loopWorkspace.reviewBeforeRuns != loopWorkspace.reviewAfterRuns {
-				t.Fatalf("review workspace lifecycle: before=%d after=%d", loopWorkspace.reviewBeforeRuns, loopWorkspace.reviewAfterRuns)
+			if loopWorkspace.reviewBeforeRuns != 0 || loopWorkspace.reviewAfterRuns != 0 {
+				t.Errorf("independent checks recreated the source worktree: before=%d after=%d", loopWorkspace.reviewBeforeRuns, loopWorkspace.reviewAfterRuns)
+			}
+			gateLog, err := os.ReadFile(gateRuns)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantGateRuns := test.wantVersions
+			if test.gateRepair {
+				wantGateRuns++
+			}
+			if n := strings.Count(string(gateLog), "checked\n"); n != wantGateRuns {
+				t.Errorf("gate ran %d times across %d checked heads, want %d", n, test.wantVersions, wantGateRuns)
 			}
 			for index, request := range provider.requests {
 				if request.MaxTurns != test.limit-index {
@@ -261,6 +281,9 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				}
 				if test.sourceReview {
 					wantReviews = 3
+				}
+				if test.gateRepair {
+					wantReviews = 1
 				}
 				if len(detail.Reviews) != wantReviews {
 					t.Fatalf("reviews=%d want=%d", len(detail.Reviews), wantReviews)

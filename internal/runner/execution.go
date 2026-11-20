@@ -398,13 +398,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 		guarded = context.WithValue(guarded, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: limit})
 		if prepared, ok := req.Execution.(CompletionExecution); ok {
-			req.reviewSource = func(ctx context.Context, result *RunResult) (string, error) {
+			req.reviewSource = func(ctx context.Context, result *RunResult, retained *retainedReviewWorkspace) (string, error) {
 				if err := prepared.PrepareFinish(ctx, "succeeded", result.FinalMessage, nil); err != nil {
 					return "", failedStep("publication", err)
 				}
 				sourceReviewed = true
 				reviewRequest := req
-				reviewRequest.workspacePrepared = true
+				reviewRequest.retainedReview = retained
 				reviewErr := r.validateNativeChange(ctx, reviewRequest)
 				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
 					change, err := source.SourceReview(ctx)
@@ -805,6 +805,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 					if err == nil {
 						validationIssue := issue
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
+						validationIssue.IsolateReviewCommands = req.retainedReview != nil
 						binding, bindingErr := r.sourceStep(ctx, req, backend, info, issue, "validation")
 						var previous tracker.NativeStepReceipt
 						if bindingErr == nil {
@@ -832,12 +833,17 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
+							} else if req.reviewSource != nil && !agentResumeEmpty(resume) && sourceBudgetRemaining(ctx) > 0 {
+								return false, &sourceGateRepair{err: failedStep("validation", err), output: receipt.Output}
 							}
 						} else {
 							binding.Validation = &receipt
 							err = recordStep(ctx, req.Execution, binding)
 							if err == nil {
 								err = recorder.RecordSourceValidation(ctx, receipt)
+							}
+							if err == nil && req.retainedReview != nil {
+								req.retainedReview.validation = &receipt
 							}
 						}
 					}
@@ -1299,7 +1305,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, retainedReview: req.retainedReview, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
@@ -1365,7 +1371,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, retainedReview: req.retainedReview, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
