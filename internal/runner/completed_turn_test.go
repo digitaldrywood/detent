@@ -777,6 +777,7 @@ type deadlineRoundExecution struct {
 	verdicts             []progresscheck.RoundInput
 	publicationAttempts  []string
 	failFirstPublication bool
+	loseFinalReply       bool
 	loseFence            bool
 	fenceChecks          int
 }
@@ -825,6 +826,9 @@ func (e *deadlineRoundExecution) RecordRoundVerdict(_ context.Context, verdict p
 		}
 	}
 	e.verdicts = append(e.verdicts, verdict)
+	if e.loseFinalReply && len(e.verdicts) == 2 {
+		return errors.New("ordinary round verdict response lost")
+	}
 	return nil
 }
 
@@ -861,9 +865,10 @@ func (b *deadlineRoundBackend) RunTurn(ctx context.Context, request AgentTurnReq
 }
 
 type deadlineRoundScenario struct {
-	judgeTempDir string
-	judgeFailure error
-	loseFence    bool
+	judgeTempDir   string
+	judgeFailure   error
+	loseFence      bool
+	loseFinalReply bool
 }
 
 func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
@@ -872,7 +877,7 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	info := workspace.Info{Path: t.TempDir(), Branch: "example-phase"}
 	source := &deadlineRoundWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("c", 40), WorkspaceFingerprint: "completed-digest"}}}}}}
 	sessions := &fakeSessionStore{sessionID: 42}
-	execution := &deadlineRoundExecution{failFirstPublication: scenario.judgeFailure != nil, loseFence: scenario.loseFence}
+	execution := &deadlineRoundExecution{failFirstPublication: scenario.judgeFailure != nil, loseFence: scenario.loseFence, loseFinalReply: scenario.loseFinalReply}
 	var logs bytes.Buffer
 	limit := &controlledDurationLimit{}
 	impl, judgments, lastValidation := 0, 0, 0
@@ -951,6 +956,9 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 			t.Fatalf("missing judge failure or original timeout diagnostics: %s", got)
 		}
 	}
+	if scenario.loseFinalReply && (judgments != 2 || len(execution.verdicts) != 2 || len(execution.publicationAttempts) != 3 || execution.publicationAttempts[1] != execution.publicationAttempts[2]) {
+		t.Fatalf("lost reply duplicated a verdict: judgments=%d recorded=%d publication attempts=%v", judgments, len(execution.verdicts), execution.publicationAttempts)
+	}
 	verdict := execution.verdicts[0]
 	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
 		t.Fatalf("round evidence = %+v", verdict)
@@ -974,6 +982,7 @@ func TestRoundJudgeThreadStartFailureRetainsTimeoutAndRetriesInPlace(t *testing.
 	}{
 		{"launch and publication failure", deadlineRoundScenario{judgeTempDir: alias, judgeFailure: failure}},
 		{"fence lost during backoff", deadlineRoundScenario{judgeTempDir: alias, judgeFailure: failure, loseFence: true}},
+		{"ordinary verdict reply lost", deadlineRoundScenario{loseFinalReply: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) { runNativeDeadlineRounds(t, test.scenario) })
