@@ -291,7 +291,7 @@ func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 }
 
 func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
-	for _, operation := range []string{"change read", "machine report", "progress admission", "request budget"} {
+	for _, operation := range []string{"change read", "machine report", "request budget"} {
 		t.Run(operation, func(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
 			issue := h.createInProgress(t, "Independent renewal")
@@ -322,12 +322,6 @@ func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
 					return nil, nil
 				}
 				h.scheduler.nativeHeartbeats[h.project] = time.Time{}
-			case "progress admission":
-				h.scheduler.sessionID = func() (string, error) {
-					close(entered)
-					<-release
-					return "", errors.New("admission released")
-				}
 			case "request budget":
 				h.native.Transport().DeferRequestBudget("/items", time.Now().Add(time.Minute))
 			}
@@ -338,8 +332,6 @@ func TestDedicatedClaimRenewalDoesNotWaitForOtherWork(t *testing.T) {
 					_, _ = h.native.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), "change_example")
 				case "machine report":
 					_ = h.scheduler.ensureNativeMachine(t.Context(), h.connector)
-				case "progress admission":
-					_, _, _ = h.scheduler.ReadmitRetryProgress(t.Context(), runner.RunRequest{Issue: issue, Execution: h.scheduler.RunExecution(issue.ID)}, nil)
 				case "request budget":
 					close(entered)
 					<-release

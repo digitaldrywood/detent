@@ -1805,3 +1805,13 @@ func TestMachineRetrySurvivesStoreRestart(t *testing.T) {
 		now = got.DueAt
 	}
 }
+
+type outageBackendError struct{ body string }
+
+func (outageBackendError) Error() string { return "backend protocol unavailable" }
+func (e outageBackendError) BackendErrorBody() string {
+	if e.body != "" {
+		return e.body
+	}
+	return `{"error":"protocol unavailable"}`
+}

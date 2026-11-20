@@ -1093,7 +1093,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		o.nativeLandingBatch.host = workerHost
 		o.nativeLandingBatch.members++
 	}
-	request.PrepareRun = o.prepareRetryProgress
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
 	durationLimitTransferred = true

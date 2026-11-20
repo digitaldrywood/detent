@@ -5,13 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/isolation"
-	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
-	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,104 +16,6 @@ type progressOwner struct {
 	request  progresscheck.Request
 	retained *progresscheck.Record
 	lease    tracker.NativeLease
-}
-
-func (s *Scheduler) ReadmitRetryProgress(ctx context.Context, run runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
-	s.mu.Lock()
-	claim, ok := s.nativeClaims[run.Issue.ID]
-	policy := s.claimPolicies[run.Issue.ID]
-	s.mu.Unlock()
-	if !ok || claim.execution == nil || claim.execution != run.Execution {
-		return nil, nil, runner.ErrExecutionAuthorityUnavailable
-	}
-	if claim.lifecycle != nil {
-		claim.lifecycle.Lock()
-		defer claim.lifecycle.Unlock()
-	}
-	session, err := s.sessionID()
-	if err != nil {
-		return nil, nil, err
-	}
-	request := tracker.NativeClaim{WorkItemID: claim.lease.WorkItemID, PolicyID: claim.lease.PolicyID, MachineID: claim.lease.MachineID, SessionID: session, TTLSeconds: int64(s.leaseTTL / time.Second), ProtocolMajor: 2, LandingCapacity: claim.landingCapacity, WorkflowStates: []string{run.Issue.State}, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
-	if s.providerReports != nil {
-		if resolver == nil {
-			return nil, nil, errors.New("progress admission requires the runner's model resolver")
-		}
-		run.ProviderReports, err = s.providerReports()
-		if err != nil {
-			return nil, nil, err
-		}
-		requirement, err := resolver.DispatchCapacity(ctx, run)
-		if err != nil {
-			return nil, nil, err
-		}
-		issue, err := claim.source.NativeClient().Issue(ctx, claim.lease.WorkItemID)
-		if err != nil {
-			return nil, nil, err
-		}
-		request.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement}}
-		request.Capabilities = append(request.Capabilities, tracker.NativeProviderCapacityCapability)
-	}
-	completion, ok := claim.execution.(runner.CompletionExecution)
-	if !ok {
-		return nil, nil, errors.New("progress execution cannot record its completion cause")
-	}
-	failure := tracker.NativeTerminalFailure{
-		Error: "progress check completed; lease released for next step admission", ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: s.now().UTC(),
-		Decision: &tracker.FailureAttribution{Outcome: "instance", Reason: "Progress check completed; the next step requires execution admission"},
-	}
-	if err := completion.PrepareFinish(ctx, "cancelled", "", &failure); err != nil {
-		return nil, nil, err
-	}
-	if err := claim.execution.Finish(ctx, "cancelled"); err != nil {
-		return nil, nil, err
-	}
-	claim.execution.RetainCompletion()
-	if err := claim.execution.FinishPrepared(ctx, "released"); err != nil {
-		return nil, nil, err
-	}
-	defer func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if current, found := s.nativeClaims[run.Issue.ID]; found && current.lease.FencingToken == claim.lease.FencingToken {
-			delete(s.claims, run.Issue.ID)
-			delete(s.nativeClaims, run.Issue.ID)
-			delete(s.claimPolicies, run.Issue.ID)
-		}
-	}()
-	started := s.now()
-	lease, err, admitted := s.claimNative(ctx, claim.source, request)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !admitted {
-		return nil, nil, orchestrator.ErrSchedulingUnavailable
-	}
-	release := func(cause error) (runner.Execution, *isolation.Policy, error) {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		return nil, nil, errors.Join(cause, claim.source.NativeClient().Release(cleanupCtx, lease, "work_item_hydration_failed"))
-	}
-	recovery, err := claim.source.NativeClient().Recovery(ctx, lease.WorkItemID)
-	if err == nil && s.providerReports != nil && lease.ProviderReservation == nil {
-		err = errors.New("hub omitted the required provider reservation")
-	}
-	if err != nil {
-		return release(err)
-	}
-	if err := ctx.Err(); err != nil {
-		return release(err)
-	}
-	s.mu.Lock()
-	if current, exists := s.nativeClaims[run.Issue.ID]; !exists || current.lost || current.lease.FencingToken != claim.lease.FencingToken {
-		s.mu.Unlock()
-		return release(runner.ErrExecutionAuthorityUnavailable)
-	}
-	s.claims[run.Issue.ID] = nativeTrackerLease(lease)
-	s.nativeClaims[run.Issue.ID] = nativeClaim{lifecycle: claim.lifecycle, source: claim.source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(started, lease), availabilityDeadline: claim.availabilityDeadline, landingCapacity: claim.landingCapacity}
-	s.claimPolicies[run.Issue.ID] = policy
-	s.mu.Unlock()
-	return s.RunExecution(run.Issue.ID), lease.IsolationPolicy, nil
 }
 
 func (s *Scheduler) RetryProgress(ctx context.Context, issue connector.Issue) (progresscheck.Request, progresscheck.Owner, error) {

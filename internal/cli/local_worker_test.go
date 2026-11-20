@@ -950,14 +950,6 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 				return fmt.Errorf("progress decision: %+v: %w", decision, err)
 			}
 			request.PriorAttempt.Source = "progress receipt"
-			if scenario == "preparation_readmitted" {
-				execution, policy, err := scheduler.ReadmitRetryProgress(prepareCtx, *request, nil)
-				if err != nil {
-					return err
-				}
-				request.Execution = execution
-				request.Issue.IsolationPolicy = policy
-			}
 			return nil
 		}
 		supervisor, err := runnerpkg.NewSupervisor(run, runnerpkg.SupervisorConfig{})
@@ -977,12 +969,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			t.Fatalf("acknowledged preparation: prepared=%t error=%v final state=%q effects=%d launch writes=%d", prepared, completion.Err, completion.Result.FinalState, len(sent), len(events))
 		}
 		first, second := events[0], events[1]
-		if scenario == "preparation_readmitted" {
-			if first.Data.FencingToken == second.Data.FencingToken || first.Data.AttemptID == second.Data.AttemptID ||
-				second.Type != "run.started" || completion.Request.AttemptWorkspace.Attempt != second.Data.AttemptID {
-				t.Fatalf("readmitted progress reused the old launch: first=%+v second=%+v", first, second)
-			}
-		} else if first.Data.FencingToken != second.Data.FencingToken || second.Type != "run.observed" {
+		if first.Data.FencingToken != second.Data.FencingToken || second.Type != "run.observed" {
 			t.Fatalf("same-fence progress changed ownership: first=%+v second=%+v", first, second)
 		}
 		return
