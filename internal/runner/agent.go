@@ -1310,18 +1310,17 @@ func (r *Runner) runAgentTurn(
 	worker := &sessionWorkerRegistration{sessionID: detentSessionID, cleanupRoot: info.Path}
 	turnRequest.acknowledgeProcess = r.acknowledgeProviderProcess(ctx, worker, "")
 	turnCtx := ctx
-	var observe func(func(context.Context) error)
-	var finishObservations func() error
+	var observations *runobserve.Queue
 	updates := runRequest
 	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
 	var offerIdentity func(store.SessionProviderIdentity)
 	var finishIdentity func()
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
-		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
+		turnCtx, observations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
 		})
 	}
-	if providerStore, ok := r.store.(sessionProviderStore); observe != nil && ok && detentSessionID > 0 {
+	if providerStore, ok := r.store.(sessionProviderStore); observations != nil && ok && detentSessionID > 0 {
 		var retryIdentity func()
 		offerIdentity, retryIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
 			return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
@@ -1334,10 +1333,10 @@ func (r *Runner) runAgentTurn(
 		}
 	}
 	var liveDiff atomic.Pointer[liveDiffSnapshot]
-	if observe != nil && runRequest.OnUsageUpdate != nil {
+	if observations != nil && runRequest.OnUsageUpdate != nil {
 		var diffProgress agentRunProgress
 		updates.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
-			observe(func(ctx context.Context) error {
+			observations.Observe(func(ctx context.Context) error {
 				if runRequest.Admission == nil {
 					if stat, ok := r.liveDiffStats(ctx, runRequest.workspaceBackend, info, workspaceIssue, &diffProgress, at); ok {
 						liveDiff.Store(&liveDiffSnapshot{stats: stat, headObservedAt: diffProgress.diffStatsHeadObservedAt})
@@ -1361,9 +1360,9 @@ func (r *Runner) runAgentTurn(
 			return nil
 		}
 	}
-	if peer := runRequest.observationPeer; observe != nil && peer != nil && updates.OnActivityUpdate != nil {
+	if peer := runRequest.observationPeer; observations != nil && peer != nil && updates.OnActivityUpdate != nil {
 		updates.OnActivityUpdate = func(activity AgentActivityUpdate) error {
-			observe(func(ctx context.Context) error { return peer.Call(ctx, "activity", nil, activity) })
+			observations.Observe(func(ctx context.Context) error { return peer.Call(ctx, "activity", nil, activity) })
 			return nil
 		}
 	}
@@ -1392,9 +1391,9 @@ func (r *Runner) runAgentTurn(
 			runRequest.checkpointRefs.requestPush()
 		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
+			if observations != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
 				runRequest.artifactSpool.chunks++
-				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
+				observations.Observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
@@ -1410,7 +1409,7 @@ func (r *Runner) runAgentTurn(
 				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
 			}
 		}
-		if observe == nil {
+		if observations == nil {
 			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
 		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
 			offerIdentity(store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID})
@@ -1424,17 +1423,17 @@ func (r *Runner) runAgentTurn(
 			report := func(ctx context.Context, sample RunResult) error {
 				return usageReport.report(ctx, runRequest.Execution, sample, sessionModel, backendKind, r.usageCostUSD, false)
 			}
-			if observe != nil {
+			if observations != nil {
 				sample := result
-				observe(func(ctx context.Context) error { return report(ctx, sample) })
+				observations.Observe(func(ctx context.Context) error { return report(ctx, sample) })
 			} else if err := report(updateCtx, result); err != nil {
 				return err
 			}
 		}
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
 			identity := result.RuntimeIdentity
-			if observe != nil {
-				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, detentSessionID, identity) })
+			if observations != nil {
+				observations.Observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, detentSessionID, identity) })
 			} else if err := r.persistSessionIdentity(updateCtx, detentSessionID, identity); err != nil {
 				return err
 			}
@@ -1449,10 +1448,10 @@ func (r *Runner) runAgentTurn(
 			}
 		}
 		activity := providerUpdateIsActivity(update)
-		if observe != nil && activity {
+		if observations != nil && activity {
 			if runtime, ok := runRequest.Execution.(RuntimeExecution); ok {
 				observation := tracker.NativeRuntimeObservation{LocalAttemptID: runRequest.WorkAttemptID, Generation: runRequest.Generation, HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}
-				observe(func(ctx context.Context) error { return runtime.ObserveRuntime(ctx, observation) })
+				observations.Observe(func(ctx context.Context) error { return runtime.ObserveRuntime(ctx, observation) })
 			}
 			activity = false
 		}
@@ -1476,8 +1475,8 @@ func (r *Runner) runAgentTurn(
 	if finishIdentity != nil {
 		finishIdentity()
 	}
-	if finishObservations != nil {
-		turnErr = errors.Join(turnErr, finishObservations())
+	if observations != nil {
+		turnErr = errors.Join(turnErr, observations.Finish(ctx))
 	}
 	var timeout *sessiontimeout.Error
 	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
@@ -4384,25 +4383,20 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	stopCompute := r.meterCompute(runReq.WorkerHost)
 	worker := &sessionWorkerRegistration{sessionID: sessionID, cleanupRoot: info.Path}
 	turnCtx := sessionCtx
-	var observe func(func(context.Context) error)
-	var finishObservations func() error
-	var offerIdentity func(store.SessionProviderIdentity)
-	var finishIdentity func()
+	var observations *runobserve.Queue
+	var providerStore sessionProviderStore
+	var providerIdentity store.SessionProviderIdentity
 	if req.NativeVersion != nil && backendConfig.Kind == config.AgentBackendCodex {
-		turnCtx, observe, finishObservations = runobserve.Start(sessionCtx, ErrExecutionAuthorityUnavailable, func(err error) {
+		turnCtx, observations = runobserve.StartRequired(sessionCtx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", req.Issue.ID, "error", err)
 		})
-		if providerStore, ok := r.store.(sessionProviderStore); ok && sessionID > 0 {
-			offerIdentity, _, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
-				return providerStore.UpdateSessionProviderIdentity(ctx, sessionID, identity)
-			}, func(err error) {
-				r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", sessionID, "error", err)
-			})
+		if sessionID > 0 {
+			providerStore, _ = r.store.(sessionProviderStore)
 		}
 		if peer := req.observationPeer; peer != nil && runReq.OnUsageUpdate != nil {
 			var diffProgress agentRunProgress
 			runReq.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
-				observe(func(ctx context.Context) error {
+				observations.ObserveLatest(func(ctx context.Context) error {
 					if stat, ok := r.liveDiffStats(ctx, runWorkspace, info, workspaceIssue, &diffProgress, at); ok {
 						usage.DiffStats = stat
 					}
@@ -4451,10 +4445,22 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
-		if observe == nil {
+		if observations == nil {
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
-		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
-			offerIdentity(store.SessionProviderIdentity{ThreadID: strings.TrimSpace(update.ThreadID), SessionID: strings.TrimSpace(update.ProviderSessionID)})
+		} else if providerStore != nil && !update.AuxiliaryTurn {
+			identity := providerIdentity
+			if threadID := strings.TrimSpace(update.ThreadID); threadID != "" {
+				identity.ThreadID = threadID
+			}
+			if sessionID := strings.TrimSpace(update.ProviderSessionID); sessionID != "" {
+				identity.SessionID = sessionID
+			}
+			if identity != providerIdentity {
+				providerIdentity = identity
+				observations.Observe(func(ctx context.Context) error {
+					return providerStore.UpdateSessionProviderIdentity(ctx, sessionID, identity)
+				})
+			}
 		}
 		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
@@ -4472,16 +4478,16 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			report := func(ctx context.Context) error {
 				return usageReport.report(ctx, req.usageExecution, sample, sessionModel, backendConfig.Kind, r.usageCostUSD, false)
 			}
-			if observe != nil {
-				observe(report)
+			if observations != nil {
+				observations.Observe(report)
 			} else if err := report(updateCtx); err != nil {
 				return err
 			}
 		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			identity := runResult.RuntimeIdentity
-			if observe != nil {
-				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, sessionID, identity) })
+			if observations != nil {
+				observations.Observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, sessionID, identity) })
 			} else if err := r.persistSessionIdentity(updateCtx, sessionID, identity); err != nil {
 				return err
 			}
@@ -4501,15 +4507,12 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		return nil
 	}, r.turnLimit)
-	if finishIdentity != nil {
-		finishIdentity()
-	}
-	if finishObservations != nil {
-		turnErr = errors.Join(turnErr, finishObservations())
+	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	if observations != nil {
+		turnErr = errors.Join(turnErr, observations.Finish(usageCtx))
 	}
 	runResult.Compute = stopCompute()
 	runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
-	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, true))
 	usageCancel()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(

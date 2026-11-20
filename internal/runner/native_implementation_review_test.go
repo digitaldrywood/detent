@@ -193,7 +193,7 @@ func TestNativeReviewToolDispatchSurvivesSlowSessionWrite(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				var events []string
 				head := strings.Repeat("a", 40)
-				owner := &implementationReviewExecution{events: &events, head: head}
+				owner := &reviewObservationExecution{implementationReviewExecution: &implementationReviewExecution{events: &events, head: head}}
 				input, err := owner.ReviewVersion(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -201,7 +201,7 @@ func TestNativeReviewToolDispatchSurvivesSlowSessionWrite(t *testing.T) {
 				release := make(chan struct{})
 				wait := &slowTurnObservation{observing: make(chan struct{}), release: release}
 				sessions := &slowReviewSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 42}, wait: wait}
-				backend := &reviewDispatchBackend{observing: wait.observing, read: make(chan bool, 1)}
+				backend := &reviewDispatchBackend{observing: wait.observing, read: make(chan bool, 1), samples: 48}
 				source := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace: reviewMutationWorkspace{
 					fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
 					heads:                []string{head},
@@ -232,9 +232,30 @@ func TestNativeReviewToolDispatchSurvivesSlowSessionWrite(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if len(owner.usage) != backend.samples {
+					t.Fatalf("persisted %d usage observations, want %d: %v", len(owner.usage), backend.samples, owner.usage)
+				}
+				for i, sample := range owner.usage {
+					if sample != int64(i+1) {
+						t.Fatalf("usage observation %d = %d, want %d", i, sample, i+1)
+					}
+				}
+				if len(sessions.providerUpdates) == 0 || sessions.providerUpdates[0].ThreadID != "review-thread" {
+					t.Fatalf("provider identity was not acknowledged: %+v", sessions.providerUpdates)
+				}
 			})
 		})
 	}
+}
+
+type reviewObservationExecution struct {
+	*implementationReviewExecution
+	usage []int64
+}
+
+func (e *reviewObservationExecution) RecordUsage(_ context.Context, usage tracker.NativeUsage) error {
+	e.usage = append(e.usage, usage.Input)
+	return nil
 }
 
 type slowReviewSessionStore struct {
@@ -242,21 +263,30 @@ type slowReviewSessionStore struct {
 	wait *slowTurnObservation
 }
 
-func (s *slowReviewSessionStore) UpdateSessionProviderIdentity(ctx context.Context, _ int64, _ store.SessionProviderIdentity) error {
-	return s.wait.block(ctx)
+func (s *slowReviewSessionStore) UpdateSessionProviderIdentity(ctx context.Context, session int64, identity store.SessionProviderIdentity) error {
+	if err := s.wait.block(ctx); err != nil {
+		return err
+	}
+	return s.fakeSessionStore.UpdateSessionProviderIdentity(ctx, session, identity)
 }
 
 type reviewDispatchBackend struct {
 	fakeCodexClient
 	observing <-chan struct{}
 	read      chan bool
+	samples   int
 }
 
 func (b *reviewDispatchBackend) RunTurnWithTools(ctx context.Context, _ AgentTurnRequest, _ []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
-	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: "review-thread", TurnID: "review-turn"}); err != nil {
+	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: "review-thread", TurnID: "review-turn", Model: "gpt-6.2-sol"}); err != nil {
 		return AgentTurnResult{}, err
 	}
 	<-b.observing
+	for i := 1; i <= b.samples; i++ {
+		if err := update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: int64(i), TotalTokens: int64(i)}}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
 	reply, err := handle(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"list","revision":"head","path":"."}`)})
 	b.read <- err == nil && reply.Success
 	if err != nil {
