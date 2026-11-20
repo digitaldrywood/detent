@@ -57,14 +57,15 @@ type activityObservation struct {
 }
 
 type activityRecorder struct {
-	mu         sync.Mutex
-	runtimeMu  sync.Mutex
-	cacheWait  string
-	checkTails map[string]string
-	queue      chan activityObservation
-	wake       chan struct{}
-	dropped    atomic.Uint64
-	done       chan struct{}
+	mu                    sync.Mutex
+	runtimeMu             sync.Mutex
+	cacheWait             string
+	checkTails            map[string]string
+	queue                 chan activityObservation
+	wake                  chan struct{}
+	dropped               atomic.Uint64
+	providerIdentityRetry atomic.Pointer[func()]
+	done                  chan struct{}
 }
 
 // observe never waits for persistence, file reads, classification or queries.
@@ -277,6 +278,9 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			select {
 			case <-recorder.wake:
 			case <-ticker.C:
+				if retry := recorder.providerIdentityRetry.Load(); retry != nil {
+					(*retry)()
+				}
 			}
 			draining := true
 			for draining {

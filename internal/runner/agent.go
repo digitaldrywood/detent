@@ -1322,11 +1322,16 @@ func (r *Runner) runAgentTurn(
 		})
 	}
 	if providerStore, ok := r.store.(sessionProviderStore); observe != nil && ok && detentSessionID > 0 {
-		offerIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
+		var retryIdentity func()
+		offerIdentity, retryIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
 			return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
 		}, func(err error) {
 			r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", detentSessionID, "error", err)
 		})
+		if activityProfile != nil {
+			activityProfile.providerIdentityRetry.Store(&retryIdentity)
+			defer activityProfile.providerIdentityRetry.Store(nil)
+		}
 	}
 	if peer := runRequest.observationPeer; observe != nil && peer != nil {
 		updates.OnUsageUpdate = func(usage UsageUpdate) error {
