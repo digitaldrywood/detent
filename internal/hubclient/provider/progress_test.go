@@ -16,9 +16,6 @@ func TestNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T) {
 func TestNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T) {
 	scenariotest.RunNativeRetryProgressLoadsRepeatedLandingRefusals(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
-func TestNativeRetryProgressRerouteExecutionIdentity(t *testing.T) {
-	scenariotest.RunNativeRetryProgressRerouteExecutionIdentity(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
-}
-func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
-	scenariotest.RunNativeRetryProgressFailureReleasesExecutionIdentity(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+func TestNativeRetryUsesCurrentClaim(t *testing.T) {
+	scenariotest.RunNativeRetryUsesCurrentClaim(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }

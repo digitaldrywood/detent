@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -845,12 +844,6 @@ func (s *nativePlanProgressScheduler) ReleaseClaim(ctx context.Context, id, reas
 		}
 	}
 	return err
-}
-
-func (s *nativePlanProgressScheduler) ReadmitRetryProgress(ctx context.Context, request runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
-	s.checkingProgress.Store(true)
-	defer s.checkingProgress.Store(false)
-	return s.Scheduler.ReadmitRetryProgress(ctx, request, resolver)
 }
 
 type nativePlanObservedRunner struct {

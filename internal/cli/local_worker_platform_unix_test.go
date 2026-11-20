@@ -18,7 +18,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 }
 
 func TestFencedLocalWorkerAcknowledgement(t *testing.T) {
-	for _, scenario := range []string{"before_registration", "after_commit_before_reply", "after_ack_before_release", "lost_reply", "unreachable", "second_launch", "overlapping", "preparation_unreachable", "preparation_acknowledged", "preparation_readmitted", "recovered_live", "recovered_exited"} {
+	for _, scenario := range []string{"before_registration", "after_commit_before_reply", "after_ack_before_release", "lost_reply", "unreachable", "second_launch", "overlapping", "preparation_unreachable", "preparation_acknowledged", "recovered_live", "recovered_exited"} {
 		t.Run(scenario, func(t *testing.T) { testFencedLaunchAcknowledgement(t, scenario) })
 	}
 }

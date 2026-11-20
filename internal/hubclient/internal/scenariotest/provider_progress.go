@@ -2,41 +2,27 @@ package scenariotest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
-	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
-
-func (*nativeProgressRerouteAgent) SupportsReadOnlyInvestigation() bool { return true }
 
 type nativeOutageProgressBackend struct{}
 
@@ -235,628 +221,65 @@ func RunNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T, factories 
 	}
 }
 
-const (
-	progressNormalModel   = "gpt-6.2-sol"
-	progressComplexModel  = "gpt-6.2-astra"
-	progressPreviousModel = "gpt-6.1-sol"
-)
-
-type nativeProgressRerouteAgent struct {
-	PlanningAgent
-	attempt              string
-	err                  error
-	decision             *progresscheck.Decision
-	duringCheck          func(context.Context) error
-	catalogCalls         int
-	progressEffort       string
-	implementationEffort string
-	implementationModel  string
-	implementationThread string
+type nativeCurrentClaimRunner struct {
+	started chan nativeCompletionRun
+	checked bool
 }
 
-var errProgressImplementationReached = errors.New("implementation provider reached")
-
-func (a *nativeProgressRerouteAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, _ []runner.AgentTool, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-	return a.RunTurn(ctx, request, update)
+func (r *nativeCurrentClaimRunner) CheckProgress(context.Context, runner.RunRequest, progresscheck.Request) (progresscheck.Decision, error) {
+	r.checked = true
+	return progresscheck.Decision{}, errors.New("pre-dispatch progress should not run")
 }
 
-func (a *nativeProgressRerouteAgent) ListModels(context.Context, runner.AgentProcessRequest) ([]runner.AgentModel, error) {
-	a.catalogCalls++
-	var catalog []runner.AgentModel
-	for _, model := range []string{"code-model", "plan-model", progressNormalModel, progressComplexModel, progressPreviousModel} {
-		catalog = append(catalog, runner.AgentModel{ID: model, Model: model, SupportedReasoningEfforts: []string{"low", "medium", "high"}})
-	}
-	return catalog, nil
-}
-
-func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-	if !request.ReadOnly {
-		a.implementationEffort = request.ReasoningEffort
-		a.implementationModel = request.Model
-		a.implementationThread = request.Resume.ThreadID
-		return runner.AgentTurnResult{}, errProgressImplementationReached
-	}
-	if !request.TextOnly {
-		a.progressEffort = request.ReasoningEffort
-	}
-	if a.duringCheck != nil {
-		if err := a.duringCheck(ctx); err != nil {
-			return runner.AgentTurnResult{}, err
-		}
-	}
-	if a.err != nil {
-		return runner.AgentTurnResult{}, a.err
-	}
-	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
-		return runner.AgentTurnResult{}, err
-	}
-	output := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: runner.RunModeImplement, Diagnosis: a.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Implement after the failed plan", Evidence: []string{a.attempt}}
-	if a.decision != nil {
-		output = *a.decision
-	}
-	decision, err := json.Marshal(output)
-	if err != nil {
-		return runner.AgentTurnResult{}, err
-	}
-	return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "decision", Delta: string(decision)})
-}
-
-type nativeProgressWorkspace struct {
-	workspace.Backend
-	path string
-}
-
-func (w nativeProgressWorkspace) Head(_ context.Context, _ workspace.Info, issue workspace.Issue) (string, error) {
-	return issue.PullRequestHeadSHA, nil
-}
-func (w nativeProgressWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
-	return nil
-}
-func (w nativeProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
-	return workspace.Info{Path: w.path}, nil
-}
-
-func (w nativeProgressWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
-	return workspace.Info{Path: w.path}, nil
-}
-
-type nativeProgressRerouteRun struct {
-	request runner.RunRequest
-	err     error
-}
-
-type nativeProgressRerouteRunner struct {
-	*runner.Runner
-	started        chan nativeProgressRerouteRun
-	implementation bool
-}
-
-type nativeProgressRerouteScheduling struct {
-	*nativeCompletionScheduling
-	refused chan error
-}
-
-func (s *nativeProgressRerouteScheduling) ReadmitRetryProgress(ctx context.Context, request runner.RunRequest, resolver runner.ProviderCapacityResolver) (runner.Execution, *isolation.Policy, error) {
-	execution, policy, err := s.Scheduler.ReadmitRetryProgress(ctx, request, resolver)
-	if err != nil {
-		s.refused <- err
-	}
-	return execution, policy, err
-}
-
-func (r *nativeProgressRerouteRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
-	if r.implementation {
-		_, err := r.Runner.Run(ctx, request)
-		if errors.Is(err, errProgressImplementationReached) {
-			err = nil
-		} else if err == nil {
-			err = errors.New("implementation returned before the provider turn")
-		}
-		r.started <- nativeProgressRerouteRun{request: request, err: err}
-		<-ctx.Done()
-		return runner.RunResult{}, ctx.Err()
-	}
-	request.ProviderReports = []providercapacity.Report{{Backend: "codex", Models: []string{"plan-model", "code-model"}}}
-	requirement, err := r.DispatchCapacity(ctx, request)
-	if err == nil {
-		err = request.Execution.Start(ctx, tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model})
-	}
-	r.started <- nativeProgressRerouteRun{request: request, err: err}
+func (r *nativeCurrentClaimRunner) Run(ctx context.Context, req runner.RunRequest) (runner.RunResult, error) {
+	err := req.Execution.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"})
+	r.started <- nativeCompletionRun{request: req, err: err}
 	<-ctx.Done()
 	return runner.RunResult{}, ctx.Err()
 }
 
-func RunNativeRetryProgressRerouteExecutionIdentity(t *testing.T, factories Constructors) {
-	for _, reserved := range []bool{false, true} {
-		t.Run(map[bool]string{false: "legacy admission", true: "provider reservation"}[reserved], func(t *testing.T) {
-			for _, tighten := range []bool{false, true} {
-				t.Run(map[bool]string{false: "unchanged isolation", true: "stricter isolation"}[tighten], func(t *testing.T) {
-					t.Parallel()
-					testNativeRetryProgressReroute(t, reserved, tighten, false, factories)
-				})
-			}
-		})
-	}
-	t.Run("enrolled implementation with pre-upgrade checkpoint", func(t *testing.T) {
-		testNativeRetryProgressReroute(t, true, false, true, factories)
-	})
-}
-
-func testNativeRetryProgressReroute(t *testing.T, reserved, tighten, retained bool, factories Constructors) {
-	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
-	}
-
-	t.Helper()
-	now := time.Now()
-	h := newNativeChangeHubTransport(t, "Human Review", PlanStates(), true)
-	if reserved || tighten {
-		configureNativeProgressProvider(t, h)
-		if !reserved {
-			fixtureConfigureScheduler(t, h, func(config *SchedulerConfig) { config.ProviderReports = nil })
-		}
-	}
-	setIsolation := func(ctx context.Context, tier string) error {
-		fleet, err := NewFleetClient(h.admin.Transport(), h.organization, nil)
-		if err != nil {
-			return err
-		}
-		current, err := fleet.Fleet(ctx)
-		if err != nil {
-			return err
-		}
-		index := slices.IndexFunc(current.Runners, func(r runnerauth.Runner) bool {
-			return r.MachineID == fixtureSchedulerMachine(h.scheduler).ID
-		})
-		if index < 0 {
-			return errors.New("fixture runner is missing from the fleet")
-		}
-		r := current.Runners[index]
-		routing := r.Routing
-		routing.IsolationTier = tier
-		return fleet.UpdateRunner(ctx, r.RunnerID, runnerauth.RoutingChange{ExpectedRevision: r.Revision, Routing: routing})
-	}
-	if tighten {
-		if err := setIsolation(t.Context(), isolation.NativeTrusted); err != nil {
-			t.Fatal(err)
-		}
-	}
-	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry failed planning as implementation", Body: "Update the README." + issueContractTestSections})
-	if err != nil {
+func RunNativeRetryUsesCurrentClaim(t *testing.T, factories Constructors) {
+	t.Parallel()
+	h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done", "Todo"}},
+		{Name: "Done", Terminal: true},
+	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
+	issue := h.createInProgress(t, "Retry under the admitted lease")
+	h.claim(t, issue.ID)
+	prior := h.scheduler.RunExecution(issue.ID)
+	if err := prior.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	confirmIssueContract(t, h.admin, issue.ID)
-	mode, role, checkModel := runner.RunModePlan, runner.RolePlan, progressComplexModel
-	if retained {
-		mode, role, checkModel = runner.RunModeImplement, runner.RoleCode, progressNormalModel
-	}
-	historicalModel := checkModel
-	normalModel := progressNormalModel
-	if retained {
-		historicalModel, normalModel = progressPreviousModel, progressPreviousModel
-	}
-	work := nativeProgressGitWorkspace(t)
-	provider := &nativeProgressRerouteAgent{}
-	cfg := config.Config{Policy: h.descriptor, Agents: config.Agents{
-		ModelSelection: config.ModelSelection{Preset: new("sol_first"), NormalModel: new(normalModel), ComplexModel: new(progressComplexModel)},
-		Routes:         []config.AgentRoute{{Name: "planner", Role: runner.RolePlan, Backend: "codex", Model: progressComplexModel}, {Name: "implementation", Backend: "codex", Default: true}},
-	}}
-	sessions := api.NewRunnerSessions(h.native)
-	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: cfg}, Workspace: work, AgentBackend: provider})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim := func() connector.Issue {
-		t.Helper()
-		candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}, ProviderRequirement: func(ctx context.Context, item connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-			return agent.DispatchCapacity(ctx, runner.RunRequest{Issue: item, Mode: mode, ProviderReports: reports})
-		}})
-		if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
-			t.Fatalf("planning admission: candidates=%v error=%v", candidates, err)
-		}
-		admitted, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		return admitted.Issue
-	}
-	sourceIssue := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}
-	info, err := work.Create(t.Context(), sourceIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := work.Head(t.Context(), info, sourceIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	claim()
-	failed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-	failed.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-		diff, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
-		request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
-		for _, file := range diff.Files {
-			request.Files = append(request.Files, tracker.AttemptDiffFile{Path: file.Path, OldPath: file.OldPath, Status: file.Status, Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch})
-		}
-		return request, err == nil
-	})
-	captureSource := func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-		return workspace.CaptureChangeSource(ctx, info.Path, base, head)
-	}
-	failed.SetChangeSource(captureSource)
-	if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: historicalModel}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(info.Path, "progress.txt"), []byte("retained source"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	nativeChangeGit(t, info.Path, "add", "progress.txt")
-	nativeChangeGit(t, info.Path, "commit", "-m", "Retain progress source")
-	state, err := work.RecoveryState(t.Context(), info, sourceIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.UnpushedCommits != 1 || len(state.TrackedPaths)+len(state.UntrackedPaths) != 0 {
-		t.Fatalf("expected one committed change in the source worktree, got %+v", state)
-	}
-	head := state.HeadSHA
-	if retained {
-		ctx := sessions.BindExecution(t.Context(), failed)
-		now := h.clock()
-		identity := agentidentity.Configured("codex", "codex", "implementation", role, historicalModel, "", "medium", "", now)
-		id, err := sessions.StartSession(ctx, store.SessionStart{ProjectID: "local", IssueID: issue.ID, StartedAt: now, Model: historicalModel, RequestedModel: historicalModel, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: role, RuntimeIdentity: identity})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: h.clock(), FinalState: "failed", Turns: 1, ProviderThreadID: "prior-thread", RuntimeIdentity: identity}); err != nil {
-			t.Fatal(err)
-		}
-		if err := failed.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, WorkspaceDigest: state.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none"}); err != nil {
-			t.Fatal(err)
-		}
-		cfg.Agents.ModelSelection.NormalModel = new(progressNormalModel)
-		if err := agent.UpdateWorkflowChecked(config.Workflow{Config: cfg}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := failed.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+	if err := prior.Finish(t.Context(), "failed"); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	issue = claim()
+	issue = h.claim(t, issue.ID)
 	original := h.scheduler.RunExecution(issue.ID)
-	if original == nil {
-		t.Fatal("claimed planning execution is missing")
-	}
-	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained progress source"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	capture, err := captureSource(t.Context(), base, head)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.publishCaptured(t, tracker.NativeWorkItemID(issue.ID), change.ID, head, &capture, "", base)
-	provider.attempt = failed.CompletionData().AttemptID
-	if tighten {
-		if issue.IsolationPolicy == nil || issue.IsolationPolicy.Tier != isolation.NativeTrusted {
-			t.Fatalf("initial claim did not pin trusted isolation: %+v", issue.IsolationPolicy)
-		}
-		provider.duringCheck = func(ctx context.Context) error { return setIsolation(ctx, isolation.Sandbox) }
-	}
-	backend := &nativeProgressRerouteRunner{Runner: agent, started: make(chan nativeProgressRerouteRun, 1), implementation: true}
-	source := &nativeProgressRerouteScheduling{nativeCompletionScheduling: &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}, refused: make(chan error, 1)}
-	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, Plan: gate.PlanConfig{Enabled: !retained, Review: gate.PlanReviewAutomated}, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+	backend := &nativeCurrentClaimRunner{started: make(chan nativeCompletionRun, 1)}
+	source := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- orch.Run(ctx) }()
-	t.Cleanup(func() {
+	defer func() {
 		cancel()
 		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 			t.Error(err)
 		}
-	})
+	}()
 	select {
 	case started := <-backend.started:
-		if started.err != nil {
-			t.Fatalf("rerouted implementation could not start: %v", started.err)
+		if started.err != nil || started.request.Execution != original || backend.checked {
+			t.Fatalf("retry did not start on the admitted execution: check=%t error=%v", backend.checked, started.err)
 		}
-		if started.request.Mode != runner.RunModeImplement || started.request.Execution == original {
-			t.Fatalf("reroute did not reconcile the selected execution: mode=%s", started.request.Mode)
-		}
-		if tighten {
-			execution := started.request.Execution.(*ownedExecution)
-			if execution.claim.lease.IsolationPolicy == nil || execution.claim.lease.IsolationPolicy.Tier != isolation.Sandbox {
-				t.Fatalf("replacement claim did not pin sandbox: %+v", execution.claim.lease.IsolationPolicy)
-			}
-			if started.request.Issue.IsolationPolicy == nil || started.request.Issue.IsolationPolicy.Tier != isolation.Sandbox {
-				t.Fatalf("implementation retained trusted isolation after sandbox readmission: %+v", started.request.Issue.IsolationPolicy)
-			}
-		}
-		check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.(*ownedExecution).CompletionData().AttemptID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		implementation, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), started.request.Execution.(*ownedExecution).CompletionData().AttemptID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if check.Identity == nil || check.Identity.Role != role || check.Identity.Backend != "codex" || check.Identity.Model != checkModel || len(check.Usage) != 1 || check.Usage[0].Input != 10 || check.Usage[0].Output != 1 {
-			t.Fatalf("progress accounting changed: %+v", check)
-		}
-		if implementation.Identity == nil || implementation.Identity.Role != runner.RoleCode || implementation.Identity.Backend != "codex" || implementation.Identity.Model != progressNormalModel || implementation.LeaseID == check.LeaseID {
-			t.Fatalf("implementation did not receive its own identity and admission: %+v", implementation)
-		}
-		if err := original.Validate(t.Context()); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-			t.Fatalf("original execution retained authority: %v", err)
-		}
-		if retained {
-			prior := started.request.Execution.Recovery().SourceAttempt()
-			if prior == nil || prior.AttemptID != provider.attempt || prior.Identity == nil || prior.Identity.Model != progressPreviousModel || prior.Checkpoint == nil || prior.Checkpoint.Resume != "resume_session" || prior.Checkpoint.HeadSHA != head || prior.Checkpoint.WorkspaceDigest != state.WorkspaceFingerprint {
-				t.Fatalf("readmission lost the retained checkpoint: %+v", prior)
-			}
-			if provider.implementationModel != progressNormalModel || provider.implementationThread != "" {
-				t.Fatalf("worker started model %q with resume thread %q", provider.implementationModel, provider.implementationThread)
-			}
-		} else if err := started.request.Execution.Start(t.Context(), *check.Identity); err == nil {
-			t.Fatal("implementation allowed its admitted identity to change")
-		}
-		if reserved {
-			reservation := started.request.Execution.(runner.ProviderCapacityExecution).ProviderCapacity()
-			if reservation == nil || reservation.Role != runner.RoleCode || reservation.Backend != "codex" || reservation.Model != progressNormalModel {
-				t.Fatalf("reroute retained the planning reservation: %+v", reservation)
-			}
-			if reservation.Report.AccountAlias != "example" || reservation.Report.SharedAccountAlias != "example" {
-				t.Fatalf("worker reservation changed provider account: %+v", reservation.Report)
-			}
-		}
-	case err := <-source.refused:
-		t.Fatalf("selected step admission failed: %v", err)
-	case <-testenv.WaitContext(t, t.Context()).Done():
-		t.Fatal("rerouted implementation did not reach execution start")
+	case <-testenv.WaitContext(t, ctx).Done():
+		t.Fatal("retry did not start")
 	}
-}
-
-func RunNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T, factories Constructors) {
-	newNativeChangeHubTransport := func(t *testing.T, review string, states []tracker.NativeState, memory bool) *nativeChangeHub {
-		return newNativeChangeHubConfigured(t, review, states, memory, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)}, factories)
-	}
-
-	t.Parallel()
-	for _, tt := range []struct {
-		name          string
-		failure       error
-		invalid       bool
-		conflict      bool
-		reason        string
-		effort        string
-		projectEffort bool
-	}{
-		{name: "backend", failure: errors.New("provider unavailable"), reason: "provider unavailable"},
-		{name: "timeout", failure: context.DeadlineExceeded, reason: "context deadline exceeded"},
-		{name: "invalid decision", invalid: true, reason: "progress decision names unavailable step"},
-		{name: "old Hub publication conflict", conflict: true, reason: "revision_conflict"},
-		{name: "rework identity retains issue effort", failure: errors.New("provider unavailable"), reason: "provider unavailable", effort: "low"},
-		{name: "rework identity retains project effort", failure: errors.New("provider unavailable"), reason: "provider unavailable", effort: "low", projectEffort: true},
-		{name: "rework identity retains effort after deadline", failure: context.DeadlineExceeded, reason: "context deadline exceeded", effort: "low"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			now := time.Now()
-			states := PlanStates()
-			states[1].Transitions = append(states[1].Transitions, "Rework")
-			states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo", "In Progress"}})
-			h := newNativeChangeHubTransport(t, "Human Review", states, true)
-			conflicts := 0
-			if tt.conflict {
-				next := h.failChanges.next
-				h.failChanges.next = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/progress") {
-						conflicts++
-						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"revision_conflict","message":"evidence changed"}`)), Request: request}, nil
-					}
-					return next.RoundTrip(request)
-				})
-			}
-			body := "Update the README." + issueContractTestSections
-			if tt.effort != "" && !tt.projectEffort {
-				body += "\n```detent-agent\nschema: 1\neffort: " + tt.effort + "\n```"
-			}
-			issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: body})
-			if err != nil {
-				t.Fatal(err)
-			}
-			confirmIssueContract(t, h.admin, issue.ID)
-			claim := func(state string) connector.Issue {
-				t.Helper()
-				candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{state}})
-				if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
-					t.Fatalf("admission: candidates=%v error=%v", candidates, err)
-				}
-				admitted, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
-				if err != nil {
-					t.Fatal(err)
-				}
-				return admitted.Issue
-			}
-			claim("Todo")
-			failed := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-			if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "code-model"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := failed.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
-				t.Fatal(err)
-			}
-			current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, state := range []string{"In Progress", "Rework"} {
-				current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			issue = claim("Rework")
-			original := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-			if tt.effort == "" {
-				change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Retained progress source"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				h.publish(t, tracker.NativeWorkItemID(issue.ID), change.ID, nativeChangeFixtureHead("b"))
-			}
-			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.CompletionData().AttemptID}
-			if tt.invalid {
-				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.CompletionData().AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.CompletionData().AttemptID}}
-			}
-			var runWorkspace workspace.Backend = nativeProgressWorkspace{path: t.TempDir()}
-			if tt.effort != "" {
-				runWorkspace = nativeProgressGitWorkspace(t)
-			}
-			cfg := config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}
-			if tt.projectEffort {
-				cfg.Agent.Effort.Rework = tt.effort
-			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: cfg}, Workspace: runWorkspace, AgentBackend: provider})
-			if err != nil {
-				t.Fatal(err)
-			}
-			backend := &nativeProgressRerouteRunner{Runner: agent, started: make(chan nativeProgressRerouteRun, 1), implementation: tt.effort != ""}
-			source := &nativeProgressRerouteScheduling{nativeCompletionScheduling: &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}, refused: make(chan error, 1)}
-			orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- orch.Run(ctx) }()
-			t.Cleanup(func() {
-				cancel()
-				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
-					t.Error(err)
-				}
-			})
-			var started nativeProgressRerouteRun
-			var admissionErr error
-			select {
-			case started = <-backend.started:
-				if started.err != nil {
-					t.Fatal(started.err)
-				}
-			case err := <-source.refused:
-				admissionErr = err
-			case err := <-source.released:
-				t.Fatalf("ordinary retry stopped after progress failure: %v", err)
-			case <-testenv.WaitContext(t, t.Context()).Done():
-				t.Fatal("ordinary retry did not start")
-			}
-			if admissionErr != nil {
-				t.Fatalf("ordinary retry admission failed: %v", admissionErr)
-			}
-			implementation := started.request.Execution.(*ownedExecution)
-			if err := implementation.FlushRuntime(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.CompletionData().AttemptID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Identity.Model != "code-model" || check.Outcome != "" || check.ClaimReleasedAt != nil || implementation.CompletionData().AttemptID != check.AttemptID {
-				t.Fatalf("failed advisory progress check changed its admitted implementation identity: %+v", check)
-			}
-			if tt.effort != "" {
-				if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Identity.Model != "code-model" || check.Identity.ReasoningEffort != tt.effort {
-					t.Fatalf("rework identity lost resolved effort: %+v", check.Identity)
-				}
-				if provider.catalogCalls != 1 || provider.progressEffort != tt.effort || provider.implementationEffort != tt.effort {
-					t.Fatalf("attempt selection was not shared: catalogs=%d progress=%q implementation=%q prior=%s", provider.catalogCalls, provider.progressEffort, provider.implementationEffort, started.request.PriorAttempt.Reason)
-				}
-				implementation := started.request.Execution.(*ownedExecution)
-				if implementation.CompletionData().AttemptID != check.AttemptID {
-					t.Fatal("progress failure replaced the implementation attempt")
-				}
-				changed := *check.Identity
-				changed.ReasoningEffort = "high"
-				if err := implementation.Start(t.Context(), changed); err == nil {
-					t.Fatal("implementation allowed its admitted effort to change")
-				}
-				return
-			}
-			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
-				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
-			}
-			if tt.conflict && conflicts != 2 {
-				t.Fatalf("old Hub conflict made %d publications, want 2", conflicts)
-			}
-			if check.Runtime == nil || check.Runtime.Recovery == nil || strings.Count(check.Runtime.Recovery.Reason, tt.reason) != 1 {
-				t.Fatalf("progress failure evidence missing: %+v", check.Runtime)
-			}
-			if implementation.CompletionData().AttemptID != check.AttemptID || implementation.claim.lease.ID != check.LeaseID {
-				t.Fatal("failed advisory progress check replaced its admitted implementation")
-			}
-
-			changedIdentity := *check.Identity
-			changedIdentity.Role = runner.RolePlan
-			if err := implementation.Start(t.Context(), changedIdentity); err == nil {
-				t.Fatal("implementation allowed its admitted identity to change")
-			}
-
-		})
-	}
-}
-
-func nativeProgressGitWorkspace(t *testing.T) *workspace.LocalGit {
-	t.Helper()
-	source := nativeChangeSourceRepo(t)
-	remote := filepath.Join(t.TempDir(), "origin.git")
-	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
-	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
-	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
-	nativeChangeGit(t, source, "push", "-u", "origin", "main")
-	runWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return runWorkspace
-}
-
-func configureNativeProgressProvider(t *testing.T, h *nativeChangeHub) {
-	t.Helper()
-	fixtureClient(h.admin.Transport()).baseURL.Scheme = "https"
-	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "example", SharedAccountAlias: "example", Models: []string{progressNormalModel, progressComplexModel, progressPreviousModel}, MaxConcurrent: 1, Availability: "available", ObservedAt: time.Now()}
-	identityPath := filepath.Join(t.TempDir(), "private", "identity.json")
-	file, err := runnerauth.Initialize(identityPath, "https://native-hub.test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := h.admin.Transport().CreateRunnerEnrollment(t.Context(), h.organization, runnerauth.EnrollmentRequest{Binding: file.Identity.Binding, ProjectIDs: []tracker.ProjectID{h.project}, Operations: []string{runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate}, TTLSeconds: 60})
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine := Machine{BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}, ID: file.Identity.MachineID, Hostname: "example", DisplayName: "Progress runner", Capacity: 1, Version: "test"}
-	var identity runnerauth.Identity
-	if err := fixtureRunnerRequest(t, h.admin.Transport(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", runnerauth.Redemption{BackendIsolation: machine.BackendIsolation, Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version}, &identity); err != nil {
-		t.Fatal(err)
-	}
-	file.Identity = identity
-	if err := runnerauth.Save(identityPath, file); err != nil {
-		t.Fatal(err)
-	}
-	client, err := createTestClient(t, Config{URL: file.HubURL, IdentityFile: identityPath, HTTPClient: &http.Client{Transport: h.failChanges}}, fixtureClient(h.admin.Transport()).constructors)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, ProviderReports: func() ([]providercapacity.Report, error) { return []providercapacity.Report{report}, nil }, LeaseHold: h.leaseHold})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.connector.worker = h.scheduler.ExecutionSource("local")
-	h.native = h.connector.worker.NativeClient()
 }
