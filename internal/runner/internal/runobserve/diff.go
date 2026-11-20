@@ -72,3 +72,37 @@ func DiffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		Status:       status,
 	}
 }
+
+func (diffStats *DiffStats) ApplyRecoveryState(state *workspace.RecoveryState) {
+	if diffStats == nil || state == nil {
+		return
+	}
+	diffStats.UnpushedCommits = state.UnpushedCommits
+	diffStats.UnpushedCommitRefs = append([]string(nil), state.UnpushedCommitRefs...)
+	diffStats.TrackedPaths = append([]string(nil), state.TrackedPaths...)
+	diffStats.UntrackedPaths = append([]string(nil), state.UntrackedPaths...)
+	diffStats.CommitsNotInPullRequest = append([]string(nil), state.CommitsNotInPullRequest...)
+	diffStats.PullRequestComparisonAvailable = state.PullRequestComparisonAvailable
+	diffStats.RecoveryStateAvailable = true
+	diffStats.HeadSHA = strings.TrimSpace(state.HeadSHA)
+}
+
+func (diffStats DiffStats) Empty() bool {
+	return diffStats.FilesChanged == 0 &&
+		diffStats.AddedLines == 0 &&
+		diffStats.RemovedLines == 0 &&
+		diffStats.UnpushedCommits == 0 &&
+		len(diffStats.UnpushedCommitRefs) == 0 &&
+		len(diffStats.TrackedPaths) == 0 &&
+		len(diffStats.UntrackedPaths) == 0 &&
+		len(diffStats.CommitsNotInPullRequest) == 0 &&
+		!diffStats.PullRequestComparisonAvailable &&
+		!diffStats.RecoveryStateExpected &&
+		!diffStats.RecoveryStateAvailable &&
+		diffStats.CommitsAhead == 0 &&
+		!diffStats.RemoteBranchExists &&
+		!diffStats.DeliveryStateChecked &&
+		strings.TrimSpace(diffStats.HeadSHA) == "" &&
+		strings.TrimSpace(diffStats.Fingerprint) == "" &&
+		strings.TrimSpace(diffStats.Status) == ""
+}

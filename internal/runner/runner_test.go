@@ -7747,7 +7747,7 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
 	}
-	if !diffStatsEmpty(result.DiffStats) {
+	if !result.DiffStats.Empty() {
 		t.Fatalf("DiffStats = %#v, want empty when workspace disappeared", result.DiffStats)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted {
