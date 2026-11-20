@@ -445,13 +445,20 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		stopOrchestrator = startOrchestrator(orch)
 	}
 	if loseLease {
+		var injected nativePlanFinish
 		select {
-		case got := <-transport.lost:
-			if got.err != nil || got.state != "In Progress" {
-				t.Fatalf("could not lose the lease after the plan receipt: %+v", got)
+		case injected = <-transport.lost:
+		case returned := <-observed:
+			select {
+			case injected = <-transport.lost:
+			default:
+				t.Fatalf("the runner returned before lease loss was injected: %+v", returned)
 			}
 		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatal("the plan receipt was not published")
+		}
+		if injected.err != nil || injected.state != "In Progress" {
+			t.Fatalf("could not lose the lease after the plan receipt: %+v", injected)
 		}
 		restart()
 	}
@@ -927,9 +934,9 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		if err := json.NewDecoder(body).Decode(&receipt); err != nil {
 			return nil, err
 		}
-		if receipt.Phase == t.lossPhase && t.loseLease.Swap(false) {
+		if receipt.Phase == t.lossPhase {
 			response, err := t.next.RoundTrip(req)
-			if err == nil && response.StatusCode == http.StatusOK {
+			if err == nil && response.StatusCode == http.StatusOK && t.loseLease.CompareAndSwap(true, false) {
 				item := tracker.NativeWorkItemID(strings.Split(strings.TrimSuffix(req.URL.Path, "/phases"), "/work-items/")[1])
 				issue, readErr := t.native.Issue(req.Context(), item)
 				t.lostLease.Store(string(receipt.LeaseID))

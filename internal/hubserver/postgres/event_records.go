@@ -1164,6 +1164,14 @@ func (s *session) LatestWorkflowTransition(ctx context.Context, project tracker.
 	return eventRecord(row), mapError(ctx, err)
 }
 
+func (s *session) PlanBlockerAnswer(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempt string) (eventstore.Event, error) {
+	id, err := s.queries.RecordPlanBlockerAnswer(ctx, pgquery.RecordPlanBlockerAnswerParams{OrganizationID: s.organization, ProjectID: project, WorkItemID: item, AttemptID: attempt})
+	if err != nil {
+		return eventstore.Event{}, mapError(ctx, err)
+	}
+	return s.RunEvent(ctx, project, item, id)
+}
+
 func (s *session) PRPublication(ctx context.Context, version string) (eventstore.NativePRPublication, error) {
 	row, err := s.queries.RecordGetPRPublication(ctx, pgquery.RecordGetPRPublicationParams{OrganizationID: s.organization, VersionID: version})
 	if err != nil {
@@ -1525,7 +1533,7 @@ func (s *session) ValidationCandidates(ctx context.Context, query tenantstore.Va
 			}
 			return err
 		})
-		batch.Queue(`SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 ORDER BY sequence DESC LIMIT 1`, s.organization, query.ProjectID, key.attempt).Query(func(rows pgx.Rows) error {
+		batch.Queue(`SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 AND run_id<>'' ORDER BY sequence DESC LIMIT 1`, s.organization, query.ProjectID, key.attempt).Query(func(rows pgx.Rows) error {
 			value, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[pgquery.CollaborationEvent])
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil

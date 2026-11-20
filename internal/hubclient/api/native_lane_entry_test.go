@@ -268,13 +268,13 @@ func TestNativeLaneWriteWithoutLeaseIsUnauthorized(t *testing.T) {
 func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	for _, name := range []string{"omitted draft owner", "changed plan body", "changed draft body", "changed human direction", "changed draft direction", "unbound answer", "changed direction after implementation", "unchanged approval", "unchanged approval after implementation"} {
+	for _, name := range []string{"omitted draft owner", "answer after 50 pages", "changed plan body", "changed draft body", "changed human direction", "changed draft direction", "unbound answer", "changed direction after implementation", "unchanged approval", "unchanged approval after implementation"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_plan"}, Title: "Add coverage", Body: "Cover empty input"}}
 			receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "lease_plan", FencingToken: 3}, AttemptID: "attempt_plan", Phase: "plan", PolicyID: "policy_plan", HeadSHA: "head", TreeSHA: "tree"}
 			step := tracker.NativeStepReceipt{Step: "plan", Source: tracker.NativeCheckpoint{HeadSHA: "head", WorkspaceDigest: "tree"}, PolicyID: receipt.PolicyID, ReviewState: tracker.PlanIssueDigest(recovery), CompletionBody: "Test empty input.", PlanApproval: "automated:APPROVED"}
-			if name == "omitted draft owner" || name == "changed draft body" || name == "changed draft direction" || name == "unbound answer" {
+			if name == "answer after 50 pages" || name == "omitted draft owner" || name == "changed draft body" || name == "changed draft direction" || name == "unbound answer" {
 				receipt.Phase, step.PlanApproval = "plan_draft", ""
 			}
 			receipt.InputDigest = tracker.PlanPhaseDigest(receipt, step)
@@ -298,6 +298,7 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 			if strings.HasSuffix(name, " after implementation") {
 				receipts = append([]tracker.NativePhaseReceipt{{Phase: "implement", HeadSHA: "implemented", TreeSHA: "implemented-tree", PolicyID: receipt.PolicyID}}, receipts...)
 			}
+			historyPages := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/attempts/attempt_plan"):
@@ -305,7 +306,14 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 						t.Error(err)
 					}
 				case strings.HasSuffix(r.URL.Path, "/history"):
-					if err := json.NewEncoder(w).Encode(tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{answer}}); err != nil {
+					page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{answer}}
+					if name == "answer after 50 pages" && r.URL.Query().Get("blocker_attempt_id") != owner.AttemptID {
+						historyPages++
+						if historyPages <= 50 {
+							page = tracker.Page[tracker.CollaborationEvent]{NextCursor: "later"}
+						}
+					}
+					if err := json.NewEncoder(w).Encode(page); err != nil {
 						t.Error(err)
 					}
 				default:
@@ -327,7 +335,7 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch name {
-			case "omitted draft owner":
+			case "omitted draft owner", "answer after 50 pages":
 				if resolved.NeedsProvider() || resolved.Accepted || resolved.AnswerID != answer.ID || resolved.Draft != "Test empty input." {
 					t.Fatalf("resolved the wrong draft or answer: %+v", resolved)
 				}

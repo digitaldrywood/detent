@@ -517,7 +517,7 @@ func (s *session) readAttemptCandidates(ctx context.Context, from, to time.Time)
   SELECT a.id FROM native_attempts a WHERE a.organization_id=$1 AND a.lease_id=l.lease_id LIMIT 1
  ) a WHERE m.depth<=$5
 ), evented AS MATERIALIZED (
- SELECT e.attempt_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$2 AND e.recorded_at<$3 AND nullif(e.attempt_id,'') IS NOT NULL ORDER BY e.recorded_at DESC,e.id DESC LIMIT $4
+ SELECT e.attempt_id FROM collaboration_events e WHERE e.organization_id=$1 AND e.recorded_at>=$2 AND e.recorded_at<$3 AND nullif(e.attempt_id,'') IS NOT NULL AND e.run_id<>'' ORDER BY e.recorded_at DESC,e.id DESC LIMIT $4
 ), used AS MATERIALIZED (
  SELECT u.attempt_id FROM usage_projects p CROSS JOIN LATERAL (
   SELECT u.attempt_id FROM attempt_usage u WHERE u.organization_id=$1 AND u.project_id=p.project_id AND u.period>=$2 AND u.period<$3 ORDER BY u.period,u.attempt_id LIMIT $4

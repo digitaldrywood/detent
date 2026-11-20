@@ -199,7 +199,7 @@ var upgradeOrderPending = []int64{
 	20261116234027,
 	20261117043721, 20261118021624, 20261118085855, 20261119025159, 20261119062927,
 	20261119210731, 20261119222049,
-	20261119224706, 20261120022652, 20261120072925,
+	20261119224706, 20261120022652, 20261120072925, 20261120190358,
 }
 
 var upgradeOrderTenants = []struct {
@@ -469,9 +469,39 @@ func TestMigrateAppliesPendingVersionsBelowPopulatedHead(t *testing.T) {
 					t.Fatalf("uninitialized quality evidence mutated=%v", err)
 				}
 			}
+			planningIndexes := []string{"native_comments_human_direction_idx", "collaboration_events_human_comment_edits_idx", "native_phase_receipts_plan_idx"}
+			if interrupted {
+				partial := fstest.MapFS{}
+				for _, file := range files {
+					data, err := fs.ReadFile(source, file)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if strings.HasPrefix(file, "20261120190358_") {
+						data = []byte(strings.Replace(string(data), "-- +goose Down", "SELECT 1/0;\n-- +goose Down", 1))
+					}
+					partial[file] = &fstest.MapFile{Data: data}
+				}
+				var failure *pgconn.PgError
+				if err := Migrate(t.Context(), config, partial); !errors.As(err, &failure) || failure.Code != "22012" {
+					t.Fatalf("interrupted planning index migration: %v", err)
+				}
+				for _, name := range planningIndexes {
+					if _, err := db.ExecContext(t.Context(), `UPDATE pg_index SET indisvalid=false WHERE indexrelid=$1::regclass`, name); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			if err := Migrate(t.Context(), config, source); err != nil {
 				t.Fatal(err)
 			}
+			for _, name := range planningIndexes {
+				var valid bool
+				if err := db.QueryRowContext(t.Context(), `SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid=$1::regclass`, name).Scan(&valid); err != nil || !valid {
+					t.Errorf("planning index %s ready and valid=%t error=%v", name, valid, err)
+				}
+			}
+
 			var reviewTimes, escapeTimes int
 			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FILTER(WHERE e.kind='review' AND e.quality_at=e.created_at),count(*) FILTER(WHERE e.kind='discussion' AND e.quality_at=f.observed_at AND e.quality_at<e.created_at) FROM change_evidence e LEFT JOIN report_escape_facts f ON f.organization_id=e.organization_id AND f.change_id=e.change_id AND f.evidence_sequence=e.sequence`).Scan(&reviewTimes, &escapeTimes); err != nil || reviewTimes != 2 || escapeTimes != 2 {
 				t.Fatalf("retained quality times reviews=%d escapes=%d error=%v", reviewTimes, escapeTimes, err)

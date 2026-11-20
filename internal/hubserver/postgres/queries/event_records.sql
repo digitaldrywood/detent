@@ -59,7 +59,7 @@ SELECT * FROM collaboration_events WHERE organization_id=sqlc.arg(organization_i
 -- name: RecordLatestRunEvent :one
 SELECT * FROM collaboration_events
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
-AND attempt_id=sqlc.arg(attempt_id)
+AND attempt_id=sqlc.arg(attempt_id) AND run_id<>''
 ORDER BY sequence DESC LIMIT 1;
 
 -- name: RecordLatestCheckpointEvents :many
@@ -500,6 +500,14 @@ WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_
  AND work_item_id=sqlc.arg(work_item_id) AND type='workflow.transitioned'
 ORDER BY sequence DESC LIMIT 1;
 
+-- name: RecordPlanBlockerAnswer :one
+SELECT id FROM collaboration_events
+WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+ AND work_item_id=sqlc.arg(work_item_id) AND attempt_id=sqlc.arg(attempt_id) AND attempt_id<>''
+ AND type='workflow.transitioned' AND actor_kind='human'
+ AND lower(from_state)='blocked' AND to_state<>'' AND lower(to_state)<>'blocked'
+ORDER BY sequence DESC LIMIT 1;
+
 -- name: RecordGetPRPublication :one
 SELECT * FROM native_pr_publications WHERE organization_id=sqlc.arg(organization_id) AND version_id=sqlc.arg(version_id);
 
@@ -625,5 +633,5 @@ ORDER BY head_matches DESC,fencing_token DESC,attempt_id DESC LIMIT 21;
 SELECT * FROM collaboration_events
 WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
  AND work_item_id=sqlc.arg(work_item_id) AND attempt_id=sqlc.arg(attempt_id) AND attempt_id<>''
- AND sequence>sqlc.arg(after)
+ AND run_id<>'' AND sequence>sqlc.arg(after)
 ORDER BY sequence LIMIT sqlc.arg(page_limit);
