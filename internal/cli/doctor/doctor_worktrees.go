@@ -189,7 +189,8 @@ func CheckExternalBranchWorktrees(
 func DefaultGitWorktrees(ctx context.Context, sourceRoot string) ([]GitWorktree, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(commandCtx, "git", "-C", sourceRoot, "worktree", "list", "--porcelain", "-z")
+	cmd := exec.CommandContext(commandCtx, "git", "worktree", "list", "--porcelain", "-z")
+	cmd.Dir = sourceRoot
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return nil, commandCtx.Err()
