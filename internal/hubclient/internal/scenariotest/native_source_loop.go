@@ -2,7 +2,6 @@ package scenariotest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -253,17 +252,11 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				if provider.roundVerdicts != 2 {
 					t.Errorf("runner asked for %d verdicts, want one for each of the two rounds", provider.roundVerdicts)
 				}
-				raw, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				var receipt struct {
-					ID         string `json:"round_id"`
-					PreviousID string `json:"previous_round_id"`
-					Action     string `json:"action"`
-					NextPhase  string `json:"next_phase"`
-				}
+				receipt, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := json.Unmarshal(raw, &receipt); err != nil || receipt.ID == "" || receipt.PreviousID == "" || receipt.Action != "continue" || receipt.NextPhase != "merge" {
+				if receipt == nil || receipt.RoundID == "" || receipt.PreviousRoundID == "" || receipt.Action != "continue" || receipt.NextPhase != "merge" {
 					t.Errorf("round history lost the refused round or next phase: %+v %v", receipt, err)
 				}
 			}
@@ -360,16 +353,8 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 					t.Fatal("landing changed execution ownership or workspace lifecycle")
 				}
 				if phasesSupported {
-					raw, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
-					if err != nil {
-						t.Fatal(err)
-					}
-					var receipt struct {
-						Action        string `json:"action"`
-						Disposition   string `json:"disposition"`
-						PreviousRound string `json:"previous_round_id"`
-					}
-					if err := json.Unmarshal(raw, &receipt); err != nil || receipt.Action != "done" || receipt.Disposition != "landed" || receipt.PreviousRound == "" || provider.roundVerdicts != 2 {
+					receipt, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil || receipt == nil || receipt.Action != "done" || receipt.Disposition != "landed" || receipt.PreviousRoundID == "" || provider.roundVerdicts != 2 {
 						t.Fatalf("landing did not record one verified completion verdict: %+v %v", receipt, err)
 					}
 				}
