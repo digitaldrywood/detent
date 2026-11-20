@@ -202,7 +202,7 @@ type ArtifactExecution interface {
 
 type spooledArtifactExecution interface {
 	SpoolArtifactLog(context.Context, string) error
-	FinalizeArtifactsWithLogState(context.Context, string, bool) error
+	FinalizeArtifactsWithSpoolCount(context.Context, string, int) error
 }
 
 // ArtifactSourceExecution keeps the upload journal on the execution owner while
@@ -925,8 +925,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && artifactErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
-		if spooled, ok := artifacts.(spooledArtifactExecution); ok && req.artifactLogIncomplete != nil {
-			artifactErr = spooled.FinalizeArtifactsWithLogState(artifactCtx, info.Path, *req.artifactLogIncomplete)
+		if spooled, ok := artifacts.(spooledArtifactExecution); ok && req.artifactLogChunks != nil {
+			artifactErr = spooled.FinalizeArtifactsWithSpoolCount(artifactCtx, info.Path, *req.artifactLogChunks)
 		} else {
 			artifactErr = artifacts.FinalizeArtifacts(artifactCtx, info.Path)
 		}

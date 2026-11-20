@@ -216,7 +216,7 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 		done := make(chan agentTurnExecution, 1)
 		go func() {
 			request := RunRequest{
-				Execution: execution, finalizeNativeWork: true, workspaceBackend: source, artifactLogIncomplete: &execution.artifactIncomplete,
+				Execution: execution, finalizeNativeWork: true, workspaceBackend: source, artifactLogChunks: &execution.expectedArtifactChunks,
 				AgentTools: []AgentTool{{Name: "get_change"}},
 				AgentToolHandler: func(ctx context.Context, _ AgentToolCall) (AgentToolResult, error) {
 					close(toolStarted)
@@ -252,8 +252,8 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 			if source.finalizationCalls != 1 {
 				t.Fatalf("source finalizations=%d", source.finalizationCalls)
 			}
-			if blocked == "artifact" && !execution.artifactIncomplete {
-				t.Fatal("cancelled artifact upload was reported as complete")
+			if blocked == "artifact" && execution.expectedArtifactChunks != 1 {
+				t.Fatalf("expected artifact chunks = %d", execution.expectedArtifactChunks)
 			}
 		default:
 			t.Fatal("matching completion was held behind a runtime observation")
@@ -263,10 +263,10 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 
 type slowTurnObservation struct {
 	finalizingTestExecution
-	observing          chan struct{}
-	release            <-chan struct{}
-	blocked            string
-	artifactIncomplete bool
+	observing              chan struct{}
+	release                <-chan struct{}
+	blocked                string
+	expectedArtifactChunks int
 }
 
 func (e *slowTurnObservation) ObserveRuntime(ctx context.Context, _ tracker.NativeRuntimeObservation) error {
@@ -283,8 +283,8 @@ func (e *slowTurnObservation) SpoolArtifactLog(ctx context.Context, _ string) er
 	return e.block(ctx)
 }
 
-func (e *slowTurnObservation) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
-	e.artifactIncomplete = incomplete
+func (e *slowTurnObservation) FinalizeArtifactsWithSpoolCount(ctx context.Context, directory string, expected int) error {
+	e.expectedArtifactChunks = expected
 	return e.FinalizeArtifacts(ctx, directory)
 }
 

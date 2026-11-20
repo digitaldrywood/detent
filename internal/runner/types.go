@@ -663,7 +663,7 @@ type RunRequest struct {
 	OnUsageUpdate             UsageUpdateHandler         `json:"-"`
 	OnActivityUpdate          AgentActivityUpdateHandler `json:"-"`
 	observationPeer           *SSHPeer
-	artifactLogIncomplete     *bool
+	artifactLogChunks         *int
 	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
 	ProgressProbe             SessionProgressProbe          `json:"-"`
 	CheckpointValidate        func(context.Context) error   `json:"-"`
