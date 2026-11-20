@@ -536,7 +536,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if change, ok := req.Execution.(ChangeExecution); ok {
 			result.NativeChange = change.NativeChange()
 		}
-		assessment, err := r.decideRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr, false)
+		assessment, err := r.decideRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr, false, nil)
 		if err == nil && runErr == nil && assessment.HumanAction != "" {
 			applyRoundHumanAction(&result, assessment)
 			if prepared, ok := req.Execution.(CompletionExecution); ok {

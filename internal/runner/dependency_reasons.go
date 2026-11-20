@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,11 +44,19 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 		if scratchRoot == "" {
 			scratchRoot = os.TempDir()
 		}
+		scratchRoot, err := filepath.EvalSymlinks(scratchRoot)
+		if err != nil {
+			return "", fmt.Errorf("resolve text turn scratch root: %w", err)
+		}
 		scratch, err := os.MkdirTemp(scratchRoot, "detent-reason-")
 		if err != nil {
 			return "", fmt.Errorf("prepare dependency reason scratch: %w", err)
 		}
-		defer func() { returnErr = errors.Join(returnErr, os.RemoveAll(scratch)) }()
+		defer func() {
+			if !UnretiredProviderSession(returnErr) && !errors.Is(returnErr, ErrWorkerProcessReap) {
+				returnErr = errors.Join(returnErr, os.RemoveAll(scratch))
+			}
+		}()
 		request := template
 		request.Workspace = scratch
 		request.TempDir = scratch

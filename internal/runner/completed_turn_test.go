@@ -772,9 +772,11 @@ func TestNativeImplementTurnDeadlineContinuesUnderSameLease(t *testing.T) {
 
 type deadlineRoundExecution struct {
 	finalizingTestExecution
-	validations int
-	timeouts    []*sessiontimeout.Error
-	verdicts    []progresscheck.RoundInput
+	validations          int
+	timeouts             []*sessiontimeout.Error
+	verdicts             []progresscheck.RoundInput
+	publicationAttempts  []string
+	failFirstPublication bool
 }
 
 func (e *deadlineRoundExecution) Validate(ctx context.Context) error {
@@ -807,6 +809,10 @@ func (*deadlineRoundExecution) LatestRoundVerdict(context.Context) (*progressche
 }
 
 func (e *deadlineRoundExecution) RecordRoundVerdict(_ context.Context, verdict progresscheck.RoundInput) error {
+	e.publicationAttempts = append(e.publicationAttempts, verdict.RoundID)
+	if e.failFirstPublication && len(e.publicationAttempts) == 1 {
+		return errors.New("verdict publication unavailable")
+	}
 	e.verdicts = append(e.verdicts, verdict)
 	return nil
 }
@@ -849,7 +855,8 @@ func runNativeDeadlineRounds(t *testing.T, judgeTempDir string, judgeFailure err
 	info := workspace.Info{Path: t.TempDir(), Branch: "example-phase"}
 	source := &deadlineRoundWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("c", 40), WorkspaceFingerprint: "completed-digest"}}}}}}
 	sessions := &fakeSessionStore{sessionID: 42}
-	execution := &deadlineRoundExecution{}
+	execution := &deadlineRoundExecution{failFirstPublication: judgeFailure != nil}
+	var logs bytes.Buffer
 	limit := &controlledDurationLimit{}
 	impl, judgments, lastValidation := 0, 0, 0
 	timeoutRecordedBeforeJudge := false
@@ -863,8 +870,17 @@ func runNativeDeadlineRounds(t *testing.T, judgeTempDir string, judgeFailure err
 				lastValidation = execution.validations
 			}
 			judgeScratch = req.Workspace
-			if judgments == 1 && judgeFailure != nil {
-				return AgentTurnResult{}, judgeFailure
+			if impl == 1 && judgeFailure != nil {
+				canonical, err := filepath.EvalSymlinks(req.Workspace)
+				if err != nil || canonical != req.Workspace || req.Workspace == info.Path || !req.ReadOnly || req.SupplementalTools || !agentResumeEmpty(req.Resume) {
+					t.Errorf("judge workspace or tool isolation invalid: workspace=%q canonical=%q error=%v", req.Workspace, canonical, err)
+				}
+				if len(execution.verdicts) != 0 || source.checkouts != 1 || execution.finish != "" || sessions.finishCalls != 0 {
+					t.Fatal("judge failure changed the execution or recorded a verdict")
+				}
+				if judgments == 1 {
+					return AgentTurnResult{}, judgeFailure
+				}
 			}
 			return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"implement","reason":"continue the existing work"}`})
 		}
@@ -887,7 +903,7 @@ func runNativeDeadlineRounds(t *testing.T, judgeTempDir string, judgeFailure err
 	if judgeTempDir != "" {
 		t.Setenv("TMPDIR", judgeTempDir)
 	}
-	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: agent, turnLimit: limit.Context,
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: agent, turnLimit: limit.Context, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}}, Prompt: "Complete the native issue"},
 	})
 	if err != nil {
@@ -904,8 +920,32 @@ func runNativeDeadlineRounds(t *testing.T, judgeTempDir string, judgeFailure err
 	if len(execution.verdicts) == 0 || !timeoutRecordedBeforeJudge {
 		t.Fatalf("missing typed deadline before judgment (judge scratch %q): diagnostics=%+v verdicts=%+v", judgeScratch, execution.timeouts, execution.verdicts)
 	}
+	if judgeFailure != nil {
+		if judgments != 3 || len(execution.verdicts) != 2 || len(execution.publicationAttempts) != 3 || execution.publicationAttempts[0] != execution.publicationAttempts[1] {
+			t.Fatalf("judgments=%d recorded=%d publication attempts=%v", judgments, len(execution.verdicts), execution.publicationAttempts)
+		}
+		if got := logs.String(); !strings.Contains(got, "worker_round_judge_instance_failure") || !strings.Contains(got, "turn_deadline") || !strings.Contains(got, "thread/start") || !strings.Contains(got, "verdict publication unavailable") {
+			t.Fatalf("missing judge failure or original timeout diagnostics: %s", got)
+		}
+	}
 	verdict := execution.verdicts[0]
 	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
 		t.Fatalf("round evidence = %+v", verdict)
 	}
+}
+
+func TestRoundJudgeThreadStartFailureRetainsTimeoutAndRetriesInPlace(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "owned")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("thread/start: failed to load AGENTS.md instructions for environment local: operation not permitted")
+	synctest.Test(t, func(t *testing.T) {
+		runNativeDeadlineRounds(t, alias, failure)
+	})
 }

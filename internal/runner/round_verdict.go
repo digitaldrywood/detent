@@ -20,12 +20,7 @@ type RoundVerdictExecution interface {
 	RecordRoundVerdict(context.Context, progresscheck.RoundInput) error
 }
 
-func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error) (string, error) {
-	decision, err := r.decideRound(ctx, req, backend, info, issue, phase, feedback, result, runErr, false)
-	return decision.Reason, err
-}
-
-func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error, canReimplement bool) (progresscheck.RoundAssessment, error) {
+func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error, canReimplement bool, retry func(error) error) (progresscheck.RoundAssessment, error) {
 	if !req.phaseReceipts {
 		return progresscheck.RoundAssessment{}, nil
 	}
@@ -33,21 +28,25 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	if !ok {
 		return progresscheck.RoundAssessment{}, errors.New("round verdict owner is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, progresscheck.MaxDuration)
-	defer cancel()
+	return progresscheck.RunRound(ctx, retry, execution.RecordRoundVerdict, func(ctx context.Context) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
+		return r.assessRound(ctx, execution, req, backend, info, issue, phase, feedback, result, runErr, canReimplement)
+	})
+}
+
+func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecution, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error, canReimplement bool) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
 	source, ok := backend.(interface {
 		ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
 	})
 	if !ok {
-		return progresscheck.RoundAssessment{}, errors.New("round verdict requires a Git source")
+		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, errors.New("round verdict requires a Git source")
 	}
 	head, tree, err := source.ItemPhaseHead(ctx, info, issue)
 	if err != nil {
-		return progresscheck.RoundAssessment{}, err
+		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, err
 	}
 	previous, err := execution.LatestRoundVerdict(ctx)
 	if err != nil {
-		return progresscheck.RoundAssessment{}, fmt.Errorf("read prior round verdict: %w", err)
+		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read prior round verdict: %w", err)
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	fallback := progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: "implement"}
@@ -93,7 +92,7 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 		human, _ := runtimeoutput.Diagnostic(signal.HumanAction, 1024)
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundHumanAction, HumanAction: human}
 	}
-	providerBoundary := providerRoundOutcome(runErr, "")
+	providerBoundary := progresscheck.ProviderRoundOutcome(runErr, ErrTurnDurationExceeded, "")
 	if providerBoundary != "" {
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: phase}
 	}
@@ -121,47 +120,23 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	role := runtime.effectiveRunRole(RunModeImplement)
 	selection, agent, config, err := runtime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
-		return progresscheck.RoundAssessment{}, err
+		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, err
 	}
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(config)
 	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progresscheck.MaxDuration}
 	generate := r.textGenerator(agent, request, req.Execution, config.Kind, progresscheck.MaxOutputBytes, "Assess the recorded round evidence. Do not call tools or read files.")
 	verdictCtx := context.WithValue(ctx, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: 1})
-	assessment, input, err := progresscheck.AssessRound(verdictCtx, progresscheck.RoundEvidence{
+	return progresscheck.AssessRound(verdictCtx, progresscheck.RoundEvidence{
 		Phase: phase, Head: head, Tree: tree, Signature: signature,
 		Issue: req.Issue.Description, Findings: findings, Feedback: feedback, Completion: completion,
 		Criteria: criteria, Previous: previous, ProviderBoundary: providerBoundary, ProviderError: runErr,
 	}, fallback, canReimplement, canAskHuman, generate)
-	if err != nil {
-		return progresscheck.RoundAssessment{}, err
-	}
-	if err := execution.RecordRoundVerdict(ctx, input); err != nil {
-		return progresscheck.RoundAssessment{}, fmt.Errorf("publish round verdict: %w", err)
-	}
-	return assessment, nil
 }
 
 func applyRoundHumanAction(result *RunResult, v progresscheck.RoundAssessment) {
 	if v.Action == progresscheck.RoundHumanAction {
 		result.FinalMessage = workpad.BlockedDetail(result.FinalMessage, v.HumanAction)
 	}
-}
-
-func providerRoundOutcome(err error, assessment string) string {
-	var timeout *sessiontimeout.Error
-	var outcome string
-	switch {
-	case errors.As(err, &timeout):
-		outcome = string(timeout.Kind)
-	case errors.Is(err, ErrTurnDurationExceeded):
-		outcome = "turn_review_deadline"
-	default:
-		return ""
-	}
-	if assessment == "" {
-		return outcome
-	}
-	return outcome + ": " + assessment
 }
 
 func fileRepeatedTimeout(ctx context.Context, req RunRequest, phase, backend string, timeout *sessiontimeout.Error) error {
