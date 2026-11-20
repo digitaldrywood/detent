@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
@@ -387,7 +388,7 @@ func TestHostedFleetVisibility(t *testing.T) {
 	}
 
 	now := f.service.config.Clock().UTC()
-	summary := testHostSummary(now)
+	summary := hubtest.HostSummary(now)
 	if err := f.service.config.TenantRepository.WriteTenant(t.Context(), f.service.accessOrganization(), corestore.Serving, func(w tenantstore.Writer) error {
 		acknowledged, err := w.AppendRunnerHostMetricSegments(t.Context(), activeID, []hostmetrics.Summary{summary}, now)
 		if err == nil && (len(acknowledged) != 1 || !acknowledged[0].Hour.Equal(summary.Hour) || !acknowledged[0].SegmentID.Equal(summary.SegmentID)) {
