@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"cmp"
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
@@ -29,4 +30,13 @@ func verifyPublicationRemote(ctx context.Context, path, remote, repository strin
 		return refuse(LandRefusalProtected, err.Error())
 	}
 	return nil
+}
+
+func (opts LandOptions) publicationRepository() string {
+	return gitexec.PublicationRepository("", cmp.Or(opts.PublicationRepository, opts.Repository))
+}
+
+func landingPublicationRepository(ctx context.Context, path, remote string, opts LandOptions) (string, error) {
+	repository := opts.publicationRepository()
+	return repository, verifyPublicationRemote(ctx, path, remote, repository)
 }

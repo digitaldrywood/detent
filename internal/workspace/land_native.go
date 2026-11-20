@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 type LandRequest struct {
@@ -96,9 +97,25 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 	if remote == "" {
 		remote = defaultGitRemote
 	}
+	destination := ""
+	if firstOptions := requests[0].Options; firstOptions.PublicationRepository != "" || firstOptions.Repository != "" {
+		destination, err = landingPublicationRepository(ctx, first.Path, remote, firstOptions)
+		if err != nil {
+			return fail(err)
+		}
+		for _, request := range requests[1:] {
+			if request.Options.PublicationRepository != firstOptions.PublicationRepository || request.Options.Repository != firstOptions.Repository {
+				return fail(refuse(LandRefusalProtected, "the batch contains different configured project repositories"))
+			}
+		}
+	}
 	target := requests[0].Options.TargetBranch
 	if target == "" {
-		target, err = remoteDefaultBranch(ctx, first.Path, remote)
+		if destination != "" {
+			target, err = gitexec.PublicationDefaultBranch(ctx, destination)
+		} else {
+			target, err = remoteDefaultBranch(ctx, first.Path, remote)
+		}
 		if err != nil {
 			return fail(err)
 		}
@@ -318,7 +335,13 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				}
 			}
 		}
-		_, err = runGitAt(ctx, staging, "push", "--force-with-lease=refs/heads/"+target+":"+base, remote, stageHead+":refs/heads/"+target)
+		lease := "--force-with-lease=refs/heads/" + target + ":" + base
+		refspec := stageHead + ":refs/heads/" + target
+		if destination != "" {
+			err = gitexec.PushPublication(ctx, staging, destination, refspec, lease)
+		} else {
+			_, err = runGitAt(ctx, staging, "push", lease, remote, refspec)
+		}
 		if err != nil {
 			pushErr := classifyLandingPush(err, target)
 			var moved *LandRefusal

@@ -249,7 +249,7 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 					if received.ID != version.ID || received.HeadSHA != version.HeadSHA {
 						return workspace.GitHubPublication{}, errors.New("retry changed version")
 					}
-					opts.GitHubClient = client
+					opts.GitHubClient, opts.PublicationRepository = client, remoteDir
 					return local.PrepareGitHubPublication(ctx, info, issue, opts)
 				}
 			}

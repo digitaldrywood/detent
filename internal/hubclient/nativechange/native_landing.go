@@ -44,7 +44,17 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 	if e.claim.source == nil || e.claim.source.NativeClient() == nil {
 		return runner.NativeLandingTarget{}, runner.ErrExecutionAuthorityUnavailable
 	}
-	return landingrecord.Target(ctx, e.claim.source.NativeClient(), e.claim.lease.WorkItemID, e.claim.recovery.Issue.ReleaseDelivery)
+	client := e.claim.source.NativeClient()
+	target, err := landingrecord.Target(ctx, client, e.claim.lease.WorkItemID, e.claim.recovery.Issue.ReleaseDelivery)
+	if err != nil {
+		return target, err
+	}
+	project, err := client.Project(ctx)
+	if err != nil {
+		return target, err
+	}
+	target.PublicationRepository = project.CloneURL
+	return target, nil
 }
 
 // RecordLanding tells the hub the commit the base branch advanced to. The

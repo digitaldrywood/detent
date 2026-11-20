@@ -37,6 +37,14 @@ func remoteGitArgs(args ...string) []string {
 	return gitexec.RemoteArgs(args...)
 }
 
+func remoteDefaultBranch(ctx context.Context, path, remote string) (string, error) {
+	return gitexec.RemoteDefaultBranch(ctx, path, remote)
+}
+
+func remoteDefaultBranchHead(ctx context.Context, path, remote string) (string, string, error) {
+	return gitexec.RemoteDefaultBranchHead(ctx, path, remote)
+}
+
 func remoteBranchHead(ctx context.Context, path, remote, branch string) (string, bool, error) {
 	return gitexec.RemoteBranchHead(ctx, path, remote, branch)
 }

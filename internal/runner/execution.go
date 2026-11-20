@@ -727,7 +727,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
 			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
-				opts.Repository, opts.HeadSHA = version.Repository, version.HeadSHA
+				opts.Repository, opts.HeadSHA, opts.PublicationRepository = version.Repository, version.HeadSHA, issue.PublicationRepository
 				opts.TargetBranch, opts.Message = issue.ProgressBaseRef, req.Issue.Title
 				if issue.Landing != nil {
 					opts.GitHubClient = issue.Landing.GitHubClient

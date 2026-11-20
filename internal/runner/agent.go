@@ -1881,6 +1881,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	req.workspaceBackend = runWorkspace
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	workspaceIssue.AttemptWorkspace = req.AttemptWorkspace
+	if req.phaseContinuation != nil {
+		workspaceIssue.PublicationRepository = req.phaseContinuation.RepositoryURL
+	}
 	if req.Execution != nil {
 		recovery := req.Execution.Recovery()
 		workspaceIssue.ReleaseDelivery = recovery.Issue.ReleaseDelivery

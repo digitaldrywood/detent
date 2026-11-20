@@ -282,7 +282,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "external secondary quota 429", method: "merge", external: true, failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.gitReadFailure == "" && !test.baseMovesDuringRead && !test.publicationLostReply && test.publicationReadFault == "" {
+			if test.gitReadFailure == "" && !test.baseMovesDuringRead && !test.publicationLostReply && test.publicationReadFault == "" && test.releaseRace != "during" && !test.releaseVerifyFailure {
 				t.Parallel()
 			}
 			fixture := newLandingFixture(t)
@@ -673,7 +673,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				return client
 			}
 			client := newClient(false)
-			opts := LandOptions{HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
+			opts := LandOptions{PublicationRepository: fixture.remote, HeadSHA: fixture.head, Method: test.method, Repository: repository, Message: "Native Change Request", GitHubClient: client, ValidationCommand: "test -f feature.txt"}
 			opts.TargetBranch = test.targetBranch
 			if test.pinnedBase {
 				opts.ExpectedBaseSHA = originalBase
@@ -743,15 +743,24 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					runGit(t, fixture.source, "push", "origin", parallel+":refs/heads/parallel")
 				}
 				if test.releaseRace == "during" || test.releaseVerifyFailure {
-					hooks := t.TempDir()
-					runGit(t, fixture.source, "config", "core.hooksPath", hooks)
-					script := "#!/bin/sh\ngit --git-dir=" + shellQuote(fixture.remote) + " update-ref refs/heads/main " + parallel + " " + originalBase + "\n"
-					if test.releaseVerifyFailure {
-						script = "#!/bin/sh\ngit config remote.origin.url " + shellQuote(filepath.Join(t.TempDir(), "missing-remote")) + "\n"
-					}
-					if err := os.WriteFile(filepath.Join(hooks, "pre-push"), []byte(script), 0o700); err != nil {
+					realGit, err := exec.LookPath("git")
+					if err != nil {
 						t.Fatal(err)
 					}
+					wrapper := t.TempDir()
+					before, after := "", ""
+					if test.releaseRace == "during" {
+						before = shellQuote(realGit) + " --git-dir=" + shellQuote(fixture.remote) + " update-ref refs/heads/main " + parallel + " " + originalBase + " || exit $?\n"
+					} else {
+						after = shellQuote(realGit) + " -C " + shellQuote(fixture.source) + " config remote.origin.url " + shellQuote(filepath.Join(t.TempDir(), "missing-remote")) + "\n"
+					}
+					script := "#!/bin/sh\nfor arg in \"$@\"; do if [ \"$arg\" = push ]; then\n" +
+						before + shellQuote(realGit) + " \"$@\"\nresult=$?\n" + after +
+						"exit \"$result\"\nfi; done\nexec " + shellQuote(realGit) + " \"$@\"\n"
+					if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
 				}
 				if test.releasePushRefused {
 					script := "#!/bin/sh\nprintf 'protected branch requires reviewed PR and passing checks' >&2\nexit 1\n"
@@ -846,7 +855,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						t.Fatal(err)
 					}
 					wrapper := t.TempDir()
-					script := "#!/bin/sh\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"push\" ] && [ \"$result\" = \"0\" ]; then exit 1; fi\nexit \"$result\"\n"
+					script := "#!/bin/sh\npush=0\nfor arg in \"$@\"; do if [ \"$arg\" = push ]; then push=1; fi; done\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$push\" = 1 ] && [ \"$result\" = \"0\" ]; then exit 1; fi\nexit \"$result\"\n"
 					if test.publicationReadFault != "" {
 						marker := filepath.Join(wrapper, "pushed")
 						condition := "true"
@@ -857,7 +866,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 						if test.publicationReadFault == "post-push" {
 							condition = "test -f " + shellQuote(marker)
 						}
-						script = "#!/bin/sh\nread_ref=0\nfor arg in \"$@\"; do if [ \"$arg\" = ls-remote ]; then read_ref=1; fi; if [ \"$read_ref\" = 1 ] && " + refMatch + " && " + condition + "; then exit 1; fi; done\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$3\" = push ]; then touch " + shellQuote(marker) + "; exit 1; fi\nexit \"$result\"\n"
+						script = "#!/bin/sh\npush=0\nread_ref=0\nfor arg in \"$@\"; do if [ \"$arg\" = push ]; then push=1; fi; if [ \"$arg\" = ls-remote ]; then read_ref=1; fi; if [ \"$read_ref\" = 1 ] && " + refMatch + " && " + condition + "; then exit 1; fi; done\n" + shellQuote(realGit) + " \"$@\"\nresult=$?\nif [ \"$push\" = 1 ]; then touch " + shellQuote(marker) + "; exit 1; fi\nexit \"$result\"\n"
 					}
 					if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
 						t.Fatal(err)
@@ -912,9 +921,6 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(hooks, "pre-receive"), []byte("#!/bin/sh\nprintf publication-policy-refusal >&2\nexit 1\n"), 0o700); err != nil {
 						t.Fatal(err)
 					}
-				}
-				if test.wrongRemote != "" {
-					runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", "https://github.com/other/repo.git")
 				}
 				switch test.wrongRemote {
 				case "selected":

@@ -111,6 +111,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			sourceA := nativeChangeSourceRepo(t)
 			nativeChangeGit(t, sourceA, "branch", "-m", "dev")
 			remote := filepath.Join(t.TempDir(), "origin.git")
+			h.configureCloneURL(remote)
 			nativeChangeGit(t, sourceA, "init", "--bare", "-b", "dev", remote)
 			nativeChangeGit(t, sourceA, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, sourceA, "config", "url."+remote+".insteadOf", nativeChangeRepository)
@@ -997,6 +998,7 @@ func RunNativeSourceResumesWithoutPreviousRuntime(t *testing.T, factories Constr
 			}
 			base := head(firstWorkspace)
 			remote := filepath.Join(t.TempDir(), "origin.git")
+			h.configureCloneURL(remote)
 			nativeChangeGit(t, firstWorkspace, "init", "--bare", "-b", "main", remote)
 			nativeChangeGit(t, firstWorkspace, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, firstWorkspace, "config", "url."+remote+".insteadOf", nativeChangeRepository)
