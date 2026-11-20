@@ -196,6 +196,46 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	return branch, head, tree, nil
 }
 
+func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) error {
+	info, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	head, tree, err := l.ItemPhaseHead(ctx, info, issue)
+	if err != nil || head == previous.HeadSHA {
+		return err
+	}
+	if err := l.fetchItemPhase(ctx, info, issue, previous); err != nil {
+		return err
+	}
+	if _, err := runGitAt(ctx, info.Path, "merge-base", "--is-ancestor", previous.HeadSHA, head); err == nil {
+		return nil
+	} else {
+		var commandErr *CommandError
+		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
+			return err
+		}
+	}
+	remote, exists, err := remoteBranchHead(ctx, info.Path, defaultGitRemote, previous.Branch)
+	if err != nil {
+		return err
+	}
+	if !exists || remote != previous.HeadSHA {
+		return refuse(LandRefusalHeadMoved, "the item branch advanced beyond its recorded phase")
+	}
+	if err := authorize(ctx); err != nil {
+		return err
+	}
+	if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "merge", "--no-ff", "-s", "ours", "-m", "fix: retain phase history for "+issue.Identifier, previous.HeadSHA); err != nil {
+		return err
+	}
+	_, observedTree, err := l.ItemPhaseHead(ctx, info, issue)
+	if err == nil && observedTree != tree {
+		return errors.New("preserving the item branch changed the completed source tree")
+	}
+	return err
+}
+
 func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (string, string, error) {
 	info, err := l.normalizeInfo(info, issue)
 	if err != nil {

@@ -173,6 +173,11 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		if turn.err != nil {
 			t.Fatalf("native landing turn failed: result=%+v error=%v", turn.result, turn.err)
 		}
+		initial, continued := request.Execution.Recovery().Lease, turn.request.Execution.Recovery().Lease
+		if continued.ID != initial.ID || continued.FencingToken != initial.FencingToken {
+			t.Fatalf("continued landing changed the original claim: initial=%+v continued=%+v", initial, continued)
+		}
+		completed.result.NativeLanding = landing
 	default:
 	}
 	if completed.err != nil || target == "Done" && ((!noChange && (landing == nil || !landing.Landed)) || len(state.Blocked) != 0) || backend.calls.Load() != wantCalls {

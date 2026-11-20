@@ -102,6 +102,9 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	e.mu.Lock()
 	attempt, reviewState := e.data.AttemptID, e.stepReviewState()
+	if len(receipts) > 0 {
+		e.phaseSource = &receipts[0]
+	}
 	e.mu.Unlock()
 	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
 		return &tracker.NativePhaseContinuation{}, nil

@@ -20,10 +20,11 @@ import (
 )
 
 type Source struct {
-	Version       tracker.ChangeVersion `json:"version"`
-	Bundle        []byte                `json:"bundle,omitempty"`
-	PreviousHeads []string              `json:"previous_heads,omitempty"`
-	Transferred   bool                  `json:"transferred,omitempty"`
+	Version       tracker.ChangeVersion       `json:"version"`
+	Bundle        []byte                      `json:"bundle,omitempty"`
+	PreviousHeads []string                    `json:"previous_heads,omitempty"`
+	Transferred   bool                        `json:"transferred,omitempty"`
+	PushedPhase   *tracker.NativePhaseReceipt `json:"pushed_phase,omitempty"`
 }
 
 func Diff(ctx context.Context, directory, base, head string) (string, error) {

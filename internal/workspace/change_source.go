@@ -38,6 +38,39 @@ func (l *LocalGit) CaptureRecoveryChangeSource(ctx context.Context, issue Issue,
 	return CaptureChangeSource(ctx, info.Path, base, head)
 }
 
+func (l *LocalGit) importWorkspaceChangeSource(ctx context.Context, issue Issue) error {
+	source := issue.Source
+	if source.PushedPhase == nil {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+		return l.importChangeSource(ctx, source)
+	}
+	version := source.Version
+	if !validLandingHead(version.BaseSHA) || version.HeadSHA != source.PushedPhase.HeadSHA || version.PolicyID != source.PushedPhase.PolicyID || version.Repository != RepositoryURL(ctx, l.sourceRoot) {
+		return refuse(LandRefusalMissingHead, "the pushed phase does not match the selected Change source")
+	}
+	itemIssue := issue
+	itemIssue.Landing = nil
+	itemIssue.ReviewVersionID = ""
+	itemInfo, err := l.infoForIssue(itemIssue)
+	if err != nil {
+		return err
+	}
+	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, *source.PushedPhase); err != nil {
+		return err
+	}
+	if version.Source != nil {
+		digest, err := changeSourceDiff(ctx, l.sourceRoot, version.BaseSHA, version.HeadSHA)
+		if err != nil || digest != version.Source.DiffSHA256 {
+			return errors.Join(errors.New("pushed Change source diff differs from the immutable version"), err)
+		}
+	}
+	return nil
+}
+
 func (l *LocalGit) importChangeSource(ctx context.Context, source *ChangeSource) (err error) {
 	version := source.Version
 	if !validLandingHead(version.HeadSHA) || !validLandingHead(version.BaseSHA) || version.Repository == "" || RepositoryURL(ctx, l.sourceRoot) != version.Repository {
@@ -105,6 +138,9 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		return false, refuse(LandRefusalMissingHead, "the transferred version has no retained bundle; republish the exact head with source capture before retrying transfer")
 	}
 	transferred := issue.Source.Transferred
+	if transferred && state.HeadSHA == issue.Source.Version.HeadSHA && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0 {
+		return false, nil
+	}
 	if !transferred {
 		if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 			return false, nil

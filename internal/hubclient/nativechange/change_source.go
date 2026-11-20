@@ -39,8 +39,9 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 		e.mu.Unlock()
 		return workspace.ChangeSource{Version: version}, nil
 	}
+	phase := e.phaseSource
 	e.mu.Unlock()
-	return changesource.Recover(ctx, e.claim.source.NativeClient(), e.claim.lease.WorkItemID, sourceAuthority{e})
+	return changesource.Recover(ctx, e.claim.source.NativeClient(), e.claim.lease.WorkItemID, sourceAuthority{e}, phase)
 }
 
 func publishedChangeSourceSupersedes(detail tracker.ChangeDetail, selected string, recovery tracker.NativeRecovery) bool {
