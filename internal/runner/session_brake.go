@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -379,7 +380,7 @@ func (r *Runner) sessionProgressSnapshot(
 		if err != nil {
 			workspaceErr = err
 		} else {
-			snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
+			snapshot.DiffStats = runobserve.DiffStatsFromWorkspace(recovery.DiffStat)
 			applyRecoveryState(&snapshot.DiffStats, &recovery)
 			snapshot.HeadSHA = strings.TrimSpace(recovery.HeadSHA)
 			snapshot.WorkspaceFingerprint = strings.TrimSpace(recovery.WorkspaceFingerprint)
@@ -390,7 +391,7 @@ func (r *Runner) sessionProgressSnapshot(
 		if err != nil {
 			workspaceErr = err
 		} else {
-			snapshot.DiffStats = diffStatsFromWorkspace(stat)
+			snapshot.DiffStats = runobserve.DiffStatsFromWorkspace(stat)
 			snapshot.WorkspaceFingerprint = strings.TrimSpace(stat.Fingerprint)
 		}
 	}

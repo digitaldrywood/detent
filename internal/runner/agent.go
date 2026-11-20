@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
@@ -774,7 +775,7 @@ func (r *Runner) prepareMergeFastPath(
 		return RunResult{
 			FinalState:            FinalStateCompleted,
 			Output:                RunOutputMergeFastPathClean,
-			DiffStats:             diffStatsFromWorkspace(precheck.DiffStat),
+			DiffStats:             runobserve.DiffStatsFromWorkspace(precheck.DiffStat),
 			PullRequestHeadPushed: precheck.HeadChanged,
 			ForgeWriteCompleted:   true,
 			GateValidatedHead:     validatedHead(precheck),
@@ -799,7 +800,7 @@ func mergePrecheckFromWorkspace(precheck workspace.MergePrepareResult) MergePrec
 		TargetCommitSubjects: append([]string(nil), precheck.TargetCommitSubjects...),
 		Status:               string(precheck.Status),
 		Message:              precheck.Message,
-		DiffStats:            diffStatsFromWorkspace(precheck.DiffStat),
+		DiffStats:            runobserve.DiffStatsFromWorkspace(precheck.DiffStat),
 		HeadChanged:          precheck.HeadChanged,
 		HeadSHA:              precheck.HeadSHA,
 	}
@@ -1332,22 +1333,48 @@ func (r *Runner) runAgentTurn(
 			defer activityProfile.providerIdentityRetry.Store(nil)
 		}
 	}
-	if peer := runRequest.observationPeer; observe != nil && peer != nil {
-		updates.OnUsageUpdate = func(usage UsageUpdate) error {
-			observe(func(ctx context.Context) error { return peer.Call(ctx, "usage", nil, usage) })
+	var liveDiff atomic.Pointer[liveDiffSnapshot]
+	if observe != nil && runRequest.OnUsageUpdate != nil {
+		var diffProgress agentRunProgress
+		updates.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
+			observe(func(ctx context.Context) error {
+				if runRequest.Admission == nil {
+					if stat, ok := r.liveDiffStats(ctx, runRequest.workspaceBackend, info, workspaceIssue, &diffProgress, at); ok {
+						liveDiff.Store(&liveDiffSnapshot{stats: stat, headObservedAt: diffProgress.diffStatsHeadObservedAt})
+					}
+				}
+				if peer := runRequest.observationPeer; peer != nil {
+					if snapshot := liveDiff.Load(); snapshot != nil {
+						usage.DiffStats = snapshot.stats
+					}
+					return peer.Call(ctx, "usage", nil, usage)
+				}
+				return nil
+			})
+			if runRequest.observationPeer == nil {
+				local := usage
+				if snapshot := liveDiff.Load(); snapshot != nil {
+					local.DiffStats = snapshot.stats
+				}
+				return runRequest.OnUsageUpdate(local)
+			}
 			return nil
 		}
-		if updates.OnActivityUpdate != nil {
-			updates.OnActivityUpdate = func(activity AgentActivityUpdate) error {
-				observe(func(ctx context.Context) error { return peer.Call(ctx, "activity", nil, activity) })
-				return nil
-			}
+	}
+	if peer := runRequest.observationPeer; observe != nil && peer != nil && updates.OnActivityUpdate != nil {
+		updates.OnActivityUpdate = func(activity AgentActivityUpdate) error {
+			observe(func(ctx context.Context) error { return peer.Call(ctx, "activity", nil, activity) })
+			return nil
 		}
 	}
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(turnCtx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
-		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
+		head, headObservedAt := progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt
+		if snapshot := liveDiff.Load(); snapshot != nil {
+			head, headObservedAt = snapshot.stats.HeadSHA, snapshot.headObservedAt
+		}
+		activityProfile.observe(update, eventAt, head, headObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
 			update.Tokens = usage.Normalize(update.Tokens)
 		}
@@ -2970,7 +2997,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		var exhaustedDeliverable *DeliverableRecoveryError
 		if mode == RunModeImplement && result.PullRequestHeadPushed && errors.As(turnErr, &exhaustedDeliverable) {
 			if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "deliverable_recovery"); recoveryState != nil {
-				result.DiffStats = diffStatsFromWorkspace(recoveryState.DiffStat)
+				result.DiffStats = runobserve.DiffStatsFromWorkspace(recoveryState.DiffStat)
 				applyRecoveryState(&result.DiffStats, recoveryState)
 			}
 			deliverableState = r.workspaceDeliverableState(runWorkspace, ctx, info, workspaceIssue)
@@ -3194,7 +3221,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			)
 		}
 
-		result.DiffStats = diffStatsFromWorkspace(diffStat)
+		result.DiffStats = runobserve.DiffStatsFromWorkspace(diffStat)
 		if mode == RunModeImplement {
 			_, result.DiffStats.RecoveryStateExpected = runWorkspace.(workspace.RecoveryStateProvider)
 			if recoveryState := r.workspaceRecoveryState(runWorkspace, finalizationCtx, info, workspaceIssue, "final"); recoveryState != nil {
@@ -3813,7 +3840,7 @@ func (r *Runner) publishCompletionSourceStart(req RunRequest, recovery *workspac
 	if recovery != nil {
 		snapshot.WorkspaceDiffAvailable = true
 		snapshot.WorkspaceHeadAvailable = strings.TrimSpace(recovery.HeadSHA) != ""
-		snapshot.DiffStats = diffStatsFromWorkspace(recovery.DiffStat)
+		snapshot.DiffStats = runobserve.DiffStatsFromWorkspace(recovery.DiffStat)
 		applyRecoveryState(&snapshot.DiffStats, recovery)
 	}
 	if err := req.OnUsageUpdate(UsageUpdate{CompletionSourceStart: &snapshot}); err != nil && r.logger != nil {
@@ -6473,6 +6500,9 @@ func (r *Runner) publishRunUpdate(
 		RSSCeilingBytes:       progress.rssCeilingBytes,
 		RSSObservedAt:         progress.rssObservedAt,
 	}
+	if req.turnUsageUpdate != nil {
+		return req.turnUsageUpdate(usage, eventAt)
+	}
 	if req.Admission == nil {
 		diffStats, ok := r.liveDiffStats(ctx, req.workspaceBackend, info, issue, progress, eventAt)
 		if ok {
@@ -6558,6 +6588,11 @@ func failedAgentToolStatus(status string) bool {
 	}
 }
 
+type liveDiffSnapshot struct {
+	stats          DiffStats
+	headObservedAt time.Time
+}
+
 func (r *Runner) liveDiffStats(
 	ctx context.Context,
 	backend workspace.Backend,
@@ -6571,31 +6606,12 @@ func (r *Runner) liveDiffStats(
 	}
 
 	progress.diffStatsCheckedAt = eventAt
-	stat, err := backend.DiffStat(ctx, info, issue)
+	stat, err := runobserve.SampleDiff(ctx, backend, info, issue, r.logger)
 	if err != nil {
-		if workspace.IsMissingWorkspaceError(err) {
-			r.logger.Info(
-				"workspace live diff stat skipped",
-				slog.String("issue_id", issue.ID),
-				slog.String("issue_identifier", issue.Identifier),
-				slog.String("workspace_path", info.Path),
-				slog.String("phase", "live"),
-				slog.String("error", err.Error()),
-			)
-			return progress.cachedDiffStats()
-		}
-		r.logger.Warn(
-			"workspace live diff stat failed",
-			slog.String("issue_id", issue.ID),
-			slog.String("issue_identifier", issue.Identifier),
-			slog.String("workspace_path", info.Path),
-			slog.String("phase", "live"),
-			slog.String("error", err.Error()),
-		)
 		return progress.cachedDiffStats()
 	}
 
-	diffStats := diffStatsFromWorkspace(stat)
+	diffStats := runobserve.DiffStatsFromWorkspace(stat)
 	diffStats.Status = "ok"
 	progress.diffStats = diffStats
 	progress.diffStatsHeadObservedAt = stat.HeadObservedAt
@@ -6653,22 +6669,6 @@ func ciTriggerPullRequestNumber(issue connector.Issue) int {
 		return issue.PullRequest.Number
 	}
 	return 0
-}
-
-func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
-	status := "clean"
-	if stat.Files != 0 || stat.Added != 0 || stat.Removed != 0 {
-		status = "changed"
-	}
-	return DiffStats{
-		FilesChanged: stat.Files,
-		AddedLines:   stat.Added,
-		RemovedLines: stat.Removed,
-		Fingerprint:  strings.TrimSpace(stat.Fingerprint),
-		HeadSHA:      stat.HeadSHA,
-		TreeSHA:      stat.TreeSHA,
-		Status:       status,
-	}
 }
 
 func applyRecoveryState(diffStats *DiffStats, state *workspace.RecoveryState) {
