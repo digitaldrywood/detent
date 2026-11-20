@@ -13,7 +13,7 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	localWorker := e.hasWorkers()
 	e.cancelMu.Lock()
 	controller := e.supervisor != nil
-	lost := e.supervisionLost || controller && e.supervisor.Err() != nil
+	lost := e.supervisionLost || controller && supervisorLost(e.supervisor)
 	select {
 	case <-e.reviewDone:
 		e.reviewDone = nil
@@ -40,7 +40,7 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	// turn-end heartbeat cannot expire a live publication or review.
 	outage := !e.completionOutageDeadline.IsZero()
 	liveReview := reviewing && e.settled && e.change != nil && e.change.VersionID != "" && e.data.Outcome == ""
-	if (controller || liveReview) && !outage {
+	if (controller || liveReview || localWorker && observation != nil && observation.Phase == "completed") && !outage {
 		e.mu.Unlock()
 		return executioncontract.ExecutionState{Override: 1}, nil
 	}

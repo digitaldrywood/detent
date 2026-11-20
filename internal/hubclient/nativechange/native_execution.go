@@ -268,7 +268,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	return guarded, func() {
 		e.cancelMu.Lock()
 		if e.supervisor == guarded {
-			e.supervisionLost = e.supervisionLost || guarded.Err() != nil
+			e.supervisionLost = e.supervisionLost || supervisorLost(guarded)
 			e.supervisor = nil
 			e.cancel = nil
 		}
@@ -277,6 +277,11 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		<-done
 		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	}, nil
+}
+
+func supervisorLost(ctx context.Context) bool {
+	cause := context.Cause(ctx)
+	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause)
 }
 
 func (e *nativeExecution) unavailable(err error) error {
