@@ -267,7 +267,7 @@ LEFT JOIN LATERAL (
  SELECT * FROM native_attempts a WHERE a.organization_id=sqlc.arg(organization_id) AND a.issue_id=i.id ORDER BY a.fencing_token DESC LIMIT 1
 ) a ON true
 LEFT JOIN LATERAL (
- SELECT * FROM collaboration_events ev WHERE ev.organization_id=sqlc.arg(organization_id) AND ev.project_id=sqlc.arg(project_id) AND ev.work_item_id=i.native_id AND ev.attempt_id<>''
+ SELECT * FROM collaboration_events ev WHERE ev.organization_id=sqlc.arg(organization_id) AND ev.project_id=sqlc.arg(project_id) AND ev.work_item_id=i.native_id AND ev.attempt_id<>'' AND ev.run_id<>''
  AND (ev.attempt_id,ev.sequence)>=(a.id,0::bigint) AND (ev.attempt_id,ev.sequence)<=(a.id,9223372036854775807::bigint)
  ORDER BY ev.attempt_id,ev.sequence DESC LIMIT 1
 ) ev ON true

@@ -78,15 +78,15 @@ func (c *NativeClient) planAnswer(ctx context.Context, id tracker.NativeWorkItem
 	if err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
-	var answer tracker.CollaborationEvent
-	err = c.eachWorkflowTransition(ctx, path, func(event tracker.CollaborationEvent) bool {
-		if event.Actor.Kind == "human" && event.Data.BlockerAttemptID == attemptID && event.Data.ToState != "" && strings.EqualFold(event.Data.FromState, "Blocked") && !strings.EqualFold(event.Data.ToState, "Blocked") {
-			answer = event
-			return true
+	params := url.Values{"blocker_attempt_id": {attemptID}}
+	var page tracker.Page[tracker.CollaborationEvent]
+	err = c.client.request(ctx, http.MethodGet, c.base()+path+"/history?"+params.Encode(), nil, &page)
+	for _, event := range page.Items {
+		if event.Actor.Kind == "human" && event.Type == "workflow.transitioned" && event.Data.BlockerAttemptID == attemptID && event.Data.ToState != "" && strings.EqualFold(event.Data.FromState, "Blocked") && !strings.EqualFold(event.Data.ToState, "Blocked") {
+			return event, err
 		}
-		return false
-	})
-	return answer, err
+	}
+	return tracker.CollaborationEvent{}, err
 }
 
 func (c *NativeClient) eachWorkflowTransition(ctx context.Context, path string, found func(tracker.CollaborationEvent) bool) error {

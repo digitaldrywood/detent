@@ -723,7 +723,7 @@ func (s *session) ReplayAttemptUsage(ctx context.Context, replay reportstore.Usa
 	var kind string
 	var factSequence *int64
 	err := s.db.QueryRow(ctx, `SELECT a.usage_pending_sequence,a.usage_projected_sequence,e.type,f.run_sequence FROM native_attempts a JOIN work_item_identities i ON i.organization_id=a.organization_id AND i.id=a.issue_id
- JOIN collaboration_events e ON e.organization_id=a.organization_id AND e.attempt_id=a.id LEFT JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id
+ JOIN collaboration_events e ON e.organization_id=a.organization_id AND e.attempt_id=a.id AND e.run_id=a.run_id LEFT JOIN report_event_facts f ON f.organization_id=e.organization_id AND f.event_id=e.id
  WHERE a.organization_id=$1 AND i.project_id=$2 AND i.native_id=$3 AND a.id=$4
  AND e.project_id=$2 AND e.work_item_id=$3 AND e.id=$8 AND e.payload_sha256=$9 AND e.recorded_at=$10 AND e.sequence=$11
  AND (e.type NOT IN ('run.started','run.checkpointed','run.observed','run.finished') OR (e.run_id=a.run_id AND a.lease_id=$5 AND a.fencing_token=$6 AND a.sequence>=$7))`, s.organization, report.ProjectID, report.WorkItemID, report.AttemptID, report.LeaseID, report.FencingToken, report.Sequence, report.ReplayEventID, report.ReplayEventSHA256, recordTime(report.ReceivedAt), report.EventSequence).Scan(&pending, &projected, &kind, &factSequence)
@@ -734,7 +734,7 @@ func (s *session) ReplayAttemptUsage(ctx context.Context, replay reportstore.Usa
 		return true, nil
 	}
 	var next int64
-	if err := s.db.QueryRow(ctx, `SELECT sequence FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND attempt_id=$4 AND attempt_id<>'' AND sequence>$5 ORDER BY sequence LIMIT 1`, s.organization, report.ProjectID, report.WorkItemID, report.AttemptID, projected).Scan(&next); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT sequence FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3 AND attempt_id=$4 AND attempt_id<>'' AND run_id<>'' AND sequence>$5 ORDER BY sequence LIMIT 1`, s.organization, report.ProjectID, report.WorkItemID, report.AttemptID, projected).Scan(&next); err != nil {
 		return false, mapError(ctx, err)
 	}
 	if next != report.EventSequence {

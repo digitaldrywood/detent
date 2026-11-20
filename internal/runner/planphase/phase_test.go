@@ -131,3 +131,57 @@ func TestPlanQuestionOwnsTheDraft(t *testing.T) {
 		})
 	}
 }
+
+type changingPlanSource struct {
+	revisionSource
+	head, tree             string
+	pushedHead, pushedTree string
+	pushes                 int
+}
+
+func (s *changingPlanSource) ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error) {
+	return s.head, s.tree, nil
+}
+
+func (s *changingPlanSource) PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error) {
+	s.pushes++
+	return "branch", s.pushedHead, s.pushedTree, nil
+}
+
+func TestPlanReviewFailureKeepsPinnedSource(t *testing.T) {
+	t.Parallel()
+	for _, changed := range []string{"head during review", "tree during review", "pushed head", "pushed tree"} {
+		t.Run(changed, func(t *testing.T) {
+			t.Parallel()
+			stop := errors.New("provider failed during review")
+			publication := &planPublication{}
+			source := &changingPlanSource{head: "head", tree: "tree", pushedHead: "head", pushedTree: "tree"}
+			_, _, err := Run(t.Context(), Request{
+				Execution: publication, Backend: source, Now: time.Now, AutomatedReview: true,
+				Continuation: &tracker.NativePhaseContinuation{Plan: &tracker.NativePlanState{Draft: "Test empty input.", ReviewPending: true}},
+				Prompt:       func() (string, error) { return "Draft the plan.", nil },
+				OpenAgent: func() (func(context.Context, string) (string, error), error) {
+					return func(context.Context, string) (string, error) {
+						switch changed {
+						case "head during review":
+							source.head = "changed"
+						case "tree during review":
+							source.tree = "changed"
+						case "pushed head":
+							source.pushedHead = "changed"
+						case "pushed tree":
+							source.pushedTree = "changed"
+						}
+						return "", stop
+					}, nil
+				},
+			})
+			if !errors.Is(err, stop) || publication.phase != "" {
+				t.Fatalf("recorded a review of changed source: phase=%q error=%v", publication.phase, err)
+			}
+			if strings.HasSuffix(changed, "during review") && (source.pushes != 0 || publication.plan.Step != "") {
+				t.Fatalf("published pending progress for changed source: pushes=%d step=%q", source.pushes, publication.plan.Step)
+			}
+		})
+	}
+}

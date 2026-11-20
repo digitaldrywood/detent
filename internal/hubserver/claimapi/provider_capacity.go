@@ -52,7 +52,8 @@ func ValidateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reade
 		return ProviderWait("provider_incompatible", "Execution identity must match the reserved role, backend and model")
 	}
 	requirement := providercapacity.Requirement{Role: data.Identity.Role, Backend: data.Identity.Backend, Model: data.Identity.Model}
-	if reservation.Role == "plan" && data.Runtime != nil && data.Runtime.Phase == "planning" && (requirement.Role == "code" || requirement.Role == "rework") {
+	bootstrap := *data.Identity == tracker.WorkerBootstrapIdentity() && data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.Bootstrap
+	if reservation.Role == "plan" && data.Runtime != nil && data.Runtime.Phase == "planning" && (bootstrap || requirement.Role == "code" || requirement.Role == "rework") {
 		pinned, err := reader.LeasePolicy(ctx, data.LeaseID)
 		if err != nil {
 			return err

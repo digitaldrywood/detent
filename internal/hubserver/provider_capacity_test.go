@@ -1264,8 +1264,9 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	plan := providercapacity.Requirement{Role: "plan", Backend: "planner", Model: "test-model"}
 	code := providercapacity.Requirement{Role: "code", Backend: "codex", Model: "test-model"}
 	type owner struct {
-		runner runnerFixture
-		lease  tracker.NativeLease
+		runner   runnerFixture
+		lease    tracker.NativeLease
+		sequence int64
 	}
 	claim := func(f nativeFixture, requirement providercapacity.Requirement, session string) owner {
 		t.Helper()
@@ -1289,31 +1290,48 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		}
 		event := nativeStartedEvent(lease)
 		event.Data.Identity = &tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
-		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
-		return owner{runner: r, lease: lease}
+		path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+		if requirement == plan {
+			event.Data.Identity = new(tracker.WorkerBootstrapIdentity())
+			event.Worker = &tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: now, StartKey: "planner-bootstrap"}
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "planning", HeartbeatAt: now, WorkerLaunch: &tracker.NativeWorkerLaunch{
+				Bootstrap: true, PID: 101, ProcessStart: now, ExecutionVersion: "example", ExecutionCommit: strings.Repeat("a", 40),
+				ExecutionSHA256: strings.Repeat("b", 64), ControlVersion: "example", PolicyID: pinned.ID, Protocol: 1, SelectedAt: now,
+			}}
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
+		if event.Worker != nil {
+			event.Worker = nil
+			event.Type, event.IdempotencyKey = "run.observed", "bind_phased_worker"
+			event.Data.Sequence++
+			event.Data.Runtime.WorkerLaunch.Bootstrap = false
+			event.Data.Identity = &tracker.NativeExecutionIdentity{Role: code.Role, Backend: code.Backend, Model: code.Model}
+			requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path, r.redemption.Credential, event), http.StatusOK)
+		}
+		return owner{runner: r, lease: lease, sequence: event.Data.Sequence}
 	}
 	for _, f := range []nativeFixture{first, second} {
 		approveHubTestPolicy(t, service, f.base+"/policy", pinned)
 	}
 	local := claim(first, plan, "local-plan")
 	other := claim(second, code, "other-code")
-	swap := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, from, to providercapacity.Requirement) *httptest.ResponseRecorder {
+	swap := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, from, to providercapacity.Requirement, sequence int64) *httptest.ResponseRecorder {
 		t.Helper()
 		return performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", requester.redemption.Credential,
 			tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90,
-				ProviderPhase: &tracker.NativeProviderPhaseMutation{Expected: from, Requirement: to, Sequence: 1}})
+				ProviderPhase: &tracker.NativeProviderPhaseMutation{Expected: from, Requirement: to, Sequence: sequence}})
 	}
-	if refused := swap(second, other.lease, local.runner, code, plan); refused.Code < 400 {
+	if refused := swap(second, other.lease, local.runner, code, plan, other.sequence); refused.Code < 400 {
 		t.Fatal("runner from another tenant changed the permit")
 	}
-	response := swap(first, local.lease, local.runner, plan, code)
+	response := swap(first, local.lease, local.runner, plan, code, local.sequence)
 	requireNativeStatus(t, response, http.StatusOK)
 	var renewed tracker.NativeLease
 	decodeHubResponse(t, response, &renewed)
 	if renewed.ID != local.lease.ID || renewed.FencingToken != local.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
 		t.Fatalf("swap changed the fence or selected the wrong account: %+v", renewed)
 	}
-	response = swap(second, other.lease, other.runner, plan, code)
+	response = swap(second, other.lease, other.runner, plan, code, other.sequence)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
 	if renewed.ID != other.lease.ID || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {

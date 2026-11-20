@@ -225,7 +225,7 @@ const recordAttemptEvents = `-- name: RecordAttemptEvents :many
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
  AND work_item_id=$3 AND attempt_id=$4 AND attempt_id<>''
- AND sequence>$5
+ AND run_id<>'' AND sequence>$5
 ORDER BY sequence LIMIT $6
 `
 
@@ -2408,7 +2408,7 @@ func (q *Queries) RecordLatestClaimedSchedulerDecision(ctx context.Context, arg 
 const recordLatestRunEvent = `-- name: RecordLatestRunEvent :one
 SELECT organization_id, project_id, work_item_id, id, sequence, type, schema_version, actor_kind, actor_principal_id, event_revision, change_id, version_id, head_sha, run_id, attempt_id, from_state, to_state, recorded_at, payload_object_key, payload_sha256, payload_bytes, payload_content_bytes, payload_format_version, landing_waiting, landing_change_id, landing_version_id, landing_head_sha, project_sequence, push_known, push_change_id, push_version_id, push_head_sha, push_external_effect, push_effect_state, history_hidden, scheduler_outcome, actor_envelope_known, actor_via_key, actor_display_name, actor_agent FROM collaboration_events
 WHERE organization_id=$1 AND project_id=$2
-AND attempt_id=$3
+AND attempt_id=$3 AND run_id<>''
 ORDER BY sequence DESC LIMIT 1
 `
 
@@ -3517,6 +3517,34 @@ func (q *Queries) RecordPendingWorkItemScheduledSources(ctx context.Context, arg
 	var column_1 pgtype.Bool
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const recordPlanBlockerAnswer = `-- name: RecordPlanBlockerAnswer :one
+SELECT id FROM collaboration_events
+WHERE organization_id=$1 AND project_id=$2
+ AND work_item_id=$3 AND attempt_id=$4 AND attempt_id<>''
+ AND type='workflow.transitioned' AND actor_kind='human'
+ AND lower(from_state)='blocked' AND to_state<>'' AND lower(to_state)<>'blocked'
+ORDER BY sequence DESC LIMIT 1
+`
+
+type RecordPlanBlockerAnswerParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	WorkItemID     tracker.NativeWorkItemID
+	AttemptID      string
+}
+
+func (q *Queries) RecordPlanBlockerAnswer(ctx context.Context, arg RecordPlanBlockerAnswerParams) (string, error) {
+	row := q.db.QueryRow(ctx, recordPlanBlockerAnswer,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.WorkItemID,
+		arg.AttemptID,
+	)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const recordProjectChanges = `-- name: RecordProjectChanges :many
