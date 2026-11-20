@@ -1392,8 +1392,8 @@ func (r *Runner) runAgentTurn(
 			runRequest.checkpointRefs.requestPush()
 		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && artifactWriter != nil && runRequest.artifactLogChunks != nil {
-				*runRequest.artifactLogChunks++
+			if observe != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
+				runRequest.artifactSpool.chunks++
 				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
@@ -1889,10 +1889,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
-	if _, ok := req.Execution.(spooledArtifactExecution); ok && req.observationPeer == nil {
-		req.artifactLogChunks = new(int)
-	}
 	mode := normalizeRunMode(req.Mode)
+	if _, ok := req.Execution.(spooledArtifactExecution); ok && req.observationPeer == nil && mode == RunModeImplement {
+		req.artifactSpool = &sourceArtifactSpool{}
+	}
 	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		result, err := execution.ReconcileReleaseDelivery(ctx, req.WorkAttemptID, req.Generation)
 		if err != nil {
@@ -2196,7 +2196,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		cleanup, afterErr := r.prepareExecutionCompletion(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false)
-		r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanup && !retainedLanding)
+		err = errors.Join(err, r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanup && !retainedLanding))
 		return result, errors.Join(err, afterErr)
 	}
 	if mode == RunModeMerge {
@@ -3168,7 +3168,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				applyRoundHumanAction(&result, assessment)
 			}
 		}
-		r.finishExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, cleanupWorkspace)
+		turnErr = errors.Join(turnErr, r.finishExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, cleanupWorkspace))
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,

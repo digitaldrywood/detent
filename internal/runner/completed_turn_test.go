@@ -770,6 +770,58 @@ func TestNativeImplementTurnDeadlineContinuesUnderSameLease(t *testing.T) {
 	})
 }
 
+type spooledRoundExecution struct {
+	finalizingTestExecution
+	segments      []string
+	finalizations int
+}
+
+func (e *spooledRoundExecution) SpoolArtifactLog(_ context.Context, text string) error {
+	e.segments = append(e.segments, text)
+	return nil
+}
+
+func (e *spooledRoundExecution) FinalizeArtifactsWithSpoolCount(ctx context.Context, directory string, expected int) error {
+	if expected != len(e.segments) {
+		return errors.New("artifact finalization lost a round")
+	}
+	e.finalizations++
+	return e.FinalizeArtifacts(ctx, directory)
+}
+
+func TestArtifactsSealAfterCorrectiveRound(t *testing.T) {
+	info := workspace.Info{Path: t.TempDir()}
+	source := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head"}}}}}
+	execution := &spooledRoundExecution{}
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: source, AgentBackend: &fakeCodexClient{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	request := RunRequest{Execution: execution, artifactSpool: &sourceArtifactSpool{}, finalizeNativeWork: true}
+	var cleanup bool
+	for _, segment := range []string{"initial work", "corrective work"} {
+		request.artifactSpool.chunks++
+		if err := execution.SpoolArtifactLog(ctx, segment); err != nil {
+			t.Fatal(err)
+		}
+		cleanup, err = r.prepareExecutionCompletion(ctx, request, source, info, workspace.Issue{}, AgentResume{}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if execution.finalizations != 0 {
+			t.Fatal("preparing a round sealed the attempt log")
+		}
+	}
+	if err := r.finishExecution(ctx, request, source, info, workspace.Issue{}, cleanup); err != nil {
+		t.Fatal(err)
+	}
+	if execution.finalizations != 1 || strings.Join(execution.segments, ",") != "initial work,corrective work" {
+		t.Fatalf("artifact finalizations=%d segments=%v", execution.finalizations, execution.segments)
+	}
+}
+
 type deadlineRoundExecution struct {
 	finalizingTestExecution
 	validations          int
