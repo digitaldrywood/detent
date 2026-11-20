@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -330,39 +331,36 @@ func TestAgentUpdateFromCodexCarriesCommandCompletionEvidence(t *testing.T) {
 
 func TestAgentBackendOperatorEnforcesConfiguredStallTimeout(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	transport := newBlockingAppServerTransport([]Message{
-		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-stall"}}`),
-		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
-		responseMessage(t, 3, `{"turn":{"id":"turn-stall"}}`),
-	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport},
-		WithReadTimeout(time.Second),
-		WithTurnTimeout(time.Hour),
-	)
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
-	backend, err := NewAgentBackend(server, OptionsFromConfig(config.CodexOptions{
-		StallTimeoutMS: 10,
-	}))
-	if err != nil {
-		t.Fatalf("NewAgentBackend() error = %v", err)
-	}
+		transport := newBlockingAppServerTransport([]Message{
+			responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+			responseMessage(t, 2, `{"thread":{"id":"thread-stall"}}`),
+			responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+			responseMessage(t, 3, `{"turn":{"id":"turn-stall"}}`),
+		})
+		server, err := NewAppServer(staticTransportFactory{transport: transport},
+			WithReadTimeout(time.Second),
+			WithTurnTimeout(time.Hour),
+		)
+		if err != nil {
+			t.Fatalf("NewAppServer() error = %v", err)
+		}
+		backend, err := NewAgentBackend(server, OptionsFromConfig(config.CodexOptions{
+			StallTimeoutMS: 10,
+		}))
+		if err != nil {
+			t.Fatalf("NewAgentBackend() error = %v", err)
+		}
 
-	factory := newControlledTimeoutFactory()
-	server.timeoutContext = factory.context
-	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, ErrStreamStalled, func() error {
-		_, runErr := backend.RunTurnWithTools(context.Background(), runner.AgentTurnRequest{
+		_, err = backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{
 			Workspace: "/tmp/detent-workspace",
 			Prompt:    "stall",
 		}, []runner.AgentTool{{Name: "board_state", InputSchema: json.RawMessage(`{"type":"object"}`)}}, nil, nil)
-		return runErr
+		if !errors.Is(err, ErrStreamStalled) {
+			t.Fatalf("RunTurnWithTools() error = %v, want configured ErrStreamStalled", err)
+		}
 	})
-	if !errors.Is(err, ErrStreamStalled) {
-		t.Fatalf("RunTurnWithTools() error = %v, want configured ErrStreamStalled", err)
-	}
 }
 
 func TestAgentBackendToolTurnUsesRestrictedSandbox(t *testing.T) {
@@ -657,18 +655,25 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 	for _, tt := range []struct {
 		name                                      string
 		resume, tools, supplemental, readOnly     bool
+		registered                                bool
+		traffic                                   string
 		turnTimeout, cancelAfter, commandDuration time.Duration
 		wantErr                                   error
 		wantElapsed                               time.Duration
 	}{
-		{name: "new worker", wantElapsed: 45 * time.Minute},
-		{name: "resumed worker", resume: true, wantElapsed: 45 * time.Minute},
-		{name: "supplemental worker", tools: true, supplemental: true, wantElapsed: 45 * time.Minute},
-		{name: "read-only worker", readOnly: true, wantElapsed: 45 * time.Minute},
+		{name: "quiet without a command", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
+		{name: "unrelated traffic", tools: true, traffic: "unrelated", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
+		{name: "replayed completion", tools: true, traffic: "replay", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
+		{name: "current activity", tools: true, traffic: "current", wantElapsed: 8 * time.Minute},
+		{name: "busy command exceeds deadline", tools: true, registered: true, traffic: "busy", turnTimeout: 6 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: 6 * time.Minute},
+		{name: "registered quiet command", tools: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "resumed worker", resume: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "supplemental worker", tools: true, supplemental: true, registered: true, wantElapsed: 45 * time.Minute},
+		{name: "read-only worker", readOnly: true, registered: true, wantElapsed: 45 * time.Minute},
 		{name: "operator keeps stall limit", tools: true, wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
-		{name: "worker keeps stream limit", turnTimeout: 10 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: 10 * time.Minute},
-		{name: "worker keeps default stream limit", commandDuration: 70 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: time.Hour},
-		{name: "worker cancellation", cancelAfter: 7 * time.Minute, wantErr: context.Canceled, wantElapsed: 7 * time.Minute},
+		{name: "worker keeps stream limit", turnTimeout: 10 * time.Minute, registered: true, wantErr: context.DeadlineExceeded, wantElapsed: 10 * time.Minute},
+		{name: "worker keeps default stream limit", commandDuration: 70 * time.Minute, registered: true, wantErr: context.DeadlineExceeded, wantElapsed: time.Hour},
+		{name: "worker cancellation", cancelAfter: 7 * time.Minute, registered: true, wantErr: context.Canceled, wantElapsed: 7 * time.Minute},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -682,12 +687,42 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 				if duration == 0 {
 					duration = 45 * time.Minute
 				}
-				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport([]Message{
+				messages := []Message{
 					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
 					rolloutResponseMessage(t, threadRequest, `{"thread":{"id":"thread-1","model":"gpt-6-astra"}}`, nil),
 					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
-					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-				}), delay: duration}
+				}
+				if tt.registered {
+					messages = append(messages, notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"command-1","type":"commandExecution","command":"make test","status":"inProgress"}}`))
+				}
+				delays := map[int]time.Duration{}
+				switch tt.traffic {
+				case "unrelated":
+					for range 3 {
+						delays[len(messages)] = 4 * time.Minute
+						messages = append(messages, notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-2","turnId":"turn-1","itemId":"text","delta":"unrelated"}`))
+					}
+				case "replay":
+					message := notificationMessage(t, "item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-1","type":"mcpToolCall","tool":"read_item","status":"completed"}}`)
+					messages = append(messages, message)
+					for range 3 {
+						delays[len(messages)] = 4 * time.Minute
+						messages = append(messages, message)
+					}
+				case "current":
+					delays[len(messages)] = 4 * time.Minute
+					messages = append(messages, notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"text","delta":"active"}`))
+					delays[len(messages)] = 4 * time.Minute
+				case "busy":
+					for i := range 4 {
+						delays[len(messages)] = 2 * time.Minute
+						messages = append(messages, notificationMessage(t, "item/commandExecution/outputDelta", fmt.Sprintf(`{"threadId":"thread-1","turnId":"turn-1","itemId":"command-1","delta":"%d"}`, i)))
+					}
+				default:
+					delays[len(messages)] = duration
+				}
+				messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+				transport := &quietCommandTransport{fakeAppServerTransport: newFakeAppServerTransport(messages), delays: delays}
 				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Hour))
 				if err != nil {
 					t.Fatal(err)
@@ -742,12 +777,13 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 
 type quietCommandTransport struct {
 	*fakeAppServerTransport
-	delay time.Duration
+	delays    map[int]time.Duration
+	nextIndex int
 }
 
 func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
-	if len(t.received) == 1 {
-		timer := time.NewTimer(t.delay)
+	if delay := t.delays[t.nextIndex]; delay > 0 {
+		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
@@ -755,6 +791,7 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 		case <-timer.C:
 		}
 	}
+	t.nextIndex++
 	return t.fakeAppServerTransport.Receive(ctx)
 }
 

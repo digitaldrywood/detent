@@ -188,10 +188,8 @@ func (b *AgentBackend) runTurn(
 	if req.SupplementalTools {
 		instructionTools = nil
 	}
-	stallTimeout := b.options.StallTimeout
 	var terminalTimeout time.Duration
 	if len(instructionTools) == 0 {
-		stallTimeout = 0
 		terminalTimeout = terminalWaitTimeout
 	}
 	var finalText strings.Builder
@@ -224,7 +222,7 @@ func (b *AgentBackend) runTurn(
 		ServiceTier:             req.ServiceTier,
 		ReasoningEffort:         req.ReasoningEffort,
 		TurnTimeout:             req.TurnTimeout,
-		StallTimeout:            stallTimeout,
+		StallTimeout:            b.options.StallTimeout,
 		TerminalWaitTimeout:     terminalTimeout,
 		DynamicTools:            tools,
 		ToolHandler:             toolHandler,

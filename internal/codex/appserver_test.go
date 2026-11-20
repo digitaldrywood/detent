@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 func TestAppServerEarlyTurnRejection(t *testing.T) {
@@ -64,7 +65,9 @@ func TestAppServerEarlyTurnRejection(t *testing.T) {
 						return nil
 					}
 					if streaming {
-						err = server.streamTurn(t.Context(), transport, "thread-1", "turn-1", time.Minute, 0, nil, nil, observe)
+						lifetime := sessiontimeout.Start(t.Context(), 0, time.Minute, nil)
+						defer lifetime.Close()
+						err = server.streamTurn(lifetime, transport, "thread-1", "turn-1", nil, nil, observe)
 					} else {
 						_, err = server.startTurn(t.Context(), transport, turnStartRequestID, RunTurnRequest{}, "thread-1", nil, observe)
 					}
@@ -1662,210 +1665,73 @@ func TestUpdateFromMessageCapturesThreadSettingsIdentity(t *testing.T) {
 
 func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	transport := newBlockingAppServerTransport([]Message{
-		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-timeout"}}`),
-		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
-		responseMessage(t, 3, `{"turn":{"id":"turn-timeout"}}`),
-	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport},
-		WithReadTimeout(time.Second),
-		WithTurnTimeout(time.Hour),
-	)
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
+		transport := newBlockingAppServerTransport([]Message{
+			responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+			responseMessage(t, 2, `{"thread":{"id":"thread-timeout"}}`),
+			responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+			responseMessage(t, 3, `{"turn":{"id":"turn-timeout"}}`),
+		})
+		server, err := NewAppServer(staticTransportFactory{transport: transport},
+			WithReadTimeout(time.Second),
+			WithTurnTimeout(time.Hour),
+		)
+		if err != nil {
+			t.Fatalf("NewAppServer() error = %v", err)
+		}
 
-	factory := newControlledTimeoutFactory()
-	server.timeoutContext = factory.context
-	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, nil, func() error {
-		_, runErr := server.RunTurn(context.Background(), RunTurnRequest{
+		started := time.Now()
+		_, err = server.RunTurn(t.Context(), RunTurnRequest{
 			Workspace:   "/tmp/detent-workspace",
 			Prompt:      "timeout",
 			TurnTimeout: 10 * time.Millisecond,
 		}, nil)
-		return runErr
+		if elapsed := time.Since(started); elapsed != 10*time.Millisecond {
+			t.Fatalf("turn elapsed %s, want 10ms", elapsed)
+		}
+		if err == nil {
+			t.Fatal("RunTurn() error = nil, want request timeout")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RunTurn() error = %v, want context deadline exceeded", err)
+		}
+		if errors.Is(err, ErrStreamStalled) {
+			t.Fatalf("RunTurn() error = %v, want disabled stall timeout", err)
+		}
 	})
-	if err == nil {
-		t.Fatal("RunTurn() error = nil, want request timeout")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("RunTurn() error = %v, want context deadline exceeded", err)
-	}
-	if errors.Is(err, ErrStreamStalled) {
-		t.Fatalf("RunTurn() error = %v, want disabled stall timeout", err)
-	}
 }
 
 func TestAppServerRunTurnEnforcesStallTimeout(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
 
-	transport := newBlockingAppServerTransport([]Message{
-		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-stall"}}`),
-		responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
-		responseMessage(t, 3, `{"turn":{"id":"turn-stall"}}`),
-	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport},
-		WithReadTimeout(time.Second),
-		WithTurnTimeout(time.Hour),
-	)
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
+		transport := newBlockingAppServerTransport([]Message{
+			responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+			responseMessage(t, 2, `{"thread":{"id":"thread-stall"}}`),
+			responseMessage(t, 5, `{"config":{"model":"gpt-5.6"}}`),
+			responseMessage(t, 3, `{"turn":{"id":"turn-stall"}}`),
+		})
+		server, err := NewAppServer(staticTransportFactory{transport: transport},
+			WithReadTimeout(time.Second),
+			WithTurnTimeout(time.Hour),
+		)
+		if err != nil {
+			t.Fatalf("NewAppServer() error = %v", err)
+		}
 
-	factory := newControlledTimeoutFactory()
-	server.timeoutContext = factory.context
-	err = runWithTimeoutExpiration(t, factory, 10*time.Millisecond, ErrStreamStalled, func() error {
-		_, runErr := server.RunTurn(context.Background(), RunTurnRequest{
+		_, err = server.RunTurn(t.Context(), RunTurnRequest{
 			Workspace:    "/tmp/detent-workspace",
 			Prompt:       "stall",
 			StallTimeout: 10 * time.Millisecond,
 		}, nil)
-		return runErr
+		if !errors.Is(err, ErrStreamStalled) {
+			t.Fatalf("RunTurn() error = %v, want ErrStreamStalled", err)
+		}
+		if !strings.Contains(err.Error(), "after 10ms") {
+			t.Fatalf("RunTurn() error = %v, want configured stall duration", err)
+		}
 	})
-	if !errors.Is(err, ErrStreamStalled) {
-		t.Fatalf("RunTurn() error = %v, want ErrStreamStalled", err)
-	}
-	if !strings.Contains(err.Error(), "after 10ms") {
-		t.Fatalf("RunTurn() error = %v, want configured stall duration", err)
-	}
-}
-
-func TestAppServerStreamTurnResetsStallTimeoutAfterActivity(t *testing.T) {
-	t.Parallel()
-
-	transport := &deadlineRecordingAppServerTransport{
-		fakeAppServerTransport: newFakeAppServerTransport([]Message{
-			notificationMessage(t, "item/agentMessage/delta", `{
-				"threadId":"thread-1",
-				"turnId":"turn-1",
-				"itemId":"item-1",
-				"delta":"still working"
-			}`),
-			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-		}),
-	}
-	server, err := NewAppServer(staticTransportFactory{transport: transport})
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
-
-	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Hour, time.Second, nil, nil, nil); err != nil {
-		t.Fatalf("streamTurn() error = %v", err)
-	}
-	if len(transport.deadlines) != 2 {
-		t.Fatalf("Receive() deadlines = %v, want two stall deadlines", transport.deadlines)
-	}
-	if !transport.deadlines[1].After(transport.deadlines[0]) {
-		t.Fatalf("Receive() deadlines = %v, want activity to reset stall deadline", transport.deadlines)
-	}
-}
-
-func TestAppServerStreamTurnResetsTurnTimeoutAfterActivity(t *testing.T) {
-	t.Parallel()
-
-	transport := &deadlineRecordingAppServerTransport{
-		fakeAppServerTransport: newFakeAppServerTransport([]Message{
-			notificationMessage(t, "item/agentMessage/delta", `{
-				"threadId":"thread-1",
-				"turnId":"turn-1",
-				"itemId":"item-1",
-				"delta":"still working"
-			}`),
-			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
-		}),
-	}
-	server, err := NewAppServer(staticTransportFactory{transport: transport})
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
-
-	if err := server.streamTurn(context.Background(), transport, "thread-1", "turn-1", time.Second, 0, nil, nil, nil); err != nil {
-		t.Fatalf("streamTurn() error = %v", err)
-	}
-	if len(transport.deadlines) != 2 {
-		t.Fatalf("Receive() deadlines = %v, want two turn timeout deadlines", transport.deadlines)
-	}
-	if !transport.deadlines[1].After(transport.deadlines[0]) {
-		t.Fatalf("Receive() deadlines = %v, want activity to reset turn timeout deadline", transport.deadlines)
-	}
-}
-
-func TestReceiveTurnMessageTimeoutSelection(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		context      func() context.Context
-		turnTimeout  time.Duration
-		stallTimeout time.Duration
-		want         error
-		wantStall    bool
-	}{
-		{
-			name:        "stall disabled",
-			context:     context.Background,
-			turnTimeout: 10 * time.Millisecond,
-			want:        context.DeadlineExceeded,
-		},
-		{
-			name:         "turn timeout is shorter",
-			context:      context.Background,
-			turnTimeout:  10 * time.Millisecond,
-			stallTimeout: time.Hour,
-			want:         context.DeadlineExceeded,
-		},
-		{
-			name:         "stall timeout is shorter",
-			context:      context.Background,
-			turnTimeout:  time.Hour,
-			stallTimeout: 10 * time.Millisecond,
-			want:         ErrStreamStalled,
-			wantStall:    true,
-		},
-		{
-			name: "parent canceled",
-			context: func() context.Context {
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-				return ctx
-			},
-			turnTimeout:  time.Hour,
-			stallTimeout: time.Second,
-			want:         context.Canceled,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			transport := newBlockingAppServerTransport(nil)
-			factory := newControlledTimeoutFactory()
-			run := func() error {
-				_, err := receiveTurnMessage(tt.context(), transport, tt.turnTimeout, tt.stallTimeout, factory.context)
-				return err
-			}
-			var err error
-			if errors.Is(tt.want, context.Canceled) {
-				err = run()
-			} else {
-				timeout := tt.turnTimeout
-				var cause error
-				if tt.stallTimeout > 0 && (tt.turnTimeout <= 0 || tt.stallTimeout <= tt.turnTimeout) {
-					timeout = tt.stallTimeout
-					cause = ErrStreamStalled
-				}
-				err = runWithTimeoutExpiration(t, factory, timeout, cause, run)
-			}
-			if !errors.Is(err, tt.want) {
-				t.Fatalf("receiveTurnMessage() error = %v, want %v", err, tt.want)
-			}
-			if got := errors.Is(err, ErrStreamStalled); got != tt.wantStall {
-				t.Fatalf("receiveTurnMessage() ErrStreamStalled = %t, want %t", got, tt.wantStall)
-			}
-		})
-	}
 }
 
 func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
@@ -2986,20 +2852,6 @@ func (t *blockingAppServerTransport) Receive(ctx context.Context) (Message, erro
 	}
 	<-ctx.Done()
 	return Message{}, ctx.Err()
-}
-
-type deadlineRecordingAppServerTransport struct {
-	*fakeAppServerTransport
-	deadlines []time.Time
-}
-
-func (t *deadlineRecordingAppServerTransport) Receive(ctx context.Context) (Message, error) {
-	deadline, ok := ctx.Deadline()
-	if ok {
-		t.deadlines = append(t.deadlines, deadline)
-	}
-	time.Sleep(time.Millisecond)
-	return t.fakeAppServerTransport.Receive(ctx)
 }
 
 func rolloutResponseMessage(t *testing.T, id int, result string, tools []DynamicTool) Message {

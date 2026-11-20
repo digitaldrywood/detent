@@ -2,10 +2,12 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync"
 
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,6 +31,9 @@ type toolTransport struct {
 	mu         sync.Mutex
 	pending    []Message
 	unresolved bool
+	threadID   string
+	turnID     string
+	lifetime   *sessiontimeout.Session
 }
 
 func newToolTransport(ctx context.Context, transport Transport, handler DynamicToolHandler, logger *slog.Logger) *toolTransport {
@@ -73,6 +78,30 @@ func (t *toolTransport) receiveMessage(toolCtx, ctx context.Context) (Message, e
 	}
 }
 
+func (t *toolTransport) observeTurn(threadID, turnID string, lifetime *sessiontimeout.Session) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.threadID, t.turnID, t.lifetime = threadID, turnID, lifetime
+}
+
+func (t *toolTransport) observeCall(msg Message) (*sessiontimeout.Session, string) {
+	if t.lifetime == nil {
+		return nil, ""
+	}
+	var scope struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+	}
+	if json.Unmarshal(msg.Params, &scope) != nil || scope.ThreadID != t.threadID || scope.TurnID != t.turnID {
+		return nil, ""
+	}
+	id := scope.ThreadID + "/" + scope.TurnID + "/" + string(msg.ID)
+	if !t.lifetime.Event("tool/call/" + id) {
+		return nil, ""
+	}
+	return t.lifetime, id
+}
+
 func (t *toolTransport) run(ctx context.Context) {
 	defer close(t.done)
 	for {
@@ -95,11 +124,15 @@ func (t *toolTransport) run(ctx context.Context) {
 		t.pending[0] = Message{}
 		t.pending = t.pending[1:]
 		t.unresolved = true
+		lifetime, callID := t.observeCall(msg)
 		t.mu.Unlock()
 		_, err := handleServerRequest(ctx, t, msg, t.handler, nil, t.logger)
 		t.mu.Lock()
 		if err == nil && ctx.Err() == nil {
 			t.unresolved = false
+			if lifetime != nil {
+				lifetime.Event("tool/result/" + callID)
+			}
 		}
 		t.mu.Unlock()
 		if err != nil && ctx.Err() == nil {

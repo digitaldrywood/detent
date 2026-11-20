@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
@@ -26,10 +27,26 @@ func (b *AgentBackend) RunTurn(
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (turnResult runner.AgentTurnResult, turnErr error) {
-	return b.runTurn(ctx, req, onUpdate, false)
+	lifetime := b.startSession(ctx, req)
+	defer lifetime.Close()
+	result, err := b.runTurn(lifetime, req, onUpdate, false)
+	return result, lifetime.Result(err)
 }
 
-func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler, finalizing bool) (turnResult runner.AgentTurnResult, turnErr error) {
+func (b *AgentBackend) startSession(ctx context.Context, req runner.AgentTurnRequest) *sessiontimeout.Session {
+	turnTimeout := b.options.TurnTimeout
+	if req.TurnTimeout > 0 {
+		turnTimeout = req.TurnTimeout
+	}
+	stallTimeout := b.options.StallTimeout
+	if stallTimeout <= 0 {
+		stallTimeout = sessiontimeout.DefaultIdle
+	}
+	return sessiontimeout.Start(contextOrBackground(ctx), stallTimeout, turnTimeout, nil)
+}
+
+func (b *AgentBackend) runTurn(lifetime *sessiontimeout.Session, req runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler, finalizing bool) (turnResult runner.AgentTurnResult, turnErr error) {
+	ctx := lifetime.Context()
 	if req.ToolBudget != nil {
 		previous := onUpdate
 		onUpdate = func(update runner.AgentUpdate) error {
@@ -46,26 +63,6 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 			return nil
 		}
 	}
-	ctx = contextOrBackground(ctx)
-	turnTimeout := b.options.TurnTimeout
-	if req.TurnTimeout > 0 {
-		turnTimeout = req.TurnTimeout
-	}
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return runner.AgentTurnResult{}, context.DeadlineExceeded
-		}
-		if turnTimeout <= 0 || remaining < turnTimeout {
-			turnTimeout = remaining
-		}
-	}
-	if turnTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, turnTimeout)
-		defer cancel()
-	}
-
 	cmd, sandboxSettings, err := b.commandWithIsolation(ctx, req)
 	if err != nil {
 		return runner.AgentTurnResult{}, err
@@ -183,7 +180,7 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 		}
 		streamOutput = reader
 	}
-	state, streamErr := b.consumeStream(ctx, cmd, processGroupID, streamOutput, onUpdate)
+	state, streamErr := b.consumeStream(lifetime, cmd, processGroupID, streamOutput, req.Resume.SessionID, onUpdate)
 	waitErr := <-waitDone
 	if stderrErr := <-stderrDone; stderrErr != nil {
 		waitErr = errors.Join(waitErr, fmt.Errorf("read claude stderr: %w", stderrErr))
@@ -201,7 +198,7 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 		result.CostSource = "backend_result"
 	}
 	if streamErr != nil {
-		return result, errors.Join(streamErr, closeErr)
+		return result, errors.Join(streamErr, waitErr, closeErr)
 	}
 
 	finalErr := finalTurnError(ctx, state, waitErr, stderr.String())
@@ -212,7 +209,8 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 		req.Resume = runner.AgentResume{SessionID: state.sessionID}
 		req.Prompt = req.ToolBudget.FinalPrompt(ctx)
 		req.MaxTurns = 1
-		return b.runTurn(ctx, req, onUpdate, true)
+		lifetime.Activity()
+		return b.runTurn(lifetime, req, onUpdate, true)
 	}
 	status := runner.FinalStateCompleted
 	if finalErr != nil {
@@ -444,99 +442,63 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 }
 
 func (b *AgentBackend) consumeStream(
-	ctx context.Context,
+	lifetime *sessiontimeout.Session,
 	cmd *exec.Cmd,
 	processGroupID int,
 	stdout io.Reader,
+	sessionID string,
 	onUpdate runner.AgentUpdateHandler,
 ) (turnState, error) {
-	items := scanClaudeStream(ctx, stdout, b.options.MaxScanTokenSize)
+	ctx := lifetime.Context()
+	scanCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	items := scanClaudeStream(scanCtx, stdout, b.options.MaxScanTokenSize)
 	state := turnState{}
-	var streamErr error
-	ctxDone := ctx.Done()
-	stallTimer := newStallTimer(b.options.StallTimeout)
-	stallC := stallTimerChannel(stallTimer)
-	defer stopStallTimer(stallTimer)
-
-	for items != nil {
+	for {
 		select {
-		case <-ctxDone:
-			streamErr = ctx.Err()
-			streamErr = terminateWithCause(cmd, processGroupID, streamErr)
-			ctxDone = nil
-			stallC = nil
-		case <-stallC:
-			streamErr = fmt.Errorf("%w after %s", ErrStreamStalled, b.options.StallTimeout)
-			streamErr = terminateWithCause(cmd, processGroupID, streamErr)
-			stallC = nil
-			ctxDone = nil
+		case <-ctx.Done():
+			err := terminateWithCause(cmd, processGroupID, context.Cause(ctx))
+			cancel()
+			for range items {
+			}
+			return state, err
 		case item, ok := <-items:
 			if !ok {
-				items = nil
+				return state, nil
+			}
+			if ctx.Err() != nil {
 				continue
 			}
-			if streamErr != nil {
-				continue
+			err := item.err
+			if err == nil {
+				event := item.event
+				init := event.Type == "init" || event.Type == "system" && event.Subtype == "init"
+				expected := state.sessionID
+				if expected == "" && !init {
+					expected = sessionID
+				}
+				if event.SessionID != "" && expected != "" && event.SessionID != expected {
+					continue
+				}
+				state.observeActivity(lifetime, item.event)
+				err = state.apply(item.event, b.options.IncludePartialMessages, onUpdate)
 			}
-			if item.err != nil {
-				streamErr = item.err
-				streamErr = terminateWithCause(cmd, processGroupID, streamErr)
-				ctxDone = nil
-				stallC = nil
-				continue
-			}
-			resetStallTimer(stallTimer, b.options.StallTimeout)
-			if err := state.apply(item.event, b.options.IncludePartialMessages, onUpdate); err != nil {
-				streamErr = err
-				streamErr = terminateWithCause(cmd, processGroupID, streamErr)
-				ctxDone = nil
-				stallC = nil
+			if err != nil {
+				err = terminateWithCause(cmd, processGroupID, err)
+				cancel()
+				for range items {
+				}
+				return state, err
 			}
 		}
 	}
-
-	return state, streamErr
 }
 
 func terminateWithCause(cmd *exec.Cmd, processGroupID int, cause error) error {
 	if err := procgroup.TerminateTree(cmd, processGroupID); err != nil {
-		return errors.Join(cause, fmt.Errorf("terminate claude process tree: %w", err))
+		return errors.Join(cause, runner.ErrWorkerProcessReap, fmt.Errorf("terminate claude process tree: %w", err))
 	}
 	return cause
-}
-
-func newStallTimer(timeout time.Duration) *time.Timer {
-	if timeout <= 0 {
-		return nil
-	}
-	return time.NewTimer(timeout)
-}
-
-func stallTimerChannel(timer *time.Timer) <-chan time.Time {
-	if timer == nil {
-		return nil
-	}
-	return timer.C
-}
-
-func resetStallTimer(timer *time.Timer, timeout time.Duration) {
-	if timer == nil || timeout <= 0 {
-		return
-	}
-	stopStallTimer(timer)
-	timer.Reset(timeout)
-}
-
-func stopStallTimer(timer *time.Timer) {
-	if timer == nil {
-		return
-	}
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
 }
 
 func waitAndCleanup(ctx context.Context, cmd *exec.Cmd, processGroupID int, startedAt time.Time) error {
@@ -549,7 +511,7 @@ func waitAndCleanup(ctx context.Context, cmd *exec.Cmd, processGroupID int, star
 func waitAndCleanupWith(cmd *exec.Cmd, processGroupID int, cleanup func(int) error) error {
 	err := cmd.Wait()
 	if cleanupErr := cleanup(processGroupID); cleanupErr != nil {
-		err = errors.Join(err, fmt.Errorf("clean up claude process group %d after %s: %w", processGroupID, cmd.ProcessState, cleanupErr))
+		err = errors.Join(err, runner.ErrWorkerProcessReap, fmt.Errorf("clean up claude process group %d after %s: %w", processGroupID, cmd.ProcessState, cleanupErr))
 	}
 	return err
 }
