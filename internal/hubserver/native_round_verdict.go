@@ -12,6 +12,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -49,7 +50,7 @@ func validRoundPublication(input progresscheck.Publication) bool {
 		strings.TrimSpace(input.IdempotencyKey) == "" || len(input.IdempotencyKey) > 256 ||
 		input.AttemptID == "" || input.PolicyID == "" || input.LeaseID == "" || input.FencingToken <= 0 ||
 		!nativePhaseName.MatchString(input.Phase) || hasSource && !validNativeGitSource(input.HeadSHA, input.TreeSHA) ||
-		len(input.FailureSignature) > 256 || len(input.Reason) > 512 || len(input.Criteria) > progresscheck.MaxReceipts {
+		input.ProviderTimeout != nil && !input.ProviderTimeout.Valid() || len(input.FailureSignature) > 256 || len(input.Reason) > 512 || len(input.Criteria) > progresscheck.MaxReceipts {
 		return false
 	}
 	raw, err := json.Marshal(input.RoundInput)
@@ -313,6 +314,7 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 	record := progresscheck.RoundVerdict{
 		RoundInput: input.RoundInput, LeaseID: input.LeaseID, FencingToken: input.FencingToken,
 		AttemptID: input.AttemptID, PolicyID: input.PolicyID, PreviousRoundID: facts.previousRound,
+		ObservedAt: o.service.config.Clock().UTC(),
 	}
 	if record.Reason == "" {
 		record.Reason = record.FailureSignature
@@ -360,7 +362,7 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 	if !exactCommand || command.ReceiptID == "" {
 		return record, nil
 	}
-	previous, err := o.criterionHistory(ctx, facts.previous, input.PolicyID, record.CriteriaRevision, criteria)
+	statuses, previous, err := o.criterionHistory(ctx, facts.previous, input.PolicyID, record.CriteriaRevision, criteria)
 	if err != nil {
 		return record, err
 	}
@@ -368,7 +370,7 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		if entry.RestatesImplementation || !slices.Contains(criteria, entry.Criterion) || len(entry.ReceiptIDs) != 1 || entry.ReceiptIDs[0] != command.ReceiptID {
 			continue
 		}
-		previouslyVerified := previous[entry.Criterion]
+		previouslyVerified := statuses[entry.Criterion]
 		if command.ExitCode == 0 && entry.Kind == gate.EvidenceReceipt && entry.HeadSHA == input.HeadSHA &&
 			entry.TreeSHA == input.TreeSHA && strings.TrimSpace(entry.Behavior) != "" && strings.TrimSpace(entry.Reference) != "" {
 			if !slices.Contains(record.VerifiedCriteria, entry.Criterion) {
@@ -383,16 +385,22 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 			record.Regressed = record.Regressed || previouslyVerified
 		}
 	}
+	recordRoundProgress(&record, previous, command, previous.PolicyID == record.PolicyID && previous.CriteriaRevision == record.CriteriaRevision)
+
 	return record, nil
 }
 
-func (o nativeRoundOwner) criterionHistory(ctx context.Context, row eventstore.Receipt, policyID, criteriaRevision string, criteria []string) (map[string]bool, error) {
+func (o nativeRoundOwner) criterionHistory(ctx context.Context, row eventstore.Receipt, policyID, criteriaRevision string, criteria []string) (map[string]bool, progresscheck.RoundVerdict, error) {
 	const maxRounds = 32
 	previous := make(map[string]bool, len(criteria))
+	var latest progresscheck.RoundVerdict
 	for i := 0; i < maxRounds && row.CommandKey != ""; i++ {
 		record, err := o.load(ctx, row)
 		if err != nil {
-			return nil, err
+			return nil, latest, err
+		}
+		if i == 0 {
+			latest = record
 		}
 		if record.PolicyID != policyID || record.CriteriaRevision != criteriaRevision {
 			break
@@ -416,10 +424,58 @@ func (o nativeRoundOwner) criterionHistory(ctx context.Context, row eventstore.R
 			return err
 		})
 		if err != nil {
-			return nil, err
+			return nil, latest, err
 		}
 	}
-	return previous, nil
+	return previous, latest, nil
+}
+
+func recordRoundProgress(record *progresscheck.RoundVerdict, previous progresscheck.RoundVerdict, command *gate.CommandResult, comparable bool) {
+	if comparable {
+		record.RecentDiagnostics = slices.Clone(previous.RecentDiagnostics)
+	}
+	if command.OutputTruncated || command.ExitCode == 0 {
+		return
+	}
+	if signature := verifiedRoundDiagnostic(command); signature != "" && !slices.Contains(record.RecentDiagnostics, signature) {
+		record.DiagnosticReceipt = command.ReceiptID
+		record.RecentDiagnostics = recentRoundEvidence(record.RecentDiagnostics, signature)
+	}
+	if record.FailureSignature == "" || len(record.FailedCriteria) == 0 || record.Advanced {
+		return
+	}
+	if comparable {
+		record.RecentFailures = slices.Clone(previous.RecentFailures)
+		if len(record.RecentFailures) == 0 && len(previous.FailedCriteria) > 0 && previous.FailureSignature != "" {
+			record.RecentFailures = append(record.RecentFailures, previous.FailureSignature)
+		}
+	}
+	record.CirclingCandidate = !record.Regressed && record.DiagnosticReceipt == "" && slices.Contains(record.RecentFailures, record.FailureSignature)
+	record.RecentFailures = recentRoundEvidence(record.RecentFailures, record.FailureSignature)
+}
+
+func recentRoundEvidence(previous []string, evidence string) []string {
+	const limit = 6
+	previous = append(previous, evidence)
+	return previous[max(0, len(previous)-limit):]
+}
+
+func verifiedRoundDiagnostic(command *gate.CommandResult) string {
+	base := command.BaseReproduction
+	if base == nil {
+		return ""
+	}
+	head := gate.CommandObservation(*command)
+	for _, finding := range command.Findings {
+		if finding.CheckCommand != head.Command {
+			continue
+		}
+		outcome, proof := failureattribution.Classify(base.HeadSHA, head.HeadSHA, finding.CheckDiagnostic, head, *base)
+		if proof != nil {
+			return failureattribution.Digest(strings.Join([]string{outcome, proof.Command, proof.Diagnostic, proof.BaseSHA}, "\n"))
+		}
+	}
+	return ""
 }
 
 func (o nativeRoundOwner) completion(ctx context.Context, input progresscheck.Publication, facts nativeRoundFacts, issue tracker.NativeIssue, attempt tracker.NativeAttempt, content *eventstore.Content) (string, error) {

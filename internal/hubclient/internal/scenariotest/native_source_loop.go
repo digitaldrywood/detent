@@ -32,6 +32,8 @@ type sourceRepairAgent struct {
 	roundVerdicts  int
 	deadlineRound  string
 	deadlineRounds int
+	repeatRemedy   bool
+	incidents      int
 	timedOut       int
 	timedOutPath   string
 	oldWriter      procgroup.Identity
@@ -89,6 +91,9 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 			action, next = "done", ""
 		}
 		reason := fmt.Sprintf("Fixture evaluated the passing and failing checks in round %d.", a.roundVerdicts)
+		if a.repeatRemedy && a.roundVerdicts <= a.deadlineRounds {
+			reason = "Retry the same unavailable tool."
+		}
 		body := fmt.Sprintf(`{"action":%q,"next_phase":%q,"reason":%q}`, action, next, reason)
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
 	}
@@ -220,6 +225,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		land           bool
 		deadlineRound  string
 		deadlineRounds int
+		repeatRemedy   bool
 		wantVersions   int
 		wantCalls      int
 		wantReviewed   bool
@@ -230,6 +236,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "quiet session restart", deadlineRound: "idle", deadlineRounds: 2, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
+		{name: "repeated timeout files one incident", deadlineRound: "idle", deadlineRounds: 3, repeatRemedy: true, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "busy round review", deadlineRound: "review", deadlineRounds: 1, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
@@ -272,7 +279,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			}
 			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
 			sessions := api.NewRunnerSessions(h.native)
-			provider := &sourceRepairAgent{deadlineRound: test.deadlineRound, deadlineRounds: test.deadlineRounds, gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{deadlineRound: test.deadlineRound, deadlineRounds: test.deadlineRounds, repeatRemedy: test.repeatRemedy, gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			t.Cleanup(func() {
 				if provider.oldWait != nil {
 					if err := provider.oldInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
@@ -299,9 +306,25 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				defer closePeers()
 				runExecution = remote
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: test.land})
+			request := runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: test.land}
+			if test.repeatRemedy {
+				request.AgentToolHandler = func(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
+					var incident struct {
+						Fingerprint string `json:"fingerprint"`
+					}
+					if call.Name != "file_machine_issue" || json.Unmarshal(call.Arguments, &incident) != nil || incident.Fingerprint == "" {
+						return runner.AgentToolResult{}, fmt.Errorf("unexpected timeout incident: %v", call)
+					}
+					provider.incidents++
+					return runner.AgentToolResult{Success: true}, nil
+				}
+			}
+			result, err := agent.Run(t.Context(), request)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.repeatRemedy && provider.incidents != 1 {
+				t.Errorf("repeated recovery filed %d machine incidents, want one", provider.incidents)
 			}
 			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns > 1 {
 				t.Fatalf("workspace lifecycle: before=%d after=%d", loopWorkspace.beforeRuns, loopWorkspace.afterRuns)
