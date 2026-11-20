@@ -604,8 +604,12 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request := event.Request
 	request.Execution = o.nativeCompletionExecution(event)
 	_, available := request.Execution.(runpkg.LandingExecution)
+	landing := event.Result.NativeLanding
+	repair := !reviewOnly && landing != nil && landing.Path == "merge_resolution_pending" && landing.RefusalKind == workspace.LandRefusalConflict
 	if reviewOnly {
 		_, available = request.Execution.(runpkg.NativeReviewContinuationExecution)
+	} else if repair {
+		_, available = request.Execution.(runpkg.NativeSourceIterationExecution)
 	}
 	if !available || o.supervisor == nil {
 		return errors.New("native landing execution is unavailable")
@@ -622,7 +626,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 		if !available {
 			return runpkg.ErrModelPermitUnavailable
 		}
-	} else {
+	} else if !repair {
 		slotIssue.State = autoPromoteMergingState
 	}
 	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, o.clockNow(), 0)
@@ -633,12 +637,18 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.Policy = running.Policy
 	request.Mode = runpkg.RunModeMerge
 	request.NativeReviewContinuation = nil
+	request.NativeLandingRework = nil
 	_, ownsWorkspace := request.Execution.(runpkg.AttemptWorkerExecution)
-	request.RetainItemWorkspace = !reviewOnly && ownsWorkspace && event.Result.WorkspaceBranch != ""
+	request.RetainItemWorkspace = !reviewOnly && (request.RetainItemWorkspace || ownsWorkspace && event.Result.WorkspaceBranch != "")
 	if reviewOnly {
 		change := event.Result.NativeChange
 		request.Mode = runpkg.RunModeImplement
 		request.NativeReviewContinuation = &runpkg.NativeReviewContinuation{Source: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: change.HeadSHA}, FinalMessage: event.Result.FinalMessage}
+	} else if repair {
+		request.Mode = runpkg.RunModeImplement
+		request.NativeLandingRework = &tracker.NativeChangeReference{ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA}
+		request.ResumeState = store.AgentResumeState{}
+		request.RetryMode = runpkg.RetryModeFresh
 	}
 	request.Attempt = running.Attempt
 	request.WorkAttemptID = running.WorkAttemptID
@@ -646,6 +656,9 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.WorkerHost = workerHost
 	request.DeferExecutionFinish = true
 	request.AcquireModelPermit = nil
+	if repair {
+		request.AcquireModelPermit = o.modelPermitAcquirer(event.IssueID)
+	}
 	if !reviewOnly {
 		ctx = o.nativeContinuationContext(ctx, &running)
 	}
