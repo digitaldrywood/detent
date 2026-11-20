@@ -132,7 +132,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	}
 	newAgent := func(backend workspace.Backend) *runner.Runner {
 		t.Helper()
-		agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource,
+		agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, ReapWorkerProcess: reapReviewFixtureProcess,
 			Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider,
 			Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
 		})
@@ -480,6 +480,12 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		{Name: "Blocked", Transitions: []string{"Merging"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, factories, backend)
+	repository := nativeChangeRepository
+	if linked {
+		repository = "https://github.com/example-org/example-project"
+	} else {
+		h.configureProjectCheckout(t, repository)
+	}
 	if batch {
 		fixtureConfigureScheduler(t, h, func(config *SchedulerConfig) { config.Machine.Capacity = 6 })
 	}
@@ -557,7 +563,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			return nativeChangeSourceFixture(ctx, t, base, head), nil
 		})
 	}
-	work.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
+	work.(runner.RepositoryExecution).SetRepository(repository)
 	if err := work.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 		t.Fatal(err)
 	}
@@ -977,7 +983,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if !reflect.DeepEqual(target.Validation, &sourceValidation) {
 		t.Fatalf("landing lost source receipt: %#v", target.Validation)
 	}
-	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != nativeChangeRepository || target.GitHubPullRequest != github {
+	if target.ChangeID != change.ChangeID || target.VersionID != change.VersionID || target.HeadSHA != head || target.Method != "squash" || target.Number != 1 || target.Title != "Land me" || target.Repository != repository || target.PublicationRepository != repository+".git" || target.GitHubPullRequest != github {
 		t.Fatalf("landing target = %#v", target)
 	}
 	if linked {

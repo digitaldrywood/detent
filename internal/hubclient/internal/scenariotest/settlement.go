@@ -141,6 +141,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			} else {
 				h = newNativeChangeHub(t, true)
 			}
+			if test.Land || test.MergeResolution || test.IntegrationConflict || test.ReviewDispositions || test.RequiredPR {
+				h.configureProjectCheckout(t, nativeChangeRepository)
+			}
 			if test.IntegrateAudit {
 				previous := h.descriptor.ID
 				h.descriptor.Gates.SecurityAudit = true

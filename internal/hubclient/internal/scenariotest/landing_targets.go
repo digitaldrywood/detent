@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -108,6 +110,15 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		t.Fatal(err)
 	}
 	execution := h.scheduler.RunExecution(issue.ID).(runner.LandingExecution)
+	h.configureProjectCheckout(t, "")
+	if _, err := execution.LandingTarget(t.Context()); err == nil || !strings.Contains(err.Error(), "landing requires a configured project repository") {
+		t.Fatalf("missing project repository: %v", err)
+	}
+	h.configureProjectCheckout(t, "example/other")
+	if _, err := execution.LandingTarget(t.Context()); err == nil || !strings.Contains(err.Error(), "reviewed GitHub repository differs") {
+		t.Fatalf("different project repository: %v", err)
+	}
+	h.configureProjectCheckout(t, nativeChangeRepository)
 	target, err := execution.LandingTarget(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +183,7 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review"}},
 		{Name: "Done", Terminal: true},
 	}, factories)
+	h.configureProjectCheckout(t, nativeChangeRepository)
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -216,4 +228,17 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.WorkItemID, candidates, err)
 	}
+}
+
+func (h *nativeChangeHub) configureProjectCheckout(t *testing.T, repository string) {
+	t.Helper()
+	h.seed(func(w tenantstore.Writer) error {
+		project, err := w.ProjectRecord(t.Context(), h.project)
+		if err != nil {
+			return err
+		}
+		project.Settings.CheckoutRepository = strings.TrimPrefix(repository, "https://github.com/")
+		_, err = w.UpdateProjectRecord(t.Context(), project)
+		return err
+	})
 }

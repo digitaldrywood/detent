@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -124,78 +123,6 @@ func VerifyPublicationRemote(ctx context.Context, path, remote, repository strin
 		return errors.New("the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
 	}
 	return nil
-}
-
-func PushPublication(ctx context.Context, path, repository, refspec string, options ...string) error {
-	args := append([]string{"push", "--no-follow-tags"}, options...)
-	_, err := publicationGit(ctx, path, append(args, "--", repository, refspec)...)
-	return err
-}
-
-func PublicationBranchHead(ctx context.Context, repository, branch string) (string, bool, error) {
-	ref := "refs/heads/" + branch
-	output, err := ReadPublicationRefs(ctx, repository, false, ref)
-	if err != nil {
-		return "", false, err
-	}
-	return parseRemoteBranchHead(output, ref)
-}
-
-func ReadPublicationRefs(ctx context.Context, repository string, symref bool, refs ...string) (string, error) {
-	args := []string{"ls-remote"}
-	if symref {
-		args = append(args, "--symref")
-	}
-	return publicationGit(ctx, "", append(append(args, "--", repository), refs...)...)
-}
-
-func publicationEnvironment() []string {
-	source := os.Environ()
-	env := make([]string, 0, len(source)+4)
-	for _, entry := range source {
-		if !strings.HasPrefix(strings.ToUpper(entry), "GIT_") {
-			env = append(env, entry)
-		}
-	}
-	return append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1")
-}
-
-func ReadPublicationSource(ctx context.Context, path string, args ...string) (string, error) {
-	return withCommandEnvironment(ctx, path, publicationEnvironment(), true, "", RunCommand, args...)
-}
-
-func publicationGit(ctx context.Context, path string, args ...string) (string, error) {
-	env := publicationEnvironment()
-	run := func(dir string, args ...string) (string, error) {
-		return withCommandEnvironment(ctx, dir, env, true, "", RunCommand, args...)
-	}
-	scratch, err := Scratch()
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(scratch)
-	format := "sha1"
-	if path != "" {
-		value, err := run(path, "rev-parse", "--show-object-format")
-		if err != nil {
-			return "", err
-		}
-		format = strings.TrimSpace(value)
-	}
-	if _, err := run(scratch, "init", "--bare", "--template=", "--object-format="+format); err != nil {
-		return "", err
-	}
-	if path != "" {
-		objects, err := run(path, "rev-parse", "--path-format=absolute", "--git-path", "objects")
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(filepath.Join(scratch, "objects", "info", "alternates"), []byte(strings.TrimSuffix(objects, "\n")+"\n"), 0o600); err != nil {
-			return "", err
-		}
-	}
-	options := RemoteArgs("--git-dir="+scratch, "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always")
-	return run(scratch, append(options, args...)...)
 }
 
 func RemoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {

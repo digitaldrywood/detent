@@ -25,9 +25,12 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			}
 			client, err := newTestClient(t, Config{URL: "https://hub.example", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var value any
-				if strings.HasSuffix(request.URL.Path, "/changes") {
+				switch {
+				case strings.HasSuffix(request.URL.Path, "/projects/prj_example"):
+					value = tracker.NativeProject{OrganizationID: change.OrganizationID, ID: change.ProjectID, Repository: strings.TrimPrefix(version.Repository, "https://github.com/"), CloneURL: version.Repository + ".git"}
+				case strings.HasSuffix(request.URL.Path, "/changes"):
 					value = []tracker.ChangeRequest{change}
-				} else {
+				default:
 					sections := map[string]operatortool.ChangeReadPage{}
 					for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
 						sections[section] = operatortool.ChangeReadPage{Complete: true}
