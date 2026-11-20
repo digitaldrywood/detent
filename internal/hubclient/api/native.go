@@ -144,6 +144,13 @@ func (c *NativeClient) LatestRoundVerdict(ctx context.Context, item tracker.Nati
 	return output, err
 }
 
+func (c *NativeClient) ExecutionChecklist(ctx context.Context, item tracker.NativeWorkItemID, attempt string) (*tracker.ExecutionChecklist, error) {
+	var output *tracker.ExecutionChecklist
+	query := url.Values{"checklist_attempt": {attempt}}
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress?"+query.Encode(), nil, &output)
+	return output, err
+}
+
 func (c *NativeClient) PublishExecutionChecklist(ctx context.Context, item tracker.NativeWorkItemID, input progresscheck.Publication) (tracker.ExecutionChecklist, error) {
 	var output tracker.ExecutionChecklist
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, &output)

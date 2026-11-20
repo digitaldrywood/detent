@@ -938,7 +938,7 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 	onUpdate agentContextUpdateHandler,
 	turnLimit durationLimitContextFactory,
 ) (AgentTurnResult, func() error, error) {
-	if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok {
+	if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok && !request.DetectToolLoops {
 		remaining := budget.remaining
 		if remaining == 0 {
 			return AgentTurnResult{}, nil, ErrSessionTurnLimitExceeded
@@ -1417,14 +1417,14 @@ func (r *Runner) runAgentTurn(
 		turnErr = errors.Join(turnErr, finishObservations())
 	}
 	if len(interventions) != 0 {
-		publishCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
+		retry := r.roundRetry(ctx, runRequest, "implement", nil, &progresscheck.RoundDeadlines{}, roundRetryDelay(agentConfig.MaxRetryBackoffMS))
 		for _, event := range interventions {
-			if err := loopOwner.RecordLoopIntervention(publishCtx, event); err != nil {
-				turnErr = errors.Join(turnErr, fmt.Errorf("publish provider loop intervention: %w", err))
+			err := progresscheck.AwaitRoundAuthority(ctx, func(ctx context.Context) error { return loopOwner.RecordLoopIntervention(ctx, event) }, retry)
+			if err != nil {
+				turnErr = errors.Join(turnErr, progresscheck.ErrRoundVerdictRejected, fmt.Errorf("publish provider loop intervention: %w", err))
 				break
 			}
 		}
-		cancel()
 	}
 	var timeout *sessiontimeout.Error
 	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
@@ -2700,11 +2700,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	defer cancelSession()
 	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
 	defer cancelSessionBrake(context.Canceled)
+	capable, supportsLoopDetection := backend.(interface{ SupportsToolLoopDetection() bool })
+	detectToolLoops := req.phaseReceipts && mode == RunModeImplement && supportsLoopDetection && capable.SupportsToolLoopDetection()
+	sessionMaxTurns := workflow.Config.Agent.MaxTurns
+	if detectToolLoops {
+		sessionMaxTurns = 0
+	}
 	sessionBrake := newSessionBrakeController(
 		sessionCtx,
 		runStartedAt,
 		sessionDuration,
-		workflow.Config.Agent.MaxTurns,
+		sessionMaxTurns,
 		cancelSessionBrake,
 		func(probeCtx context.Context) (sessionProgressSnapshot, error) {
 			return r.sessionProgressSnapshot(probeCtx, runWorkspace, info, workspaceIssue, req.ProgressProbe)
@@ -2778,14 +2784,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
 	}
-	if req.phaseReceipts && mode == RunModeImplement {
-		if capable, ok := backend.(interface{ SupportsToolLoopDetection() bool }); ok && capable.SupportsToolLoopDetection() {
-			turnRequest.DetectToolLoops = true
-			turnRequest.TurnTimeout = turnRequest.MaxDuration
-			turnRequest.MaxDuration = 0
-		} else if turnRequest.MaxDuration <= 0 {
-			turnRequest.MaxDuration = sessiontimeout.DefaultTurn
-		}
+	if detectToolLoops {
+		turnRequest.DetectToolLoops = true
+		turnRequest.TurnTimeout = turnRequest.MaxDuration
+		turnRequest.MaxDuration = 0
+		turnRequest.MaxTurns = 0
+	} else if req.phaseReceipts && mode == RunModeImplement && turnRequest.MaxDuration <= 0 {
+		turnRequest.MaxDuration = sessiontimeout.DefaultTurn
 	}
 	if mergeFallback && sessionDuration > 0 && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
@@ -2818,6 +2823,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if priorSource != nil {
 			execution = mergeAgentTurnExecutions(*priorSource, execution)
+		}
+		if errors.Is(execution.err, progresscheck.ErrRoundVerdictRejected) {
+			afterRunPending = false
+			return execution.result, execution.err
 		}
 		var providerTimeout *sessiontimeout.Error
 		timedOut := errors.As(execution.err, &providerTimeout)
