@@ -42,6 +42,8 @@ type nativeExecution struct {
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
 	reviewDone        <-chan struct{}
+	supervisor        context.Context
+	supervisionLost   bool
 	workers           []func(context.Context) error
 	workerLauncher    func(context.Context, runner.RunRequest) (runner.RunResult, error)
 	reasonGenerator   runner.DependencyReasonGenerator
@@ -169,6 +171,11 @@ func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 		e.workerLauncher = nil
 	}
 	e.workerMu.Unlock()
+	if len(failures) > 0 {
+		e.cancelMu.Lock()
+		e.supervisionLost = true
+		e.cancelMu.Unlock()
+	}
 	return errors.Join(failures...)
 }
 
@@ -192,7 +199,13 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	bound := api.WithMutationAuthority(ctx, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
 	guarded, cancel := context.WithCancelCause(bound)
 	e.cancelMu.Lock()
+	if e.supervisionLost {
+		e.cancelMu.Unlock()
+		cancel(runner.ErrExecutionAuthorityUnavailable)
+		return guarded, func() {}, runner.ErrExecutionAuthorityUnavailable
+	}
 	e.cancel = cancel
+	e.supervisor = guarded
 	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -253,11 +266,15 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		}
 	}()
 	return guarded, func() {
-		cancel(context.Canceled)
-		<-done
 		e.cancelMu.Lock()
-		e.cancel = nil
+		if e.supervisor == guarded {
+			e.supervisionLost = e.supervisionLost || guarded.Err() != nil
+			e.supervisor = nil
+			e.cancel = nil
+		}
+		cancel(context.Canceled)
 		e.cancelMu.Unlock()
+		<-done
 		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	}, nil
 }
