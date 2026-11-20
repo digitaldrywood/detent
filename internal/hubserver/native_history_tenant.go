@@ -30,9 +30,10 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope hubscope.NativeSc
 	if params.Get("archive_url") == "true" {
 		return tracker.Page[tracker.CollaborationEvent]{}, hubapi.NativePublicInvalid("archive_url is not supported for PostgreSQL-backed history")
 	}
-	if err := hubapi.ValidateNativeQuery(params, "view", "direction"); err != nil {
+	if err := hubapi.ValidateNativeQuery(params, "view", "direction", "blocker_attempt_id"); err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
+	blockerAttempt := params.Get("blocker_attempt_id")
 	view := params.Get("view")
 	if view != "" && view != "blockers" && view != "timeline" {
 		return tracker.Page[tracker.CollaborationEvent]{}, hubapi.NativePublicInvalid("view supports blockers or timeline")
@@ -76,6 +77,15 @@ func (s *Service) readHistoryTenant(ctx context.Context, scope hubscope.NativeSc
 		}
 		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(workItem.ActorPrincipalID)}) {
 			return hubapi.NativeNotFound()
+		}
+		if blockerAttempt != "" {
+			record, err := r.PlanBlockerAnswer(ctx, scope.Project, workItem.NativeID, blockerAttempt)
+			if err == nil {
+				records = []eventstore.Event{record}
+			} else if errors.Is(err, corestore.ErrNotFound) {
+				err = nil
+			}
+			return err
 		}
 		if newest {
 			records, err = r.HistoryEventsBefore(ctx, scope.Project, workItem.NativeID, boundary, limit)

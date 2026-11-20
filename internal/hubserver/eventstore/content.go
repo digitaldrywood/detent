@@ -234,6 +234,9 @@ func (c *Content) PrepareEvent(ctx context.Context, organization tracker.Organiz
 	}
 	row.ActorEnvelopeKnown, row.ActorViaKey, row.ActorDisplayName, row.ActorAgent = true, value.Actor.ViaKey, value.Actor.DisplayName, value.Actor.Agent
 	row = ProjectChangePush(row, value)
+	if value.Type == "workflow.transitioned" && value.Actor.Kind == "human" {
+		row.AttemptID = value.Data.BlockerAttemptID
+	}
 	if value.Data.Run != nil {
 		row.RunID = value.Data.Run.RunID
 		row.AttemptID = value.Data.Run.AttemptID
@@ -333,6 +336,8 @@ func validateEventRecord(row Event, value tracker.CollaborationEvent, err error)
 		var runID, attemptID string
 		if value.Data.Run != nil {
 			runID, attemptID = value.Data.Run.RunID, value.Data.Run.AttemptID
+		} else if row.AttemptID != "" && value.Type == "workflow.transitioned" && value.Actor.Kind == "human" {
+			attemptID = value.Data.BlockerAttemptID
 		}
 		if row.RunID != runID || row.AttemptID != attemptID {
 			return value, fmt.Errorf("validate event run projection: %w", artifact.ErrIntegrity)

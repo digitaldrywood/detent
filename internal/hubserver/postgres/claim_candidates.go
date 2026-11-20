@@ -179,7 +179,7 @@ const unclassifiedSource = `EXISTS(SELECT 1 FROM (SELECT a.checkpoint_preserves_
 const currentDispatchSatisfied = `(lower(trim(ws.name)) NOT IN ('rework','merging') AND EXISTS(SELECT 1 FROM (SELECT a.id,a.status,a.work_item_revision,a.dispatch_generation,a.claim_disposition FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.issue_id=i.id ORDER BY a.fencing_token DESC LIMIT 1) latest
  WHERE latest.status='succeeded' AND latest.work_item_revision>=i.revision AND latest.dispatch_generation>=i.dispatch_generation
  AND latest.claim_disposition IS NOT NULL AND latest.claim_disposition<>'progress' AND (latest.claim_disposition<>'' OR i.dispatch_requested_at IS NOT NULL)
- AND NOT EXISTS(SELECT 1 FROM (SELECT ev.landing_waiting FROM collaboration_events ev WHERE ev.organization_id=i.organization_id AND ev.project_id=i.project_id AND ev.work_item_id=i.native_id AND ev.attempt_id=latest.id ORDER BY ev.attempt_id,ev.sequence DESC LIMIT 1) run WHERE run.landing_waiting)))`
+ AND NOT EXISTS(SELECT 1 FROM (SELECT ev.landing_waiting FROM collaboration_events ev WHERE ev.organization_id=i.organization_id AND ev.project_id=i.project_id AND ev.work_item_id=i.native_id AND ev.attempt_id=latest.id AND ev.run_id<>'' ORDER BY ev.attempt_id,ev.sequence DESC LIMIT 1) run WHERE run.landing_waiting)))`
 
 func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQuery) (claimstore.CandidatePage, error) {
 	if query.ProjectID == "" || query.Limit < 1 || query.Limit > corestore.MaxPageSize || query.AvailableAt.IsZero() || len(query.WorkItemIDs) > 100 {

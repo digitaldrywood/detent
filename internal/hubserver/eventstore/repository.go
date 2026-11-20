@@ -64,6 +64,7 @@ type ProgressEvidenceReader interface {
 }
 
 type HistoryReader interface {
+	PlanBlockerAnswer(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)
 	HistoryEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 	HistoryEventsBefore(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, int) ([]Event, error)
 }

@@ -50,14 +50,32 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 	if state.Accepted {
 		return plan, "", nil
 	}
+	verifySource := func(ctx context.Context) error {
+		return verifyPlanSource(ctx, backend, source, info, issue, head, tree)
+	}
 	publish := func(phase, approval string) error {
+		if err := verifySource(ctx); err != nil {
+			return err
+		}
 		if err := req.Execution.RecordStep(ctx, tracker.NativeStepReceipt{
 			Step: "plan", Source: tracker.NativeCheckpoint{HeadSHA: head, WorkspaceDigest: tree},
 			CompletedAt: req.Now().UTC(), CompletionBody: plan, PlanApproval: approval,
 		}); err != nil {
 			return err
 		}
-		return runworkspace.PublishPhase(ctx, req.Execution, backend, info, issue, nil, phase, "")
+		branch, pushedHead, pushedTree, err := source.PushItemPhase(ctx, info, issue, func(ctx context.Context) error {
+			if err := req.Execution.VerifyPhaseAuthority(ctx); err != nil {
+				return err
+			}
+			return verifySource(ctx)
+		})
+		if err != nil {
+			return err
+		}
+		if pushedHead != head || pushedTree != tree {
+			return errors.New("pushed plan source does not match the reviewed source")
+		}
+		return req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, "")
 	}
 	phase, approval := "plan_draft", ""
 	if !state.NeedsProvider() && state.Answer != "" {
@@ -97,7 +115,7 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 				if draft == "" {
 					return "", "", errors.New("planner did not produce an implementation plan")
 				}
-				if err := verifyPlanSource(ctx, backend, source, info, issue, head, tree); err != nil {
+				if err := verifySource(ctx); err != nil {
 					return "", "", err
 				}
 				plan, findings = draft, ""
@@ -109,7 +127,7 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 			if err != nil {
 				return "", "", preserveReview(err)
 			}
-			if err := verifyPlanSource(ctx, backend, source, info, issue, head, tree); err != nil {
+			if err := verifySource(ctx); err != nil {
 				return "", "", err
 			}
 			decision, detail, _ := strings.Cut(review, "\n")
