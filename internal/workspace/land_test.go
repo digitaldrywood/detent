@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
@@ -641,6 +642,56 @@ func TestRetainedWorktreeCleanupRequiresVerifiedLanding(t *testing.T) {
 			}
 		})
 	}
+	t.Run("waits for shared source lock", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			fixture := newLandingFixture(t)
+			issue := fixture.issue
+			options := LandOptions{HeadSHA: fixture.head, Method: "squash"}
+			issue.RetainedLanding, issue.Landing = true, &options
+			landed, err := fixture.backend.LandChange(t.Context(), fixture.info, issue, options)
+			if err != nil || landed.MergeSHA == "" || fixture.remoteMain(t) != landed.MergeSHA {
+				t.Fatalf("landing was not verified on the target: %+v, %v", landed, err)
+			}
+			issue.Terminal, issue.LandedHeadSHA = true, fixture.head
+			peerSource := filepath.Join(testenv.TempDir(t), "peer")
+			runGit(t, fixture.source, "worktree", "add", "--detach", peerSource, "main")
+			peer, err := NewLocalGit(LocalGitOptions{Root: testenv.TempDir(t), SourceRoot: peerSource})
+			if err != nil {
+				t.Fatal(err)
+			}
+			release, err := peer.acquireSourceOperation(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if release != nil {
+					release()
+				}
+			}()
+			branchRef := "refs/heads/" + fixture.info.Branch
+			before := runGit(t, fixture.source, "worktree", "list", "--porcelain")
+			done := make(chan error, 1)
+			go func() { done <- fixture.backend.CleanupLanding(t.Context(), fixture.info, issue) }()
+			synctest.Wait()
+			select {
+			case err := <-done:
+				t.Fatalf("cleanup returned while the shared source lock was held: %v", err)
+			default:
+			}
+			if strings.TrimSpace(runGit(t, fixture.source, "rev-parse", branchRef)) != fixture.head ||
+				runGit(t, fixture.source, "worktree", "list", "--porcelain") != before {
+				t.Fatal("cleanup changed the branch or worktree registration while the source lock was held")
+			}
+			release()
+			release = nil
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(fixture.info.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("cleanup did not retire the worktree after unlock: %v", err)
+			}
+		})
+	})
 }
 
 func TestLocalGitLandingCleanup(t *testing.T) {

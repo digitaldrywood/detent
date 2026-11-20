@@ -58,6 +58,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 	}{
 		{name: "plain git by default"},
 		{name: "audited landing under the implementation lease", audited: "held"},
+		{name: "retained landing cleans up after a phase receipt error", audited: "cleanup_epilogue"},
 		{name: "audited clean landing after publisher reclaim", audited: "clean"},
 		{name: "audited landing integrates an advanced target", audited: "target"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
@@ -103,6 +104,19 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 	}
 }
 
+type landingPhaseFailure struct {
+	*ownedExecution
+	failed bool
+}
+
+func (e *landingPhaseFailure) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
+	if phase == "merge" {
+		e.failed = true
+		return errors.New("injected merge phase receipt failure")
+	}
+	return e.ownedExecution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input)
+}
+
 func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, factories Constructors) {
 	t.Helper()
 	states := []tracker.NativeState{
@@ -140,10 +154,16 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if scenario == "clean" {
 		provider.failStage = "security"
 	}
+	epilogueFailure := scenario == "cleanup_epilogue"
+	var diagnostics bytes.Buffer
+	var logger *slog.Logger
+	if epilogueFailure {
+		logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
+	}
 	newAgent := func(backend workspace.Backend) *runner.Runner {
 		t.Helper()
 		agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, ReapWorkerProcess: reapReviewFixtureProcess,
-			Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider,
+			Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: backend, AgentBackend: provider, Logger: logger,
 			Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
 		})
 		if err != nil {
@@ -152,7 +172,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		return agent
 	}
 	agent := newAgent(backend)
-	held := scenario == "held"
+	held := scenario == "held" || epilogueFailure
 	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: held})
 	var publishingAttempt, reviewAttempt string
 	if scenario == "clean" {
@@ -304,7 +324,26 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if scenario == "advanced" {
 		h.failChanges.next = incorporationRejectionTransport{next: h.failChanges.next, t: t}
 	}
-	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: landingOwner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeMerge})
+	landingRequest := runner.RunRequest{Execution: landingOwner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeMerge}
+	var retainedPath string
+	var failure *landingPhaseFailure
+	if epilogueFailure {
+		list, err := exec.CommandContext(t.Context(), "git", "-C", source, "worktree", "list", "--porcelain").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		worktrees := strings.Split(strings.TrimSpace(string(list)), "\n\n")
+		if len(worktrees) != 2 {
+			t.Fatalf("expected exactly one retained item worktree: %s", list)
+		}
+		retained, _, _ := strings.Cut(worktrees[1], "\n")
+		retainedPath = strings.TrimPrefix(retained, "worktree ")
+		failure = &landingPhaseFailure{ownedExecution: landingOwner}
+		landingRequest.Execution = failure
+		landingRequest.RetainItemWorkspace = true
+		landingRequest.DeferExecutionFinish = true
+	}
+	result, err = agent.Run(t.Context(), landingRequest)
 	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || h.state(t, issue.ID) != "Done" {
 		t.Fatalf("audited landing did not reach Done: %+v, %v, state=%s", result.NativeLanding, err, h.state(t, issue.ID))
 	}
@@ -315,6 +354,30 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		}
 	}
 	landed := result.NativeLanding
+	if epilogueFailure {
+		if !failure.failed || !strings.Contains(diagnostics.String(), "injected merge phase receipt failure") || !landed.WorkspaceRetired {
+			t.Fatalf("landing lost the epilogue diagnostic or cleanup: failed=%t retired=%t", failure.failed, landed.WorkspaceRetired)
+		}
+		if _, err := os.Stat(retainedPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("retained worktree survived a verified landing: %v", err)
+		}
+		remoteHead, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/main").Output()
+		if err != nil || strings.TrimSpace(string(remoteHead)) != landed.MergeSHA {
+			t.Fatalf("remote head=%s receipt=%s error=%v", remoteHead, landed.MergeSHA, err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		attempts, err := h.admin.Attempts(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+		if err != nil || len(attempts.Items) != 1 {
+			t.Fatalf("expected one attempt after release: %+v, %v", attempts.Items, err)
+		}
+		attempt := attempts.Items[0]
+		if attempt.AttemptID != landingAttempt || attempt.Outcome != "succeeded" || attempt.Current ||
+			attempt.CleanupAcknowledgedAt == nil || attempt.ClaimReleasedAt == nil || attempt.CleanupAcknowledgedAt.After(*attempt.ClaimReleasedAt) {
+			t.Fatalf("Hub did not acknowledge and release the same landed attempt: %+v", attempt)
+		}
+	}
 	audit := landed.SecurityAudit
 	auditHead := landed.MergeSHA
 	if incorporated {

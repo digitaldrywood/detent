@@ -449,6 +449,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if StopProviderSupervision(req.Execution, runErr) {
 		return result, runErr
 	}
+	if result.NativeLanding != nil && result.NativeLanding.Landed && runErr != nil && guarded.Err() == nil && executionCancellation(req) == nil {
+		r.logger.Warn("verified landing epilogue failed", "issue_id", req.Issue.ID, "merge_sha", result.NativeLanding.MergeSHA, "error", runErr)
+		runErr = nil
+	}
 	runErr = r.attributeFailure(guarded, req, runErr, result.TurnStartRefused)
 	if diagnostics, ok := req.Execution.(HostDiagnosticsExecution); ok && result.TurnStarted {
 		diagnostics.ProviderCompleted(r.now())

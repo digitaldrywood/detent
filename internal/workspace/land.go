@@ -44,15 +44,15 @@ func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) e
 	if err != nil || normalized.Path != expected {
 		return errors.Join(err, fmt.Errorf("landing cleanup path differs from the prepared workspace: %s", normalized.Path))
 	}
-	if issue.RetainedLanding {
-		_, err := l.cleanupWorkspace(ctx, normalized, issue)
-		return err
-	}
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if issue.RetainedLanding {
+		_, err := l.cleanupWorkspace(ctx, normalized, issue)
+		return err
+	}
 	if err := preserveLandingRecord(ctx, normalized.Path); err != nil {
 		return err
 	}
