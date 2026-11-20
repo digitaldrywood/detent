@@ -1424,6 +1424,10 @@ func (r *Runner) runAgentTurn(
 	if finishObservations != nil {
 		turnErr = errors.Join(turnErr, finishObservations())
 	}
+	var timeout *sessiontimeout.Error
+	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
+		diagnostics.HostOperation("provider.session", r.now(), timeout, false)
+	}
 	if strings.TrimSpace(turnResult.ThreadID) == "" {
 		turnResult.ThreadID = providerResume.ThreadID
 	}
@@ -1477,10 +1481,6 @@ func (r *Runner) runAgentTurn(
 	cleanupErr = errors.Join(cleanupErr, scratchCleanupErr)
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)
-	}
-	var timeout *sessiontimeout.Error
-	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
-		diagnostics.HostOperation("provider.session", r.now(), timeout, false)
 	}
 
 	result.TurnStarted = turnStarted
@@ -2734,6 +2734,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		timedOut := errors.As(execution.err, &providerTimeout)
 		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded)
 		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
+			deadlines.Observe("implement", providerTimeout)
+			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
 			assessment, verdictErr := r.judgeRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err)
 			if verdictErr != nil {
 				afterRunPending = false
@@ -2757,7 +2759,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return execution.result, errors.Join(execution.err, err)
 			}
 			turnRequest.Resume = AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
-			if timedOut {
+			if timedOut && providerTimeout.Kind != sessiontimeout.TurnDeadline {
 				turnRequest.Resume = AgentResume{}
 				req.RetryMode = RetryModeFresh
 			}

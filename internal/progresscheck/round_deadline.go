@@ -16,10 +16,17 @@ type RoundDeadlines struct {
 	attempts int
 	filed    map[sessiontimeout.Kind]bool
 	recent   []string
+	current  string
+}
+
+func (d *RoundDeadlines) Observe(phase string, timeout *sessiontimeout.Error) {
+	if timeout != nil {
+		d.current = phase + ": " + timeout.Error()
+	}
 }
 
 func (d *RoundDeadlines) Evidence() string {
-	return strings.Join(d.recent, "\n")
+	return strings.TrimSpace(strings.Join(d.recent, "\n") + "\n" + d.current)
 }
 
 func (d *RoundDeadlines) Continue(ctx, sessionCtx context.Context, timeout *sessiontimeout.Error, diagnosis, assessment string, validate func(context.Context) error, report func(context.Context, *sessiontimeout.Error) error, retryDelay func(int) time.Duration) (string, error) {
@@ -51,6 +58,7 @@ func (d *RoundDeadlines) Continue(ctx, sessionCtx context.Context, timeout *sess
 	if err := validate(ctx); err != nil {
 		return "", err
 	}
+	d.current = ""
 	d.recent = append(d.recent, diagnosis)
 	if len(d.recent) > 6 {
 		d.recent = d.recent[1:]

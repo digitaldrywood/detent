@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -760,5 +761,151 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 				t.Fatalf("missing instance cleanup evidence: %s", logs.String())
 			}
 		})
+	}
+}
+
+func TestNativeImplementTurnDeadlineContinuesUnderSameLease(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runNativeDeadlineRounds(t, "", nil)
+	})
+}
+
+type deadlineRoundExecution struct {
+	finalizingTestExecution
+	validations int
+	timeouts    []*sessiontimeout.Error
+	verdicts    []progresscheck.RoundInput
+}
+
+func (e *deadlineRoundExecution) Validate(ctx context.Context) error {
+	e.validations++
+	return e.finalizingTestExecution.Validate(ctx)
+}
+
+func (e *deadlineRoundExecution) HostOperation(operation string, at time.Time, err error, pending bool) {
+	var timeout *sessiontimeout.Error
+	if operation == "provider.session" && errors.As(err, &timeout) {
+		e.timeouts = append(e.timeouts, timeout)
+	}
+	e.finalizingTestExecution.HostOperation(operation, at, err, pending)
+}
+
+func (*deadlineRoundExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
+	return &tracker.NativePhaseContinuation{}, nil
+}
+
+func (e *deadlineRoundExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	return e.Validate(ctx)
+}
+
+func (*deadlineRoundExecution) RecordPhaseReceipt(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
+func (*deadlineRoundExecution) LatestRoundVerdict(context.Context) (*progresscheck.RoundVerdict, error) {
+	return nil, nil
+}
+
+func (e *deadlineRoundExecution) RecordRoundVerdict(_ context.Context, verdict progresscheck.RoundInput) error {
+	e.verdicts = append(e.verdicts, verdict)
+	return nil
+}
+
+type deadlineRoundWorkspace struct {
+	completedExecutionWorkspace
+	checkouts int
+}
+
+func (w *deadlineRoundWorkspace) Create(ctx context.Context, issue workspace.Issue) (workspace.Info, error) {
+	w.checkouts++
+	return w.completedExecutionWorkspace.Create(ctx, issue)
+}
+
+func (w *deadlineRoundWorkspace) ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error) {
+	return w.recoveryStates[0].HeadSHA, strings.Repeat("a", 40), nil
+}
+
+func (w *deadlineRoundWorkspace) PushItemPhase(ctx context.Context, info workspace.Info, issue workspace.Issue, validate func(context.Context) error) (string, string, string, error) {
+	head, tree, _ := w.ItemPhaseHead(ctx, info, issue)
+	return "example-phase", head, tree, validate(ctx)
+}
+
+func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error {
+	return nil
+}
+
+type deadlineRoundBackend struct {
+	fakeCodexClient
+	run func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
+}
+
+func (b *deadlineRoundBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	return b.run(ctx, request, update)
+}
+
+func runNativeDeadlineRounds(t *testing.T, judgeTempDir string, judgeFailure error) {
+	t.Helper()
+	const deadline = time.Minute
+	info := workspace.Info{Path: t.TempDir(), Branch: "example-phase"}
+	source := &deadlineRoundWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("c", 40), WorkspaceFingerprint: "completed-digest"}}}}}}
+	sessions := &fakeSessionStore{sessionID: 42}
+	execution := &deadlineRoundExecution{}
+	limit := &controlledDurationLimit{}
+	impl, judgments, lastValidation := 0, 0, 0
+	timeoutRecordedBeforeJudge := false
+	var judgeScratch string
+	resume := AgentResume{ThreadID: "thread-impl", SessionID: "session-impl"}
+	agent := &deadlineRoundBackend{run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+		if req.TextOnly {
+			judgments++
+			if impl == 1 {
+				timeoutRecordedBeforeJudge = len(execution.timeouts) == 1 && execution.timeouts[0].Kind == sessiontimeout.TurnDeadline
+				lastValidation = execution.validations
+			}
+			judgeScratch = req.Workspace
+			if judgments == 1 && judgeFailure != nil {
+				return AgentTurnResult{}, judgeFailure
+			}
+			return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"implement","reason":"continue the existing work"}`})
+		}
+		impl++
+		if req.Workspace != info.Path {
+			t.Fatalf("implementation %d used a different worktree %s", impl, req.Workspace)
+		}
+		if impl == 1 {
+			if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: resume.ThreadID, TurnID: "round-1"}); err != nil {
+				return AgentTurnResult{}, err
+			}
+			limit.Expire()
+			return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, context.Cause(ctx)
+		}
+		if req.Resume != resume || execution.validations <= lastValidation || execution.finish != "" || source.checkouts != 1 || sessions.finishCalls != 0 {
+			t.Fatalf("round continuation lost lease or session: resume=%+v validations=%d/%d outcome=%q checkouts=%d finished sessions=%d", req.Resume, execution.validations, lastValidation, execution.finish, source.checkouts, sessions.finishCalls)
+		}
+		return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, update(AgentUpdate{Type: AgentUpdateTurnCompleted, ThreadID: resume.ThreadID, TurnID: "round-2", Status: "completed"})
+	}}
+	if judgeTempDir != "" {
+		t.Setenv("TMPDIR", judgeTempDir)
+	}
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: agent, turnLimit: limit.Context,
+		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}}, Prompt: "Complete the native issue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.sleepInhibitor = nil
+	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Mode: RunModeImplement, Issue: connector.Issue{ID: "native", Identifier: "native#1", State: "Rework"}})
+	if err != nil {
+		t.Fatalf("implement round returned a terminal completion: %v", err)
+	}
+	if impl != 2 || source.checkouts != 1 || sessions.finishCalls != 1 || source.finalizationCalls != 1 || execution.finish != "succeeded" {
+		t.Fatalf("implementation turns=%d checkouts=%d finished sessions=%d finalizations=%d outcome=%q", impl, source.checkouts, sessions.finishCalls, source.finalizationCalls, execution.finish)
+	}
+	if len(execution.verdicts) == 0 || !timeoutRecordedBeforeJudge {
+		t.Fatalf("missing typed deadline before judgment (judge scratch %q): diagnostics=%+v verdicts=%+v", judgeScratch, execution.timeouts, execution.verdicts)
+	}
+	verdict := execution.verdicts[0]
+	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
+		t.Fatalf("round evidence = %+v", verdict)
 	}
 }
