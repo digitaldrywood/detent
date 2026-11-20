@@ -310,7 +310,6 @@ type nativeScope struct {
 const apiScopeOperator = hubauth.Operator
 const hostedProjectsSelected = "selected"
 const hostedCookie = hubauth.Cookie
-const hubReadTimeout = hubapi.ReadTimeout
 const nativeContractTestBody = "Example issue body"
 const testHubAdminToken = "detent_test_hub_admin_token_00000000000000000000000000000000"
 
@@ -343,10 +342,6 @@ func browserHostedStatus(t *testing.T, r *httptest.ResponseRecorder, want int) {
 func startupConnection(t *testing.T, admin *sql.DB, group, attributes string) pgtransport.Connection {
 	t.Helper()
 	return hubtest.PostgresConfig(t, admin).Connection
-}
-func nativeConfig(t *testing.T, admin *sql.DB, user, password string) *pgxpool.Config {
-	t.Helper()
-	return hubtest.NativeConfig(t, admin, user, password)
 }
 
 type testDatabase struct{ postgres *postgres.Repository }
