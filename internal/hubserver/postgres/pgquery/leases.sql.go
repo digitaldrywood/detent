@@ -77,57 +77,57 @@ worker_retired_at=CASE
  WHEN $5::integer IS NOT NULL AND ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS DISTINCT FROM
       ROW($5::integer,$6::integer,$7::timestamptz,$8::text) THEN NULL
  ELSE worker_retired_at END,
-cleanup_acknowledged_at=CASE WHEN $9::boolean THEN $10 ELSE cleanup_acknowledged_at END,
-status=CASE WHEN $11::boolean THEN status ELSE $12 END,
-payload_object_key=$13,
-checkpoint_object_key=COALESCE($14,checkpoint_object_key),
-checkpoint_preserves_source=CASE WHEN $14::text IS NOT NULL THEN $15::boolean ELSE checkpoint_preserves_source END,
-artifacts_object_key=COALESCE($16,artifacts_object_key),
-failure_sequence=CASE WHEN $11::boolean THEN CASE WHEN failure_sequence=sequence THEN $1 END WHEN $17::boolean THEN $1 END,
-failure_example=CASE WHEN $11::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_example END ELSE $18::text END,
-failure_class=CASE WHEN $11::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_class END ELSE $19::text END,
-failure_landing_observed_at=CASE WHEN $11::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_landing_observed_at END ELSE $20::timestamptz END,
+cleanup_acknowledged_at=CASE WHEN $9::boolean OR $10::boolean THEN COALESCE(cleanup_acknowledged_at,$11) ELSE cleanup_acknowledged_at END,
+status=CASE WHEN $12::boolean THEN status ELSE $13 END,
+payload_object_key=$14,
+checkpoint_object_key=COALESCE($15,checkpoint_object_key),
+checkpoint_preserves_source=CASE WHEN $15::text IS NOT NULL THEN $16::boolean ELSE checkpoint_preserves_source END,
+artifacts_object_key=COALESCE($17,artifacts_object_key),
+failure_sequence=CASE WHEN $12::boolean THEN CASE WHEN failure_sequence=sequence THEN $1 END WHEN $18::boolean THEN $1 END,
+failure_example=CASE WHEN $12::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_example END ELSE $19::text END,
+failure_class=CASE WHEN $12::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_class END ELSE $20::text END,
+failure_landing_observed_at=CASE WHEN $12::boolean THEN CASE WHEN failure_sequence=sequence THEN failure_landing_observed_at END ELSE $21::timestamptz END,
 identity_sequence=CASE WHEN identity_sequence<$1 THEN $1 ELSE identity_sequence END,
-identity_execution_role=CASE WHEN identity_sequence<$1 AND $21::text IS NOT NULL THEN $21::text ELSE identity_execution_role END,
-identity_execution_backend=CASE WHEN identity_sequence<$1 AND $21::text IS NOT NULL THEN $22::text ELSE identity_execution_backend END,
-identity_execution_model=CASE WHEN identity_sequence<$1 AND $21::text IS NOT NULL THEN $23::text ELSE identity_execution_model END,
-identity_execution_reasoning_effort=CASE WHEN identity_sequence<$1 AND $21::text IS NOT NULL THEN $24::text ELSE identity_execution_reasoning_effort END,
-identity_selection_effort_clamped_from=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $26::text ELSE identity_selection_effort_clamped_from END,
-identity_selection_policy=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $27::text ELSE identity_selection_policy END,
-identity_selection_policy_source=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $28::text ELSE identity_selection_policy_source END,
-identity_selection_reason=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $29::text ELSE identity_selection_reason END,
-identity_selection_level=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $30::text ELSE identity_selection_level END,
-identity_selection_requested_model=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $31::text ELSE identity_selection_requested_model END,
-identity_selection_model_source=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $32::text ELSE identity_selection_model_source END,
-identity_selection_effort_source=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $33::text ELSE identity_selection_effort_source END,
-identity_selection_fallback_reason=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $34::text ELSE identity_selection_fallback_reason END,
-identity_selection_backend_source=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $35::text ELSE identity_selection_backend_source END,
-identity_selection_route_source=CASE WHEN identity_sequence<$1 AND $25::boolean THEN $36::text ELSE identity_selection_route_source END,
-identity_backend_id=CASE WHEN identity_sequence<$1 AND $37::text IS NOT NULL THEN $37::text ELSE identity_backend_id END,
-identity_backend_kind=CASE WHEN identity_sequence<$1 AND $38::text IS NOT NULL THEN $38::text ELSE identity_backend_kind END,
-identity_route=CASE WHEN identity_sequence<$1 AND $39::text IS NOT NULL THEN $39::text ELSE identity_route END,
-identity_role=CASE WHEN identity_sequence<$1 AND $40::text IS NOT NULL THEN $40::text ELSE identity_role END,
-identity_provider=CASE WHEN identity_sequence<$1 AND $41::text IS NOT NULL THEN $42::text ELSE identity_provider END,
-identity_provider_provenance=CASE WHEN identity_sequence<$1 AND $41::text IS NOT NULL THEN $41::text ELSE identity_provider_provenance END,
-identity_requested_model=CASE WHEN identity_sequence<$1 AND $43::text IS NOT NULL THEN $44::text ELSE identity_requested_model END,
-identity_requested_model_provenance=CASE WHEN identity_sequence<$1 AND $43::text IS NOT NULL THEN $43::text ELSE identity_requested_model_provenance END,
-identity_resolved_model=CASE WHEN identity_sequence<$1 AND $45::text IS NOT NULL THEN $46::text ELSE identity_resolved_model END,
-identity_resolved_model_provenance=CASE WHEN identity_sequence<$1 AND $45::text IS NOT NULL THEN $45::text ELSE identity_resolved_model_provenance END,
-identity_reasoning_effort=CASE WHEN identity_sequence<$1 AND $47::text IS NOT NULL THEN $48::text ELSE identity_reasoning_effort END,
-identity_reasoning_effort_provenance=CASE WHEN identity_sequence<$1 AND $47::text IS NOT NULL THEN $47::text ELSE identity_reasoning_effort_provenance END,
-identity_service_tier=CASE WHEN identity_sequence<$1 AND $49::text IS NOT NULL THEN $50::text ELSE identity_service_tier END,
-identity_service_tier_provenance=CASE WHEN identity_sequence<$1 AND $49::text IS NOT NULL THEN $49::text ELSE identity_service_tier_provenance END,
-identity_observed_at=CASE WHEN identity_sequence<$1 AND $51::timestamptz IS NOT NULL THEN $51::timestamptz ELSE identity_observed_at END,
-updated_at=CASE WHEN $11::boolean THEN updated_at ELSE $10 END
-WHERE native_attempts.organization_id=$52 AND native_attempts.id=$53 AND native_attempts.lease_id=$54
-AND fencing_token=$55::bigint AND run_id=$56
+identity_execution_role=CASE WHEN identity_sequence<$1 AND $22::text IS NOT NULL THEN $22::text ELSE identity_execution_role END,
+identity_execution_backend=CASE WHEN identity_sequence<$1 AND $22::text IS NOT NULL THEN $23::text ELSE identity_execution_backend END,
+identity_execution_model=CASE WHEN identity_sequence<$1 AND $22::text IS NOT NULL THEN $24::text ELSE identity_execution_model END,
+identity_execution_reasoning_effort=CASE WHEN identity_sequence<$1 AND $22::text IS NOT NULL THEN $25::text ELSE identity_execution_reasoning_effort END,
+identity_selection_effort_clamped_from=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $27::text ELSE identity_selection_effort_clamped_from END,
+identity_selection_policy=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $28::text ELSE identity_selection_policy END,
+identity_selection_policy_source=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $29::text ELSE identity_selection_policy_source END,
+identity_selection_reason=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $30::text ELSE identity_selection_reason END,
+identity_selection_level=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $31::text ELSE identity_selection_level END,
+identity_selection_requested_model=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $32::text ELSE identity_selection_requested_model END,
+identity_selection_model_source=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $33::text ELSE identity_selection_model_source END,
+identity_selection_effort_source=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $34::text ELSE identity_selection_effort_source END,
+identity_selection_fallback_reason=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $35::text ELSE identity_selection_fallback_reason END,
+identity_selection_backend_source=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $36::text ELSE identity_selection_backend_source END,
+identity_selection_route_source=CASE WHEN identity_sequence<$1 AND $26::boolean THEN $37::text ELSE identity_selection_route_source END,
+identity_backend_id=CASE WHEN identity_sequence<$1 AND $38::text IS NOT NULL THEN $38::text ELSE identity_backend_id END,
+identity_backend_kind=CASE WHEN identity_sequence<$1 AND $39::text IS NOT NULL THEN $39::text ELSE identity_backend_kind END,
+identity_route=CASE WHEN identity_sequence<$1 AND $40::text IS NOT NULL THEN $40::text ELSE identity_route END,
+identity_role=CASE WHEN identity_sequence<$1 AND $41::text IS NOT NULL THEN $41::text ELSE identity_role END,
+identity_provider=CASE WHEN identity_sequence<$1 AND $42::text IS NOT NULL THEN $43::text ELSE identity_provider END,
+identity_provider_provenance=CASE WHEN identity_sequence<$1 AND $42::text IS NOT NULL THEN $42::text ELSE identity_provider_provenance END,
+identity_requested_model=CASE WHEN identity_sequence<$1 AND $44::text IS NOT NULL THEN $45::text ELSE identity_requested_model END,
+identity_requested_model_provenance=CASE WHEN identity_sequence<$1 AND $44::text IS NOT NULL THEN $44::text ELSE identity_requested_model_provenance END,
+identity_resolved_model=CASE WHEN identity_sequence<$1 AND $46::text IS NOT NULL THEN $47::text ELSE identity_resolved_model END,
+identity_resolved_model_provenance=CASE WHEN identity_sequence<$1 AND $46::text IS NOT NULL THEN $46::text ELSE identity_resolved_model_provenance END,
+identity_reasoning_effort=CASE WHEN identity_sequence<$1 AND $48::text IS NOT NULL THEN $49::text ELSE identity_reasoning_effort END,
+identity_reasoning_effort_provenance=CASE WHEN identity_sequence<$1 AND $48::text IS NOT NULL THEN $48::text ELSE identity_reasoning_effort_provenance END,
+identity_service_tier=CASE WHEN identity_sequence<$1 AND $50::text IS NOT NULL THEN $51::text ELSE identity_service_tier END,
+identity_service_tier_provenance=CASE WHEN identity_sequence<$1 AND $50::text IS NOT NULL THEN $50::text ELSE identity_service_tier_provenance END,
+identity_observed_at=CASE WHEN identity_sequence<$1 AND $52::timestamptz IS NOT NULL THEN $52::timestamptz ELSE identity_observed_at END,
+updated_at=CASE WHEN $12::boolean THEN updated_at ELSE $11 END
+WHERE native_attempts.organization_id=$53 AND native_attempts.id=$54 AND native_attempts.lease_id=$55
+AND fencing_token=$56::bigint AND run_id=$57
 AND ($2::bigint=0 OR local_attempt_id IS NULL OR local_attempt_id=$2)
-AND dispatch_generation=$57 AND sequence=$1-1
+AND dispatch_generation=$58 AND sequence=$1-1
 AND ($5::integer IS NULL OR worker_pid IS NULL OR worker_retired_at IS NOT NULL
  OR ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS NOT DISTINCT FROM
     ROW($5::integer,$6::integer,$7::timestamptz,$8::text))
-AND (status='running' OR status='interrupted' AND $12='running' OR $11::boolean AND status=$12 OR $9::boolean AND status IN ('interrupted','cancelled') AND $12='cancelled')
-AND (NOT $58::boolean OR CASE WHEN $11::boolean THEN status ELSE $12 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
+AND (status='running' OR status='interrupted' AND $13='running' OR $12::boolean AND status=$13 OR $9::boolean AND status IN ('interrupted','cancelled') AND $13='cancelled')
+AND (NOT $59::boolean OR CASE WHEN $12::boolean THEN status ELSE $13 END NOT IN ('running','interrupted') OR runtime_heartbeat_at IS NULL OR $3>=runtime_heartbeat_at)
 RETURNING organization_id, id, issue_id, lease_id, fencing_token, run_id, sequence, status, work_item_revision, dispatch_generation, payload_object_key, checkpoint_object_key, artifacts_object_key, started_at, updated_at, started_at_submicro_ns, runner_tokens_recorded, cleanup_acknowledged_at, runtime_heartbeat_at, runtime_summary_sequence, claim_disposition, local_attempt_id, local_attempt_id_recorded, checkpoint_preserves_source, project_id, usage_pending_sequence, usage_projected_sequence, worker_cleanup_required, failure_sequence, failure_example, failure_class, failure_landing_observed_at, identity_sequence, identity_execution_role, identity_execution_backend, identity_execution_model, identity_execution_reasoning_effort, identity_selection_effort_clamped_from, identity_selection_policy, identity_selection_policy_source, identity_selection_reason, identity_selection_level, identity_selection_requested_model, identity_selection_model_source, identity_selection_effort_source, identity_selection_fallback_reason, identity_selection_backend_source, identity_selection_route_source, identity_backend_id, identity_backend_kind, identity_route, identity_role, identity_provider, identity_provider_provenance, identity_requested_model, identity_requested_model_provenance, identity_resolved_model, identity_resolved_model_provenance, identity_reasoning_effort, identity_reasoning_effort_provenance, identity_service_tier, identity_service_tier_provenance, identity_observed_at, worker_pid, worker_pgid, worker_started_at, worker_start_key, worker_runner_id, worker_retired_at, verdict_evidence_revision, verdict_attempted_step, verdict_success, verdict_outcome, verdict_reason, verdict_next_step, verdict_disposition, verdict_round_id
 `
 
@@ -141,6 +141,7 @@ type AdvanceLeaseAttemptParams struct {
 	WorkerStartedAt                    *time.Time
 	WorkerStartKey                     *string
 	Termination                        bool
+	WorkspaceRetired                   bool
 	Now                                *time.Time
 	UsageCorrection                    bool
 	Status                             string
@@ -203,6 +204,7 @@ func (q *Queries) AdvanceLeaseAttempt(ctx context.Context, arg AdvanceLeaseAttem
 		arg.WorkerStartedAt,
 		arg.WorkerStartKey,
 		arg.Termination,
+		arg.WorkspaceRetired,
 		arg.Now,
 		arg.UsageCorrection,
 		arg.Status,

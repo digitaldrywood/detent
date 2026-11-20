@@ -409,6 +409,48 @@ func TestManagedHookServiceLivesThroughWork(t *testing.T) {
 }
 
 func TestLandingHookRetainsVerifiedService(t *testing.T) {
+	t.Run("retained item after verified landing", func(t *testing.T) {
+		daemon := detachedHook(t)
+		useDaemonCandidates(t, daemon)
+		source, remote := gitfixture.SourceRepo(t), gitfixture.BareRemote(t)
+		gitfixture.Git(t, source, "remote", "add", "origin", remote)
+		gitfixture.Git(t, source, "push", "-u", "origin", "main")
+		backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+			Root: t.TempDir(), SourceRoot: source, AutoBranch: true, Hooks: workspace.Hooks{AfterCreate: daemon.Command},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := workspace.Issue{Identifier: "EXAMPLE-1"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		gitfixture.Git(t, info.Path, "add", "feature.txt")
+		gitfixture.Git(t, info.Path, "commit", "-m", "Add feature")
+		head := strings.TrimSpace(gitfixture.Git(t, info.Path, "rev-parse", "HEAD"))
+		issue.RetainedLanding, issue.Landing = true, &workspace.LandOptions{HeadSHA: head, Method: "squash"}
+		if err := backend.CleanupLanding(t.Context(), info, issue); err != nil || !daemon.Alive(t) {
+			t.Fatalf("service did not survive before landing: %v", err)
+		}
+		if _, err := os.Stat(info.Path); err != nil {
+			t.Fatalf("worktree did not survive before landing: %v", err)
+		}
+		landed, err := backend.LandChange(t.Context(), info, issue, *issue.Landing)
+		if err != nil || landed.MergeSHA != strings.TrimSpace(gitfixture.Git(t, remote, "rev-parse", "refs/heads/main")) {
+			t.Fatalf("landing was not verified on the target: %+v, %v", landed, err)
+		}
+		issue.Terminal, issue.LandedHeadSHA = true, head
+		if err := backend.CleanupLanding(t.Context(), info, issue); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) || daemon.Alive(t) {
+			t.Fatalf("retained worktree or service survived landing cleanup: %v", err)
+		}
+	})
 	for _, foreign := range []bool{false, true} {
 		name := "retained service"
 		if foreign {

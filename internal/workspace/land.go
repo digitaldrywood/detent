@@ -33,7 +33,7 @@ type LandingWorkspaceCleaner interface {
 }
 
 func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) error {
-	if issue.Landing == nil || issue.RetainedLanding {
+	if issue.Landing == nil || issue.RetainedLanding && (!issue.Terminal || !validLandingHead(issue.LandedHeadSHA) || issue.LandedHeadSHA != issue.Landing.HeadSHA) {
 		return nil
 	}
 	normalized, err := l.normalizeInfo(info, issue)
@@ -43,6 +43,10 @@ func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) e
 	expected, err := l.workspacePathForIssue(issue, normalized.Key)
 	if err != nil || normalized.Path != expected {
 		return errors.Join(err, fmt.Errorf("landing cleanup path differs from the prepared workspace: %s", normalized.Path))
+	}
+	if issue.RetainedLanding {
+		_, err := l.cleanupWorkspace(ctx, normalized, issue)
+		return err
 	}
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {

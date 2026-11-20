@@ -165,7 +165,7 @@ worker_retired_at=CASE
  WHEN sqlc.narg(worker_pid)::integer IS NOT NULL AND ROW(worker_pid,worker_pgid,worker_started_at,worker_start_key) IS DISTINCT FROM
       ROW(sqlc.narg(worker_pid)::integer,sqlc.narg(worker_pgid)::integer,sqlc.narg(worker_started_at)::timestamptz,sqlc.narg(worker_start_key)::text) THEN NULL
  ELSE worker_retired_at END,
-cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean THEN sqlc.arg(now) ELSE cleanup_acknowledged_at END,
+cleanup_acknowledged_at=CASE WHEN sqlc.arg(termination)::boolean OR sqlc.arg(workspace_retired)::boolean THEN COALESCE(cleanup_acknowledged_at,sqlc.arg(now)) ELSE cleanup_acknowledged_at END,
 status=CASE WHEN sqlc.arg(usage_correction)::boolean THEN status ELSE sqlc.arg(status) END,
 payload_object_key=sqlc.arg(payload_object_key),
 checkpoint_object_key=COALESCE(sqlc.narg(checkpoint_object_key),checkpoint_object_key),
