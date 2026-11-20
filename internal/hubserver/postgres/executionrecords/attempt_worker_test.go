@@ -128,8 +128,12 @@ func TestAttemptWorkerInventory(t *testing.T) {
 		}
 		finished := heartbeat
 		finished.Sequence, finished.Status = 3, "succeeded"
+		finished.WorkspaceRetired = i == 0
 		if err := record(finished, false); err != nil {
 			t.Fatal(err)
+		}
+		if err := record(finished, true); err != nil {
+			t.Fatalf("replaying attempt finish: %v", err)
 		}
 
 		readLimit := func(runner string, machine tracker.MachineID, after string, limit int, now time.Time) runnerauth.AttemptWorkerPage {
@@ -238,7 +242,7 @@ func TestAttemptWorkerInventory(t *testing.T) {
 				return err
 			}
 			attempt, err := w.Attempt(ctx, event.ID)
-			if err == nil && (attempt.CleanupAcknowledgedAt != nil || attempt.Status != "succeeded" || attempt.Sequence != finished.Sequence) {
+			if err == nil && ((attempt.CleanupAcknowledgedAt != nil) != finished.WorkspaceRetired || attempt.Status != "succeeded" || attempt.Sequence != finished.Sequence) {
 				t.Fatalf("retirement changed the terminal attempt: %+v", attempt)
 			}
 			return err

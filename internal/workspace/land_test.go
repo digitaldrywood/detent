@@ -603,6 +603,46 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 	}
 }
 
+func TestRetainedWorktreeCleanupRequiresVerifiedLanding(t *testing.T) {
+	for _, change := range []string{"none", "uncommitted", "unpushed"} {
+		t.Run(change, func(t *testing.T) {
+			f := newLandingFixture(t)
+			issue := f.issue
+			issue.RetainedLanding = true
+			options := LandOptions{HeadSHA: f.head, Method: "squash"}
+			issue.Landing = &options
+			if err := f.backend.CleanupLanding(t.Context(), f.info, issue); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(f.info.Path); err != nil {
+				t.Fatalf("worktree was removed before landing: %v", err)
+			}
+			landed, err := f.backend.LandChange(t.Context(), f.info, issue, options)
+			if err != nil || landed.MergeSHA == "" || f.remoteMain(t) != landed.MergeSHA {
+				t.Fatalf("landing was not verified on the target: %+v, %v", landed, err)
+			}
+			issue.Terminal, issue.LandedHeadSHA = true, f.head
+			switch change {
+			case "uncommitted":
+				if err := os.WriteFile(filepath.Join(f.info.Path, "unpublished.txt"), []byte("unpublished"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "unpushed":
+				runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "Unpublished commit")
+			}
+			err = f.backend.CleanupLanding(t.Context(), f.info, issue)
+			_, statErr := os.Stat(f.info.Path)
+			if change == "none" {
+				if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("verified landed worktree was not retired: cleanup=%v stat=%v", err, statErr)
+				}
+			} else if !errors.Is(err, ErrWorkspacePreserved) || statErr != nil {
+				t.Fatalf("unpublished work was not preserved: cleanup=%v stat=%v", err, statErr)
+			}
+		})
+	}
+}
+
 func TestLocalGitLandingCleanup(t *testing.T) {
 	t.Parallel()
 	for _, outcome := range []string{"landed", "refused", "conflict", "error", "cancelled", "unreported"} {
