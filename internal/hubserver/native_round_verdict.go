@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/reports"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -437,11 +438,17 @@ func recordRoundProgress(record *progresscheck.RoundVerdict, previous progressch
 	if command.OutputTruncated || command.ExitCode == 0 {
 		return
 	}
-	if signature := verifiedRoundDiagnostic(command); signature != "" && !slices.Contains(record.RecentDiagnostics, signature) {
+	verifiedFailure, diagnostic := verifiedRoundDiagnostic(command)
+	if diagnostic != "" && !slices.Contains(record.RecentDiagnostics, diagnostic) {
 		record.DiagnosticReceipt = command.ReceiptID
-		record.RecentDiagnostics = recentRoundEvidence(record.RecentDiagnostics, signature)
+		record.RecentDiagnostics = recentRoundEvidence(record.RecentDiagnostics, diagnostic)
 	}
-	if record.FailureSignature == "" || len(record.FailedCriteria) == 0 || record.Advanced {
+	exactFailure := len(record.FailedCriteria) > 0
+	if !exactFailure && verifiedFailure != "" && record.Phase == "project_gate" && record.ProviderTimeout == nil {
+		record.FailureSignature = verifiedFailure
+		exactFailure = true
+	}
+	if !exactFailure || record.FailureSignature == "" || record.Advanced {
 		return
 	}
 	if comparable {
@@ -457,10 +464,10 @@ func recentRoundEvidence(previous []string, evidence string) []string {
 	return previous[max(0, len(previous)-limit):]
 }
 
-func verifiedRoundDiagnostic(command *gate.CommandResult) string {
+func verifiedRoundDiagnostic(command *gate.CommandResult) (failure, diagnostic string) {
 	base := command.BaseReproduction
 	if base == nil {
-		return ""
+		return "", ""
 	}
 	head := gate.CommandObservation(*command)
 	for _, finding := range command.Findings {
@@ -469,10 +476,12 @@ func verifiedRoundDiagnostic(command *gate.CommandResult) string {
 		}
 		outcome, proof := failureattribution.Classify(base.HeadSHA, head.HeadSHA, finding.CheckDiagnostic, head, *base)
 		if proof != nil {
-			return failureattribution.Digest(strings.Join([]string{outcome, proof.Command, proof.Diagnostic}, "\n"))
+			normalized := reports.NormalizeFailureSignature(proof.Diagnostic)
+			failure = failureattribution.Digest(proof.Command + "\n" + normalized)
+			return failure, failureattribution.Digest(outcome + "\n" + failure)
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func (o nativeRoundOwner) completion(ctx context.Context, input progresscheck.Publication, facts nativeRoundFacts, issue tracker.NativeIssue, attempt tracker.NativeAttempt, content *eventstore.Content) (string, error) {
