@@ -1820,6 +1820,18 @@
         "tables": []
       }
     },
+    "internal/hubclient/internal/scenariotest/landing_targets.go": {
+      "disposition": "non-storage",
+      "families": [
+        "non-storage"
+      ],
+      "inventory": {
+        "operations": {
+          "checkReviewedRepositoryAdmission:Query": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubclient/internal/scenariotest/native_change.go": {
       "disposition": "non-storage",
       "families": [
