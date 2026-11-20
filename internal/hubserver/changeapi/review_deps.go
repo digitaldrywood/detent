@@ -29,6 +29,7 @@ type ReviewDeps struct {
 	ChangeOperationRecordReceipt        func(ctx context.Context, scope hubscope.NativeScope, item, changeID, versionID, operation, key, hash string) (json.RawMessage, bool, error)
 	ReadChangeRecord                    func(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.ChangeRequest, error)
 	ReadChangeVersionRecord             func(ctx context.Context, organization tracker.OrganizationID, changeID, versionID string) (eventstore.Version, error)
+	SelectedCandidateChangeSummary      func(ctx context.Context, scope hubscope.NativeScope, item, id string, now time.Time) (tracker.ChangeSummary, error)
 	ReadWorkItemRecord                  func(ctx context.Context, scope hubscope.NativeScope, id string) (corestore.WorkItem, eventstore.CollaborationVersion, error)
 	HydrateWorkItemRecord               func(ctx context.Context, row corestore.WorkItem, version eventstore.CollaborationVersion) (tracker.NativeIssue, error)
 	LockChangeRecordOperation           func(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item, changeID, versionID string) (eventstore.Change, error)

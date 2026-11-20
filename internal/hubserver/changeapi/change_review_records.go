@@ -107,10 +107,18 @@ prepareReview:
 	if err != nil {
 		return nil, fmt.Errorf("prepare validator review: %w", err)
 	}
-
 	now, err := s.deps.CurrentTime()
 	if err != nil {
 		return nil, err
+	}
+	if request.SecurityAudit != nil && request.SecurityAudit.Landing {
+		summary, err := s.deps.SelectedCandidateChangeSummary(ctx, scope, item, changeID, now)
+		if err != nil {
+			return nil, fmt.Errorf("read landing audit candidate status: %w", err)
+		}
+		if summary.Status != "reviewed" {
+			return nil, s.deps.Validator.SecurityAuditRejection("landing security audit requires a reviewed current version", "version_id")
+		}
 	}
 	if request.Bundle != nil {
 		if err := s.deps.ValidateReviewBundleRecord(ctx, scope, change, version, *request.Bundle, now); err != nil {

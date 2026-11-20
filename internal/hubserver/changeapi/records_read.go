@@ -162,6 +162,15 @@ func (s *RecordReader) ReadChangeVersionRecord(ctx context.Context, organization
 }
 
 func (s *RecordReader) SelectedChangeDetail(ctx context.Context, scope hubscope.NativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
+	return s.selectedChangeDetail(ctx, scope, item, id, now, false)
+}
+
+func (s *RecordReader) SelectedCandidateChangeSummary(ctx context.Context, scope hubscope.NativeScope, item, id string, now time.Time) (tracker.ChangeSummary, error) {
+	detail, err := s.selectedChangeDetail(ctx, scope, item, id, now, true)
+	return detail.Summary, err
+}
+
+func (s *RecordReader) selectedChangeDetail(ctx context.Context, scope hubscope.NativeScope, item, id string, now time.Time, candidateOnly bool) (tracker.ChangeDetail, error) {
 	change, err := s.ReadChangeRecord(ctx, scope, item, id)
 	if err != nil {
 		return tracker.ChangeDetail{}, err
@@ -246,7 +255,9 @@ func (s *RecordReader) SelectedChangeDetail(ctx context.Context, scope hubscope.
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return tracker.ChangeDetail{}, err
 			}
-			result.Reviews = append(result.Reviews, value)
+			if !candidateOnly || value.SecurityAudit == nil || !value.SecurityAudit.Landing {
+				result.Reviews = append(result.Reviews, value)
+			}
 		case "check":
 			var value tracker.ChangeCheck
 			if err := json.Unmarshal(raw, &value); err != nil {

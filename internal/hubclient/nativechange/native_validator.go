@@ -290,8 +290,8 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	}
 	var changeID, versionID string
 	if result.Landing {
-		if e.data.Identity == nil || e.data.Identity.Role != runner.RoleMerge {
-			return errors.New("landing security audit requires a merge execution")
+		if err := e.flushObservations(ctx); err != nil {
+			return err
 		}
 		detail, err := e.claim.source.NativeClient().CurrentChange(ctx, e.claim.lease.WorkItemID)
 		if err != nil {
