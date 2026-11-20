@@ -54,7 +54,7 @@ func threadConfig(req RunTurnRequest) map[string]any {
 	if req.TerminalWaitTimeout > 0 {
 		settings["background_terminal_max_timeout"] = req.TerminalWaitTimeout.Milliseconds()
 	}
-	if req.IsolatedTools {
+	if req.TextOnly || req.IsolatedTools {
 		settings["project_doc_max_bytes"] = 0
 	}
 	return settings

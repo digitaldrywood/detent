@@ -541,6 +541,7 @@ func TestAgentBackendTextOnlyTurn(t *testing.T) {
 			assertJSONContains(t, sent[3].Params, "config.permissions."+profile+".filesystem./", rootAccess)
 			assertJSONContains(t, sent[3].Params, "config.permissions."+profile+".filesystem.:workspace_roots", "read")
 			assertJSONContains(t, sent[3].Params, "config.permissions."+profile+".network.enabled", false)
+			assertJSONContains(t, sent[3].Params, "config.project_doc_max_bytes", 0)
 			var params struct {
 				Config map[string]any `json:"config"`
 			}
