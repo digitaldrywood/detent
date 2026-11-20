@@ -40,6 +40,18 @@ func Configure(ctx context.Context, cmd *exec.Cmd) {
 	}
 }
 
+func WaitOwned(ctx context.Context, cmd *exec.Cmd, identity Identity) (error, error) {
+	waitErr := Wait(cmd)
+	outcome, cleanupErr := Terminate(context.WithoutCancel(ctx), identity, DefaultTerminationGrace)
+	if cleanupErr != nil {
+		return waitErr, fmt.Errorf("retire owned process group: %w", cleanupErr)
+	}
+	if outcome == TerminationOutcomeStaleIdentity {
+		return waitErr, errors.New("owned process group identity changed before retirement")
+	}
+	return waitErr, nil
+}
+
 func GroupID(cmd *exec.Cmd) int {
 	if cmd == nil || cmd.Process == nil {
 		return 0
@@ -233,7 +245,8 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 		return TerminationOutcomeAlreadyExited, nil
 	}
 	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) {
+		if errors.Is(err, syscall.ESRCH) ||
+			errors.Is(err, syscall.EPERM) && confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
 			return TerminationOutcomeAlreadyExited, nil
 		}
 		return "", err

@@ -105,7 +105,7 @@ func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
 	})
 }
 
-type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error) error, error)
+type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error)
 
 func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
 	return shell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
@@ -118,7 +118,7 @@ func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
 
 func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (func() error, error) {
 	Configure(ctx, cmd)
-	var finish func(error) error
+	var finish func(error, error) error
 	var observed Identity
 	launch := WithStartAcknowledgement(ctx, func(id Identity) (err error) {
 		finish, err = owner(ctx, cmd, id)
@@ -130,13 +130,13 @@ func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (
 	})
 	if err := StartAuthorized(launch, cmd); err != nil {
 		if finish != nil {
-			err = finish(err)
+			err = finish(err, err)
 		}
 		return nil, err
 	}
 	complete := sessiontimeout.ObserveOwnedCommand(ctx, strconv.Itoa(observed.PID)+"/"+strconv.FormatInt(observed.StartedAt.UnixNano(), 10))
 	return func() error {
 		defer complete()
-		return finish(Wait(cmd))
+		return finish(WaitOwned(ctx, cmd, observed))
 	}, nil
 }
