@@ -175,6 +175,10 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		if replacement.CompletionData().AttemptID == publishingAttempt {
 			t.Fatal("replacement reused the dead publisher attempt")
 		}
+		continuation, err := replacement.PhaseReceipts(t.Context(), "true")
+		if err != nil || continuation == nil || continuation.NextPhase != "security_audit" || continuation.LastPushed == nil || continuation.LastPushed.HeadSHA != published.HeadSHA {
+			t.Fatalf("replacement did not resume at the missing audit: %+v %v", continuation, err)
+		}
 		result, err = agent.Run(t.Context(), runner.RunRequest{Execution: replacement, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 		if err != nil || result.TurnStarted || provider.writableCalls != 1 || result.NativeChange == nil || result.NativeChange.VersionID != published.VersionID || !result.NativeChange.Reviewed {
 			t.Fatalf("reclaim did not review retained source without implementation: result=%+v writable=%d error=%v", result, provider.writableCalls, err)
