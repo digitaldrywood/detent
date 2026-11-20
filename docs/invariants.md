@@ -2,7 +2,7 @@
 
 These rules apply to all repository changes. Each invariant is a concept, stated in a few sentences and applied at review. Identify affected INV IDs in the Change description; put per-change rationale, evidence and verification there or in issue comments, as required by INV-16.
 
-An invariant is a rule, not a specification and not a test. Implementation detail, and the automated checks that guard some rules, live in code, never here. A passing check does not authorize weakening a rule. Only a change to a rule edits this document.
+An invariant is a rule, not a specification and not a test. Invariants are enforced by review, human or AI, and by nothing else. Never write a test, source scanner, baseline file, lint rule or gate step to enforce an invariant, and never name a test in this document. Tests cover the behavior of code; they do not police rules. Only a change to a rule edits this document.
 
 INV numbers are permanent identifiers. A retired invariant keeps its number as
 a retired entry; numbers are never reused or renumbered.

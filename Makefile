@@ -303,7 +303,7 @@ nilaway-audit:
 nilaway-changed:
 	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
 
-check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race test-cover
+check: check-migrations check-generated check-app build lint vet nilaway-audit test-race test-cover
 	@echo "All checks passed."
 
 check-land:
@@ -317,13 +317,9 @@ check-release:
 check-landing:
 	bash scripts/check-landing.sh "$(CHECK_LAND_BASE)" "$(TEST_PROCS)" "$(GOLANGCI_LINT_RUN)"
 
-check-fast: check-invariants check-migrations check-generated check-app lint vet test-fast
+check-fast: check-migrations check-generated check-app lint vet test-fast
 	go build ./...
 	@echo "Fast checks passed."
-
-.PHONY: check-invariants
-check-invariants:
-	$(GO_TEST) ./internal/invariants
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...

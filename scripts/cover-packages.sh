@@ -26,7 +26,6 @@ BEGIN {
     weight[module "/internal/config/configdoc"] = 54
     weight[module "/internal/store"] = 32
     weight[module "/tools/testgate"] = 26
-    weight[module "/internal/invariants"] = 20
     load[1] = 240
 }
 $0 != module "/internal/workspace" && $0 != module "/internal/web" && !(skiphub != "" && $0 == module "/internal/hubserver") {

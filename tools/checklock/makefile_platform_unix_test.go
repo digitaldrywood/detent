@@ -95,7 +95,7 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 set -eu
 case "$*" in
   'build ./...') exec "$DETENT_MAKE_TEST_BINARY" -test.run='^TestMakeCheckFastBuildHelper$' ;;
-  'test '*' ./internal/invariants'|'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
+  'run ./tools/migrationcheck'|'run ./internal/config/cmd/configdoc -root .') exit 0 ;;
   'run github.com/sqlc-dev/sqlc/cmd/sqlc@'*' diff -f internal/hubserver/postgres/sqlc.yaml') exit 0 ;;
   *) echo "unexpected gate command: $*" >&2; exit 99 ;;
 esac
@@ -198,16 +198,14 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 	tests := []struct {
 		name      string
 		broken    string
-		invalid   bool
 		wantTrace string
 		wantError bool
 		staleSQL  string
 	}{
-		{"stale SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", true, "sqlc"},
-		{"broken config generator", "configdoc", false, "invariants\nmigrations\nconfigdoc\n", true, ""},
-		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", false, ""},
-		{"broken enrollment docs", "enrollmentdocs", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", true, ""},
-		{"invariant failure", "", true, "invariants\n", true, ""},
+		{"stale SQL", "", "migrations\nconfigdoc\nsqlc\n", true, "sqlc"},
+		{"broken config generator", "configdoc", "migrations\nconfigdoc\n", true, ""},
+		{"generation succeeds", "", "migrations\nconfigdoc\nsqlc\nenrollmentdocs\n", false, ""},
+		{"broken enrollment docs", "enrollmentdocs", "migrations\nconfigdoc\nsqlc\nenrollmentdocs\n", true, ""},
 	}
 	for _, target := range []string{"check", "check-fast"} {
 		for _, tt := range tests {
@@ -228,9 +226,6 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 				if tt.staleSQL != "" {
 					write("stale-"+tt.staleSQL, "", 0o600)
 				}
-				if tt.invalid {
-					write("invalid-invariants", "", 0o600)
-				}
 				write("git", "#!/bin/sh\npwd\n", 0o700)
 				write("python3", `#!/bin/sh
 set -eu
@@ -241,10 +236,6 @@ test ! -f broken-enrollmentdocs
 				write("go", `#!/bin/sh
 set -eu
 case "$*" in
-  'test '*' ./internal/invariants')
-    echo invariants >> trace
-    test ! -f invalid-invariants
-    ;;
   'run ./tools/migrationcheck')
     echo migrations >> trace
     ;;

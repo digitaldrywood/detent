@@ -13,7 +13,6 @@ if [ "$#" -gt 1 ]; then
         app) check_with_evidence app make check-app TEST_PROCS="$procs" ;;
         generated) check_with_evidence generated make check-generated TEST_PROCS="$procs" ;;
         migrations) check_with_evidence migrations make check-migrations ;;
-        invariants) check_with_evidence invariants make check-invariants ;;
         build) check_with_evidence build go build -p "$procs" ./... ;;
         windows-build-amd64) check_with_evidence windows-build-amd64 env GOOS=windows GOARCH=amd64 go build -p "$procs" ./... ;;
         windows-vet) check_with_evidence windows-vet env GOOS=windows GOARCH=amd64 go vet -p "$procs" ./... ;;

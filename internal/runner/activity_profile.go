@@ -637,7 +637,7 @@ func classifyActivity(tool, command string) (string, string) {
 			if len(fields) > 1 && (strings.HasPrefix(fields[1], "check") || strings.HasPrefix(fields[1], "test") || fields[1] == "lint" || fields[1] == "build") {
 				nextKind, nextEvidence = "local_validation", "make_validation"
 				switch fields[1] {
-				case "check", "check-fast", "check-invariants", "test", "lint", "build":
+				case "check", "check-fast", "test", "lint", "build":
 					nextEvidence = "make_" + strings.ReplaceAll(fields[1], "-", "_")
 				}
 			}
@@ -892,7 +892,7 @@ func (r *activityRecorder) checkObservations(update AgentUpdate) []gate.CheckObs
 
 func workerCheckScope(scope string) bool {
 	switch scope {
-	case "check-land", "app", "generated", "lint", "vet", "build", "unit-short", "nilaway", "scripts", "invariants", "migrations":
+	case "check-land", "app", "generated", "lint", "vet", "build", "unit-short", "nilaway", "scripts", "migrations":
 		return true
 	}
 	return false

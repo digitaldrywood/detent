@@ -24,7 +24,7 @@ A tenant is one customer organization. Detent is one program that serves all of 
 
 "Per-tenant" means the number of instances grows with the number of organizations. A rule names its check when one exists; everything else is enforced by review.
 
-1. No per-tenant process. Nothing starts, supervises or keeps an operating-system process, binary or container per organization. The only dedicated placement is the rule 20 exception, which uses the same shard machinery. Ratcheted by `TestRepositoryTenancy`; the check sees direct launch syntax only, so review is the boundary.
+1. No per-tenant process. Nothing starts, supervises or keeps an operating-system process, binary or container per organization. The only dedicated placement is the rule 20 exception, which uses the same shard machinery.
 2. Physical pools do not grow with tenants. Count distinct physical pools: one runtime reader and writer pair per Hub process (they may be one pool), the entry pool, and a migration pool that runs outside serving. A wrapper around an existing pool is not a new pool. `MaxConns` is a ceiling, not a count of open connections; the server-side ceiling is the sum of `MaxConns` over physical pools. The process host owns pool lifecycle: adding or removing an organization never constructs or closes a physical pool, wherever the factory lives.
 3. No per-tenant timer or idle goroutine. An idle tenant costs no wakeups. A goroutine works for one tenant only while it serves a request, runs a scheduler step, runs an admitted asynchronous job that has a deadline, is cancelled with its owner and is joined before shutdown, or serves an admitted stream with a memory bound.
 4. One verified scope. Scopes are built only in one narrow authority package: its request constructor works from the authenticated principal (the verified entry assertion's audience and allocation generation, or a verified credential), and its scheduler constructor works from the registry page the shared scheduler selected. A path organization must equal the audience. The scope is immutable and passed explicitly, and every tenant store entry point rejects a zero or invalid scope; nothing reads a process-wide "current organization", and a bare organization ID string is not proof of authority. Current registry state, generation and membership are checked when the scope is built, before any read, and again inside the transaction where a write commits. An external publication is authorized and reserved by a transaction; the external call runs after it, outside any transaction, under the existing publication owner (rule 15). During migration, one process may hold several tenant-bound services, each built for one organization and never re-pointed per request.
@@ -214,7 +214,7 @@ Each tenant transaction sets its timeouts in the same batch that binds the organ
 
 ## Anti-patterns
 
-Each fails at 10,000 tenants. The named code is a stable example; the current debt list is in `internal/invariants/tenancy_policy.json` and the migration work is in the Detent tracker.
+Each fails at 10,000 tenants. The named code is a stable example; the migration work is in the Detent tracker.
 
 - Process per tenant. Processes, pools, timers, caches and memory multiply and all run while idle. Example: `ExecLauncher` in `internal/cloudentry/tenant` runs `detent hub serve --hosted-config <tenant.yaml>` per organization and restarts it on failure.
 - Pool per tenant. Server connection ceilings multiply with organizations. Example: every per-organization Hub process opens its own pool through `internal/hubserver/postgres` `Open`.
@@ -244,11 +244,6 @@ A change that touches hosted serving, tenancy, scheduling, connection pools or b
 12. Does the change add a process, binary, file, directory, timer or configuration entry per organization?
 13. Do startup, readiness, export, deletion and migration stay bounded and fenced as rules 14 to 17 require?
 14. What does the change cost per request, per tick and in total at 10,000 tenants?
-15. Does `TestRepositoryTenancy` pass without raising `internal/invariants/tenancy_policy.json`, and was the baseline lowered for every occurrence removed?
-
-## What the check does not prove
-
-`TestRepositoryTenancy` is a syntactic ratchet. It pins process and pool construction to named sites across the repository (skipping only named scratch paths, the directories the Go toolchain ignores and named test-support packages), counts hosted-path timers and process-wide organization reads as debt, and fails when a new site appears. Landing keeps the policy from growing: `scripts/check-tenancy-policy.py`, run by `make check-land` and the landing gate, compares the candidate's committed policy with the target revision's and rejects raised counts, new exceptions and new test-support entries. It does not follow call graphs, types or runtime multiplicity: a factory called once per tenant, a renamed accessor, a goroutine per tenant or a launch behind an existing wrapper passes it. An empty debt list does not prove the migration is complete; the required tests above and review do.
 
 ## Sources
 

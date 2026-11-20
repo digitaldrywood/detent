@@ -15,7 +15,6 @@ trap 'result=$?; printf "check-land finished: exit=%s wall=%ss\n" "$result" "$((
 
 base=$(git rev-parse --verify "${base}^{commit}")
 head=$(git rev-parse --verify 'HEAD^{commit}')
-check_with_evidence tenancy-policy python3 scripts/check-tenancy-policy.py "$base" "$head"
 app_changed=false
 if ! git diff --quiet "$base" -- "$app" || [ -n "$(git ls-files --others --exclude-standard -- "$app")" ]; then
     app_changed=true
@@ -78,7 +77,6 @@ if [ "${#script_tests[@]}" -gt 0 ]; then
     check_with_evidence scripts python3 -m unittest "${script_tests[@]}"
 fi
 
-check_with_evidence invariants env -u DETENT_API_TOKEN go test -p "$procs" -timeout=60s ./internal/invariants
 check_with_evidence migrations make check-migrations
 if [ "$app_changed" = false ]; then
     printf 'Conversation sources unchanged; skipping check-app.\n'

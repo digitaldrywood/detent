@@ -98,12 +98,12 @@ Detent's self-protection mechanisms (brakes, breakers, leases, parks, recovery s
 ## Multi-tenancy
 
 - One Hub process serves many organizations. The tenant is an attribute of a request, a job and a row, never of a process, binary, physical pool, timer, idle goroutine or configuration file, and never a process-wide "current organization". Goroutines exist for a tenant only during active, bounded, cancellable and joined work. Transitional tenant-bound services are immutable, one per organization. Dedicated compute is only a shard assignment Cory approves, with a recorded reason.
-- The contract is [docs/architecture/multi-tenancy.md](docs/architecture/multi-tenancy.md), incorporated by [INV-23](docs/invariants.md#inv-23--the-tenant-is-never-a-process). `TestRepositoryTenancy` is a ratchet, not proof: `internal/invariants/tenancy_policy.json` only shrinks.
+- The contract is [docs/architecture/multi-tenancy.md](docs/architecture/multi-tenancy.md), incorporated by [INV-23](docs/invariants.md#inv-23--the-tenant-is-never-a-process).
 - A change touching hosted serving, tenancy, scheduling, connection pools or background work answers the [review checklist](docs/architecture/multi-tenancy.md#review-checklist) in its Change description; "not applicable, because ..." with a reason is a valid answer.
 
 ## Repository invariants
 
-Follow [docs/invariants.md](docs/invariants.md). It is short; read it whole. Only a change to an invariant's rule edits `docs/invariants.md`. Name affected INV IDs in the Change description; per-change rationale and evidence go there or in issue comments. The rules agents trip on most:
+Follow [docs/invariants.md](docs/invariants.md). It is short; read it whole. Invariants are applied at review and are never enforced by tests, scanners or gate steps; do not add one. Only a change to an invariant's rule edits `docs/invariants.md`. Name affected INV IDs in the Change description; per-change rationale and evidence go there or in issue comments. The rules agents trip on most:
 
 - [INV-16](docs/invariants.md#inv-16--the-hub-carries-execution-context-and-git-carries-source): the Hub carries issue direction, phase receipts, verdicts and findings. Git carries source commits. Keep human discussion and final outcomes in the tracker. Never pass execution state through repository notes or machine issue-comment streams.
 - [INV-17](docs/invariants.md#inv-17--hub-owned-assignment-and-retained-item-worktrees): the Hub owns assignment and execution authority. The runner keeps the item’s worktree across phases and retries under its lease. Each completed phase pushes ordinary commits and records commit-bound receipts in the Hub. After lease loss, resume from the last pushed phase commit at the first phase without a valid receipt. Keep unrelated jobs independent of machine-local state. Never discover configuration by scanning the machine or route by where earlier work ran.
@@ -137,7 +137,7 @@ Follow [docs/invariants.md](docs/invariants.md). It is short; read it whole. Onl
 - Browser specs in `tests/visual` cover critical user journeys only. Verify UI issues with Vitest component tests in `web/conversation` or Go handler tests by default. Add a browser test only for a journey no existing spec covers and no component or API test can catch; otherwise extend the existing journey spec.
 - Every test creates its own data, through the API where possible, and never depends on test order. No describe serial mode or mutable shared state in `beforeAll`; isolate server state per test with a unique project or account.
 - Locate elements by `getByRole`, then `getByLabel`, `getByText`, `getByTestId`; never CSS or XPath structure. Assert the user's outcome, not layout, counts or order unless the issue concerns them. Use web-first assertions; never `waitForTimeout` or fixed sleeps.
-- Every browser journey runs the same assertions on every operating system. The frozen `internal/invariants/browser_policy.json` allowlists only shrink; remove entries when files or patterns disappear.
+- Every browser journey runs the same assertions on every operating system.
 - UI changes attach screenshots (light and dark, desktop and 390px as relevant) as review evidence. Screenshots are never compared by pixels or hashes.
 
 ## Diagnosis

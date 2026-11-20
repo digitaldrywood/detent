@@ -141,7 +141,7 @@ if name == "python3":
         os.execv(os.environ["REAL_PYTHON"], [os.environ["REAL_PYTHON"], *args])
 elif name == "make":
     stage = {"check-app": "app", "check-generated": "generated", "check-migrations": "migrations",
-             "check-invariants": "invariants", "test-race": "race", "test": "full"}.get(args[0], args[0])
+             "test-race": "race", "test": "full"}.get(args[0], args[0])
     if stage == "-o":
         stage = "browser-build"
 elif name == "playwright":

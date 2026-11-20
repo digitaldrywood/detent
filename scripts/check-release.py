@@ -12,13 +12,13 @@ import time
 
 
 STEPS = (
-    "app", "generated", "migrations", "invariants", "build",
+    "app", "generated", "migrations", "build",
     "windows-build-amd64", "windows-vet", "windows-build-arm64", "vet", "lint",
     "scripts", "nilaway-changed", "race", "subprocess-lifecycle", "full",
     "security", "browser",
 )
 PRIORITY = (
-    "app", "generated", "full", "race", "browser", "invariants", "lint",
+    "app", "generated", "full", "race", "browser", "lint",
     "nilaway-changed", "scripts", "migrations", "build", "windows-build-amd64",
     "windows-vet", "windows-build-arm64", "vet", "subprocess-lifecycle", "security",
 )
