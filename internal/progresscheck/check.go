@@ -1,7 +1,6 @@
 package progresscheck
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,18 +14,14 @@ import (
 )
 
 const (
-	CompleteStep       = "complete"
-	MaxToolCalls       = 80
-	MaxToolResultBytes = 1 << 20
-	MaxDuration        = 3 * time.Minute
-	MaxAttempts        = 12
-	MaxReceipts        = 24
-	MaxComments        = 24
-	MaxInputBytes      = 64 << 10
-	MaxOutputBytes     = 8 << 10
+	CompleteStep   = "complete"
+	MaxDuration    = 3 * time.Minute
+	MaxAttempts    = 12
+	MaxReceipts    = 24
+	MaxComments    = 24
+	MaxInputBytes  = 64 << 10
+	MaxOutputBytes = 8 << 10
 )
-
-var ErrBackend = errors.New("progress check backend failed")
 
 type Outcome string
 
@@ -127,53 +122,6 @@ type Record struct {
 	Decision         Decision
 	CommentID        string
 	DefectIssueID    string
-}
-
-type Backend interface {
-	Decide(context.Context, Request) (Decision, error)
-}
-
-type Owner interface {
-	Load(context.Context, string, string, string) (Record, bool, error)
-	Publish(context.Context, Record) (Record, error)
-}
-
-func Check(ctx context.Context, request Request, backend Backend, owner Owner) (Record, bool, error) {
-	if !request.NeedsCheck() {
-		return Record{}, false, nil
-	}
-	id, err := request.ID()
-	if err != nil {
-		return Record{}, false, err
-	}
-	if backend == nil || owner == nil {
-		return Record{}, false, errors.New("progress check requires backend and tracker owner")
-	}
-	record, found, err := owner.Load(ctx, request.ProjectID, request.IssueID, id)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("load progress decision: %w", err)
-	}
-	if found {
-		if err := validateRecord(request, id, record); err != nil {
-			return Record{}, false, fmt.Errorf("validate retained progress decision: %w", err)
-		}
-		return record, true, nil
-	}
-	decision, err := backend.Decide(ctx, request)
-	if err != nil {
-		return Record{}, false, fmt.Errorf("%w: %w", ErrBackend, err)
-	}
-	if err := validateDecision(request, decision); err != nil {
-		return Record{}, false, fmt.Errorf("%w: %w", ErrBackend, err)
-	}
-	record, err = owner.Publish(ctx, Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
-	if err != nil {
-		return Record{}, false, fmt.Errorf("publish progress decision: %w", err)
-	}
-	if err := validateRecord(request, id, record); err != nil {
-		return Record{}, false, fmt.Errorf("validate published progress decision: %w", err)
-	}
-	return record, true, nil
 }
 
 func (request Request) NeedsCheck() bool {

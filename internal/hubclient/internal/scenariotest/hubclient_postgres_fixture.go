@@ -164,15 +164,3 @@ func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization trac
 		t.Fatal(err)
 	}
 }
-
-func hubclientReadPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, read func(tenantstore.Reader) error) {
-	t.Helper()
-	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../../hubserver/postgres/migrations"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = repository.ReadTenant(t.Context(), organization, corestore.Serving, read)
-	if err := errors.Join(err, repository.Close()); err != nil {
-		t.Fatal(err)
-	}
-}

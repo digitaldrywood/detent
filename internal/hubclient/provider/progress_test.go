@@ -10,12 +10,6 @@ import (
 )
 
 func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
-func TestNativeRetryProgressSharedOutagePersistsOneDefect(t *testing.T) {
-	scenariotest.RunNativeRetryProgressSharedOutagePersistsOneDefect(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
-}
-func TestNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T) {
-	scenariotest.RunNativeRetryProgressLoadsRepeatedLandingRefusals(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
-}
 func TestNativeRetryUsesCurrentClaim(t *testing.T) {
 	scenariotest.RunNativeRetryUsesCurrentClaim(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }

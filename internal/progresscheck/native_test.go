@@ -80,10 +80,8 @@ func TestNativeRequestActiveAttemptDoesNotRetryOlderFailure(t *testing.T) {
 		{NativeRunData: tracker.NativeRunData{AttemptID: "failed", Outcome: "failed"}, Status: "failed"},
 		{NativeRunData: tracker.NativeRunData{AttemptID: "current"}, Status: "running"},
 	}}
-	backend := &fakeBackend{}
-	_, checked, err := Check(t.Context(), NativeRequest(recovery, "policy", "instance"), backend, &fakeOwner{})
-	if err != nil || checked || backend.calls != 0 {
-		t.Fatalf("active continuation paid an AI turn: checked=%v calls=%d error=%v", checked, backend.calls, err)
+	if NativeRequest(recovery, "policy", "instance").NeedsCheck() {
+		t.Fatal("active continuation prompted a progress check")
 	}
 }
 
@@ -95,10 +93,8 @@ func TestNativeEmptyLandingSuccessRequiresProgressCheck(t *testing.T) {
 				Issue:    tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "example-project", WorkItemID: "example-issue", Revision: 1}},
 				Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "merge-attempt", Outcome: outcome, Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", BaseSHA: "base", HeadSHA: "head"}}}}},
 			}
-			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Diagnosis: "merge-attempt:landing has no deliverable or acceptance evidence", Instruction: "Implement and verify the unmet acceptance criteria", Reason: "Acceptance remains unmet after nothing_to_land", Evidence: []string{"merge-attempt:landing"}}}
-			_, checked, err := Check(t.Context(), NativeRequest(recovery, "policy", "instance"), backend, &fakeOwner{})
-			if err != nil || !checked || backend.calls != 1 {
-				t.Fatalf("empty landing skipped progress check: checked=%v calls=%d error=%v", checked, backend.calls, err)
+			if !NativeRequest(recovery, "policy", "instance").NeedsCheck() {
+				t.Fatal("empty landing skipped progress check")
 			}
 		})
 	}
@@ -181,10 +177,8 @@ func TestNativeNoProgressSuccessRequiresCheck(t *testing.T) {
 				r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: id, Outcome: "succeeded", Finalization: &tracker.NativeFinalization{Changed: true, BaseSHA: "base", HeadSHA: "head"}}})
 			}
 			test.mutate(&r)
-			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Diagnosis: "latest" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce missing work", Evidence: []string{"latest"}}}
-			_, checked, err := Check(t.Context(), NativeRequest(r, "policy", "instance"), backend, &fakeOwner{})
-			if err != nil || checked != test.want || (backend.calls == 1) != test.want {
-				t.Fatalf("checked=%v calls=%d err=%v, want %v", checked, backend.calls, err, test.want)
+			if needed := NativeRequest(r, "policy", "instance").NeedsCheck(); needed != test.want {
+				t.Fatalf("NeedsCheck=%v, want %v", needed, test.want)
 			}
 		})
 	}
