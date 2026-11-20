@@ -553,7 +553,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if change, ok := req.Execution.(ChangeExecution); ok {
 			result.NativeChange = change.NativeChange()
 		}
-		_, err := r.judgeRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr)
+		assessment, err := r.decideRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr, false)
+		if err == nil && runErr == nil && assessment.HumanAction != "" {
+			assessment.applyHumanAction(&result)
+			if prepared, ok := req.Execution.(CompletionExecution); ok {
+				err = prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nil)
+			}
+		}
 		if err != nil {
 			runErr = errors.Join(runErr, err)
 			outcome = "interrupted"

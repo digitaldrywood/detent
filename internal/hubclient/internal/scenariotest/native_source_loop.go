@@ -28,6 +28,8 @@ type sourceRepairAgent struct {
 	workspaceHooks *sourceLoopWorkspace
 	gateRepair     bool
 	roundVerdicts  int
+	roundChoices   []string
+	roundPrompts   []string
 }
 
 type sourceLoopWorkspace struct {
@@ -72,14 +74,18 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		if !request.ReadOnly || !request.TextOnly || request.Resume != (runner.AgentResume{}) {
 			return runner.AgentTurnResult{}, errors.New("round verdict was not an independent read-only turn")
 		}
+		a.roundPrompts = append(a.roundPrompts, request.Prompt)
+		index := a.roundVerdicts
 		a.roundVerdicts++
-		action, next := "continue", "merge"
-		if strings.Contains(request.Prompt, "required next phase: implement") {
-			next = "implement"
-		} else if strings.Contains(request.Prompt, "required action is done") {
-			action, next = "done", ""
+		body := `{"action":"continue","next_phase":"implement","reason":"The failed check needs a source repair."}`
+		switch {
+		case index < len(a.roundChoices):
+			body = a.roundChoices[index]
+		case strings.Contains(request.Prompt, "\nPhase: merge\n"):
+			body = `{"action":"done","reason":"The reviewed source landed."}`
+		case a.validator == "pass" && !(a.gateRepair && index == 0) && !(a.auditRework && index == 0) && a.sourceVerdict != "rework":
+			body = `{"action":"continue","next_phase":"merge","reason":"The independent checks passed for the current source."}`
 		}
-		body := fmt.Sprintf(`{"action":%q,"next_phase":%q,"reason":"Fixture evaluated the passing and failing checks."}`, action, next)
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
 	}
 	a.requests = append(a.requests, request)
@@ -109,7 +115,7 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 	}
 	if !review && a.writableCalls > 0 {
 		if request.Workspace != a.workspace || request.Resume.ThreadID != "thread-native" ||
-			(!strings.Contains(request.Prompt, "Checked") && !(a.gateRepair && strings.Contains(request.Prompt, "repair required"))) {
+			(!strings.Contains(request.Prompt, "Checked") && !strings.Contains(request.Prompt, "Exercise the missing acceptance case.") && !(a.gateRepair && strings.Contains(request.Prompt, "repair required"))) {
 			return runner.AgentTurnResult{}, errors.New("repair lost implementation resume or review findings")
 		}
 		if err := os.WriteFile(filepath.Join(request.Workspace, "REPAIR.md"), []byte("repaired\n"), 0o600); err != nil {
@@ -140,6 +146,8 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		gateRepair   bool
 		loseReceipt  bool
 		land         bool
+		roundChoice  string
+		wantReason   string
 		wantVersions int
 		wantCalls    int
 		wantReviewed bool
@@ -148,6 +156,8 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		{name: "old audit approval cannot approve repaired head", audit: true, limit: 6, verdict: "rework", wantVersions: 2, wantCalls: 6, wantReviewed: true},
 		{name: "accepted source lands and records completion", land: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
+		{name: "verdict chooses implementation after approval", limit: 4, verdict: "pass", roundChoice: `{"action":"continue","next_phase":"implement","reason":"Exercise the missing acceptance case."}`, wantReason: "Exercise the missing acceptance case.", wantVersions: 2, wantCalls: 4, wantReviewed: true},
+		{name: "verdict cannot skip a failed gate", gateRepair: true, limit: 4, verdict: "pass", roundChoice: `{"action":"continue","next_phase":"merge","reason":"Skip the failing command."}`, wantReason: "phase is not authorized", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
@@ -191,6 +201,9 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
 			sessions := api.NewRunnerSessions(h.native)
 			provider := &sourceRepairAgent{gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			if test.roundChoice != "" {
+				provider.roundChoices = []string{test.roundChoice}
+			}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
@@ -258,6 +271,15 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				}
 				if receipt == nil || receipt.RoundID == "" || receipt.PreviousRoundID == "" || receipt.Action != "continue" || receipt.NextPhase != "merge" {
 					t.Errorf("round history lost the refused round or next phase: %+v %v", receipt, err)
+				}
+			}
+			if test.roundChoice != "" {
+				if provider.writableCalls != 2 || len(provider.roundPrompts) != 2 {
+					t.Fatalf("round decision did not drive a second implementation turn: writable=%d verdicts=%d", provider.writableCalls, len(provider.roundPrompts))
+				}
+				_, prior, ok := strings.Cut(provider.roundPrompts[1], "\nPrior verdict:\n")
+				if !ok || !strings.Contains(prior, `"next_phase":"implement"`) || !strings.Contains(prior, test.wantReason) {
+					t.Errorf("round history did not record the decision and reason: %s", prior)
 				}
 			}
 			change := result.NativeChange
@@ -404,7 +426,7 @@ func (a *phaseRecoveryAgent) RunTurnWithTools(ctx context.Context, request runne
 func (a *phaseRecoveryAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if strings.HasPrefix(request.Prompt, "Judge the completed Detent round") {
 		next := "merge"
-		if strings.Contains(request.Prompt, "required next phase: implement") {
+		if a.repair && a.writeTurns == 0 {
 			next = "implement"
 		}
 		message := fmt.Sprintf(`{"action":"continue","next_phase":%q,"reason":"The recorded gate result determines the next phase."}`, next)
