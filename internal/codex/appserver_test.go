@@ -1051,9 +1051,9 @@ func (e *artifactBlockedExecution) Finish(_ context.Context, outcome string) err
 func (*artifactBlockedExecution) Recovery() tracker.NativeRecovery                { return tracker.NativeRecovery{} }
 func (*artifactBlockedExecution) PrepareArtifacts(context.Context, string) error  { return nil }
 func (*artifactBlockedExecution) FinalizeArtifacts(context.Context, string) error { return nil }
-func (e *artifactBlockedExecution) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
-	if !incomplete {
-		return errors.New("blocked artifact spool was reported as complete")
+func (e *artifactBlockedExecution) FinalizeArtifactsWithSpoolCount(ctx context.Context, directory string, expected int) error {
+	if expected != 1 {
+		return errors.New("finalization lost the expected artifact chunk count")
 	}
 	return e.FinalizeArtifacts(ctx, directory)
 }

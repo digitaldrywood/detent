@@ -245,7 +245,7 @@ func TestSSHNativeEvidenceSource(t *testing.T) {
 func TestSSHNativePublication(t *testing.T) {
 
 	t.Parallel()
-	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost"} {
+	for _, scenario := range []string{"complete", "capture disconnected", "upload acknowledgment lost", "spool reply lost", "spool write missing"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newNativeChangeHub(t)
 			issue := h.createInProgress(t, "Remote diff")
@@ -354,7 +354,11 @@ func TestSSHNativePublication(t *testing.T) {
 			git("add", "README.md")
 			git("-c", "commit.gpgsign=false", "commit", "-m", "remote")
 			head := git("rev-parse", "HEAD")
-			if err := artifacts.ArtifactLog(ctx, "remote log 🌲\n"); err != nil {
+			if strings.HasPrefix(scenario, "spool ") {
+				if err := e.SpoolArtifactLog(ctx, "remote log 🌲\n"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := artifacts.ArtifactLog(ctx, "remote log 🌲\n"); err != nil {
 				t.Fatal(err)
 			}
 			if err := remote.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
@@ -377,7 +381,22 @@ func TestSSHNativePublication(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err = artifacts.FinalizeArtifacts(ctx, checkout)
+			if strings.HasPrefix(scenario, "spool ") {
+				expected := 1
+				want := "complete"
+				if scenario == "spool write missing" {
+					expected++
+					want = "interrupted"
+				}
+				err = artifacts.(interface {
+					FinalizeArtifactsWithSpoolCount(context.Context, string, int) error
+				}).FinalizeArtifactsWithSpoolCount(ctx, checkout, expected)
+				if err == nil && e.artifacts.log.State != want {
+					t.Fatalf("artifact state = %q, want %q", e.artifacts.log.State, want)
+				}
+			} else {
+				err = artifacts.FinalizeArtifacts(ctx, checkout)
+			}
 			if scenario == "upload acknowledgment lost" {
 				if err == nil {
 					t.Fatal("upload failure not injected")

@@ -16,18 +16,19 @@ import (
 )
 
 type nativeArtifacts struct {
-	mu          sync.Mutex
-	client      *artifact.Client
-	directory   string
-	base        string
-	finished    bool
-	incomplete  bool
-	uploaded    int64
-	sequence    int
-	reservation artifact.Reservation
-	log         artifact.Upload
-	journalRoot string
-	capture     func(context.Context, string, string) (artifact.GitCapture, error)
+	mu            sync.Mutex
+	client        *artifact.Client
+	directory     string
+	base          string
+	finished      bool
+	incomplete    bool
+	spooledChunks int
+	uploaded      int64
+	sequence      int
+	reservation   artifact.Reservation
+	log           artifact.Upload
+	journalRoot   string
+	capture       func(context.Context, string, string) (artifact.GitCapture, error)
 }
 
 func (e *nativeExecution) SetArtifactSource(journalRoot string, source func(context.Context, string, string) (artifact.GitCapture, error)) {
@@ -161,6 +162,7 @@ func (e *nativeExecution) appendArtifactLog(ctx context.Context, delta string, u
 		return err
 	}
 	if !upload {
+		a.spooledChunks++
 		return nil
 	}
 	err = a.flush(ctx, false)
@@ -242,17 +244,16 @@ func (a *nativeArtifacts) flush(ctx context.Context, final bool) (resultErr erro
 }
 
 func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory string) error {
-	return e.FinalizeArtifactsWithLogState(ctx, directory, false)
+	return e.FinalizeArtifactsWithSpoolCount(ctx, directory, 0)
 }
 
-func (e *nativeExecution) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
+func (e *nativeExecution) FinalizeArtifactsWithSpoolCount(ctx context.Context, directory string, expected int) error {
 	a := &e.artifacts
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.directory == "" || a.finished {
 		return nil
 	}
-	a.incomplete = a.incomplete || incomplete
 	// Freeze the remote capture before publishing any of it. Retries use the
 	// same bytes even if the checkout changes or the SSH channel disappears.
 	bundlePath := filepath.Join(a.directory, "diff.json")
@@ -285,7 +286,7 @@ func (e *nativeExecution) FinalizeArtifactsWithLogState(ctx context.Context, dir
 		a.incomplete = true
 	}
 	state := "complete"
-	if a.incomplete {
+	if a.incomplete || a.spooledChunks < expected {
 		state = "interrupted"
 	}
 	if a.log.State != "complete" && a.log.State != "interrupted" {
