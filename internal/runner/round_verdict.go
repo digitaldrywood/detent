@@ -178,6 +178,10 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 		Reason: assessment.Reason, NextPhase: assessment.NextPhase, FailureSignature: signature, HumanAction: assessment.HumanAction,
 		Criteria: criteria[:min(len(criteria), progresscheck.MaxReceipts)],
 	}
+	var providerTimeout *sessiontimeout.Error
+	if errors.As(runErr, &providerTimeout) && providerTimeout.Valid() {
+		input.ProviderTimeout = providerTimeout
+	}
 	if err := execution.RecordRoundVerdict(ctx, input); err != nil {
 		return roundAssessment{}, fmt.Errorf("publish round verdict: %w", err)
 	}
@@ -236,4 +240,27 @@ func providerRoundOutcome(err error, assessment string) string {
 		return outcome
 	}
 	return outcome + ": " + assessment
+}
+
+func fileRepeatedTimeout(ctx context.Context, req RunRequest, phase, backend string, timeout *sessiontimeout.Error) error {
+	if req.AgentToolHandler == nil {
+		return errors.New("runner incident owner is unavailable")
+	}
+	fingerprint := "provider-timeout:" + policy.Digest([]byte(phase+"\n"+backend+"\n"+string(timeout.Kind)))
+	arguments, err := json.Marshal(map[string]string{
+		"title":       "Provider session repeatedly exceeds its deadline",
+		"body":        fmt.Sprintf("The %s backend repeatedly reported %s during %s. The same recovery instruction returned after more than one retired session.", backend, timeout.Kind, phase),
+		"fingerprint": fingerprint,
+	})
+	if err != nil {
+		return err
+	}
+	result, err := req.AgentToolHandler(ctx, AgentToolCall{Name: "file_machine_issue", Arguments: arguments})
+	if err != nil {
+		return fmt.Errorf("record repeated provider timeout: %w", err)
+	}
+	if !result.Success {
+		return errors.New("runner incident owner refused the repeated timeout")
+	}
+	return nil
 }

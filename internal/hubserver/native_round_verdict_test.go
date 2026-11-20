@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -50,6 +51,10 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		editCriteria bool
 		gap          int
 		forged       bool
+		truncated    bool
+		learning     bool
+		circling     bool
+		signature    string
 		advanced     bool
 		regressed    bool
 		want         int
@@ -57,7 +62,11 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		{key: "forged criterion", head: strings.Repeat("b", 40), action: "continue", forged: true, want: http.StatusOK},
 		{key: "first verified criterion", head: strings.Repeat("f", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
 		{key: "initial", head: strings.Repeat("a", 40), action: "continue", command: new(1), regressed: true, want: http.StatusOK},
-		{key: "different commit same refusal", head: strings.Repeat("b", 40), action: "continue", command: new(1), want: http.StatusOK},
+		{key: "different commit same refusal", head: strings.Repeat("b", 40), action: "continue", command: new(1), circling: true, want: http.StatusOK},
+		{key: "alternate refusal", head: strings.Repeat("f", 40), action: "continue", command: new(1), signature: "test:TestOther", want: http.StatusOK},
+		{key: "first refusal returns", head: strings.Repeat("1", 40), action: "continue", command: new(1), circling: true, want: http.StatusOK},
+		{key: "truncated repeat is unknown", head: strings.Repeat("2", 40), action: "continue", command: new(1), truncated: true, want: http.StatusOK},
+		{key: "same refusal with diagnostic learning", head: strings.Repeat("3", 40), action: "continue", command: new(1), learning: true, want: http.StatusOK},
 		{key: "unsupported completion", head: strings.Repeat("b", 40), action: "done", want: http.StatusUnprocessableEntity},
 		{key: "verified advancement", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
 		{key: "diagnostic without criterion receipts", head: strings.Repeat("d", 40), action: "continue", want: http.StatusOK},
@@ -91,7 +100,10 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		input.RoundID, input.IdempotencyKey = round.key, round.key
 		input.Phase, input.HeadSHA, input.TreeSHA = "project_gate", round.head, tree
 		input.Action, input.NextPhase, input.HumanAction = round.action, "implement", ""
-		input.FailureSignature = "test:TestAcceptance"
+		input.FailureSignature = round.signature
+		if input.FailureSignature == "" {
+			input.FailureSignature = "test:TestAcceptance"
+		}
 		input.Criteria = []gate.CriterionEvidence{{Criterion: criterion, Kind: gate.EvidenceNotVerified, Reference: "TestAcceptance failed"}}
 		if round.forged {
 			input.Criteria[0] = gate.CriterionEvidence{Criterion: criterion, Kind: gate.EvidenceReceipt, Reference: "TestAcceptance", Behavior: "The requested output matches", ReceiptIDs: []string{"fabricated"}, HeadSHA: round.head, TreeSHA: tree}
@@ -105,6 +117,18 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 			event.Data.Sequence++
 			event.IdempotencyKey = "observe " + round.key
 			validation := &gate.CommandResult{ReceiptID: "receipt_" + strings.Repeat(round.head[:1], 32), Stage: gate.StageSourceFinalization, Command: "go test -run TestAcceptance ./example", HeadSHA: round.head, TreeSHA: tree, ExitCode: *round.command, DurationNS: 1}
+			validation.OutputTruncated = round.truncated
+			if round.learning {
+				validation.FinishedAt = clock.Now()
+				validation.StartedAt = validation.FinishedAt.Add(-time.Microsecond)
+				validation.DurationNS = int64(time.Microsecond)
+				validation.ReceiptID = ""
+				validation.ReceiptID = validation.PipelineTiming("finalization").ReceiptID
+				const diagnostic = "TestAcceptance failed"
+				validation.Output = diagnostic
+				validation.Findings = []gate.Finding{{CheckCommand: validation.Command, CheckDiagnostic: diagnostic}}
+				validation.BaseReproduction = &failureattribution.Observation{Command: validation.Command, HeadSHA: strings.Repeat("9", 40), ExitCode: 1, Output: diagnostic, Complete: true}
+			}
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: clock.Now(), Validation: validation}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker.redemption.Credential, event), http.StatusOK)
 			input.Criteria[0].ReceiptIDs = []string{validation.ReceiptID}
@@ -127,7 +151,8 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 			if receipt.RoundID != round.key || receipt.PreviousRoundID != previous || receipt.Advanced != round.advanced ||
 				receipt.Regressed != round.regressed || receipt.NextPhase != input.NextPhase ||
 				receipt.HumanAction != input.HumanAction || receipt.FencingToken != lease.FencingToken ||
-				(len(receipt.VerifiedCriteria) != 0) != round.verified {
+				(len(receipt.VerifiedCriteria) != 0) != round.verified ||
+				receipt.CirclingCandidate != round.circling || (receipt.DiagnosticReceipt != "") != round.learning {
 				t.Errorf("round %q returned %+v", round.key, receipt)
 			}
 			previous = receipt.RoundID
