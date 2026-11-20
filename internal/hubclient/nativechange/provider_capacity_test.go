@@ -2,13 +2,19 @@ package nativechange
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/diagnostics"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -109,5 +115,64 @@ func TestRecordedAttemptChecksProviderBeforeRestart(t *testing.T) {
 				t.Fatalf("stored attempt can start code without its provider permit: %v", err)
 			}
 		})
+	}
+}
+
+type planPolicyHost struct {
+	executioncontract.ExecutionHost
+}
+
+func (planPolicyHost) PinnedExecutionPolicy(string) policy.Descriptor {
+	var pinned policy.Descriptor
+	pinned.Gates.PlanEnabled = true
+	return pinned
+}
+
+func TestLivePlanContinuationKeepsSameAttemptReceipt(t *testing.T) {
+	t.Parallel()
+	lease := tracker.NativeLease{ID: "lease_plan", WorkItemID: "wi_plan", FencingToken: 3, PolicyID: "policy_plan"}
+	recovery := tracker.NativeRecovery{Lease: lease}
+	recovery.Issue.WorkItemID, recovery.Issue.Title = lease.WorkItemID, "Plan implementation"
+	step := tracker.NativeStepReceipt{
+		Step: "plan", PolicyID: lease.PolicyID, ReviewState: tracker.PlanIssueDigest(recovery),
+		Source:         tracker.NativeCheckpoint{HeadSHA: "head", WorkspaceDigest: "tree"},
+		CompletionBody: "Test empty inputs.", PlanApproval: "automated:APPROVED",
+	}
+	data := tracker.NativeRunData{AttemptID: "attempt_plan", LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: lease.PolicyID, Steps: []tracker.NativeStepReceipt{step}}
+	recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: data, Status: "running"}}
+	receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken}, Phase: "plan", AttemptID: data.AttemptID, PolicyID: lease.PolicyID, HeadSHA: "head", TreeSHA: "tree"}
+	receipt.InputDigest = tracker.PlanPhaseDigest(receipt, recovery, step)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var payload any = tracker.NativeProject{}
+		if strings.HasSuffix(req.URL.Path, "/phases") {
+			payload = []tracker.NativePhaseReceipt{receipt}
+			if req.URL.Query().Has("phase") {
+				payload = tracker.NativePhaseContinuation{LastPushed: &receipt, NextPhase: runner.RunModeImplement}
+			}
+		}
+		if err := json.NewEncoder(w).Encode(payload); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	client, err := api.New(api.Config{URL: server.URL, TokenSource: func() string { return "test-token" }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_test", "prj_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := api.NewNativeConnector(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &nativeExecution{scheduler: &executionAuthority{host: planPolicyHost{}}, claim: nativeClaim{source: source, lease: lease, recovery: recovery}, data: data, reconnecting: true}
+	continuation, err := execution.PhaseReceipts(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continuation.LastPushed == nil || *continuation.LastPushed != receipt || continuation.Plan == nil || !continuation.Plan.Accepted || continuation.NextPhase != runner.RunModeImplement {
+		t.Fatalf("live attempt discarded its approved plan: %+v", continuation)
 	}
 }
