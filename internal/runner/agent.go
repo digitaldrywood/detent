@@ -1862,7 +1862,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
-	if _, ok := req.Execution.(spooledArtifactExecution); ok {
+	if _, ok := req.Execution.(spooledArtifactExecution); ok && req.observationPeer == nil {
 		req.artifactLogChunks = new(int)
 	}
 	mode := normalizeRunMode(req.Mode)
