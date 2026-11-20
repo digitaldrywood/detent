@@ -2034,6 +2034,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		afterRunPending = false
 		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
+		if err == nil && result.NativeLanding != nil && result.NativeLanding.Landed {
+			err = publishItemPhase(ctx, req, runWorkspace, info, workspaceIssue, "merge", landingTarget.VersionID)
+		}
 		if result.NativeChange != nil && result.NativeChange.MergeResolution {
 			workspaceIssue.BaseRef = result.NativeChange.BaseSHA
 			if diffs, ok := req.Execution.(DiffExecution); ok {
@@ -2089,7 +2092,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	attempt := req.Attempt
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
 	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
-		req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
+		if !req.phaseReceipts {
+			req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
+		}
 		defer req.checkpointRefs.halt()
 	}
 	var promptRecoveryState *workspace.RecoveryState

@@ -492,3 +492,17 @@ func (e *sshNativeExecution) PrepareNoChange(ctx context.Context, base string) (
 	err := e.peer.Call(ctx, "execution.PrepareNoChange", &result, base)
 	return result.Message, result.Eligible, err
 }
+
+func (e *sshNativeExecution) PhaseReceipts(ctx context.Context) (bool, error) {
+	var enabled bool
+	err := e.peer.Call(ctx, "execution.PhaseReceipts", &enabled)
+	return enabled, err
+}
+
+func (e *sshNativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	return e.peer.Call(ctx, "execution.VerifyPhaseAuthority", nil)
+}
+
+func (e *sshNativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
+	return e.peer.Call(ctx, "execution.RecordPhaseReceipt", nil, phase, branch, head, tree, input)
+}

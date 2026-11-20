@@ -163,3 +163,38 @@ const ReviewSourcePageBytes = reviewoutput.SourcePageBytes
 
 type ReviewOutputRange = reviewoutput.Range
 type reviewOutputCapture = reviewoutput.Capture
+
+func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, authorize func(context.Context) error) (branch, head, tree string, err error) {
+	info, err = l.normalizeInfo(info, issue)
+	if err != nil {
+		return "", "", "", err
+	}
+	branch = info.PublishBranch()
+	if branch == "" {
+		return "", "", "", errors.New("phase publication requires an item branch")
+	}
+	if _, err := runGitAt(ctx, info.Path, "check-ref-format", "refs/heads/"+branch); err != nil {
+		return "", "", "", fmt.Errorf("validate phase publication branch: %w", err)
+	}
+	if err := l.VerifyReviewTree(ctx, info, issue); err != nil {
+		return "", "", "", err
+	}
+	head, err = l.Head(ctx, info, issue)
+	if err != nil {
+		return "", "", "", err
+	}
+	tree, err = runGitAt(ctx, info.Path, "rev-parse", head+"^{tree}")
+	if err != nil {
+		return "", "", "", fmt.Errorf("read phase tree: %w", err)
+	}
+	if err := authorize(ctx); err != nil {
+		return "", "", "", err
+	}
+	if _, pushErr := runGitAt(ctx, info.Path, "push", "--no-follow-tags", defaultGitRemote, head+":refs/heads/"+branch); pushErr != nil {
+		current, exists, readErr := remoteBranchHead(ctx, info.Path, defaultGitRemote, branch)
+		if readErr != nil || !exists || current != head {
+			return "", "", "", errors.Join(classifyLandingPush(pushErr, branch), readErr)
+		}
+	}
+	return branch, head, strings.TrimSpace(tree), nil
+}

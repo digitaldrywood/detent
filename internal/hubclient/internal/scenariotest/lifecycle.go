@@ -36,6 +36,7 @@ type Lifecycle interface {
 	runner.NativeSourceIterationExecution
 	runner.NativeValidatorExecution
 	runner.NoChangeExecution
+	runner.PhaseReceiptExecution
 	runner.PipelineExecution
 	runner.PreStartConversationExecution
 	runner.ProcessUsageExecution

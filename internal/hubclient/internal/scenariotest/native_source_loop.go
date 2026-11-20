@@ -122,6 +122,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		limit        int
 		verdict      string
 		gateRepair   bool
+		loseReceipt  bool
 		wantVersions int
 		wantCalls    int
 		wantReviewed bool
@@ -129,7 +130,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		{name: "audit repair before acceptance", audit: true, auditRework: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "old audit approval cannot approve repaired head", audit: true, limit: 6, verdict: "rework", wantVersions: 2, wantCalls: 6, wantReviewed: true},
 		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
-		{name: "validator repair", limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
+		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "shared budget exhausted", limit: 2, verdict: "rework", wantVersions: 1, wantCalls: 2},
@@ -154,6 +155,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
 			lease := execution.Recovery().Lease
+			h.failChanges.dropPhaseReceipt.Store(test.loseReceipt)
 			source := nativeChangeSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
@@ -206,10 +208,23 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if n := strings.Count(string(gateLog), "checked\n"); n != wantGateRuns {
 				t.Errorf("gate ran %d times across %d checked heads, want %d", n, test.wantVersions, wantGateRuns)
 			}
+			if test.loseReceipt {
+				branch := sourceLoopGitOutput(t, provider.workspace, "branch", "--show-current")
+				if branch == "" {
+					t.Fatal("implementation lost its item branch")
+				}
+				want := sourceLoopGitOutput(t, provider.workspace, "rev-parse", "HEAD")
+				if got := sourceLoopGitOutput(t, provider.workspace, "ls-remote", "origin", "refs/heads/"+branch); !strings.HasPrefix(got, want+"\t") {
+					t.Errorf("item branch on origin = %q, want head %s", got, want)
+				}
+			}
 			for index, request := range provider.requests {
 				if request.MaxTurns != test.limit-index {
 					t.Fatalf("phase %d reset shared budget: limit=%d want=%d", index, request.MaxTurns, test.limit-index)
 				}
+			}
+			if test.loseReceipt && h.failChanges.phaseReceiptDrops.Load() != 1 {
+				t.Error("runner never reconciled the lost response after recording a pushed phase")
 			}
 			change := result.NativeChange
 			if change == nil || change.Reviewed != test.wantReviewed || provider.calls != test.wantCalls || execution.Recovery().Lease.ID != lease.ID || execution.Recovery().Lease.FencingToken != lease.FencingToken {
@@ -306,4 +321,15 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			}
 		})
 	}
+}
+
+func sourceLoopGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSuffix(string(out), "\n")
 }
