@@ -1,9 +1,14 @@
 package progresscheck
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func refusalRequest() Request {
@@ -163,5 +168,50 @@ func TestRequestIDRejectsInvalidEvidence(t *testing.T) {
 				t.Fatalf("invalid request ID = %q, error = %v", id, err)
 			}
 		})
+	}
+}
+
+func TestRoundPublicationReassessesDefiniteRejection(t *testing.T) {
+	var assessed int
+	var published []string
+	_, err := RunRound(t.Context(), func(error) error { return nil },
+		func(context.Context) error { return nil },
+		func(_ context.Context, input RoundInput) error {
+			published = append(published, input.RoundID)
+			switch len(published) {
+			case 1:
+				return errors.New("reply unavailable")
+			case 2:
+				return ErrRoundVerdictRejected
+			default:
+				return nil
+			}
+		},
+		func(ctx context.Context) (RoundAssessment, RoundInput, error) {
+			assessed++
+			return AssessRound(ctx, RoundEvidence{Phase: "implement", Criteria: []gate.CriterionEvidence{
+				{Criterion: "Small criterion"},
+				{Criterion: strings.Repeat("large", MaxOutputBytes)},
+			}}, RoundAssessment{Action: RoundContinue, NextPhase: "implement"}, false, false,
+				func(context.Context, string) (string, error) {
+					return `{"action":"continue","next_phase":"implement","reason":"continue"}`, nil
+				})
+		})
+	if err != nil || assessed != 2 || len(published) != 3 || published[0] != published[1] || published[1] == published[2] {
+		t.Fatalf("assessment calls=%d publication IDs=%v error=%v", assessed, published, err)
+	}
+}
+
+func TestRoundCriterionEvidenceFitsPublicationBound(t *testing.T) {
+	_, input, err := AssessRound(t.Context(), RoundEvidence{Phase: "implement", Criteria: []gate.CriterionEvidence{
+		{Criterion: "Small criterion"},
+		{Criterion: strings.Repeat("large", MaxOutputBytes)},
+	}}, RoundAssessment{Action: RoundContinue, NextPhase: "implement"}, false, false,
+		func(context.Context, string) (string, error) {
+			return `{"action":"continue","next_phase":"implement","reason":"continue"}`, nil
+		})
+	data, marshalErr := json.Marshal(input)
+	if err != nil || marshalErr != nil || len(data) > MaxOutputBytes || len(input.Criteria) != 1 || input.Criteria[0].Criterion != "Small criterion" {
+		t.Fatalf("serialized bytes=%d criteria=%d errors=%v / %v", len(data), len(input.Criteria), err, marshalErr)
 	}
 }

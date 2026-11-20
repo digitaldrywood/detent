@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -219,7 +220,7 @@ func sshSentinels() []error {
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrProviderSessionUnretired, ErrLandingNotReviewed, ErrValidatorInfrastructure,
 		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired,
-		ErrChangeSourceVersionSuperseded}
+		ErrChangeSourceVersionSuperseded, progresscheck.ErrRoundVerdictRejected}
 }
 
 func encodeSSHError(err error) *sshError {

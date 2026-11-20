@@ -30,6 +30,10 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	if !ok {
 		return progresscheck.RoundAssessment{}, errors.New("round verdict owner is unavailable")
 	}
+	if retry == nil && normalizeRunMode(req.Mode) == RunModeImplement {
+		workflow, _, _, _ := r.runtimeSnapshot()
+		retry = r.roundRetry(ctx, req, phase, nil, &progresscheck.RoundDeadlines{}, roundRetryDelay(workflow.Config.Agent.MaxRetryBackoffMS))
+	}
 	return progresscheck.RunRound(ctx, retry, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, execution.RecordRoundVerdict, func(ctx context.Context) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
 		return r.assessRound(ctx, execution, req, backend, info, issue, phase, feedback, result, runErr, canReimplement)
 	})

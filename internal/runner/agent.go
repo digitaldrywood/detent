@@ -3130,7 +3130,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		if !verdictAttempted && result.TurnStarted && cleanupErr == nil && ctx.Err() == nil && executionCancellation(req) == nil {
-			assessment, verdictErr := r.decideRound(afterRunCtx, req, runWorkspace, info, workspaceIssue, "implement", "", result, turnErr, false, nil)
+			assessment, verdictErr := r.decideRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", "", result, turnErr, false, nil)
 			turnErr = errors.Join(turnErr, verdictErr)
 			if turnErr == nil {
 				applyRoundHumanAction(&result, assessment)

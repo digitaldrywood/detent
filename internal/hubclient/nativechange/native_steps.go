@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -256,5 +257,14 @@ func (e *nativeExecution) publishRoundVerdict(ctx context.Context, input progres
 	if err == nil && (recorded.RoundID != input.RoundID || recorded.AttemptID != attempt || recorded.PolicyID != lease.PolicyID || recorded.Action != input.Action || recorded.NextPhase != input.NextPhase || recorded.HeadSHA != input.HeadSHA || recorded.TreeSHA != input.TreeSHA) {
 		return errors.New("Hub round verdict differs from the completed round")
 	}
-	return e.executionError(ctx, err)
+	err = e.executionError(ctx, err)
+	var refusal *APIError
+	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+		switch refusal.Status {
+		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		default:
+			return errors.Join(progresscheck.ErrRoundVerdictRejected, err)
+		}
+	}
+	return err
 }
