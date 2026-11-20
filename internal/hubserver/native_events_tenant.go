@@ -915,6 +915,9 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				}
 			}
 			attemptEvent := event.attempt
+			if l := nativeLandingClaim(authority.Event); !authority.Termination && !attemptEvent.UsageCorrection && authority.Landing != nil && l != nil && l.Landed && l.WorkspaceRetired && authority.Event.Type == "run.finished" && attemptEvent.Status == "succeeded" {
+				attemptEvent.WorkspaceRetired = true
+			}
 			attemptEvent.DispatchGeneration = authority.DispatchGeneration
 			attempt, duplicate, err := w.RecordAttemptEvent(ctx, attemptEvent)
 			if err != nil {

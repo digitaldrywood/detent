@@ -918,6 +918,8 @@ type NativeLanding struct {
 	Method          string
 	RefusalKind     string
 	Refusal         string
+
+	WorkspaceRetired bool
 }
 
 func (l NativeLanding) RequiresRework() bool {

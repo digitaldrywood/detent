@@ -235,6 +235,7 @@ type AttemptEvent struct {
 	CheckpointPreservesSource *bool                        `json:"-"`
 	CheckpointReference       attachment.ArchiveReference  `json:"-"`
 	Termination               bool                         `json:"termination,omitempty"`
+	WorkspaceRetired          bool                         `json:"-"`
 	PayloadReference          attachment.ArchiveReference  `json:"-"`
 	Usage                     []tracker.NativeUsage        `json:"-"`
 	Failure                   *AttemptFailure              `json:"-"`

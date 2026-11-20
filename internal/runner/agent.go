@@ -2077,6 +2077,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			release()
 		}
 	}()
+	var retireRetainedLanding func()
+	defer func() {
+		if retireRetainedLanding != nil {
+			retireRetainedLanding()
+		}
+	}()
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
@@ -2123,7 +2129,28 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
-	if nativeLanding {
+	if retainedLanding {
+		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
+			retireRetainedLanding = func() {
+				landing := returnValue.NativeLanding
+				if returnErr != nil || landing == nil || !landing.Landed || landing.MergeSHA == "" || workspaceIssue.Landing == nil || landing.HeadSHA != workspaceIssue.Landing.HeadSHA {
+					return
+				}
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+				defer cancel()
+				if err := req.Execution.Validate(cleanupCtx); err != nil {
+					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+					return
+				}
+				workspaceIssue.Terminal, workspaceIssue.LandedHeadSHA = true, landing.HeadSHA
+				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
+					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+					return
+				}
+				landing.WorkspaceRetired = true
+			}
+		}
+	} else if nativeLanding {
 		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
 			defer func() {
 				if returnValue.NativeChange != nil && returnValue.NativeChange.MergeResolution {

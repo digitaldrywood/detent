@@ -262,6 +262,8 @@ type NativeLandingReceipt struct {
 	Method          string                  `json:"method,omitempty"`
 	RefusalKind     string                  `json:"refusal_kind,omitempty"`
 	ObservedAt      time.Time               `json:"observed_at"`
+
+	WorkspaceRetired bool `json:"workspace_retired,omitempty"`
 }
 
 type NativeRESTEvidence struct {
