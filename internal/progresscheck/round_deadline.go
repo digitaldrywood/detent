@@ -74,7 +74,22 @@ func (d *RoundDeadlines) Wait(ctx context.Context, retryDelay func(int) time.Dur
 	}
 }
 
-func RunRound(ctx context.Context, retry func(error) error, publish func(context.Context, RoundInput) error, assess func(context.Context) (RoundAssessment, RoundInput, error)) (RoundAssessment, error) {
+func AwaitRoundAuthority(ctx context.Context, verify func(context.Context) error, retry func(error) error) error {
+	for {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		err := verify(ctx)
+		if err == nil || retry == nil {
+			return err
+		}
+		if stop := retry(err); stop != nil {
+			return errors.Join(err, stop)
+		}
+	}
+}
+
+func RunRound(ctx context.Context, retry func(error) error, verify func(context.Context) error, publish func(context.Context, RoundInput) error, assess func(context.Context) (RoundAssessment, RoundInput, error)) (RoundAssessment, error) {
 	var assessment RoundAssessment
 	var input RoundInput
 	for {
@@ -83,7 +98,10 @@ func RunRound(ctx context.Context, retry func(error) error, publish func(context
 		}
 		bounded, cancel := context.WithTimeout(ctx, MaxDuration)
 		var err error
-		if input.RoundID == "" {
+		if retry != nil {
+			err = verify(bounded)
+		}
+		if err == nil && input.RoundID == "" {
 			assessment, input, err = assess(bounded)
 		}
 		if err == nil {

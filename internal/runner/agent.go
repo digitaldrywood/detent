@@ -2762,28 +2762,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
 			deadlines.Observe("implement", providerTimeout)
 			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
-			retryDelay := func(attempt int) time.Duration {
-				ceiling := durationFromMillis(workflow.Config.Agent.MaxRetryBackoffMS)
-				if ceiling <= 0 {
-					ceiling = defaultSupervisorMaxRetryBackoff
-				}
-				return JitteredFailureRetryDelay(failureRetryDelay(attempt, defaultSupervisorFailureRetryBaseDelay, ceiling))
+			retryDelay := roundRetryDelay(workflow.Config.Agent.MaxRetryBackoffMS)
+			retry := r.roundRetry(sessionCtx, req, "implement", providerTimeout, &deadlines, retryDelay)
+			validate := func(ctx context.Context) error {
+				return progresscheck.AwaitRoundAuthority(ctx, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, retry)
 			}
-			validate := req.Execution.Validate
-			if err := validate(sessionCtx); err != nil {
-				afterRunPending = false
-				return execution.result, errors.Join(execution.err, err)
-			}
-			assessment, verdictErr := r.decideRound(sessionCtx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err, false, func(err error) error {
-				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_round_judge_instance_failure", "phase", "implement", "provider_timeout", providerTimeout, "error", err)
-				if StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
-					return err
-				}
-				if err := deadlines.Wait(sessionCtx, retryDelay); err != nil {
-					return err
-				}
-				return validate(sessionCtx)
-			})
+			assessment, verdictErr := r.decideRound(sessionCtx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err, false, retry)
 			if verdictErr != nil {
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, verdictErr)

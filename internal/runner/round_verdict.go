@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -28,9 +30,29 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	if !ok {
 		return progresscheck.RoundAssessment{}, errors.New("round verdict owner is unavailable")
 	}
-	return progresscheck.RunRound(ctx, retry, execution.RecordRoundVerdict, func(ctx context.Context) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
+	return progresscheck.RunRound(ctx, retry, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, execution.RecordRoundVerdict, func(ctx context.Context) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
 		return r.assessRound(ctx, execution, req, backend, info, issue, phase, feedback, result, runErr, canReimplement)
 	})
+}
+
+func roundRetryDelay(maxBackoffMS int) func(int) time.Duration {
+	ceiling := durationFromMillis(maxBackoffMS)
+	if ceiling <= 0 {
+		ceiling = defaultSupervisorMaxRetryBackoff
+	}
+	return func(attempt int) time.Duration {
+		return JitteredFailureRetryDelay(failureRetryDelay(attempt, defaultSupervisorFailureRetryBaseDelay, ceiling))
+	}
+}
+
+func (r *Runner) roundRetry(ctx context.Context, req RunRequest, phase string, timeout *sessiontimeout.Error, deadlines *progresscheck.RoundDeadlines, retryDelay func(int) time.Duration) func(error) error {
+	return func(err error) error {
+		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_round_judge_instance_failure", "phase", phase, "provider_timeout", timeout, "error", err)
+		if StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
+			return err
+		}
+		return deadlines.Wait(ctx, retryDelay)
+	}
 }
 
 func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecution, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error, canReimplement bool) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {
