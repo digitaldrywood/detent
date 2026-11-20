@@ -191,6 +191,9 @@ func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (resu
 	if err := r.callSSH(ctx, request, "run", &response, nil); err != nil {
 		return response.Result, err
 	}
+	if responseErr := response.Err(); runnerpkg.StopProviderSupervision(request.Execution, responseErr) {
+		return response.Result, responseErr
+	}
 	if errors.Is(response.Err(), runnerpkg.ErrWorkspacePreparation) {
 		return response.Result, r.hostFailure(request.WorkerHost, response.Err())
 	}

@@ -6,10 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+const toolRetirementTimeout = 5 * time.Second
 
 type ToolError struct{ Err error }
 
@@ -104,18 +108,13 @@ func (t *toolTransport) observeCall(msg Message) (*sessiontimeout.Session, strin
 
 func (t *toolTransport) run(ctx context.Context) {
 	defer close(t.done)
-	for {
+	for ctx.Err() == nil {
 		t.mu.Lock()
 		if len(t.pending) == 0 {
 			t.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				t.mu.Lock()
-				empty := len(t.pending) == 0
-				t.mu.Unlock()
-				if empty {
-					return
-				}
+				return
 			case <-t.wake:
 			}
 			continue
@@ -146,7 +145,13 @@ func (t *toolTransport) finish(err error) error {
 	unresolved := t.unresolved
 	t.mu.Unlock()
 	t.cancel(nil)
-	<-t.done
+	timer := time.NewTimer(toolRetirementTimeout)
+	defer timer.Stop()
+	select {
+	case <-t.done:
+	case <-timer.C:
+		return errors.Join(err, runner.ErrWorkerProcessReap)
+	}
 	if unresolved && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrStreamStalled)) {
 		var startup *StartupError
 		var primary interface {
