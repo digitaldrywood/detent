@@ -6,6 +6,10 @@ import (
 )
 
 func NativeClaimAnswerRequired(plan hubrecords.NativeClaimPlan) bool {
+	if identity := plan.LatestAttempt.Identity.Execution; plan.Policy.Compatibility != nil &&
+		plan.Policy.Compatibility.PlanEnabled && identity != nil && identity.Role == "plan" {
+		return false
+	}
 	return !hubapi.StringsEqualFold(plan.Candidate.State, "Rework") && plan.LatestAttemptFound && plan.LatestAttempt.Status == "succeeded" && plan.LatestAttempt.WorkItemRevision >= plan.Item.Revision && plan.LatestAttempt.DispatchGeneration >= plan.Item.DispatchGeneration && !plan.LandingPending && !hubapi.StringsEqualFold(plan.Candidate.State, "Merging")
 }
 

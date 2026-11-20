@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -357,6 +358,12 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
+		}
+		if continuation := req.phaseContinuation; req.LegacyPlan != nil && workflow.Config.Plan.Enabled &&
+			continuation != nil && req.Execution.Recovery().Change == nil &&
+			(continuation.Plan == nil && continuation.LastPushed == nil || continuation.Plan != nil && continuation.Plan.Draft == "") {
+			req.phaseContinuation.Plan = req.LegacyPlan
+			req.phaseContinuation.NextPhase = RunModePlan
 		}
 		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
 	}

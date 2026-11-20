@@ -757,7 +757,8 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if !validCandidate(issue) {
 		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
-	if !stateIn(issue.State, p.cfg.ActiveStates) {
+	legacyPlanStop := p.boundedAdmission && p.nativeWorkflow && p.cfg.Plan.Enabled && strings.EqualFold(p.cfg.Plan.Stop, issue.State)
+	if !legacyPlanStop && !stateIn(issue.State, p.cfg.ActiveStates) {
 		return dispatchableDecision{reason: dispatchSkipInactiveState}
 	}
 	if stateIn(issue.State, p.cfg.TerminalStates) {

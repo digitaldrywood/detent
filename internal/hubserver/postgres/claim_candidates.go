@@ -244,6 +244,13 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		recovery = "(p.profile='native' AND lower(trim(ws.name))='blocked')"
 		dispatchable = "(" + dispatchable + " OR " + recovery + ")"
 	}
+	legacyPlan, legacyPlanStop := "false", "false"
+	if query.LegacyPlanStop != "" {
+		legacyPlan = "(p.profile='native' AND NOT ws.operator_only AND (SELECT a.status='succeeded' AND COALESCE(a.identity_execution_role,a.identity_role)='plan' FROM native_attempts a" +
+			" WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.issue_id=i.id ORDER BY a.fencing_token DESC LIMIT 1))"
+		legacyPlanStop = "(" + legacyPlan + " AND lower(trim(ws.name))=lower(trim(" + bind(query.LegacyPlanStop) + "::text)))"
+		dispatchable = "(" + dispatchable + " OR " + legacyPlanStop + ")"
+	}
 	statement := `SELECT i.id,i.revision,i.number,i.native_id,lower(trim(ws.name)),f.author_login,f.repository,
 	 f.assignees,
  ARRAY(SELECT l.label FROM issue_labels l WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id ORDER BY l.label),
@@ -256,7 +263,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
  WHERE i.organization_id=$1 AND i.project_id=$2 AND (p.profile='native' OR (p.profile='github_compatible' AND ps.repository_enabled AND lower(f.repository)=lower(ps.repository))) AND p.deleted_at IS NULL AND i.archived=false AND ` + dispatchable + ` AND ws.terminal=false AND lower(trim(ws.name))<>'cancelled'
  AND (NOT p.require_dependencies OR NOT EXISTS(SELECT 1 FROM issue_dependencies d JOIN issues blocker ON blocker.organization_id=d.organization_id AND blocker.project_id=d.blocker_project_id AND blocker.id=d.blocker_issue_id LEFT JOIN project_workflow_states blocker_state ON blocker_state.organization_id=blocker.organization_id AND blocker_state.project_id=blocker.project_id AND blocker_state.name=blocker.workflow_state_name WHERE d.organization_id=i.organization_id AND d.dependent_project_id=i.project_id AND d.dependent_issue_id=i.id AND (blocker_state.name IS NULL OR blocker_state.terminal=false)))
  AND NOT EXISTS(SELECT 1 FROM github_imports g WHERE g.organization_id=i.organization_id AND g.project_id=i.project_id AND g.work_item_id=i.native_id AND g.work_item_id<>'' AND g.intake_pending)
- AND (q.scope IS NOT NULL OR $3='')
+ AND (q.scope IS NOT NULL OR $3='' OR ` + legacyPlanStop + `)
  AND ((` + workspaceLane + ` AND EXISTS(SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id AND wi.closed_at IS NULL))
  OR (NOT ` + workspaceLane + ` AND NOT EXISTS(SELECT 1 FROM workspace_items wi WHERE wi.organization_id=i.organization_id AND wi.project_id=i.project_id AND wi.work_item_id=i.native_id)))`
 	if !query.AvailableAt.IsZero() && !query.IncludeLeasedAnchor {
@@ -266,7 +273,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		statement += ` AND (NOT ` + unclassifiedSource + ` OR ` + recovery + `)`
 	}
 	if !query.IncludeLeasedAnchor && query.WorkItemID == "" || query.ExcludeSatisfiedAnchor {
-		statement += ` AND (NOT ` + currentDispatchSatisfied + ` OR ` + recovery + `)`
+		statement += ` AND (NOT ` + currentDispatchSatisfied + ` OR ` + recovery + ` OR ` + legacyPlan + `)`
 	}
 	filters := []struct {
 		values []string

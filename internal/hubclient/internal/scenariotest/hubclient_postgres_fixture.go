@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +71,11 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 		t.Fatal(err)
 	}
 	cfg.SecretKeys = keys
-	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../../hubserver/postgres/migrations"))
+	migrations, err := postgres.MigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.Open(t.Context(), *cfg.Postgres, migrations)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +158,11 @@ func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {
 
 func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, seed func(tenantstore.Writer) error) {
 	t.Helper()
-	repository, err := postgres.Open(t.Context(), *cfg.Postgres, os.DirFS("../../hubserver/postgres/migrations"))
+	migrations, err := postgres.MigrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := postgres.Open(t.Context(), *cfg.Postgres, migrations)
 	if err != nil {
 		t.Fatal(err)
 	}

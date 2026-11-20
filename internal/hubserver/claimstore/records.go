@@ -24,6 +24,7 @@ type WorkspaceItem struct {
 }
 
 type CandidateQuery struct {
+	LegacyPlanStop            string
 	ProjectID                 tracker.ProjectID
 	Scope                     string
 	WorkItemID                tracker.NativeWorkItemID

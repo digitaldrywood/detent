@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -351,6 +352,36 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 				if resolved == nil || resolved.Accepted || !resolved.NeedsProvider() {
 					t.Fatalf("accepted stale approval: %+v", resolved)
 				}
+			}
+		})
+	}
+}
+
+func TestLegacyPlanReviewResolvesExactDraft(t *testing.T) {
+	t.Parallel()
+	for _, approved := range []bool{true, false} {
+		name := "awaiting decision"
+		if approved {
+			name = "approved"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			const draft = "Cover the empty input.\n\nKeep repeated  spaces."
+			item := tracker.NativeIssue{State: "Plan Review", NativeReference: tracker.NativeReference{WorkItemID: "wi_plan"}}
+			if approved {
+				item.Labels = []string{"plan-approved"}
+			}
+			attempt := tracker.NativeAttempt{
+				NativeRunData: tracker.NativeRunData{AttemptID: "attempt_legacy", Identity: &tracker.NativeExecutionIdentity{Role: "plan"}},
+				Status:        "succeeded",
+			}
+			artifact := tracker.NativeComment{ID: "legacy_artifact", Actor: tracker.Actor{Kind: "runner"}, Body: "## Detent Plan\n\n- issue: EX-1\n\n### Artifact\n\n" + draft + "\n\n<!-- detent-plan-completion:" + strings.Repeat("a", 64) + " -->"}
+			recovery := tracker.NativeRecovery{Issue: item, Attempts: []tracker.NativeAttempt{attempt}, Discussion: []tracker.NativeComment{artifact}}
+			var client NativeClient
+			plan, err := client.ResolvePlan(t.Context(), recovery, "policy_current", nil)
+			plan.ResolveLegacyReview(gate.DefaultPlanConfig(), item.Labels)
+			if err != nil || plan == nil || plan.Draft != draft || (plan.LegacyApproval != "") != approved {
+				t.Fatalf("legacy review lost the draft or decision: state=%+v error=%v", plan, err)
 			}
 		})
 	}
