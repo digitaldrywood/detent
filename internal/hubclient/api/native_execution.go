@@ -33,6 +33,7 @@ type nativeMutationAuthority struct {
 	scope        string
 	lease        tracker.NativeLease
 	cancellation func() error
+	guard        context.Context
 }
 
 func nativeEffectError(ctx context.Context) error {
