@@ -69,8 +69,13 @@ func (r *Runner) judgeRound(ctx context.Context, req RunRequest, backend workspa
 			findings = validation.Summary
 			criteria = validation.CriteriaEvidence
 		}
-		if change.Reviewed && change.Changed && runErr == nil && feedback == "" {
-			next = "merge"
+		if change.Reviewed && runErr == nil && feedback == "" {
+			switch {
+			case change.Changed:
+				next = "merge"
+			case change.NoChange != nil:
+				next = progresscheck.CompleteStep
+			}
 		}
 	}
 	if landing := result.NativeLanding; landing != nil {

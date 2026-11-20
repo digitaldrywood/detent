@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -209,4 +210,32 @@ func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (s
 		return "", "", fmt.Errorf("read phase tree: %w", err)
 	}
 	return head, strings.TrimSpace(tree), nil
+}
+
+func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, receipt tracker.NativePhaseReceipt) error {
+	if !validLandingHead(receipt.HeadSHA) || !validLandingHead(receipt.TreeSHA) || receipt.Branch == "" || receipt.Branch != info.PublishBranch() {
+		return errors.New("recorded phase does not name the item branch and immutable source")
+	}
+	repository := RepositoryURL(ctx, l.sourceRoot)
+	expected := strings.TrimSpace(issue.PullRequestRepository)
+	if repository == "" || expected != "" && repository != expected {
+		return errors.New("recorded phase source is outside the configured repository")
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := l.runGit(ctx, "fetch", "--no-tags", defaultGitRemote, receipt.HeadSHA); err != nil {
+		return fmt.Errorf("fetch recorded phase commit: %w", err)
+	}
+	head, err := l.runGit(ctx, "rev-parse", "FETCH_HEAD^{commit}")
+	if err != nil || strings.TrimSpace(head) != receipt.HeadSHA {
+		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
+	}
+	tree, err := l.runGit(ctx, "rev-parse", receipt.HeadSHA+"^{tree}")
+	if err != nil || strings.TrimSpace(tree) != receipt.TreeSHA {
+		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
+	}
+	return nil
 }

@@ -252,6 +252,7 @@ type Issue struct {
 	RetainedCheckpoint      *CheckpointRef
 	RequireCheckpoint       bool
 	RetainedLanding         bool
+	PhaseSource             *tracker.NativePhaseReceipt
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
 	NativeRework            bool
@@ -734,7 +735,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			issue.Checkpoint, issue.FreshCheckout = &checkpoint, true
 		}
 	}
-	if issue.NativeRework && !issue.FreshCheckout {
+	if issue.NativeRework && !issue.FreshCheckout && issue.PhaseSource == nil {
 		exists, isDir, err := pathExists(info.Path)
 		if err != nil {
 			return Info{}, err
@@ -783,6 +784,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if localHead != "" {
 			head = localHead
 		}
+		if receipt := issue.PhaseSource; receipt != nil {
+			if err := l.fetchItemPhase(ctx, info, issue, *receipt); err != nil {
+				return Info{}, err
+			}
+			head = receipt.HeadSHA
+		}
 		created, err = l.createWorktree(ctx, info, issue.FreshCheckout, head)
 	}
 	if issue.Landing != nil && created {
@@ -800,6 +807,15 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return Info{}, err
 	}
 	info.Created = created
+	if receipt := issue.PhaseSource; receipt != nil {
+		head, tree, err := l.ItemPhaseHead(ctx, info, issue)
+		if err != nil {
+			return Info{}, err
+		}
+		if head != receipt.HeadSHA || tree != receipt.TreeSHA {
+			return Info{}, errors.New("replacement worktree differs from the recorded phase source")
+		}
+	}
 	if created {
 		if err := l.validateCreatedWorktree(ctx, info.Path); err != nil {
 			return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)

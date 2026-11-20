@@ -904,6 +904,35 @@ func TestLocalGitLandingReopensRetainedItemWorktree(t *testing.T) {
 	}
 }
 
+func TestLocalGitReopensPinnedPhase(t *testing.T) {
+	t.Parallel()
+	f := newLandingFixture(t)
+	branch := f.info.PublishBranch()
+	runGit(t, f.info.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+	tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
+	runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "Later unrecorded source")
+	runGit(t, f.info.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+	checkout := filepath.Join(t.TempDir(), "replacement")
+	runGit(t, f.source, "clone", "--", f.remote, checkout)
+	repo := "https://example.test/owner/repository"
+	runGit(t, checkout, "remote", "set-url", "origin", repo)
+	runGit(t, checkout, "config", "url."+f.remote+".insteadOf", repo)
+	replacement, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: checkout, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := f.issue
+	issue.PhaseSource = &tracker.NativePhaseReceipt{Branch: branch, HeadSHA: f.head, TreeSHA: tree}
+	info, err := replacement.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := replacement.Head(t.Context(), info, issue)
+	if err != nil || head != f.head || !info.Created {
+		t.Fatalf("replacement used %s, want the recorded phase commit %s: %v", head, f.head, err)
+	}
+}
+
 func TestLocalGitNativeLanding(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

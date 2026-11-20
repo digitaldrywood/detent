@@ -119,6 +119,29 @@ func nativeTurnResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAtt
 	return nil
 }
 
+func nativePhaseTurnResumeAttempt(recovery tracker.NativeRecovery, phase tracker.NativePhaseReceipt) *tracker.NativeAttempt {
+	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
+		attempt := recovery.Attempts[i]
+		if attempt.AttemptID != phase.AttemptID {
+			continue
+		}
+		for _, receipt := range attempt.Steps {
+			if receipt.Step != "agent_turn" || receipt.PolicyID != recovery.Lease.PolicyID || receipt.Source.HeadSHA != phase.HeadSHA ||
+				receipt.ReviewState != tracker.NativeStepReviewState(recovery) || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) {
+				continue
+			}
+			disposition := NativeDispositionFromMessage(receipt.CompletionBody)
+			if disposition == nil || disposition.Status != "complete" || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
+				return nil
+			}
+			attempt.CompletionBody = receipt.CompletionBody
+			attempt.Checkpoint = &receipt.Source
+			return &attempt
+		}
+	}
+	return nil
+}
+
 func nativeTurnResumeMatches(attempt *tracker.NativeAttempt, local *workspace.RecoveryState) bool {
 	return attempt != nil && attempt.Checkpoint != nil && local != nil && attempt.Checkpoint.HeadSHA != "" &&
 		attempt.Checkpoint.HeadSHA == local.HeadSHA && attempt.Checkpoint.WorkspaceDigest != "" && attempt.Checkpoint.WorkspaceDigest == local.WorkspaceFingerprint

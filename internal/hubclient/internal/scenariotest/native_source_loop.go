@@ -387,3 +387,149 @@ func sourceLoopGitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSuffix(string(out), "\n")
 }
+
+type phaseRecoveryAgent struct {
+	committingAgent
+	head      string
+	gateRuns  string
+	workspace string
+}
+
+func (a *phaseRecoveryAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, _ []runner.AgentTool, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	return a.RunTurn(ctx, request, update)
+}
+
+func (a *phaseRecoveryAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if strings.HasPrefix(request.Prompt, "Judge the completed Detent round") {
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"merge","reason":"The recorded project gate and acceptance passed."}`})
+	}
+	if !request.ReadOnly || request.Resume != (runner.AgentResume{}) {
+		return runner.AgentTurnResult{}, errors.New("replacement restarted a completed implementation phase")
+	}
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.Dir = request.Workspace
+	head, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(head)) != a.head {
+		return runner.AgentTurnResult{}, errors.Join(err, errors.New("replacement reviewed a different commit"))
+	}
+	runs, err := os.ReadFile(a.gateRuns)
+	if err != nil || string(runs) != "gate\n" {
+		return runner.AgentTurnResult{}, errors.Join(err, errors.New("replacement did not start at the project gate"))
+	}
+	a.workspace = request.Workspace
+	return a.committingAgent.RunTurn(ctx, request, update)
+}
+
+func RunNativeReplacementResumesProjectGate(t *testing.T, factories Constructors) {
+	t.Parallel()
+	h := newPlannerHub(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
+		{Name: "In Review", Transitions: []string{"In Progress", "Done"}},
+		{Name: "Done", Terminal: true},
+	}, factories)
+	next := h.descriptor
+	next.Gates.Validator = true
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
+	issue := h.createInProgress(t, "Resume source at the first missing gate")
+	candidate := h.claim(t, issue.ID)
+	owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+	oldLease := owner.Recovery().Lease
+	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	origin := nativeChangeSourceRepo(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	nativeChangeGit(t, origin, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, origin, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, origin, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, origin, "push", "-u", "origin", "main")
+	first, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "first"), SourceRoot: origin, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceIssue := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, BranchName: candidate.BranchName}
+	info, err := first.Create(t.Context(), workspaceIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(info.Path, "CHANGE.md"), []byte("recorded implementation\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nativeChangeGit(t, info.Path, "add", "CHANGE.md")
+	nativeChangeGit(t, info.Path, "commit", "-m", "Record implementation")
+	branch, head, tree, err := first.PushItemPhase(t.Context(), info, workspaceIssue, owner.VerifyPhaseAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := first.RecoveryState(t.Context(), info, workspaceIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none", HeadSHA: head, WorkspaceDigest: state.WorkspaceFingerprint}
+	body := "Recorded implementation\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	if err := owner.RecordStep(t.Context(), tracker.NativeStepReceipt{Step: "agent_turn", CompletedAt: time.Now(), CompletionBody: body, Source: source}); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.RecordPhaseReceipt(t.Context(), "implement", branch, head, tree, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.Finish(t.Context(), "failed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.native.ValidateLease(t.Context(), oldLease); err == nil {
+		t.Fatal("original owner still holds the lease")
+	}
+	candidate = h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+	if lease := execution.Recovery().Lease; lease.ID == oldLease.ID || lease.FencingToken <= oldLease.FencingToken {
+		t.Fatalf("replacement did not obtain a new fence: %+v", lease)
+	}
+	checkout := filepath.Join(t.TempDir(), "replacement")
+	nativeChangeGit(t, origin, "clone", "--", remote, checkout)
+	nativeChangeGit(t, checkout, "remote", "set-url", "origin", nativeChangeRepository)
+	nativeChangeGit(t, checkout, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "second"), SourceRoot: checkout, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateRuns := filepath.Join(t.TempDir(), "gate-runs")
+	command := "test -f CHANGE.md && printf '%s\\n' gate >> '" + strings.ReplaceAll(gateRuns, "'", "'\\''") + "'"
+	continuation, err := execution.PhaseReceipts(t.Context(), command)
+	if err != nil || continuation == nil || continuation.NextPhase != "project_gate" || continuation.LastPushed == nil || continuation.LastPushed.HeadSHA != head {
+		t.Fatalf("replacement lost the phase pointer: %+v %v", continuation, err)
+	}
+	provider := &phaseRecoveryAgent{head: head, gateRuns: gateRuns, committingAgent: committingAgent{validator: "pass"}}
+	workflow := config.Workflow{Config: config.Config{Gate: gate.Config{Run: command, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}
+	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: workflow, Workspace: backend, AgentBackend: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+	if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed || result.NativeChange.HeadSHA != head || provider.workspace == "" || provider.workspace == info.Path {
+		t.Fatalf("replacement failed to resume at the gate: %+v %v", result.NativeChange, err)
+	}
+	receipts, err := h.native.ItemPhaseReceipts(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var implementation, projectGate int
+	for _, receipt := range receipts {
+		switch receipt.Phase {
+		case "implement":
+			implementation++
+		case "project_gate":
+			projectGate++
+		}
+	}
+	if implementation != 1 || projectGate != 1 {
+		t.Fatalf("replacement repeated a completed phase: implementation=%d project_gate=%d", implementation, projectGate)
+	}
+}

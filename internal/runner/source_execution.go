@@ -67,20 +67,37 @@ func (e *sourceGateRepair) Error() string { return e.err.Error() }
 func (e *sourceGateRepair) Unwrap() error { return e.err }
 
 type PhaseReceiptExecution interface {
-	PhaseReceipts(context.Context) (bool, error)
+	PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error)
 	VerifyPhaseAuthority(context.Context) error
 	RecordPhaseReceipt(context.Context, string, string, string, string, string) error
+}
+
+type itemPhaseWorkspace interface {
+	PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
+	ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
 }
 
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
 	if !req.phaseReceipts {
 		return nil
 	}
-	publisher, ok := backend.(interface {
-		PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
-	})
+	publisher, ok := backend.(itemPhaseWorkspace)
 	if !ok {
 		return failedStep("publication", errors.New("workspace cannot publish an item phase"))
+	}
+	if carry := req.phaseContinuation; carry != nil {
+		for _, receipt := range carry.Receipts {
+			if receipt.Phase != phase {
+				continue
+			}
+			head, tree, err := publisher.ItemPhaseHead(ctx, info, issue)
+			if err != nil {
+				return failedStep("publication", err)
+			}
+			if receipt.HeadSHA == head && receipt.TreeSHA == tree {
+				return nil
+			}
+		}
 	}
 	execution := req.Execution.(PhaseReceiptExecution)
 	branch, head, tree, err := publisher.PushItemPhase(ctx, info, issue, execution.VerifyPhaseAuthority)
