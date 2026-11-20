@@ -20,6 +20,9 @@ func TestClaudeStreamActivity(t *testing.T) {
 	const keepalive = `{"type":"system","subtype":"keepalive","session_id":"session-1"}`
 	const foreign = `{"type":"assistant","session_id":"session-2","message":{"id":"foreign","content":[{"type":"text","text":"other session"}]}}`
 	const replay = `{"type":"assistant","uuid":"event-1","session_id":"session-1","message":{"id":"message-1","content":[{"type":"text","text":"already seen"}]}}`
+	const messageStart = `{"type":"stream_event","session_id":"session-1","event":{"type":"message_start","message":{"id":"partial-1"}}}`
+	const textDelta = `{"type":"stream_event","session_id":"session-1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working "}}}`
+	const identifiedDelta = `{"type":"stream_event","uuid":"delta-1","session_id":"session-1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"working "}}}`
 	const command = `{"type":"assistant","session_id":"session-1","message":{"id":"message-2","content":[{"type":"tool_use","id":"command-1","name":"Bash","input":{"command":"make test"}}]}}`
 	for _, tc := range []struct {
 		name           string
@@ -31,12 +34,14 @@ func TestClaudeStreamActivity(t *testing.T) {
 		{name: "keepalive", later: keepalive, want: ErrStreamStalled},
 		{name: "unrelated session", later: foreign, want: ErrStreamStalled},
 		{name: "replay", initial: replay, later: replay, want: ErrStreamStalled},
+		{name: "partial output replay", initial: messageStart + "\n" + identifiedDelta, later: identifiedDelta, want: ErrStreamStalled},
+		{name: "repeated partial output", initial: messageStart + "\n" + textDelta, later: textDelta},
 		{name: "quiet command", initial: command},
 		{name: "quiet command exceeds deadline", initial: command, limit: 6 * time.Minute, kind: sessiontimeout.CommandDeadline, want: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				backend := newTestBackend(t, Options{StallTimeout: 5 * time.Minute})
+				backend := newTestBackend(t, Options{StallTimeout: 5 * time.Minute, IncludePartialMessages: true})
 				stdout, writer := io.Pipe()
 				defer stdout.Close()
 				go func() {
@@ -49,7 +54,12 @@ func TestClaudeStreamActivity(t *testing.T) {
 				}()
 				lifetime := backend.startSession(t.Context(), runner.AgentTurnRequest{TurnTimeout: tc.limit})
 				defer lifetime.Close()
-				_, err := backend.consumeStream(lifetime, nil, 0, stdout, "", nil)
+				_, err := backend.consumeStream(lifetime, nil, 0, stdout, "", func(update runner.AgentUpdate) error {
+					if tc.later == textDelta && update.Type == runner.AgentUpdateMessageDelta && update.NonActivity {
+						t.Error("repeated partial output was omitted from runtime activity")
+					}
+					return nil
+				})
 				err = lifetime.Result(err)
 				if !errors.Is(err, tc.want) {
 					t.Fatalf("stream error = %v, want %v", err, tc.want)

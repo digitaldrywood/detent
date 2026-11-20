@@ -174,7 +174,7 @@ func (s *turnState) observeActivity(lifetime *sessiontimeout.Session, event clau
 			case event.ID != "":
 				record(lifetime.Event(scope + "stream/" + event.ID))
 			case partial.Delta != nil && partial.Delta.Text != "" && s.partialItemID != "":
-				record(lifetime.Event(scope + "stream/" + s.partialItemID + "/" + partial.Delta.Text))
+				record(lifetime.Activity())
 			}
 		}
 	case "result":

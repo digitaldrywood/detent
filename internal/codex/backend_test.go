@@ -665,6 +665,7 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 		{name: "unrelated traffic", tools: true, traffic: "unrelated", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
 		{name: "replayed completion", tools: true, traffic: "replay", wantErr: ErrStreamStalled, wantElapsed: 5 * time.Minute},
 		{name: "current activity", tools: true, traffic: "current", wantElapsed: 8 * time.Minute},
+		{name: "repeated output", tools: true, traffic: "repeated output", wantElapsed: 8 * time.Minute},
 		{name: "busy command exceeds deadline", tools: true, registered: true, traffic: "busy", turnTimeout: 6 * time.Minute, wantErr: context.DeadlineExceeded, wantElapsed: 6 * time.Minute},
 		{name: "registered quiet command", tools: true, registered: true, wantElapsed: 45 * time.Minute},
 		{name: "resumed worker", resume: true, registered: true, wantElapsed: 45 * time.Minute},
@@ -713,6 +714,12 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 					delays[len(messages)] = 4 * time.Minute
 					messages = append(messages, notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"text","delta":"active"}`))
 					delays[len(messages)] = 4 * time.Minute
+				case "repeated output":
+					message := notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"text","delta":"active"}`)
+					messages = append(messages, message)
+					delays[len(messages)] = 4 * time.Minute
+					messages = append(messages, message)
+					delays[len(messages)] = 4 * time.Minute
 				case "busy":
 					for i := range 4 {
 						delays[len(messages)] = 2 * time.Minute
@@ -747,6 +754,9 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 				_, err = backend.RunTurnWithTools(ctx, req, tools, nil, func(update runner.AgentUpdate) error {
 					if update.AuxiliaryTurn && !update.NonActivity {
 						t.Error("unrelated turn update counted as activity")
+					}
+					if tt.traffic == "repeated output" && update.Type == runner.AgentUpdateMessageDelta && update.NonActivity {
+						t.Error("repeated output was omitted from runtime activity")
 					}
 					if tt.traffic == "replay" && update.Type == runner.AgentUpdateToolCompleted {
 						if update.NonActivity != completedTool {
