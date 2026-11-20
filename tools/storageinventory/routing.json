@@ -12331,6 +12331,18 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261120072925_restrict_phase_receipts_to_tenants.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": []
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
