@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -303,7 +304,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				runGit(t, fixture.remote, "update-ref", "refs/heads/"+target, base)
 			}
 			repository := "https://github.com/example/repo"
-			useFixtureGitHubRemote(t, fixture.source, fixture.remote, repository)
+			testenv.UseGitHubFixtureRemote(t, fixture.source, fixture.remote, repository)
 			previous := base
 			externalHead := fixture.head
 			publicationBranch := fixture.info.Branch

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -216,8 +217,8 @@ func TestSSHPeerConcurrentCallbacksAndDisconnect(t *testing.T) {
 				remoteDir := filepath.Join(t.TempDir(), "remote.git")
 				runRunnerGit(t, source, "init", "--bare", remoteDir)
 				runRunnerGit(t, remoteDir, "symbolic-ref", "HEAD", "refs/heads/develop")
-				runRunnerGit(t, source, "remote", "add", "origin", identity.Repository+".git")
-				runRunnerGit(t, source, "config", "url.file://"+remoteDir+".insteadOf", identity.Repository+".git")
+				runRunnerGit(t, source, "remote", "add", "origin", remoteDir)
+				testenv.UseGitHubFixtureRemote(t, source, remoteDir, identity.Repository)
 				runRunnerGit(t, source, "push", "origin", "HEAD:refs/heads/develop")
 				local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 				if err != nil {
