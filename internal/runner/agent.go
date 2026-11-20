@@ -1311,7 +1311,6 @@ func (r *Runner) runAgentTurn(
 	turnCtx := ctx
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
-	var artifactLog runobserve.ArtifactLog
 	updates := runRequest
 	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
 	var offerIdentity func(store.SessionProviderIdentity)
@@ -1366,8 +1365,9 @@ func (r *Runner) runAgentTurn(
 			runRequest.checkpointRefs.requestPush()
 		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && artifactWriter != nil {
-				artifactLog.Record(observe, artifactWriter.SpoolArtifactLog, update.Delta)
+			if observe != nil && artifactWriter != nil && runRequest.artifactLogChunks != nil {
+				*runRequest.artifactLogChunks++
+				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
@@ -1516,9 +1516,6 @@ func (r *Runner) runAgentTurn(
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-	if runRequest.artifactLogIncomplete != nil && artifactLog.Incomplete() {
-		*runRequest.artifactLogIncomplete = true
-	}
 	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, true))
 	usageCancel()
 	return agentTurnExecution{
@@ -1866,7 +1863,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
 	if _, ok := req.Execution.(spooledArtifactExecution); ok {
-		req.artifactLogIncomplete = new(bool)
+		req.artifactLogChunks = new(int)
 	}
 	mode := normalizeRunMode(req.Mode)
 	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {
