@@ -2,10 +2,12 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"sync"
 	"time"
 
@@ -313,19 +315,29 @@ func (s *Supervisor) RetryDelay(attempt int) time.Duration {
 	failureRetryBaseDelay := s.failureRetryBaseDelay
 	s.mu.RUnlock()
 
+	return failureRetryDelay(attempt, failureRetryBaseDelay, maxRetryBackoff)
+}
+
+func failureRetryDelay(attempt int, base, ceiling time.Duration) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-
-	delay := failureRetryBaseDelay
+	delay := base
 	for range attempt - 1 {
-		if delay >= maxRetryBackoff || delay > maxRetryBackoff/2 {
-			return maxRetryBackoff
+		if delay >= ceiling || delay > ceiling/2 {
+			return ceiling
 		}
 		delay *= 2
 	}
-	if delay > maxRetryBackoff {
-		return maxRetryBackoff
+	return min(delay, ceiling)
+}
+
+func JitteredFailureRetryDelay(delay time.Duration) time.Duration {
+	if delay > 0 {
+		offset, err := rand.Int(rand.Reader, big.NewInt(int64(delay/8)+1))
+		if err == nil {
+			return delay - time.Duration(offset.Int64())
+		}
 	}
 	return delay
 }
