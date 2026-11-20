@@ -938,3 +938,74 @@ func (c *nativeLandingReasonConnector) UpdateIssueState(ctx context.Context, id,
 type restRecoveryHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f restRecoveryHTTPClient) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestNativeLandingConflictContinuesHeldAttempt(t *testing.T) {
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}})
+	issue := completionTransitionIssue("In Progress", "")
+	tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Done", Terminal: true},
+	}}
+	supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	releases := 0
+	scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}, release: func() { releases++ }}
+	orch := &Orchestrator{cfg: cfg, connector: native, scheduling: scheduling, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), modelPermitRequests: make(chan modelPermitRequest)}
+	state := newState(cfg)
+	now := time.Now()
+	running := Running{Issue: issue, Mode: runpkg.RunModeMerge, Attempt: 1, WorkAttemptID: 42, Generation: 7, CompletionOwnershipReleased: true, StartedAt: now}
+	state.Running[issue.ID] = running
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now}
+	lease := tracker.NativeLease{ID: "lease_example", WorkItemID: tracker.NativeWorkItemID(issue.ID), FencingToken: 4}
+	execution := &nativeLandingReworkExecution{nativeLandingJourneyExecution: nativeLandingJourneyExecution{recovery: tracker.NativeRecovery{Lease: lease}}}
+	event := runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{
+		Mode: runpkg.RunModeMerge, Issue: issue, Execution: execution, RetainItemWorkspace: true, DeferExecutionFinish: true,
+	}, Result: runpkg.RunResult{NativeLanding: &runpkg.NativeLanding{
+		ChangeID: "change_example", VersionID: "version_example", HeadSHA: strings.Repeat("c", 40),
+		Path: "merge_resolution_pending", RefusalKind: workspace.LandRefusalConflict, ConflictFiles: []string{"main.go"},
+	}}}
+
+	observedCompletion := running
+	observedCompletion.CompletionLane = "Blocked"
+	if orch.completeNativeLandingRun(t.Context(), &state, event, observedCompletion) || state.Running[issue.ID].done != nil || releases != 0 {
+		t.Fatal("conflict redispatched work after an external lane transition")
+	}
+	if !orch.completeNativeLandingRun(t.Context(), &state, event, running) {
+		t.Fatal("landing completion did not handle the conflict")
+	}
+	next := state.Running[issue.ID]
+	if next.done == nil || releases != 0 || len(state.Retry) != 0 || len(tick.updates) != 0 {
+		t.Fatalf("conflict did not continue held work: dispatched=%t releases=%d retries=%d lane writes=%d", next.done != nil, releases, len(state.Retry), len(tick.updates))
+	}
+	defer next.cancel()
+	completion := <-orch.runResults
+	<-next.done
+	request := completion.Request
+	if request.Execution != execution || request.Execution.Recovery().Lease != lease || request.Attempt != running.Attempt || request.WorkAttemptID != running.WorkAttemptID || request.Generation != running.Generation || request.Mode != runpkg.RunModeImplement || !request.DeferExecutionFinish || !request.RetainItemWorkspace || request.AcquireModelPermit == nil || !next.ModelPermitExempt {
+		t.Fatalf("conflict continued with the wrong execution or workspace: mode=%s retained=%t attempt=%d generation=%d", request.Mode, request.RetainItemWorkspace, request.Attempt, request.Generation)
+	}
+	landing := event.Result.NativeLanding
+	expected := tracker.NativeChangeReference{ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA}
+	if request.NativeLandingRework == nil || *request.NativeLandingRework != expected {
+		t.Fatalf("rework lost the conflicted source: %+v", request.NativeLandingRework)
+	}
+}
+
+type nativeLandingReworkExecution struct {
+	nativeLandingJourneyExecution
+}
+
+func (*nativeLandingReworkExecution) PrepareReview(context.Context, tracker.NativeChangeReference) error {
+	return nil
+}
+
+func (*nativeLandingReworkExecution) PrepareSourceIteration(context.Context, tracker.NativeChangeReference) error {
+	return nil
+}
+
+func (*nativeLandingReworkExecution) SourceReview(context.Context) (runpkg.NativeChange, error) {
+	return runpkg.NativeChange{}, nil
+}
