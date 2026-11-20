@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -224,7 +225,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				started := time.Now()
 				scope = &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
 				ctx = connector.WithRESTScope(ctx, scope)
-				defer func() { runResult.GitHubScope = nativeGitHubScope(scope, started) }()
+				defer func() { runResult.GitHubScope = runobserve.GitHubScope(scope, started) }()
 			}
 			scope.Set("merging", "land")
 			githubLander, supported := backend.(workspace.GitHubPRLander)

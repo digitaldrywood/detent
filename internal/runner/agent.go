@@ -32,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
@@ -1307,7 +1308,16 @@ func (r *Runner) runAgentTurn(
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	worker := &sessionWorkerRegistration{sessionID: detentSessionID, cleanupRoot: info.Path}
 	turnRequest.acknowledgeProcess = r.acknowledgeProviderProcess(ctx, worker, "")
-	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
+	turnCtx := ctx
+	var observe func(func(context.Context) error) bool
+	var finishObservations func() error
+	var observedIdentity store.SessionProviderIdentity
+	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
+		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
+			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
+		})
+	}
+	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(turnCtx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
 		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
@@ -1335,7 +1345,9 @@ func (r *Runner) runAgentTurn(
 		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
-		r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
+		if observe == nil {
+			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
+		}
 		if !update.AuxiliaryTurn {
 			if strings.TrimSpace(update.ThreadID) != "" {
 				providerResume.ThreadID = strings.TrimSpace(update.ThreadID)
@@ -1344,13 +1356,29 @@ func (r *Runner) runAgentTurn(
 				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
 			}
 		}
+		if observe != nil && detentSessionID > 0 && !update.AuxiliaryTurn {
+			identity := store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID}
+			if providerStore, ok := r.store.(sessionProviderStore); ok && identity != observedIdentity {
+				if observe(func(ctx context.Context) error {
+					return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
+				}) {
+					observedIdentity = identity
+				}
+			}
+		}
 		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if update.Type == AgentUpdateTokenUsage {
-			if err := usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, false); err != nil {
+			report := func(ctx context.Context, sample RunResult) error {
+				return usageReport.report(ctx, runRequest.Execution, sample, sessionModel, backendKind, r.usageCostUSD, false)
+			}
+			if observe != nil {
+				sample := result
+				observe(func(ctx context.Context) error { return report(ctx, sample) })
+			} else if err := report(updateCtx, result); err != nil {
 				return err
 			}
 		}
@@ -1368,7 +1396,15 @@ func (r *Runner) runAgentTurn(
 				deliverableErr.TargetRef = cloneDeliverableTargetRefEvidence(targetRefObserver(updateCtx))
 			}
 		}
-		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, providerUpdateIsActivity(update)); err != nil {
+		activity := providerUpdateIsActivity(update)
+		if observe != nil && activity {
+			if runtime, ok := runRequest.Execution.(RuntimeExecution); ok {
+				observation := tracker.NativeRuntimeObservation{LocalAttemptID: runRequest.WorkAttemptID, Generation: runRequest.Generation, Phase: nativeRuntimePhase(runRequest), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}
+				observe(func(ctx context.Context) error { return runtime.ObserveRuntime(ctx, observation) })
+			}
+			activity = false
+		}
+		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -1385,6 +1421,9 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
+	if finishObservations != nil {
+		turnErr = errors.Join(turnErr, finishObservations())
+	}
 	if strings.TrimSpace(turnResult.ThreadID) == "" {
 		turnResult.ThreadID = providerResume.ThreadID
 	}
@@ -1961,7 +2000,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
 			scope.Set("merging", "prepare")
 			ctx = connector.WithRESTScope(ctx, scope)
-			defer func() { returnValue.GitHubScope = nativeGitHubScope(scope, started) }()
+			defer func() { returnValue.GitHubScope = runobserve.GitHubScope(scope, started) }()
 			client, policy, err := r.nativeLandingGitHubClient(ctx, req, workerGitHub)
 			if err != nil {
 				return RunResult{}, err

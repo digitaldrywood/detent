@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
@@ -460,7 +461,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
 		observation := tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: "completed", HeartbeatAt: r.now(), Identity: result.RuntimeIdentity}
 		if result.GitHubRESTUsage != nil {
-			observation.REST = nativeRESTEvidence(*result.GitHubRESTUsage, r.now())
+			observation.REST = runobserve.RESTEvidence(*result.GitHubRESTUsage, r.now())
 		}
 		observation.GitHub = result.GitHubScope
 		if err := runtime.ObserveRuntime(finishCtx, observation); err != nil {
