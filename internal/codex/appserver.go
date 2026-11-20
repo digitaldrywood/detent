@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
@@ -192,6 +193,7 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
+	DetectToolLoops       bool
 	FinalPrompt           func() string
 	TextOnly              bool
 	IsolatedTools         bool
@@ -478,6 +480,9 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
 	}
+	if req.DetectToolLoops {
+		req.StallTimeout = 0
+	}
 	lifetime := sessiontimeout.Start(ctx, req.StallTimeout, req.turnTimeout(s.turnTimeout), s.timeoutContext)
 	ctx = lifetime.Context()
 	defer lifetime.Close()
@@ -639,7 +644,11 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			}
 		}
 
-		if err := s.streamTurn(lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate); err != nil {
+		if err := s.streamTurn(lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate, newTurnToolLoop(req, threadID, turnID, s.logger)); err != nil {
+			var noProgress *progresscheck.NoProgressError
+			if errors.As(err, &noProgress) {
+				return result, err
+			}
 			return RunTurnResult{}, err
 		}
 
@@ -1369,6 +1378,7 @@ func (s *AppServer) streamTurn(
 	toolHandler DynamicToolHandler,
 	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
+	toolLoop *turnToolLoop,
 ) error {
 	ctx := lifetime.Context()
 	for {
@@ -1378,6 +1388,12 @@ func (s *AppServer) streamTurn(
 		msg, err := transport.Receive(ctx)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
+		}
+
+		if toolLoop != nil {
+			if err := toolLoop.observe(ctx, transport, msg); err != nil {
+				return err
+			}
 		}
 
 		if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil && failure.ProviderCode != "other" {
@@ -1412,6 +1428,10 @@ func (s *AppServer) streamTurn(
 		}
 		if update.Status == "" || update.Status == "completed" {
 			return nil
+		}
+		if toolLoop != nil && toolLoop.interrupted.Action != "" && update.Status == "interrupted" && update.ThreadID == threadID && update.TurnID == turnID {
+			toolLoop.log(ctx, toolLoop.interrupted)
+			return &progresscheck.NoProgressError{Evidence: toolLoop.interrupted}
 		}
 		return &TurnFailedError{
 			Status:  update.Status,

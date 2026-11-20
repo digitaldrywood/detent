@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -47,6 +48,8 @@ func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) 
 // SupportsLiveControl reports that the Codex backend can multiplex live
 // conversation controls into an active turn (runner.AgentLiveBackend).
 func (b *AgentBackend) SupportsLiveControl() bool { return true }
+
+func (b *AgentBackend) SupportsToolLoopDetection() bool { return true }
 
 func (b *AgentBackend) RunTurn(
 	ctx context.Context,
@@ -202,6 +205,7 @@ func (b *AgentBackend) runTurn(
 			return ""
 		},
 		ConversationControl:     req.ConversationControl,
+		DetectToolLoops:         req.DetectToolLoops,
 		TextOnly:                req.TextOnly,
 		IsolatedTools:           req.IsolatedTools,
 		Workspace:               req.Workspace,
@@ -260,7 +264,10 @@ func (b *AgentBackend) runTurn(
 				AuthenticationMode: result.AuthenticationMode,
 			}, runner.NewAgentTurnCleanupError(err)
 		}
-		return runner.AgentTurnResult{}, err
+		var noProgress *progresscheck.NoProgressError
+		if !errors.As(err, &noProgress) {
+			return runner.AgentTurnResult{}, err
+		}
 	}
 
 	return runner.AgentTurnResult{
@@ -268,7 +275,7 @@ func (b *AgentBackend) runTurn(
 		TurnID:             result.TurnID,
 		SessionID:          result.SessionID,
 		AuthenticationMode: result.AuthenticationMode,
-	}, nil
+	}, err
 }
 
 func approvalPolicy(configured any, restricted bool) any {

@@ -370,6 +370,7 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
+	DetectToolLoops     bool
 	acknowledgeProcess  func(context.Context, procgroup.Identity, string) error
 	ExtraNetworkDomains []string
 	AllowLocalBinding   bool

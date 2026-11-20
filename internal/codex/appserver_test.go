@@ -72,7 +72,7 @@ func TestAppServerEarlyTurnRejection(t *testing.T) {
 					if streaming {
 						lifetime := sessiontimeout.Start(t.Context(), 0, time.Minute, nil)
 						defer lifetime.Close()
-						err = server.streamTurn(lifetime, transport, "thread-1", "turn-1", nil, nil, observe)
+						err = server.streamTurn(lifetime, transport, "thread-1", "turn-1", nil, nil, observe, nil)
 					} else {
 						_, err = server.startTurn(t.Context(), transport, turnStartRequestID, RunTurnRequest{}, "thread-1", nil, observe)
 					}
