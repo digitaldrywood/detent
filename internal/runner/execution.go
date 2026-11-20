@@ -666,7 +666,9 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
 	req.checkpointRefs.halt()
 	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
-		if err := req.Execution.(spooledArtifactExecution).FinalizeArtifactsWithSpoolCount(ctx, spool.directory, spool.chunks); err != nil {
+		artifactCtx, cancel := r.artifactCompletionContext(ctx, req.Execution)
+		defer cancel()
+		if err := req.Execution.(spooledArtifactExecution).FinalizeArtifactsWithSpoolCount(artifactCtx, spool.directory, spool.chunks); err != nil {
 			return fmt.Errorf("finalize artifacts: %w", err)
 		}
 		spool.directory = ""
@@ -681,6 +683,13 @@ func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend wo
 	defer cancel()
 	backend.AfterRun(afterCtx, info, issue)
 	return nil
+}
+
+func (r *Runner) artifactCompletionContext(ctx context.Context, execution Execution) (context.Context, context.CancelFunc) {
+	if availabilityStopped(execution, context.Cause(ctx), time.Now()) {
+		return context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	}
+	return ctx, func() {}
 }
 
 func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
@@ -904,7 +913,6 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
-	deadlineExpired := availabilityStopped(req.Execution, context.Cause(ctx), time.Now())
 	finalPushCtx, finalPushCancel := r.finalizationContext(context.WithoutCancel(ctx), checkpointTimeout, context.DeadlineExceeded)
 	r.finishCheckpointRef(finalPushCtx, req.checkpointRefs, req)
 	finalPushCancel()
@@ -918,12 +926,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		checkpoint.Resume = "fresh_checkout"
 	}
 	req.checkpointRefs.apply(&checkpoint)
-	artifactCtx := ctx
-	if deadlineExpired {
-		var cancel context.CancelFunc
-		artifactCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		defer cancel()
-	}
+	artifactCtx, cancelArtifacts := r.artifactCompletionContext(ctx, req.Execution)
+	defer cancelArtifacts()
 	var artifactErr error
 	if publisher, ok := req.Execution.(ValidationEvidenceExecution); ok && finalizationErr == nil && ctx.Err() == nil && req.validationEvidenceSource != nil {
 		diff, available := req.validationEvidenceSource(artifactCtx)
