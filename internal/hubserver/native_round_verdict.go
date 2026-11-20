@@ -446,9 +446,6 @@ func recordRoundProgress(record *progresscheck.RoundVerdict, previous progressch
 	}
 	if comparable {
 		record.RecentFailures = slices.Clone(previous.RecentFailures)
-		if len(record.RecentFailures) == 0 && len(previous.FailedCriteria) > 0 && previous.FailureSignature != "" {
-			record.RecentFailures = append(record.RecentFailures, previous.FailureSignature)
-		}
 	}
 	record.CirclingCandidate = !record.Regressed && record.DiagnosticReceipt == "" && slices.Contains(record.RecentFailures, record.FailureSignature)
 	record.RecentFailures = recentRoundEvidence(record.RecentFailures, record.FailureSignature)
@@ -472,7 +469,7 @@ func verifiedRoundDiagnostic(command *gate.CommandResult) string {
 		}
 		outcome, proof := failureattribution.Classify(base.HeadSHA, head.HeadSHA, finding.CheckDiagnostic, head, *base)
 		if proof != nil {
-			return failureattribution.Digest(strings.Join([]string{outcome, proof.Command, proof.Diagnostic, proof.BaseSHA}, "\n"))
+			return failureattribution.Digest(strings.Join([]string{outcome, proof.Command, proof.Diagnostic}, "\n"))
 		}
 	}
 	return ""
