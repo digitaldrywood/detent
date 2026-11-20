@@ -171,7 +171,7 @@ func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context
 }
 
 func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
-	for _, blocked := range []string{"runtime", "artifact", "usage", "activity"} {
+	for _, blocked := range []string{"runtime", "runtime identity", "artifact", "usage", "activity"} {
 		t.Run(blocked, func(t *testing.T) { testCodexTurnWhileObservationBlocked(t, blocked) })
 	}
 }
@@ -203,7 +203,11 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 		if blocked == "artifact" {
 			backend.blockAfter = AgentUpdateMessageDelta
 		}
-		sessions := &fakeSessionStore{sessionID: 42}
+		var sessions SessionStore = &fakeSessionStore{sessionID: 42}
+		if blocked == "runtime identity" {
+			backend.blockAfter = AgentUpdateRuntimeIdentity
+			sessions = &materialIdentityObservationStore{fakeSessionStore: &fakeSessionStore{sessionID: 42}, execution: execution}
+		}
 		r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: backend})
 		if err != nil {
 			t.Fatal(err)
@@ -298,6 +302,15 @@ func (e *slowTurnObservation) block(ctx context.Context) error {
 	}
 }
 
+type materialIdentityObservationStore struct {
+	*fakeSessionStore
+	execution *slowTurnObservation
+}
+
+func (s *materialIdentityObservationStore) UpdateSessionIdentity(ctx context.Context, _ int64, _ agentidentity.Identity) error {
+	return s.execution.block(ctx)
+}
+
 type completionWithPendingTool struct {
 	fakeCodexClient
 	observing  <-chan struct{}
@@ -314,6 +327,7 @@ func (b *completionWithPendingTool) RunTurnWithTools(ctx context.Context, _ Agen
 	defer func() { stopTool(); <-toolDone }()
 	for _, event := range []AgentUpdate{
 		{Type: AgentUpdateProviderIdentity, ThreadID: "thread"},
+		{Type: AgentUpdateRuntimeIdentity, ThreadID: "thread", RuntimeIdentity: agentidentity.RuntimeUpdate("example-model", "", "", "", time.Time{})},
 		{Type: AgentUpdateTurnStarted, ThreadID: "thread", TurnID: "turn"},
 		{Type: AgentUpdateMessageDelta, ThreadID: "thread", TurnID: "turn", ItemID: "final", Delta: "complete"},
 		{Type: AgentUpdateTurnCompleted, ThreadID: "thread", TurnID: "turn", Status: "completed"},
