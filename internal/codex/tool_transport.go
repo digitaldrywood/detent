@@ -35,6 +35,7 @@ type toolTransport struct {
 	mu         sync.Mutex
 	pending    []Message
 	unresolved bool
+	drain      bool
 	threadID   string
 	turnID     string
 	lifetime   *sessiontimeout.Session
@@ -108,13 +109,16 @@ func (t *toolTransport) observeCall(msg Message) (*sessiontimeout.Session, strin
 
 func (t *toolTransport) run(ctx context.Context) {
 	defer close(t.done)
-	for ctx.Err() == nil {
+	for {
 		t.mu.Lock()
+		if ctx.Err() != nil && (!t.drain || len(t.pending) == 0) {
+			t.mu.Unlock()
+			return
+		}
 		if len(t.pending) == 0 {
 			t.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return
 			case <-t.wake:
 			}
 			continue
@@ -143,6 +147,7 @@ func (t *toolTransport) run(ctx context.Context) {
 func (t *toolTransport) finish(err error) error {
 	t.mu.Lock()
 	unresolved := t.unresolved
+	t.drain = err == nil
 	t.mu.Unlock()
 	t.cancel(nil)
 	timer := time.NewTimer(toolRetirementTimeout)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 type rpcRecord struct {
@@ -76,6 +77,7 @@ func (r toolResult) text() string {
 }
 
 type turnState struct {
+	lifetime   *sessiontimeout.Session
 	req        runner.AgentTurnRequest
 	emit       runner.AgentUpdateHandler
 	sessionID  string
@@ -93,6 +95,9 @@ func (s *turnState) result() runner.AgentTurnResult {
 }
 func (s *turnState) update(u runner.AgentUpdate) error {
 	u.ThreadID, u.TurnID, u.ProviderSessionID = s.sessionID, s.sessionID, s.sessionID
+	if s.lifetime != nil {
+		u.NonActivity = !runner.ObserveProviderActivity(s.lifetime, u, u.Type == runner.AgentUpdateToolStarted && u.Command != "")
+	}
 	return s.emit(u)
 }
 
@@ -144,13 +149,6 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 		return err
 	}
 	ready, accepted, settled := false, false, false
-	var timer *time.Timer
-	var stall <-chan time.Time
-	if b.options.StallTimeout > 0 {
-		timer = time.NewTimer(b.options.StallTimeout)
-		stall = timer.C
-		defer timer.Stop()
-	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -158,14 +156,9 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 				return &infrastructureError{err: ctx.Err(), startup: true}
 			}
 			return ctx.Err()
-		case <-stall:
-			return &infrastructureError{err: errors.New("pi RPC stream stalled"), startup: !ready}
 		case item, ok := <-records:
 			if !ok {
 				return &infrastructureError{err: fmt.Errorf("pi RPC exited before completion: %w", io.EOF), startup: !ready}
-			}
-			if timer != nil {
-				timer.Reset(b.options.StallTimeout)
 			}
 			if item.err != nil {
 				return &infrastructureError{err: fmt.Errorf("invalid Pi RPC record: %w", item.err), startup: !ready}
@@ -185,6 +178,9 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 						return &infrastructureError{err: err, startup: true}
 					}
 					return err
+				}
+				if s.lifetime != nil {
+					s.lifetime.Event("response/" + r.ID)
 				}
 				if !ready {
 					if err := s.setState(r.Data); err != nil {

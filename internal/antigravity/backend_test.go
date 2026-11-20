@@ -15,13 +15,41 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
+
+func TestProviderKeepalivesDoNotExtendIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lifetime := sessiontimeout.Start(t.Context(), 5*time.Minute, time.Hour, nil)
+		defer lifetime.Close()
+		records := make(chan scanResult, 4)
+		go func() {
+			records <- scanResult{record: streamRecord{Event: "init", ConversationID: "session"}}
+			for range 2 {
+				select {
+				case <-lifetime.Context().Done():
+					return
+				case <-time.After(4 * time.Minute):
+				}
+				records <- scanResult{record: streamRecord{Event: "keepalive", ConversationID: "session"}}
+			}
+			records <- scanResult{record: streamRecord{Event: "result", Result: &result{ConversationID: "session", Status: "SUCCESS"}}}
+		}()
+		backend := &AgentBackend{options: Options{StallTimeout: 5 * time.Minute}}
+		state := &turnState{lifetime: lifetime, emit: func(runner.AgentUpdate) error { return nil }}
+		err := backend.exchange(lifetime.Context(), records, nil, state)
+		if err := lifetime.Result(err); !errors.Is(err, sessiontimeout.ErrIdle) {
+			t.Fatalf("idle session result = %v", err)
+		}
+	})
+}
 
 func TestRunTurnStream(t *testing.T) {
 	for _, test := range []struct {

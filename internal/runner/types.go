@@ -450,6 +450,13 @@ func NewAgentTurnCleanupError(err error) error {
 	return &AgentTurnCleanupError{Err: err}
 }
 
+func NewAgentProcessCleanupError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return NewAgentTurnCleanupError(errors.Join(ErrWorkerProcessReap, err))
+}
+
 func (e *AgentTurnCleanupError) Error() string {
 	if e == nil || e.Err == nil {
 		return ErrAgentTurnCleanup.Error()
@@ -508,6 +515,7 @@ type AgentUpdate struct {
 	ThreadID            string
 	TurnID              string
 	AuxiliaryTurn       bool
+	NonActivity         bool
 	ProviderSessionID   string
 	ItemID              string
 	Tool                string
