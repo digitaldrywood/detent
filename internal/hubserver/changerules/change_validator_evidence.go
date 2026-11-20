@@ -188,7 +188,7 @@ func ValidateValidatorReviewEvidence(scope hubscope.NativeScope, change tracker.
 	}
 	validSession := current.Identity != nil && (current.Identity.Role == "code" || current.Identity.Role == "rework") && (audit || currentSession != result.SessionID)
 	if landingAudit {
-		validSession = current.Identity != nil && current.Identity.Role == "merge"
+		validSession = current.Runtime != nil && current.Runtime.Phase == "merging"
 	}
 	if current.FencingToken != request.FencingToken || !validSession || sourceSession == 0 && current.AttemptID == version.AttemptID || current.MachineID == tracker.MachineID(sourceMachine) && sourceSession == result.SessionID {
 		if audit {

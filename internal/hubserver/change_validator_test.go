@@ -216,7 +216,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.SecurityAudit.VersionID = r.ExpectedVersionID
 		}, http.StatusOK, "reviewed", nil},
 		{"security audit landing after configuration change", landingAudit, http.StatusOK, "reviewed", nil},
-		{"security audit landing requires merge execution", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
+		{"security audit landing requires merge phase", landingAudit, http.StatusUnprocessableEntity, "reviewed", nil},
+		{"security audit landing requires reviewed candidate", landingAudit, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"security audit landing stale version", func(r *tracker.ReviewChange) { landingAudit(r); r.SecurityAudit.VersionID = "other" }, http.StatusUnprocessableEntity, "reviewed", nil},
 		{"security audit landing backend failure", func(r *tracker.ReviewChange) {
 			landingAudit(r)
@@ -541,14 +542,16 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			landing := strings.HasPrefix(test.name, "security audit landing")
 			if landing {
-				source := request
-				sourceAudit := *request.SecurityAudit
-				sourceAudit.SessionID = recordSession(43, "security_audit")
-				sourceAudit.Run.ID = sourceAudit.SessionID
-				sourceAudit.Run.InvocationID = "source-audit"
-				source.SecurityAudit = &sourceAudit
-				source.IdempotencyKey = "source-audit"
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, source), http.StatusOK)
+				if test.name != "security audit landing requires reviewed candidate" {
+					source := request
+					sourceAudit := *request.SecurityAudit
+					sourceAudit.SessionID = recordSession(43, "security_audit")
+					sourceAudit.Run.ID = sourceAudit.SessionID
+					sourceAudit.Run.InvocationID = "source-audit"
+					source.SecurityAudit = &sourceAudit
+					source.IdempotencyKey = "source-audit"
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, source), http.StatusOK)
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 				if test.name == "security audit landing after configuration change" {
 					previousID := descriptor.ID
@@ -560,8 +563,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				merge := nativeStartedEvent(lease)
 				merge.IdempotencyKey = "merge-start"
 				merge.Data.Identity.Role = "merge"
-				if test.name == "security audit landing requires merge execution" {
-					merge.Data.Identity.Role = "code"
+				if test.name != "security audit landing requires merge phase" {
+					merge.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "merging"}
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, merge), http.StatusOK)
 				event = merge
@@ -1097,7 +1100,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				"security audit implementing session":                       "execution_session",
 				"security audit reconciliation reuses implementing session": "execution_session",
 				"security audit landing stale version":                      "version_id",
-				"security audit landing requires merge execution":           "execution_session",
+				"security audit landing requires reviewed candidate":        "version_id",
+				"security audit landing requires merge phase":               "execution_session",
 			}[test.name]
 			if auditRejectionField != "" {
 				failure := hubclient.APIError{Status: response.Code}

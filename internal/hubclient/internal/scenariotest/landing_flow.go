@@ -57,6 +57,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		audited      string
 	}{
 		{name: "plain git by default"},
+		{name: "audited landing under the implementation lease", audited: "held"},
 		{name: "audited clean landing after publisher reclaim", audited: "clean"},
 		{name: "audited landing integrates an advanced target", audited: "target"},
 		{name: "audited already incorporated landing", audited: "incorporated"},
@@ -151,7 +152,8 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		return agent
 	}
 	agent := newAgent(backend)
-	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+	held := scenario == "held"
+	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: held})
 	var publishingAttempt, reviewAttempt string
 	if scenario == "clean" {
 		owner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -199,7 +201,14 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		t.Fatalf("source did not pass review: %+v, %v", result.NativeChange, err)
 	}
 	change := result.NativeChange
-	h.complete(t, issue.ID, change, true)
+	if held {
+		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Merging"); err != nil {
+			t.Fatal(err)
+		}
+		candidate.State = "Merging"
+	} else {
+		h.complete(t, issue.ID, change, true)
+	}
 	if scenario == "workspace_hook" {
 		failedBackend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "landing-workspaces"), SourceRoot: source, AutoBranch: true, Hooks: workspace.Hooks{AfterCreate: "exit 19"}})
 		if err != nil {
@@ -208,7 +217,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		testWorkspaceFailurePreservesReviewedLanding(t, h, issue.ID, change, newAgent(failedBackend))
 		return
 	}
-	incorporated := scenario != "clean" && scenario != "target"
+	incorporated := !held && scenario != "clean" && scenario != "target"
 	if incorporated {
 		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
 		nativeChangeGit(t, source, "commit", "-m", "Previously incorporated source")
@@ -247,14 +256,18 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 			t.Fatal(err)
 		}
 	}
-	candidates := h.candidatesIn(t, "Merging")
-	if len(candidates) != 1 || candidates[0].ID != issue.ID {
-		t.Fatalf("reviewed source is unavailable for landing: %+v", candidates)
-	}
-	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
-		t.Fatal(err)
+	if !held {
+		candidates := h.candidatesIn(t, "Merging")
+		if len(candidates) != 1 || candidates[0].ID != issue.ID {
+			t.Fatalf("reviewed source is unavailable for landing: %+v", candidates)
+		}
+		candidate = candidates[0]
+		if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	landingOwner := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+	landingAttempt := landingOwner.CompletionData().AttemptID
 	landingRequests := 0
 	var firstLanding tracker.LandChangeVersion
 	if scenario == "receipt" {
@@ -291,9 +304,15 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	if scenario == "advanced" {
 		h.failChanges.next = incorporationRejectionTransport{next: h.failChanges.next, t: t}
 	}
-	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
+	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: landingOwner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeMerge})
 	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || h.state(t, issue.ID) != "Done" {
 		t.Fatalf("audited landing did not reach Done: %+v, %v, state=%s", result.NativeLanding, err, h.state(t, issue.ID))
+	}
+	if held {
+		attempts, err := h.admin.Attempts(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+		if err != nil || len(attempts.Items) != 1 || attempts.Items[0].AttemptID != landingAttempt || attempts.Items[0].Identity == nil || attempts.Items[0].Identity.Role != runner.RoleCode {
+			t.Fatalf("landing did not retain the implementation attempt: %+v, %v", attempts.Items, err)
+		}
 	}
 	landed := result.NativeLanding
 	audit := landed.SecurityAudit
