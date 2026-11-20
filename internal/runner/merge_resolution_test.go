@@ -194,7 +194,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			execution := &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, BaseSHA: strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD^")), BaseRef: "main", Method: "squash", Repository: repository, Validation: &receipt}}}}
+			execution := &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, BaseSHA: strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD^")), BaseRef: "main", Method: "squash", Repository: repository, PublicationRepository: remote, Validation: &receipt}}}}
 			req := RunRequest{Issue: issue, Mode: RunModeMerge, Execution: execution}
 			permits := 0
 			req.AcquireModelPermit = func(context.Context) error { permits++; return nil }
