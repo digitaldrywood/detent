@@ -963,7 +963,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				continue
 			}
 			if len(event.checklistChanges) != 0 && hubapi.StringValue(workItem.BodyObjectKey) == hubapi.StringValue(event.authority.WorkItem.BodyObjectKey) {
-				owner, ok := w.(leasestore.ChecklistWriter)
+				owner, ok := w.(leasestore.ChecklistChangesWriter)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
