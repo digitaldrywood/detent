@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -15,11 +16,11 @@ var (
 )
 
 const (
-	RoleCode          = "code"
-	RolePlan          = "plan"
-	RoleRework        = "rework"
-	RoleMerge         = "merge"
-	RoleRoutine       = "routine"
+	RoleCode          = runworkspace.RoleCode
+	RolePlan          = runworkspace.RolePlan
+	RoleRework        = runworkspace.RoleRework
+	RoleMerge         = runworkspace.RoleMerge
+	RoleRoutine       = runworkspace.RoleRoutine
 	RoleValidator     = "validator"
 	RoleSecurityAudit = "security_audit"
 )

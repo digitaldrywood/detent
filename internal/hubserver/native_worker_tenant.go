@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -253,6 +255,12 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 			if err != nil {
 				return err
 			}
+			if request.ProviderPhase != nil {
+				if err := s.setLeaseProviderPhase(c.Request().Context(), w, scope, lease, *request.ProviderPhase); err != nil {
+					return err
+				}
+				reader = s.nativeLeaseReader(w, scope)
+			}
 			authority.Lease = lease
 			if err := s.config.NativeRunEvents.ApplyNativeLeaseMutation(c.Request().Context(), w, authority); err != nil {
 				return err
@@ -266,6 +274,58 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return s.writeNativeLeaseResponse(c, lease, details)
+}
+
+func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, phase tracker.NativeProviderPhaseMutation) error {
+	id := tracker.LeaseID(lease.LeaseID)
+	attempt, err := w.LatestAttempt(ctx, lease.IssueID)
+	if err != nil {
+		return err
+	}
+	if attempt.LeaseID != lease.LeaseID || attempt.FencingToken != lease.FencingToken || attempt.Status != "running" {
+		return hubapi.NativeStaleExecution("Provider phases require the existing live item attempt")
+	}
+	if attempt.Sequence != phase.Sequence {
+		return claimapi.ProviderWait("provider_phase_changed", "Provider phase belongs to an earlier attempt event")
+	}
+	pinned, err := w.LeasePolicy(ctx, id)
+	if err != nil {
+		return err
+	}
+	policies, err := w.PolicyCompatibility(ctx, scope.Project, []string{pinned.PolicyID})
+	if err != nil {
+		return err
+	}
+	if facts, exists := policies[pinned.PolicyID]; !exists || !facts.Gates.PlanEnabled {
+		return hubapi.PolicyMismatch("The pinned policy does not enable planning")
+	}
+	requirement := phase.Requirement
+	release := requirement == (providercapacity.Requirement{})
+	if !release && (requirement.Validate() != nil || !slices.Contains([]string{"plan", "code", "rework"}, requirement.Role)) {
+		return hubapi.NativePublicInvalid("Provider phase requires a valid plan or implementation identity")
+	}
+	current, found, err := readTenantProviderReservation(ctx, w, id)
+	if err != nil {
+		return err
+	}
+	active := current.Reservation.Requirement
+	if !found {
+		active = providercapacity.Requirement{}
+	}
+	if active == requirement {
+		return nil
+	}
+	if active != phase.Expected {
+		return claimapi.ProviderWait("provider_phase_changed", "Current provider permit differs from the phase being retired")
+	}
+	if err := w.DropProviderReservation(ctx, id); err != nil || release {
+		return err
+	}
+	reservation, err := claimapi.SelectTenantProviderRequirement(ctx, w, scope.Credential.Runner.RunnerID, requirement, "", s.config.Clock().UTC())
+	if err != nil {
+		return err
+	}
+	return w.CreateProviderReservation(ctx, claimstore.ProviderReservation{OrganizationID: scope.Organization, LeaseID: id, Reservation: reservation})
 }
 
 func (s *Service) renewNativeLeaseWrite(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, write func(legacySelectorChecked bool) error) error {

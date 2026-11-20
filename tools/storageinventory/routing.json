@@ -15930,6 +15930,8 @@
         "operations": {
           "session.CreateProviderReservation:Exec": 4,
           "session.CreateProviderReservation:SQL": 4,
+          "session.DropProviderReservation:Exec": 1,
+          "session.DropProviderReservation:SQL": 1,
           "session.ProviderReservation:Query": 3,
           "session.ProviderReservation:QueryRow": 1,
           "session.ProviderReservation:SQL": 4,

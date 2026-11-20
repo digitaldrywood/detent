@@ -686,11 +686,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: reason}
 	}
 	runMode := o.dispatchMode(ctx, state, issue)
-	if runMode == runpkg.RunModePlan && o.nativeWorkflow() {
-		if _, err := o.nativePlanLanes(ctx, issue); err != nil {
-			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
-		}
-	}
+	planPhase := runMode == runpkg.RunModeImplement && o.nativeWorkflow() && o.dispatchPlanning(ctx, state, issue)
 	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
 	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
 	if o.scheduling == nil && !githubLookupBackoffAllowsDispatch(state, capacityProbeKey) {
@@ -1036,6 +1032,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		WorkAttemptID:       workAttemptID,
 		Generation:          generation,
 		Mode:                runMode,
+		PlanPhase:           planPhase,
 		DispatchSourceState: dispatchSourceState,
 		DispatchTargetState: dispatchTargetState,
 		PriorAttempt:        priorAttempt,
@@ -1153,40 +1150,51 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 			return runpkg.RunModeMerge
 		}
 	}
+	if !o.nativeWorkflow() && o.dispatchPlanning(ctx, state, issue) {
+		return runpkg.RunModePlan
+	}
+	return runpkg.RunModeImplement
+}
+
+func (o *Orchestrator) dispatchPlanning(ctx context.Context, state *State, issue connector.Issue) bool {
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	if !cfg.Enabled {
-		return runpkg.RunModeImplement
+		return false
 	}
 	if implementProgressLinkedPullRequest(issue) {
-		return runpkg.RunModeImplement
+		return false
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
 		if execution := source.RunExecution(issue.ID); execution != nil {
 			recovery := execution.Recovery()
 			if recovery.Change != nil && recovery.Change.VersionID != "" {
-				return runpkg.RunModeImplement
+				return false
+			}
+			if previous := recovery.SourceAttempt(); previous != nil && previous.Identity != nil && previous.Checkpoint.PreservesSource() &&
+				(previous.Identity.Role == runpkg.RoleCode || previous.Identity.Role == runpkg.RoleRework) {
+				return false
 			}
 		}
 	}
 	switch normalizeState(issue.State) {
 	case "todo":
-		return runpkg.RunModePlan
+		return true
 	case normalizeState(autoPromoteReworkState):
 		if match, ok := o.latestWorkflowLaneEntry(ctx, issue); ok {
 			if normalizeState(match.Event.PhaseName) == normalizeState(autoPromoteReworkState) &&
 				workflowLaneMetadataHasAction(match.Metadata, workflowActionPlanReviewRework) {
-				return runpkg.RunModePlan
+				return true
 			}
-			return runpkg.RunModeImplement
+			return false
 		}
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID != "" {
 			if _, ok := state.planRework[issueID]; ok {
-				return runpkg.RunModePlan
+				return true
 			}
 		}
 	}
-	return runpkg.RunModeImplement
+	return false
 }
 
 func (o *Orchestrator) markGlobalProjectIdle() {

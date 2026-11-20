@@ -78,7 +78,7 @@ func ValidCheckpointRef(ref string) bool {
 }
 
 func ValidateNativeExecution(nativeRejection func(error, string, string) error, nativeTerminationData func(tracker.NativeRunData) bool, data tracker.NativeRunData, eventType string) error {
-	if len(data.Steps) > 8 {
+	if len(data.Steps) > 9 {
 		return hubapi.NativePublicInvalid("Execution step receipts exceed the bounded step set")
 	}
 	seenSteps := map[string]bool{}
@@ -86,7 +86,7 @@ func ValidateNativeExecution(nativeRejection func(error, string, string) error, 
 		if receipt.ReviewEpoch < 0 || receipt.ReviewEpoch > data.FencingToken {
 			return hubapi.NativePublicInvalid("Execution step review revision exceeds its owner")
 		}
-		if !slices.Contains([]string{"agent_turn", "commit", "validation", "publication", "security_audit", "review", "validator", "landing"}, receipt.Step) || seenSteps[receipt.Step] || receipt.PolicyID != data.PolicyID || receipt.CompletedAt.IsZero() || len(receipt.ReviewState) != 64 || receipt.Source.HeadSHA == "" || receipt.Source.WorkspaceDigest == "" || len(receipt.CompletionBody) > 64<<10 || !utf8.ValidString(receipt.CompletionBody) {
+		if !slices.Contains([]string{"plan", "agent_turn", "commit", "validation", "publication", "security_audit", "review", "validator", "landing"}, receipt.Step) || seenSteps[receipt.Step] || receipt.PolicyID != data.PolicyID || receipt.CompletedAt.IsZero() || len(receipt.ReviewState) != 64 || receipt.Source.HeadSHA == "" || receipt.Source.WorkspaceDigest == "" || len(receipt.CompletionBody) > 64<<10 || !utf8.ValidString(receipt.CompletionBody) {
 			return hubapi.NativePublicInvalid("Execution step receipt identity is invalid")
 		}
 		seenSteps[receipt.Step] = true
