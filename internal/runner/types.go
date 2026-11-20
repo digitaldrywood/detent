@@ -628,6 +628,11 @@ func (e *agentDurationLimitError) Unwrap() error {
 	return nil
 }
 
+type sourceArtifactSpool struct {
+	chunks    int
+	directory string
+}
+
 type RunRequest struct {
 	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
@@ -664,7 +669,7 @@ type RunRequest struct {
 	OnActivityUpdate          AgentActivityUpdateHandler `json:"-"`
 	observationPeer           *SSHPeer
 	turnUsageUpdate           func(UsageUpdate, time.Time) error
-	artifactLogChunks         *int
+	artifactSpool             *sourceArtifactSpool
 	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
 	ProgressProbe             SessionProgressProbe          `json:"-"`
 	CheckpointValidate        func(context.Context) error   `json:"-"`

@@ -86,7 +86,9 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		case "usage":
 			request.OnUsageUpdate = func(update UsageUpdate) error { return peer.Call(ctx, "usage", nil, update) }
 		case "artifact_spool":
-			request.artifactLogChunks = new(int)
+			if normalizeRunMode(request.Mode) == RunModeImplement {
+				request.artifactSpool = &sourceArtifactSpool{}
+			}
 		case "activity":
 			request.OnActivityUpdate = func(update AgentActivityUpdate) error { return peer.Call(ctx, "activity", nil, update) }
 		case "override":

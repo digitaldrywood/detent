@@ -657,14 +657,19 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {
 	cleanup, err := r.prepareExecutionCompletion(ctx, req, backend, info, issue, resume, turnStarted)
-	r.finishExecution(ctx, req, backend, info, issue, cleanup)
-	return err
+	return errors.Join(err, r.finishExecution(ctx, req, backend, info, issue, cleanup))
 }
 
-func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) {
+func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
 	req.checkpointRefs.halt()
+	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
+		if err := req.Execution.(spooledArtifactExecution).FinalizeArtifactsWithSpoolCount(ctx, spool.directory, spool.chunks); err != nil {
+			return fmt.Errorf("finalize artifacts: %w", err)
+		}
+		spool.directory = ""
+	}
 	if !cleanup {
-		return
+		return nil
 	}
 	if req.Execution == nil {
 		ctx = context.WithoutCancel(ctx)
@@ -672,6 +677,7 @@ func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend wo
 	afterCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
 	defer cancel()
 	backend.AfterRun(afterCtx, info, issue)
+	return nil
 }
 
 func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
@@ -729,6 +735,9 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 }
 
 func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (_ bool, resultErr error) {
+	if req.artifactSpool != nil {
+		req.artifactSpool.directory = ""
+	}
 	req.checkpointRefs.halt()
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
@@ -925,8 +934,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && artifactErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
-		if spooled, ok := artifacts.(spooledArtifactExecution); ok && req.artifactLogChunks != nil {
-			artifactErr = spooled.FinalizeArtifactsWithSpoolCount(artifactCtx, info.Path, *req.artifactLogChunks)
+		if req.artifactSpool != nil {
+			req.artifactSpool.directory = info.Path
 		} else {
 			artifactErr = artifacts.FinalizeArtifacts(artifactCtx, info.Path)
 		}

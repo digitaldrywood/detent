@@ -216,7 +216,7 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 		done := make(chan agentTurnExecution, 1)
 		go func() {
 			request := RunRequest{
-				Execution: execution, finalizeNativeWork: true, workspaceBackend: source, artifactLogChunks: &execution.expectedArtifactChunks,
+				Execution: execution, finalizeNativeWork: true, workspaceBackend: source, artifactSpool: &sourceArtifactSpool{},
 				AgentTools: []AgentTool{{Name: "get_change"}},
 				AgentToolHandler: func(ctx context.Context, _ AgentToolCall) (AgentToolResult, error) {
 					close(toolStarted)
