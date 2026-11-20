@@ -1,6 +1,8 @@
 package progresscheck
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -74,6 +76,41 @@ func TestChecklistBindsAcceptanceToIndependentReceipt(t *testing.T) {
 			changes := ChecklistChanges(checks, verdict, &command, steps)
 			if test.want == "" && len(changes) != 0 || test.want != "" && (len(changes) != 1 || changes[0].Receipt != test.want || changes[0].Status != tracker.CheckPassed) {
 				t.Fatalf("checklist changes %+v, want receipt %q", changes, test.want)
+			}
+		})
+	}
+}
+
+func TestRunRoundHandsBackSupersededChecklist(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		err     error
+		retried bool
+	}{
+		{name: "superseded contract", err: ErrChecklistSuperseded},
+		{name: "ordinary round conflict", err: ErrRoundVerdictRejected, retried: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assessments, publications, retries := 0, 0, 0
+			_, err := RunRound(t.Context(), func(error) error {
+				retries++
+				return nil
+			}, func(context.Context) error { return nil }, func(context.Context, RoundInput) error {
+				publications++
+				if publications == 1 {
+					return test.err
+				}
+				return nil
+			}, func(context.Context) (RoundAssessment, RoundInput, error) {
+				assessments++
+				return RoundAssessment{}, RoundInput{RoundID: "round"}, nil
+			})
+			if test.retried {
+				if err != nil || assessments != 2 || publications != 2 || retries != 1 {
+					t.Fatalf("ordinary conflict: assessments=%d publications=%d retries=%d error=%v", assessments, publications, retries, err)
+				}
+			} else if !errors.Is(err, test.err) || assessments != 1 || publications != 1 || retries != 0 {
+				t.Fatalf("stale checklist: assessments=%d publications=%d retries=%d error=%v", assessments, publications, retries, err)
 			}
 		})
 	}

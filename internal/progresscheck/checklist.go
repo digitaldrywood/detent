@@ -13,6 +13,10 @@ import (
 )
 
 const MaxChecklistEntries = 64
+const ChecklistSupersededCode = "checklist_superseded"
+
+var ErrChecklistSuperseded = errors.New("frozen execution checklist superseded")
+
 const maxChecklistTextBytes = 32 << 10
 
 func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist, error) {

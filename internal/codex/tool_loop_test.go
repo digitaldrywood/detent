@@ -20,8 +20,10 @@ func TestStreamToolLoopControl(t *testing.T) {
 		serializedSiblings, operator, freshEvidence bool
 		methods                                     []string
 		stop                                        bool
+		lateAck                                     bool
 	}{
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
 		{name: "terminal completion won race", steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/interrupt"}},
 		{name: "parallel siblings", parallel: true, terminalStatus: "completed"},
@@ -37,12 +39,16 @@ func TestStreamToolLoopControl(t *testing.T) {
 			if test.wrongScope {
 				turn = "other"
 			}
-			for ordinal := 1; ordinal <= 6; ordinal++ {
+			repeats := 6
+			if test.lateAck {
+				repeats = 7
+			}
+			for ordinal := 1; ordinal <= repeats; ordinal++ {
 				if ordinal == 1 || !test.parallel && !test.serializedSiblings {
 					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
 					messages = append(messages, notificationMessage(t, "item/started", marker))
 				}
-				if ordinal == 4 && test.steerResult != "" {
+				if ordinal == 4 && test.lateAck {
 					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
 				}
 				source := "agent"
@@ -53,6 +59,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 				messages = append(messages, notificationMessage(t, "item/started", item))
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
+				}
+				if ordinal == 3 && !test.lateAck && test.steerResult != "" {
+					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
 				}
 				if test.freshEvidence {
 					sibling := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"sibling-%d","source":"agent","command":"other check","cwd":"/workspace","status":"completed","exitCode":0,"aggregatedOutput":"new result %d"}}`, turn, ordinal, ordinal)
@@ -87,7 +96,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 			err = server.streamTurn(t.Context(), lifetime, transport, "thread", "turn", nil, nil, nil, loop)
 			var stopped *progresscheck.NoProgressError
 			if test.stop {
-				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != 6 || stopped.Evidence.Period != 1 {
+				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != repeats || stopped.Evidence.Period != 1 {
 					t.Fatalf("stop = %v, evidence %+v", err, stopped)
 				}
 			} else if err != nil {

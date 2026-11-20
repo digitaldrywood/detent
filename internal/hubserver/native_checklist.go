@@ -84,7 +84,7 @@ func (s *Service) freezeNativeChecklist(ctx context.Context, scope hubscope.Nati
 			return err
 		}
 		if current.Archived || hubapi.StringValue(current.BodyObjectKey) != hubapi.StringValue(item.BodyObjectKey) {
-			return terminalProgressConflict()
+			return checklistSuperseded()
 		}
 		attempt, err := s.lockNativeExecutionAttempt(ctx, w, scope, current, input.AttemptID, input.PolicyID, input.Mutation)
 		if err != nil {
@@ -156,7 +156,7 @@ func (s *Service) publishLoopIntervention(c echo.Context, scope hubscope.NativeS
 		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
 	}
 	if event.Revision != progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
-		return s.nativeAPIError(c, terminalProgressConflict())
+		return s.nativeAPIError(c, checklistSuperseded())
 	}
 	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		item, err := w.LockWorkItem(ctx, scope.Project, id)
@@ -164,7 +164,7 @@ func (s *Service) publishLoopIntervention(c echo.Context, scope hubscope.NativeS
 			return err
 		}
 		if item.Archived || hubapi.StringValue(item.BodyObjectKey) != bodyKey {
-			return terminalProgressConflict()
+			return checklistSuperseded()
 		}
 		attempt, err := s.lockNativeExecutionAttempt(ctx, w, scope, item, input.AttemptID, input.PolicyID, input.Mutation)
 		if err != nil {
@@ -192,4 +192,8 @@ func validChecklistDigest(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func checklistSuperseded() error {
+	return &hubapi.NativeError{Code: progresscheck.ChecklistSupersededCode, Status: http.StatusConflict, Message: "The issue contract changed during the execution", PublicMessage: true}
 }
