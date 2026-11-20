@@ -3,6 +3,7 @@ package progresscheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,13 +47,8 @@ func (d *RoundDeadlines) Continue(ctx, sessionCtx context.Context, timeout *sess
 			}
 			assessment = "The repeated timeout is recorded as a runner incident. Choose a different bounded check that can establish the next acceptance criterion. Preserve the existing source edits."
 		}
-		d.attempts++
-		timer := time.NewTimer(retryDelay(d.attempts))
-		select {
-		case <-sessionCtx.Done():
-			timer.Stop()
-			return "", context.Cause(sessionCtx)
-		case <-timer.C:
+		if err := d.Wait(sessionCtx, retryDelay); err != nil {
+			return "", err
 		}
 	}
 	if err := validate(ctx); err != nil {
@@ -64,6 +60,65 @@ func (d *RoundDeadlines) Continue(ctx, sessionCtx context.Context, timeout *sess
 		d.recent = d.recent[1:]
 	}
 	return assessment, nil
+}
+
+func (d *RoundDeadlines) Wait(ctx context.Context, retryDelay func(int) time.Duration) error {
+	d.attempts++
+	timer := time.NewTimer(retryDelay(d.attempts))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+func RunRound(ctx context.Context, retry func(error) error, publish func(context.Context, RoundInput) error, assess func(context.Context) (RoundAssessment, RoundInput, error)) (RoundAssessment, error) {
+	var assessment RoundAssessment
+	var input RoundInput
+	for {
+		if ctx.Err() != nil {
+			return RoundAssessment{}, context.Cause(ctx)
+		}
+		bounded, cancel := context.WithTimeout(ctx, MaxDuration)
+		var err error
+		if input.RoundID == "" {
+			assessment, input, err = assess(bounded)
+		}
+		if err == nil {
+			if err = publish(bounded, input); err != nil {
+				err = fmt.Errorf("publish round verdict: %w", err)
+			}
+		}
+		cancel()
+		if err == nil {
+			return assessment, nil
+		}
+		if retry == nil {
+			return RoundAssessment{}, err
+		}
+		if stop := retry(err); stop != nil {
+			return RoundAssessment{}, errors.Join(err, stop)
+		}
+	}
+}
+
+func ProviderRoundOutcome(err, legacyDeadline error, assessment string) string {
+	var timeout *sessiontimeout.Error
+	var outcome string
+	switch {
+	case errors.As(err, &timeout):
+		outcome = string(timeout.Kind)
+	case errors.Is(err, legacyDeadline):
+		outcome = "turn_review_deadline"
+	default:
+		return ""
+	}
+	if assessment == "" {
+		return outcome
+	}
+	return outcome + ": " + assessment
 }
 
 func RepeatedTimeoutIncident(phase, backend string, timeout *sessiontimeout.Error) ([]byte, error) {
