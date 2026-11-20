@@ -37,207 +37,45 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func RunPlanAdmissionContention(t *testing.T, factories Constructors) {
-	code := providercapacity.Requirement{Role: runner.RoleCode, Backend: "coder", Model: "test"}
-	plan := providercapacity.Requirement{Role: runner.RolePlan, Backend: "planner", Model: "test"}
-	for _, occupied := range []providercapacity.Requirement{code, plan} {
-		t.Run(occupied.Role+" account busy", func(t *testing.T) {
-			t.Parallel()
-			h := newPlannerHub(t, "Human Review", hubserverPlanStates(), factories)
-			previous := h.descriptor.ID
-			h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = true, gate.PlanReviewAutomated
-			h.descriptor = h.descriptor.WithID()
-			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
-				t.Fatal(err)
-			}
-			base, _ := schedulerFixtures.Load(h.scheduler)
-			cfg := base.(*schedulerFixture).config
-			cfg.ProviderReports = func() ([]providercapacity.Report, error) {
-				now := time.Now().UTC()
-				return []providercapacity.Report{
-					{Provider: "openai", Backend: code.Backend, AccountAlias: "code", SharedAccountAlias: "code", Models: []string{"test"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now},
-					{Provider: "openai", Backend: plan.Backend, AccountAlias: "plan", SharedAccountAlias: "plan", Models: []string{"test"}, MaxConcurrent: 1, Availability: "available", ObservedAt: now},
-				}, nil
-			}
-			local, err := newTestScheduler(h.native.Transport(), cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			competitor := h.otherWorker(t)
-			identity, err := competitor.Transport().RunnerIdentity(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Machine.ID, cfg.Machine.Hostname = identity.MachineID, "competing-worker"
-			other, err := newTestScheduler(competitor.Transport(), cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resolve := func(requirement providercapacity.Requirement) func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
-				return func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
-					return requirement, nil
-				}
-			}
-			create := func(title string) connector.Issue {
-				t.Helper()
-				issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Update the README." + issueContractTestSections})
-				if err != nil {
-					t.Fatal(err)
-				}
-				confirmIssueContract(t, h.admin, issue.ID)
-				return issue
-			}
-			blocker := create("Hold provider capacity")
-			request := orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo"}, ProviderRequirement: resolve(occupied)}
-			claimed, err := other.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(claimed) != 1 || claimed[0].ID != blocker.ID {
-				t.Fatalf("competing worker did not reserve %s capacity: %v %v", occupied.Role, claimed, err)
-			}
-			t.Cleanup(func() {
-				if err := other.ReleaseClaim(context.WithoutCancel(t.Context()), blocker.ID, "failed"); err != nil {
-					t.Error(err)
-				}
-			})
-			target := create("Plan before implementation")
-			request.ProviderRequirement, request.PlanProviderRequirement = resolve(code), resolve(plan)
-			capacityRefused := false
-			request.CandidateClaimObserved = func(_ context.Context, issue connector.Issue, allowed bool, predicate string, requirement *providercapacity.Requirement) {
-				capacityRefused = issue.ID == target.ID && !allowed && predicate == "hub_claim.provider_capacity" && requirement != nil && *requirement == plan
-			}
-			claimed, err = local.FetchCandidateIssues(t.Context(), request)
-			claim, found := local.ExecutionClaim(target.ID)
-			if occupied == plan {
-				if len(claimed) != 0 || found || !capacityRefused {
-					t.Fatalf("full plan account did not refuse admission: candidates=%v claim=%t refused=%t error=%v", claimed, found, capacityRefused, err)
-				}
-				return
-			}
-			if err != nil || len(claimed) != 1 || claimed[0].ID != target.ID || !found || claim.Lease.ProviderReservation == nil || claim.Lease.ProviderReservation.Requirement != plan {
-				t.Fatalf("free planning capacity was refused: candidates=%v permit=%+v error=%v", claimed, claim.Lease.ProviderReservation, err)
-			}
-			if err := local.ReleaseClaim(t.Context(), target.ID, "failed"); err != nil {
-				t.Fatal(err)
-			}
-		})
+func OpenPlannerAdmission(t *testing.T, factories Constructors, reports func() ([]providercapacity.Report, error)) (policy.Descriptor, *Scheduler, *Scheduler, func(string) connector.Issue) {
+	t.Helper()
+	h := newPlannerHub(t, "Human Review", hubserverPlanStates(), factories)
+	previous := h.descriptor.ID
+	h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = true, gate.PlanReviewAutomated
+	h.descriptor = h.descriptor.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func RunPlanContinuation(t *testing.T, factories Constructors) {
-	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	for _, test := range []struct {
-		name        string
-		report      string
-		outcome     string
-		disposition *tracker.NativeDisposition
-		candidate   bool
-	}{
-		{name: "published plan continues immediately", outcome: "succeeded", disposition: &tracker.NativeDisposition{Status: "in_progress"}, candidate: true},
-		{name: "human action remains held", outcome: "succeeded", report: "status: blocked\nhuman_action: Approve the plan", disposition: &tracker.NativeDisposition{Status: "blocked", HumanAction: true}},
-		{name: "permission remains held", outcome: "succeeded", report: "status: blocked\nreason_code: permission_wait", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "permission_wait"}},
-		{name: "untyped external blocker stays claimable", candidate: true, outcome: "succeeded", report: "status: blocked\nblockers:\n  - reason: Await upstream approval", disposition: &tracker.NativeDisposition{Status: "blocked", Blockers: true, BlockerEvidence: []workpad.Blocker{{Reason: "Await upstream approval", Owner: workpad.BlockerOwnerHuman, Unverifiable: true}}}},
-		{name: "instance limitation leaves admission to the runner", candidate: true, outcome: "succeeded", report: "status: blocked\nreason_code: instance_limitation", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "instance_limitation"}},
-		{name: "instance failure is not a successful plan", outcome: "failed", candidate: true},
-		{name: "incomplete plan retains its active claim"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
-			held := h.createInProgress(t, "Human decision")
-			h.claim(t, held.ID)
-			owner := h.scheduler.RunExecution(held.ID).(*ownedExecution)
-			if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-				t.Fatal(err)
-			}
-			owner.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
-			if err := owner.PrepareFinish(t.Context(), "succeeded", "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve the work\n```", nil); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.scheduler.ReleaseClaim(t.Context(), held.ID, "completed"); err != nil {
-				t.Fatal(err)
-			}
-			issue := h.createInProgress(t, "Planning continuation")
-			h.claim(t, issue.ID)
-			execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-			guarded, stop, err := execution.Guard(t.Context())
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer stop()
-			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RolePlan, Backend: "codex", Model: "test"}); err != nil {
-				t.Fatal(err)
-			}
-			execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c")))
-			if test.outcome != "" {
-				output := ""
-				if test.report != "" {
-					output = "```detent-status\nschema: 1\n" + test.report + "\n```"
-				}
-				if err := execution.PrepareFinish(guarded, test.outcome, output, nil); err != nil {
-					t.Fatal(err)
-				}
-				if test.outcome == "succeeded" {
-					if err := h.connector.CreateComment(guarded, issue.ID, "## Detent Plan\n\nUpdate the README and run the project checks."); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if err := h.scheduler.ReleaseClaim(guarded, issue.ID, "completed"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			candidates := h.candidates(t)
-			if len(candidates) != 0 && (len(candidates) != 1 || candidates[0].ID != issue.ID) {
-				t.Fatalf("planning completion unlocked another item: %+v", candidates)
-			}
-			if (len(candidates) == 1) != test.candidate {
-				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
-				t.Fatalf("immediate candidate=%v, want %v; scheduling=%+v, error=%v", len(candidates) == 1, test.candidate, evidence.Scheduling, err)
-			}
-			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-			if err != nil || len(recovery.Attempts) != 1 {
-				t.Fatalf("planning receipt=%+v, error=%v", recovery.Attempts, err)
-			}
-			attempt := recovery.Attempts[0]
-			if !reflect.DeepEqual(attempt.Disposition, test.disposition) || attempt.WorkItemRevision != recovery.Issue.Revision {
-				t.Fatalf("planning receipt=%+v, want disposition=%+v at revision=%d", attempt, test.disposition, recovery.Issue.Revision)
-			}
-			if test.candidate {
-				if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
-					t.Fatal(err)
-				}
-				implementation := h.scheduler.RunExecution(issue.ID)
-				if err := implementation.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
-					t.Fatal(err)
-				}
-				if err := h.connector.CreateComment(guarded, issue.ID, "## Detent Plan\n\nStale plan"); err == nil {
-					t.Fatal("stale planning authority published a plan")
-				}
-				stale := tracker.NativeRunEvent{Mutation: api.NativeMutationKey(), Type: "run.finished", SchemaVersion: 1, Data: execution.CompletionData()}
-				stale.Data.Sequence++
-				stale.Data.Disposition = &tracker.NativeDisposition{Status: "in_progress"}
-				if err := h.native.AppendEvent(t.Context(), tracker.NativeWorkItemID(held.ID), stale); err == nil {
-					t.Fatal("stale planning authority unlocked a different item")
-				}
-				if candidates := h.candidates(t); len(candidates) != 0 {
-					t.Fatalf("active implementation claim or human decision lost protection: %+v", candidates)
-				}
-			}
-			comments, err := h.connector.FetchIssueComments(t.Context(), issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantPlans := 0
-			if test.outcome == "succeeded" {
-				wantPlans = 1
-			}
-			if len(comments) != wantPlans {
-				t.Fatalf("plan publications=%d, want %d", len(comments), wantPlans)
-			}
-		})
+	base, _ := schedulerFixtures.Load(h.scheduler)
+	cfg := base.(*schedulerFixture).config
+	cfg.ProviderReports = reports
+	local, err := newTestScheduler(h.native.Transport(), cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	competitor := h.otherWorker(t)
+	identity, err := competitor.Transport().RunnerIdentity(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Machine.ID, cfg.Machine.Hostname = identity.MachineID, "competing-worker"
+	other, err := newTestScheduler(competitor.Transport(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(title string) connector.Issue {
+		t.Helper()
+		issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: title, Body: "Update the README." + issueContractTestSections})
+		if err != nil {
+			t.Fatal(err)
+		}
+		confirmIssueContract(t, h.admin, issue.ID)
+		return issue
+	}
+	return h.descriptor, local, other, create
 }
 
 // Replay Cloud retiring a lease on run.finished. The real runner must leave
@@ -1070,6 +908,10 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 				issue, readErr := t.native.Issue(req.Context(), item)
 				t.lostLease.Store(string(receipt.LeaseID))
 				lossErr := t.native.Release(req.Context(), tracker.NativeLease{ID: receipt.LeaseID, WorkItemID: item, FencingToken: receipt.FencingToken}, "released")
+				receipt.IdempotencyKey += ":stale"
+				if _, staleErr := t.native.PublishPhaseReceipt(req.Context(), item, receipt); staleErr == nil {
+					lossErr = errors.Join(lossErr, errors.New("retired planning authority published a phase"))
+				}
 				t.lost <- nativePlanFinish{state: issue.State, err: errors.Join(readErr, lossErr)}
 			}
 			return response, err
