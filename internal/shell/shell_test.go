@@ -195,6 +195,24 @@ func TestCommandBuildsExecCommand(t *testing.T) {
 	}
 }
 
+func TestStartCommandRejectsInvalidStarter(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value any
+	}{
+		{name: "wrong type", value: struct{}{}},
+		{name: "nil starter", value: CommandStarter(nil)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.WithValue(t.Context(), commandStarterKey{}, test.value)
+			wait, err := StartCommand(ctx, &exec.Cmd{})
+			if wait != nil || err == nil || err.Error() != "native command has no process owner" {
+				t.Fatalf("StartCommand returned a wait function: %t, error: %v", wait != nil, err)
+			}
+		})
+	}
+}
+
 func TestQuoteCmdArg(t *testing.T) {
 	t.Parallel()
 

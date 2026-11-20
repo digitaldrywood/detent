@@ -238,8 +238,8 @@ func HasCommandStarter(ctx context.Context) bool { return ctx.Value(commandStart
 
 func StartCommand(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
 	if value := ctx.Value(commandStarterKey{}); value != nil {
-		starter := value.(CommandStarter)
-		if starter == nil {
+		starter, ok := value.(CommandStarter)
+		if !ok || starter == nil {
 			return nil, errors.New("native command has no process owner")
 		}
 		return starter(ctx, cmd)
