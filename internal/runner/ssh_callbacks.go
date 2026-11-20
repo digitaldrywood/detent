@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,12 +49,11 @@ func (r *Runner) SSHHosts() []string {
 
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
-	_, spoolArtifacts := request.Execution.(spooledArtifactExecution)
 	callbacks := map[string]bool{
 		"usage": true, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
 		"checkpoint": request.CheckpointValidate != nil, "tools": request.AgentToolHandler != nil,
-		"model_permit": request.AcquireModelPermit != nil, "artifact_spool": spoolArtifacts,
+		"model_permit": request.AcquireModelPermit != nil, "artifact_spool": spoolsArtifactLog(request.Execution),
 	}
 	for name, enabled := range callbacks {
 		if enabled {
@@ -85,10 +85,6 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		switch name {
 		case "usage":
 			request.OnUsageUpdate = func(update UsageUpdate) error { return peer.Call(ctx, "usage", nil, update) }
-		case "artifact_spool":
-			if normalizeRunMode(request.Mode) == RunModeImplement {
-				request.artifactSpool = &sourceArtifactSpool{}
-			}
 		case "activity":
 			request.OnActivityUpdate = func(update AgentActivityUpdate) error { return peer.Call(ctx, "activity", nil, update) }
 		case "override":
@@ -119,7 +115,10 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			native := &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
+			native := &sshNativeExecution{
+				batchedLanding: wire.BatchedLanding, spoolArtifacts: slices.Contains(wire.Callbacks, "artifact_spool"),
+				sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools,
+			}
 			request.Execution = native
 			if wire.SourceIteration {
 				request.Execution = &sshSourceIterationExecution{sshNativeExecution: native}
