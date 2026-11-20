@@ -12,10 +12,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func IsPlan(phase string) bool {
-	return phase == "plan" || phase == "plan_draft" || phase == "plan_review"
-}
-
 type Execution interface {
 	RecordStep(context.Context, tracker.NativeStepReceipt) error
 	runworkspace.PhaseReceiptExecution
