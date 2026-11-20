@@ -47,7 +47,21 @@ func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error
 	ctx = l.withOwner(ctx, owner)
 	verified, _ := verifiedProcessTargets(ctx, path, ReapProcessScanner, procstart.Identity, processEnvironment, nil)
 	pids, err := verified(ctx, path)
-	return l.unidentifiedWriter || len(l.witnesses) > 0 || len(pids) > 0, err
+	if err == nil && l.unidentifiedWriter {
+		err = errors.New("observed hook descriptor writer lacks a verified process identity")
+	}
+	for pid, start := range l.witnesses {
+		if l.starts[pid] == start {
+			continue
+		}
+		env, inspectErr := processEnvironment(pid)
+		alive, matchErr := procstart.Matches(pid, start)
+		if alive && inspectErr == nil && !hookDescriptorAllowed(owner, path, env) {
+			err = errors.Join(err, errors.New("hook descriptor writer belongs to another owner"))
+		}
+		err = errors.Join(err, matchErr)
+	}
+	return len(l.witnesses) > 0 || len(pids) > 0, err
 }
 
 type writerSnapshotKey struct{}
@@ -108,7 +122,7 @@ func (l *Lifetime) candidates(ctx context.Context) ([]int, error) {
 		return nil, err
 	}
 	if runtime.GOOS == "darwin" {
-		return l.darwinWriters(ctx, 0)
+		return l.platformWriters(ctx)
 	}
 	if runtime.GOOS == "linux" {
 		pids, err := l.procDescriptorHolders(ctx, "/proc")
@@ -167,8 +181,7 @@ func (l *Lifetime) procDescriptorHolders(ctx context.Context, root string) ([]in
 
 func (l *Lifetime) holdsWriter(ctx context.Context, pid int) (bool, error) {
 	if runtime.GOOS == "darwin" {
-		writers, err := l.darwinWriters(ctx, pid)
-		return slices.Contains(writers, pid), err
+		return l.platformHoldsWriter(pid)
 	}
 	if runtime.GOOS == "linux" {
 		marker, err := l.reader.Stat()

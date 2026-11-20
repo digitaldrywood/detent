@@ -100,7 +100,7 @@ func runDetachedHook(t *testing.T) {
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: os.Getenv("TEST_HOOK_KEEP_GROUP") != "1"}
 	child.Env = append(os.Environ(), "TEST_HOOK_CHILD=1", "GOCOVERDIR="+os.Getenv("TEST_HOOK_CHILD_COVER"))
 	child.ExtraFiles = []*os.File{writer}
-	if os.Getenv("TEST_HOOK_DROP_DESCRIPTOR") == "1" {
+	if os.Getenv("TEST_HOOK_DROP_DESCRIPTOR") == "1" || os.Getenv("TEST_HOOK_KEEP_DESCRIPTOR") == "1" {
 		var stat unix.Stat_t
 		flags, err := unix.FcntlInt(4, unix.F_GETFL, 0)
 		if err != nil || unix.Fstat(4, &stat) != nil || stat.Mode&unix.S_IFMT != unix.S_IFIFO || flags&unix.O_ACCMODE != unix.O_WRONLY {
@@ -125,6 +125,7 @@ func runDetachedHook(t *testing.T) {
 type daemon struct {
 	Command string
 	control string
+	quit    *os.File
 }
 
 func detachedHook(t *testing.T) daemon {
@@ -173,7 +174,7 @@ func detachedHook(t *testing.T) daemon {
 		t.Fatal(err)
 	}
 	command := "GOCOVERDIR=" + shellQuote(t.TempDir()) + " TEST_HOOK_CHILD_COVER=" + shellQuote(t.TempDir()) + " TEST_HOOK_CONTROL=" + shellQuote(control) + " " + shellQuote(executable) + " -test.run='^TestDetachedHookHelper$'"
-	return daemon{Command: command, control: control}
+	return daemon{Command: command, control: control, quit: quit}
 }
 
 func daemonIdentity(control string) (int, string, error) {

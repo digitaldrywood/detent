@@ -18,6 +18,7 @@ import (
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 type FilesystemOptions struct {
@@ -99,16 +100,13 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	if exists && !isDir {
 		return Info{}, fmt.Errorf("workspace path exists and is not a directory: %s", info.Path)
 	}
-	info.Created = !exists
-	if info.Created {
-		if err := root.MkdirAll(info.Key, 0o700); err != nil {
-			return Info{}, fmt.Errorf("create filesystem workspace: %w", err)
+	if retry, err := f.uses.CheckWorkspaceSetup(f.root, info.Path); err != nil {
+		if retry {
+			err = f.discardFailedSetup(ctx, info.Path, err)
 		}
+		return Info{}, err
 	}
-	if err := root.MkdirAll(filepath.Join(info.Key, "artifacts"), 0o700); err != nil {
-		return Info{}, fmt.Errorf("create artifact directory: %w", err)
-	}
-	if f.outputRoot != "" {
+	if f.outputRoot != "" && f.outputRoot != f.root {
 		if _, err := validateWorkspacePath(f.outputRoot, filepath.Join(f.outputRoot, info.Key)); err != nil {
 			return Info{}, err
 		}
@@ -121,19 +119,44 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 			return Info{}, fmt.Errorf("create output workspace: %w", err)
 		}
 	}
+	info.Created = !exists
 	if info.Created {
-		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
-			if stopErr := f.uses.Stop(ctx, info.Path); stopErr != nil {
-				f.logger.Warn("workspace hook cleanup incomplete", "error", stopErr)
-				return Info{}, err
-			}
-			if cleanupErr := removeWorkspacePath(f.root, info.Path); cleanupErr != nil {
-				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
-			}
+		if err := hookproc.MarkWorkspaceSetupPending(f.root, info.Path, f.hooks.AfterCreate); err != nil {
 			return Info{}, err
 		}
 	}
+	if err := root.MkdirAll(filepath.Join(info.Key, "artifacts"), 0o700); err != nil {
+		if info.Created {
+			err = errors.Join(err, hookproc.MarkWorkspaceSetupRetired(f.root, info.Path))
+		}
+		return Info{}, fmt.Errorf("create artifact directory: %w", err)
+	}
+	if info.Created {
+		err := hookproc.RunWorkspaceSetup(ctx, f.root, info.Path, f.hooks.AfterCreate, func(ctx context.Context) error {
+			return f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue)
+		})
+		if err != nil {
+			f.uses.SetSetupFailed(info.Path, true)
+			return Info{}, f.discardFailedSetup(ctx, info.Path, err)
+		}
+	}
 	return info, nil
+}
+
+func (f *Filesystem) discardFailedSetup(ctx context.Context, path string, cause error) error {
+	if err := f.uses.Stop(ctx, path); err != nil {
+		f.logger.Warn("workspace hook cleanup incomplete", "error", err)
+		return errors.Join(cause, err)
+	}
+	if err := hookproc.MarkWorkspaceSetupRetired(f.root, path); err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := removeWorkspacePath(f.root, path); err != nil {
+		f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", path), slog.Any("error", err))
+		return errors.Join(cause, err)
+	}
+	f.uses.SetSetupFailed(path, false)
+	return errors.Join(cause, hookproc.ClearWorkspaceSetupPending(f.root, path))
 }
 
 func (f *Filesystem) Cleanup(ctx context.Context, identifier string) error {
@@ -171,7 +194,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	if err := f.uses.CheckRemoval(ctx, info.Path); err != nil {
+	if err := errors.Join(f.uses.CheckRemoval(ctx, info.Path), f.uses.CheckWorkspaceSetupRemoval(f.root, info.Path)); err != nil {
 		return result, err
 	}
 	hookErr := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue)
@@ -183,7 +206,8 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
 	}
 	result.Worktrees = 1
-	return result, nil
+	f.uses.SetSetupFailed(info.Path, false)
+	return result, hookproc.ClearWorkspaceSetupPending(f.root, info.Path)
 }
 
 func (f *Filesystem) BeforeRun(ctx context.Context, info Info, issue Issue) error {

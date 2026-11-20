@@ -23,6 +23,14 @@ func TestLifetimeIdentifiesOnlyItsWriter(t *testing.T) {
 		return l
 	}
 	l, other := newLifetime(), newLifetime()
+	if err := l.writer.Chmod(0600); err != nil {
+		t.Fatal(err)
+	}
+	readWrite, err := os.OpenFile(l.path(), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { readWrite.Close() })
 	for _, tc := range []struct {
 		name string
 		file *os.File
@@ -30,6 +38,7 @@ func TestLifetimeIdentifiesOnlyItsWriter(t *testing.T) {
 	}{
 		{"writer", l.writer, true},
 		{"reader", l.reader, false},
+		{"read-write descriptor", readWrite, false},
 		{"other writer", other.writer, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
