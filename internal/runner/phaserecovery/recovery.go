@@ -2,13 +2,14 @@ package phaserecovery
 
 import (
 	"encoding/json"
+	"strings"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
-	"strings"
 )
 
 func ReviewAttempt(recovery tracker.NativeRecovery, command string, landingNeedsWork func() bool, completed func(string) bool) *tracker.NativeAttempt {
@@ -100,7 +101,13 @@ func ReviewMatches(recovery tracker.NativeRecovery, local *workspace.RecoverySta
 	}
 	for _, published := range recovery.ChangeDetail.Versions {
 		if published.ID == version.ID {
-			return published.HeadSHA == version.HeadSHA && published.BaseSHA == version.BaseSHA && published.Repository == version.Repository && published.AttemptID == version.AttemptID && published.RunID == version.RunID && published.PolicyID == version.PolicyID && version.Source.Validate(version.BaseSHA, version.HeadSHA, current.Bundle) == nil
+			if published.HeadSHA != version.HeadSHA || published.BaseSHA != version.BaseSHA || published.Repository != version.Repository || published.AttemptID != version.AttemptID || published.RunID != version.RunID || published.PolicyID != version.PolicyID {
+				return false
+			}
+			if phase := current.PushedPhase; phase != nil {
+				return phase.HeadSHA == version.HeadSHA && phase.TreeSHA == local.DiffStat.TreeSHA && phase.PolicyID == version.PolicyID && local.DiffStat.IsEmpty()
+			}
+			return version.Source.Validate(version.BaseSHA, version.HeadSHA, current.Bundle) == nil
 		}
 	}
 	return false

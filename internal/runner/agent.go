@@ -1820,7 +1820,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	reviewRecovery, turnRecovery, repairResume := nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	publicationRecovery := req.publicationRecovery(mode)
 	var phaseSource *tracker.NativePhaseReceipt
-	if mode == RunModeImplement && req.phaseContinuation != nil && !req.operatorFreshRetry() && !publicationRecovery {
+	if mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
 		phaseSource = req.phaseContinuation.LastPushed
 		if phaseSource != nil {
 			recovery := req.Execution.Recovery()
@@ -1831,7 +1831,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		if phaseSource != nil {
-			reviewRecovery, turnRecovery, repairResume = nil, nil, false
+			turnRecovery, repairResume = nil, false
 			if req.phaseContinuation.NextPhase != RunModeImplement {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
 			}
@@ -1900,7 +1900,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue.RequireCheckpoint = sourceErr != nil
 	if reviewRecovery != nil && !repairResume && workspaceIssue.Source != nil {
-		workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
+		if workspaceIssue.Source.PushedPhase == nil {
+			workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
+		}
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
 	if phaseSource != nil {
@@ -2396,6 +2398,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if reviewRecovery != nil {
 				result.reusedDispositionAttemptID = reviewRecovery.AttemptID
 				result.FinalMessage = reviewRecovery.CompletionBody
+				if req.reviewOnly && workspaceIssue.Source.PushedPhase != nil {
+					result.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
+				}
 			}
 		}
 		afterRunPending = false
