@@ -369,6 +369,16 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 			return record, hubapi.NativePublicInvalid("Completed round requires verified landing or no-change evidence for its source")
 		}
 	}
+	list, err := o.service.readExecutionChecklist(ctx, o.scope, input.AttemptID)
+	if err != nil {
+		return record, err
+	}
+	if input.ChecklistRevision != "" && (list == nil || list.Revision != input.ChecklistRevision) || list != nil && list.Revision != progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
+		return record, terminalProgressConflict()
+	}
+	if list != nil {
+		record.ChecklistRevision = list.Revision
+	}
 	if !exactCommand || command.ReceiptID == "" {
 		return record, nil
 	}
@@ -396,13 +406,8 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		}
 	}
 	recordRoundProgress(&record, previous, command, previous.PolicyID == record.PolicyID && previous.CriteriaRevision == record.CriteriaRevision)
-	list, err := o.service.readExecutionChecklist(ctx, o.scope, input.AttemptID)
-	if err != nil {
-		return record, err
-	}
-	if list != nil && list.Revision == progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
-		record.ChecklistRevision = list.Revision
-		record.ChecklistChanges = checklistChanges(list.Checks, record, command, attempt.Steps)
+	if list != nil {
+		record.ChecklistChanges = progresscheck.ChecklistChanges(list.Checks, record, command, attempt.Steps)
 	}
 
 	return record, nil

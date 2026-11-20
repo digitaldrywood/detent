@@ -11,7 +11,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -19,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -128,71 +126,6 @@ func (s *Service) readExecutionChecklist(ctx context.Context, scope hubscope.Nat
 	return list, err
 }
 
-func checklistChanges(checks []tracker.ExecutionCheck, verdict progresscheck.RoundVerdict, command *gate.CommandResult, steps []tracker.NativeStepReceipt) []tracker.ExecutionCheckUpdate {
-	if command == nil || command.ReceiptID == "" || command.TreeSHA == "" || command.TreeSHA != verdict.TreeSHA || command.HeadSHA != verdict.HeadSHA {
-		return nil
-	}
-	var validator, audit *tracker.NativeStepReceipt
-	for i := range steps {
-		step := &steps[i]
-		if step.PolicyID != verdict.PolicyID || step.Change.HeadSHA != verdict.HeadSHA || step.Source.HeadSHA != verdict.HeadSHA {
-			continue
-		}
-		switch {
-		case step.Step == "validator" && step.Validator != nil && step.Validator.Submitted:
-			validator = step
-		case step.Step == "security_audit" && step.SecurityAudit != nil:
-			audit = step
-		}
-	}
-	var changes []tracker.ExecutionCheckUpdate
-	for _, check := range checks {
-		var status tracker.ExecutionCheckStatus
-		receipt := command.ReceiptID
-		switch check.Kind {
-		case tracker.CheckProjectGate:
-			if check.CheckDigest == policy.Digest([]byte(command.Command)) {
-				status = tracker.CheckPassed
-				if command.ExitCode != 0 {
-					status = tracker.CheckFailed
-				}
-			}
-		case tracker.CheckIndependentReview:
-			if validator != nil {
-				receipt, _ = hubapi.CommandHash(validator)
-				status = tracker.CheckFailed
-				if validator.Validator.Verdict == gate.ValidatorVerdictPass {
-					status = tracker.CheckPassed
-				}
-			}
-		case tracker.CheckSecurityAudit:
-			if audit != nil {
-				receipt, _ = hubapi.CommandHash(audit)
-				status = tracker.CheckFailed
-				if audit.SecurityAudit.Verdict == "pass" {
-					status = tracker.CheckPassed
-				}
-			}
-		case tracker.CheckAcceptance:
-			if slices.Contains(verdict.VerifiedCriteria, check.Text) {
-				status = tracker.CheckPassed
-			} else if slices.Contains(verdict.FailedCriteria, check.Text) {
-				status = tracker.CheckFailed
-			}
-		}
-		if status == "" || receipt == "" {
-			continue
-		}
-		if check.Tree == command.TreeSHA && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
-			status = tracker.CheckFlaky
-		}
-		if check.Status != status || check.Tree != command.TreeSHA {
-			changes = append(changes, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Tree: command.TreeSHA, Receipt: receipt})
-		}
-	}
-	return changes
-}
-
 func (s *Service) publishLoopIntervention(c echo.Context, scope hubscope.NativeScope, input progresscheck.Publication) error {
 	event := *input.LoopIntervention
 	shape := event.Period >= 1 && event.Period <= 4 && event.Repeats <= progresscheck.ToolLoopWindow && event.Sequence > 0 && event.Sequence <= math.MaxInt64
@@ -203,10 +136,35 @@ func (s *Service) publishLoopIntervention(c echo.Context, scope hubscope.NativeS
 	}
 	ctx := c.Request().Context()
 	id := tracker.NativeWorkItemID(c.Param("item"))
-	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		item, err := s.nativeExecutionItem(ctx, w, scope, id, true)
+	var bodyKey string
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		item, err := s.nativeExecutionItem(ctx, r, scope, id, true)
 		if err != nil {
 			return err
+		}
+		if _, err := s.nativeExecutionAttempt(ctx, r, scope, item, input.AttemptID, input.PolicyID, input.Mutation); err != nil {
+			return err
+		}
+		bodyKey = hubapi.StringValue(item.BodyObjectKey)
+		return nil
+	})
+	if err != nil {
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+	}
+	issue, err := s.readWorkItem(ctx, scope, string(id))
+	if err != nil {
+		return s.nativeAPIError(c, hubapi.ProjectRecordError(err))
+	}
+	if event.Revision != progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
+		return s.nativeAPIError(c, terminalProgressConflict())
+	}
+	err = s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		item, err := w.LockWorkItem(ctx, scope.Project, id)
+		if err != nil {
+			return err
+		}
+		if item.Archived || hubapi.StringValue(item.BodyObjectKey) != bodyKey {
+			return terminalProgressConflict()
 		}
 		attempt, err := s.lockNativeExecutionAttempt(ctx, w, scope, item, input.AttemptID, input.PolicyID, input.Mutation)
 		if err != nil {

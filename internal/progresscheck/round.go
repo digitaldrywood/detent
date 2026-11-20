@@ -15,22 +15,22 @@ const (
 )
 
 type RoundInput struct {
-	RoundID          string                   `json:"round_id,omitempty"`
-	Phase            string                   `json:"phase,omitempty"`
-	HeadSHA          string                   `json:"head_sha,omitempty"`
-	TreeSHA          string                   `json:"tree_sha,omitempty"`
-	ProviderTimeout  *sessiontimeout.Error    `json:"provider_timeout,omitempty"`
-	FailureSignature string                   `json:"failure_signature,omitempty"`
-	Criteria         []gate.CriterionEvidence `json:"criterion_evidence,omitempty"`
-	Action           string                   `json:"action,omitempty"`
-	NextPhase        string                   `json:"next_phase,omitempty"`
-	Reason           string                   `json:"reason,omitempty"`
-	HumanAction      string                   `json:"human_action,omitempty"`
+	ChecklistRevision string                   `json:"checklist_revision,omitempty"`
+	RoundID           string                   `json:"round_id,omitempty"`
+	Phase             string                   `json:"phase,omitempty"`
+	HeadSHA           string                   `json:"head_sha,omitempty"`
+	TreeSHA           string                   `json:"tree_sha,omitempty"`
+	ProviderTimeout   *sessiontimeout.Error    `json:"provider_timeout,omitempty"`
+	FailureSignature  string                   `json:"failure_signature,omitempty"`
+	Criteria          []gate.CriterionEvidence `json:"criterion_evidence,omitempty"`
+	Action            string                   `json:"action,omitempty"`
+	NextPhase         string                   `json:"next_phase,omitempty"`
+	Reason            string                   `json:"reason,omitempty"`
+	HumanAction       string                   `json:"human_action,omitempty"`
 }
 
 type RoundVerdict struct {
 	RoundInput
-	ChecklistRevision string                         `json:"checklist_revision,omitempty"`
 	ChecklistChanges  []tracker.ExecutionCheckUpdate `json:"checklist_changes,omitempty"`
 	LeaseID           tracker.LeaseID                `json:"lease_id"`
 	FencingToken      tracker.FencingToken           `json:"fencing_token,string"`

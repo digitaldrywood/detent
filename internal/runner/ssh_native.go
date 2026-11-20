@@ -552,3 +552,9 @@ func (e *sshNativeExecution) FreezeExecutionChecklist(ctx context.Context, list 
 func (e *sshNativeExecution) RecordLoopIntervention(ctx context.Context, event tracker.ExecutionLoopIntervention) error {
 	return e.peer.Call(ctx, "execution.RecordLoopIntervention", nil, event)
 }
+
+func (e *sshNativeExecution) ExecutionChecklist(ctx context.Context) (*tracker.ExecutionChecklist, error) {
+	var result *tracker.ExecutionChecklist
+	err := e.peer.Call(ctx, "execution.ExecutionChecklist", &result)
+	return result, err
+}

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,6 +18,7 @@ func TestFreezeChecklist(t *testing.T) {
 		kinds              []tracker.ExecutionCheckKind
 	}{
 		{name: "deduplicate policy reference", verification: "Run `make check`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate}},
+		{name: "retains additional named verification", verification: "Run `make check` and confirm `TestRecovery` fails on the old version.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
 		{name: "unmapped command is review only", verification: "Run `make other`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,6 +45,35 @@ func TestFreezeChecklist(t *testing.T) {
 			changed, err := FreezeChecklist(body+" changed", cfg)
 			if err != nil || changed.Revision == list.Revision {
 				t.Fatalf("issue edit preserved its checklist revision: %+v, %v", changed, err)
+			}
+		})
+	}
+}
+
+func TestChecklistBindsAcceptanceToIndependentReceipt(t *testing.T) {
+	command := gate.CommandResult{Command: "make check", ReceiptID: "gate", HeadSHA: "head", TreeSHA: "tree"}
+	proof := gate.CommandResult{Command: "git diff -- main.go", ReceiptID: "inspection", HeadSHA: "head", TreeSHA: "tree"}
+	verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: "head", TreeSHA: "tree"}, PolicyID: "policy", VerifiedCriteria: []string{"criterion"}}
+	checks := []tracker.ExecutionCheck{{Ordinal: 1, Kind: tracker.CheckAcceptance, Text: "criterion", Status: tracker.CheckNeedsReview}}
+	for _, test := range []struct {
+		name, citation string
+		proofTree      string
+		want           string
+	}{
+		{name: "generic gate alone remains unverified", citation: "gate", proofTree: "tree"},
+		{name: "mismatched tree remains unverified", citation: "inspection", proofTree: "wrong"},
+		{name: "accepted independent receipt verifies criterion", citation: "inspection", proofTree: "tree", want: "inspection"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			check := proof
+			check.TreeSHA = test.proofTree
+			validator := gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass,
+				CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, HeadSHA: "head", TreeSHA: "tree", ReceiptIDs: []string{test.citation}, Behavior: "inspected exact changed line"}},
+				Commands:         []gate.CommandResult{check, command}}
+			steps := []tracker.NativeStepReceipt{{Step: "validator", PolicyID: "policy", Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Change: tracker.NativeChangeReference{HeadSHA: "head"}, Validator: &validator}}
+			changes := ChecklistChanges(checks, verdict, &command, steps)
+			if test.want == "" && len(changes) != 0 || test.want != "" && (len(changes) != 1 || changes[0].Receipt != test.want || changes[0].Status != tracker.CheckPassed) {
+				t.Fatalf("checklist changes %+v, want receipt %q", changes, test.want)
 			}
 		})
 	}
