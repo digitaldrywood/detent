@@ -100,7 +100,11 @@ func startWindows(cmd *exec.Cmd, assign func(windows.Handle, windows.Handle) err
 		killErr := TerminateTree(cmd, cmd.Process.Pid)
 		cleanupErr := Cleanup(cmd.Process.Pid)
 		_ = cmd.Wait()
-		return errors.Join(fmt.Errorf("start worker job: %w", err), killErr, cleanupErr)
+		launchErr := fmt.Errorf("start worker job: %w", err)
+		if cleanupErr := errors.Join(killErr, cleanupErr); cleanupErr != nil {
+			return launchRollbackError{launch: launchErr, cleanup: cleanupErr}
+		}
+		return launchErr
 	}
 	killErr := cmd.Process.Kill()
 	jobCloseErr := windows.CloseHandle(job)
@@ -169,7 +173,7 @@ func TerminateTree(cmd *exec.Cmd, groupID int) error {
 	windowsJobs.Lock()
 	defer windowsJobs.Unlock()
 	if job, ok := windowsJobs.byPID[groupID]; ok {
-		return windows.TerminateJobObject(job.job, 1)
+		return retireWindowsJob(job.job, DefaultTerminationGrace)
 	}
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -184,11 +188,79 @@ func Cleanup(groupID int) error {
 	if !ok {
 		return nil
 	}
+	retireErr := retireWindowsJob(job.job, DefaultTerminationGrace)
 	if err := windows.CloseHandle(job.job); err != nil {
-		return fmt.Errorf("close worker job: %w", err)
+		return errors.Join(retireErr, fmt.Errorf("close worker job: %w", err))
 	}
 	delete(windowsJobs.byPID, groupID)
-	return windows.CloseHandle(job.process)
+	return errors.Join(retireErr, windows.CloseHandle(job.process))
+}
+
+func retireWindowsJob(job windows.Handle, grace time.Duration) error {
+	var accounting struct {
+		UserTime, KernelTime, PeriodUserTime, PeriodKernelTime                int64
+		PageFaults, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses uint32
+	}
+	readAccounting := func() error {
+		return windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation, uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil)
+	}
+	if err := readAccounting(); err != nil {
+		return fmt.Errorf("read worker job accounting: %w", err)
+	}
+	total := accounting.TotalProcesses
+	processes, err := windowsJobProcesses(job, accounting.ActiveProcesses)
+	terminationErr := windows.TerminateJobObject(job, 1)
+	defer func() {
+		for _, process := range processes {
+			_ = windows.CloseHandle(process)
+		}
+	}()
+	if err := errors.Join(err, terminationErr); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(grace)
+	for _, process := range processes {
+		event, err := windows.WaitForSingleObject(process, uint32(max(0, time.Until(deadline).Milliseconds())))
+		if err != nil {
+			return fmt.Errorf("wait for worker job member: %w", err)
+		}
+		if event != windows.WAIT_OBJECT_0 {
+			return errors.New("worker job member remained alive after termination")
+		}
+	}
+	if err := readAccounting(); err != nil {
+		return fmt.Errorf("verify worker job accounting: %w", err)
+	}
+	if accounting.TotalProcesses != total {
+		return errors.New("worker job membership grew during retirement")
+	}
+	return nil
+}
+
+func windowsJobProcesses(job windows.Handle, active uint32) ([]windows.Handle, error) {
+	const headerSize = 2 * unsafe.Sizeof(uint32(0))
+	const wordSize = unsafe.Sizeof(uintptr(0))
+	headerWords := int(headerSize / wordSize)
+	pids := make([]uintptr, headerWords+int(active)+1)
+	if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList, uintptr(unsafe.Pointer(&pids[0])), uint32(len(pids)*int(wordSize)), nil); err != nil {
+		return nil, fmt.Errorf("list worker job members: %w", err)
+	}
+	counts := (*[2]uint32)(unsafe.Pointer(&pids[0]))
+	if counts[0] != counts[1] || counts[1] > uint32(len(pids)-headerWords) {
+		return nil, errors.New("worker job member list changed")
+	}
+	processes := make([]windows.Handle, 0, counts[1])
+	for _, pid := range pids[headerWords : headerWords+int(counts[1])] {
+		process, err := openProcess(int(pid), windows.SYNCHRONIZE)
+		if errors.Is(err, ErrProcessNotRunning) {
+			continue
+		}
+		if err != nil {
+			return processes, err
+		}
+		processes = append(processes, process)
+	}
+	return processes, nil
 }
 
 func inspectProcess(pid int) (Identity, error) {
@@ -248,18 +320,18 @@ func Terminate(_ context.Context, identity Identity, grace time.Duration) (Termi
 	if !sameIdentity(Identity{PID: identity.PID, GroupID: groupID, StartedAt: startedAt}, identity) {
 		return TerminationOutcomeStaleIdentity, nil
 	}
+	if grace <= 0 {
+		grace = DefaultTerminationGrace
+	}
 	windowsJobs.Lock()
 	if job, ok := windowsJobs.byPID[identity.PID]; ok {
-		err = windows.TerminateJobObject(job.job, 1)
+		err = retireWindowsJob(job.job, grace)
 	} else {
 		err = windows.TerminateProcess(handle, 1)
 	}
 	windowsJobs.Unlock()
 	if err != nil {
 		return "", fmt.Errorf("terminate process %d: %w", identity.PID, err)
-	}
-	if grace <= 0 {
-		grace = DefaultTerminationGrace
 	}
 	waitMillis := uint32(max(1, grace.Milliseconds()))
 	event, err := windows.WaitForSingleObject(handle, waitMillis)
