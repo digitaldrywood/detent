@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -213,6 +214,10 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 		NativeTerminalFailure() tracker.NativeTerminalFailure
 	}
 	var failure tracker.NativeTerminalFailure
+	var timeout *sessiontimeout.Error
+	if errors.As(err, &timeout) {
+		return &tracker.FailureAttribution{Outcome: "instance", Reason: "provider session exceeded its execution deadline"}
+	}
 	if errors.As(err, &provider) {
 		failure = provider.NativeTerminalFailure()
 		if decision := failure.InfrastructureDecision(); decision != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -204,7 +205,7 @@ type sshError struct {
 }
 
 func sshErrorTypes() []error {
-	return []error{&backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &shell.UnavailableError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
+	return []error{&sessiontimeout.Error{}, &backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &shell.UnavailableError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
 }
 
 func sshSentinels() []error {

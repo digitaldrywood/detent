@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/sprites"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 const cachedProbeProblemWindow = 2 * time.Minute
@@ -55,18 +56,19 @@ func MergeProblems(previous, current []runnerauth.Problem, protocol int, rejecte
 	return runnerauth.MergeProblems(previous, current, now)
 }
 
-func AppendRuntimeProblems(r *runnerauth.Runner, lease runnerstore.FleetLease, now time.Time) {
-	if lease.RuntimeAttemptID == "" || lease.RuntimeHeartbeatAt == nil || !slices.Contains(r.ProjectIDs, lease.Lease.ProjectID) {
+func AppendRuntimeProblems(r *runnerauth.Runner, lease runnerstore.FleetLease) {
+	if lease.RuntimeAttemptID == "" || lease.RuntimeTimeoutAt == nil || !slices.Contains(r.ProjectIDs, lease.Lease.ProjectID) {
 		return
 	}
-	heartbeat := *lease.RuntimeHeartbeatAt
-	ttl := lease.Lease.ExpiresAt.Sub(lease.RenewedAt)
-	if !lease.RenewedAt.After(heartbeat) || !heartbeat.IsZero() && !now.Before(heartbeat) && now.Sub(heartbeat) < ttl {
+	switch sessiontimeout.Kind(lease.RuntimeTimeoutCode) {
+	case sessiontimeout.Idle, sessiontimeout.CommandDeadline, sessiontimeout.TurnDeadline:
+	default:
 		return
 	}
+	at := *lease.RuntimeTimeoutAt
 	r.Problems = append(r.Problems, runnerauth.Problem{Code: "runtime_expired", ProjectID: string(lease.Lease.ProjectID), Subject: lease.RuntimeAttemptID,
-		Message: "A running attempt has expired runtime activity while its lease is still being renewed.",
-		FixHint: "Inspect the attempt's runtime and finalization diagnostics on its runner.", FirstSeen: heartbeat.Add(ttl), ReportedAt: lease.RenewedAt})
+		Check: lease.RuntimeTimeoutCode, Message: "The runner reported that a provider session exceeded its execution deadline.",
+		FixHint: "Inspect the attempt's provider session and command diagnostics.", FirstSeen: at, ReportedAt: at})
 	if r.Health != "revoked" && r.Health != "expired" {
 		r.Health = "needs_attention"
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -41,10 +42,15 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 	}
 	var hook *workspace.HookError
 	var issueConfiguration *IssueConfigurationError
+	var timeout *sessiontimeout.Error
 	if capacity, ok := backendcapacity.As(err); ok && backendcapacity.IsStartupFailureKind(capacity.Details.Kind) {
 		failure.ErrorClass = "backend_startup"
 	}
 	switch {
+	case errors.As(err, &timeout):
+		failure.ErrorClass = string(timeout.Kind)
+		failure.Stage = "provider_session"
+		failure.Error = timeout.Error()
 	case errors.As(err, &issueConfiguration):
 		failure.ErrorClass = "issue_configuration"
 	case failure.Stage == "" && (errors.As(err, &hook) || errors.Is(err, ErrWorkspacePreparation)):

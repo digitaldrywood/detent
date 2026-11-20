@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -485,6 +486,12 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 }
 
 func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) (err error) {
+	if failure != nil {
+		switch kind := sessiontimeout.Kind(failure.ErrorClass); kind {
+		case sessiontimeout.Idle, sessiontimeout.CommandDeadline, sessiontimeout.TurnDeadline:
+			e.recordSessionTimeout(kind, failure.ObservedAt)
+		}
+	}
 	e.mu.Lock()
 	defer func() {
 		if err == nil && e.preparedOutcome != "" {

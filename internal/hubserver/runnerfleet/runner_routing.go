@@ -581,7 +581,7 @@ func (d RoutingDeps) FromRoutingRecord(record runnerstore.RoutingRecord, now tim
 		}
 		lease.Lease.ProviderReservation = lease.Reservation
 		runner.Leases = append(runner.Leases, lease.Lease)
-		AppendRuntimeProblems(&runner, lease, now)
+		AppendRuntimeProblems(&runner, lease)
 	}
 	runner.HostUsed, runner.Used = len(hostSlots), len(runnerSlots)
 	return runner
