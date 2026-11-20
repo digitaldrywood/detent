@@ -119,6 +119,55 @@ func TestRecordSourceValidationInitialRuntimeUsesValidationPhase(t *testing.T) {
 	}
 }
 
+func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Retire the old worker")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	guarded, stop, err := e.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	entered, retired := make(chan struct{}), make(chan struct{})
+	if err := e.KeepWorker(func(context.Context) error {
+		close(entered)
+		<-retired
+		return nil
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- e.CloseWorkers(cleanup) }()
+	defer func() {
+		close(retired)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	<-entered
+	cancel()
+	watch, stopWatch := context.WithTimeout(t.Context(), 5*time.Second)
+	defer stopWatch()
+	select {
+	case <-guarded.Done():
+	case <-watch.Done():
+		t.Fatal("expired cleanup left the supervisor active")
+	}
+	if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Fatalf("unretired worker retained renewal: %v", err)
+	}
+	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+		lease, err := w.Lease(t.Context(), string(e.claim.lease.ID))
+		if err == nil && lease.ReleasedAt != nil {
+			t.Fatal("the lease was released before its worker was retired")
+		}
+		return err
+	})
+}
+
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 	for _, test := range []struct {
 		name           string
