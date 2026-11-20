@@ -2,7 +2,9 @@ package scenariotest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +28,7 @@ type sourceRepairAgent struct {
 	requests       []runner.AgentTurnRequest
 	workspaceHooks *sourceLoopWorkspace
 	gateRepair     bool
+	roundVerdicts  int
 }
 
 type sourceLoopWorkspace struct {
@@ -66,6 +69,18 @@ func (a *sourceRepairAgent) RunTurn(ctx context.Context, request runner.AgentTur
 }
 
 func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handler runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if strings.HasPrefix(request.Prompt, "Judge the completed Detent round") {
+		if !request.ReadOnly || !request.TextOnly || request.Resume != (runner.AgentResume{}) {
+			return runner.AgentTurnResult{}, errors.New("round verdict was not an independent read-only turn")
+		}
+		a.roundVerdicts++
+		next := "merge"
+		if strings.Contains(request.Prompt, "required next phase: implement") {
+			next = "implement"
+		}
+		body := fmt.Sprintf(`{"action":"continue","next_phase":%q,"reason":"Fixture evaluated the passing and failing checks."}`, next)
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
+	}
 	a.requests = append(a.requests, request)
 	if a.workspaceHooks.beforeRuns != 1 || a.workspaceHooks.afterRuns != 0 {
 		return runner.AgentTurnResult{}, errors.New("source workspace hooks ran outside the enclosing execution lifecycle")
@@ -225,6 +240,24 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			}
 			if test.loseReceipt && h.failChanges.phaseReceiptDrops.Load() != 1 {
 				t.Error("runner never reconciled the lost response after recording a pushed phase")
+			}
+			if test.gateRepair || test.loseReceipt {
+				if provider.roundVerdicts != 2 {
+					t.Errorf("runner asked for %d verdicts, want one for each of the two rounds", provider.roundVerdicts)
+				}
+				raw, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				var receipt struct {
+					ID         string `json:"round_id"`
+					PreviousID string `json:"previous_round_id"`
+					Action     string `json:"action"`
+					NextPhase  string `json:"next_phase"`
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(raw, &receipt); err != nil || receipt.ID == "" || receipt.PreviousID == "" || receipt.Action != "continue" || receipt.NextPhase != "merge" {
+					t.Errorf("round history lost the refused round or next phase: %+v %v", receipt, err)
+				}
 			}
 			change := result.NativeChange
 			if change == nil || change.Reviewed != test.wantReviewed || provider.calls != test.wantCalls || execution.Recovery().Lease.ID != lease.ID || execution.Recovery().Lease.FencingToken != lease.FencingToken {

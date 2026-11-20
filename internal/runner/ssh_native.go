@@ -506,3 +506,13 @@ func (e *sshNativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 func (e *sshNativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
 	return e.peer.Call(ctx, "execution.RecordPhaseReceipt", nil, phase, branch, head, tree, input)
 }
+
+func (e *sshNativeExecution) LatestRoundVerdict(ctx context.Context) (json.RawMessage, error) {
+	var output json.RawMessage
+	err := e.peer.Call(ctx, "execution.LatestRoundVerdict", &output)
+	return output, err
+}
+
+func (e *sshNativeExecution) RecordRoundVerdict(ctx context.Context, payload map[string]any) error {
+	return e.peer.Call(ctx, "execution.RecordRoundVerdict", nil, payload)
+}

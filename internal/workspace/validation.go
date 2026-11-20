@@ -179,13 +179,9 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if err := l.VerifyReviewTree(ctx, info, issue); err != nil {
 		return "", "", "", err
 	}
-	head, err = l.Head(ctx, info, issue)
+	head, tree, err = l.ItemPhaseHead(ctx, info, issue)
 	if err != nil {
 		return "", "", "", err
-	}
-	tree, err = runGitAt(ctx, info.Path, "rev-parse", head+"^{tree}")
-	if err != nil {
-		return "", "", "", fmt.Errorf("read phase tree: %w", err)
 	}
 	if err := authorize(ctx); err != nil {
 		return "", "", "", err
@@ -196,5 +192,21 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 			return "", "", "", errors.Join(classifyLandingPush(pushErr, branch), readErr)
 		}
 	}
-	return branch, head, strings.TrimSpace(tree), nil
+	return branch, head, tree, nil
+}
+
+func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (string, string, error) {
+	info, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return "", "", err
+	}
+	head, err := l.Head(ctx, info, issue)
+	if err != nil {
+		return "", "", err
+	}
+	tree, err := runGitAt(ctx, info.Path, "rev-parse", head+"^{tree}")
+	if err != nil {
+		return "", "", fmt.Errorf("read phase tree: %w", err)
+	}
+	return head, strings.TrimSpace(tree), nil
 }

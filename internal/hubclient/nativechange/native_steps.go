@@ -2,6 +2,7 @@ package nativechange
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strconv"
@@ -125,6 +126,39 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 			return errors.Join(err, authorityErr)
 		}
 		err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, payload)
+	}
+	return e.executionError(ctx, err)
+}
+
+func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (json.RawMessage, error) {
+	return e.claim.source.NativeClient().LatestRoundVerdict(ctx, e.claim.lease.WorkItemID)
+}
+
+func (e *nativeExecution) RecordRoundVerdict(ctx context.Context, payload map[string]any) error {
+	if err := e.VerifyPhaseAuthority(ctx); err != nil {
+		return err
+	}
+	if err := e.FlushRuntime(ctx); err != nil {
+		return err
+	}
+	lease := e.claim.lease
+	e.mu.Lock()
+	attempt := e.data.AttemptID
+	e.mu.Unlock()
+	round, ok := payload["round_id"].(string)
+	if !ok || round == "" {
+		return errors.New("round verdict requires a round ID")
+	}
+	payload["attempt_id"], payload["policy_id"] = attempt, lease.PolicyID
+	payload["lease_id"], payload["fencing_token"] = lease.ID, strconv.FormatInt(int64(lease.FencingToken), 10)
+	payload["idempotency_key"] = attempt + ":round:" + round
+	client := e.claim.source.NativeClient()
+	err := client.PublishRoundVerdict(ctx, lease.WorkItemID, payload)
+	if nativeTransportUnavailable(err) && ctx.Err() == nil {
+		if authorityErr := e.VerifyPhaseAuthority(ctx); authorityErr != nil {
+			return errors.Join(err, authorityErr)
+		}
+		err = client.PublishRoundVerdict(ctx, lease.WorkItemID, payload)
 	}
 	return e.executionError(ctx, err)
 }

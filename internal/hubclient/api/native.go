@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -116,6 +117,16 @@ func (c *NativeClient) PhaseReceiptRoute(ctx context.Context, item tracker.Nativ
 
 func (c *NativeClient) PublishPhaseReceipt(ctx context.Context, item tracker.NativeWorkItemID, input map[string]any) error {
 	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", input, nil)
+}
+
+func (c *NativeClient) LatestRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID) (json.RawMessage, error) {
+	var output json.RawMessage
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress?round=latest", nil, &output)
+	return output, err
+}
+
+func (c *NativeClient) PublishRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID, input map[string]any) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, nil)
 }
 
 // HubFeature reports whether the hub advertises a feature on its capability
