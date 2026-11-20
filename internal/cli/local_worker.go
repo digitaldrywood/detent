@@ -421,6 +421,9 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", err))
 	}
 	responseReceived = true
+	if responseErr := response.Err(); runnerpkg.StopProviderSupervision(request.Execution, responseErr) {
+		return response.Result, responseErr
+	}
 	var reviewErr *runnerpkg.NativeImplementationReviewError
 	reviewFailed := errors.As(response.Err(), &reviewErr)
 	if !request.DeferExecutionFinish && request.Execution != nil {

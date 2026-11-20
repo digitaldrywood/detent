@@ -45,6 +45,7 @@ type nativeExecution struct {
 	reviewDone        <-chan struct{}
 	supervisor        context.Context
 	supervisionLost   bool
+	unretiredProvider bool
 	workers           []func(context.Context) error
 	workerLauncher    func(context.Context, runner.RunRequest) (runner.RunResult, error)
 	reasonGenerator   runner.DependencyReasonGenerator
@@ -172,11 +173,13 @@ func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 		e.workerLauncher = nil
 	}
 	e.workerMu.Unlock()
+	e.cancelMu.Lock()
 	if len(failures) > 0 {
-		e.cancelMu.Lock()
 		e.supervisionLost = true
-		e.cancelMu.Unlock()
+	} else if len(workers) > 0 {
+		e.unretiredProvider = false
 	}
+	e.cancelMu.Unlock()
 	return errors.Join(failures...)
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 type CancellationCause struct {
@@ -79,6 +81,21 @@ func preserveCancellation(ctx context.Context, err error, source string) error {
 		return errors.Join(NewCancellationCause(err, source), err)
 	}
 	return err
+}
+
+func UnretiredProviderSession(err error) bool {
+	var timeout *sessiontimeout.Error
+	return errors.Is(err, ErrWorkerProcessReap) && errors.As(err, &timeout)
+}
+
+func StopProviderSupervision(execution Execution, err error) bool {
+	if !UnretiredProviderSession(err) {
+		return false
+	}
+	if owner, ok := execution.(interface{ Cancel(error) }); ok {
+		owner.Cancel(err)
+	}
+	return true
 }
 
 func executionCancellation(req RunRequest) error {
