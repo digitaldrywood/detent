@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (result runner.AgentTurnResult, turnErr error) {
@@ -40,10 +41,6 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	args, err := b.argv(ctx, req)
-	if err != nil {
-		return result, err
-	}
 	timeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
 		timeout = req.TurnTimeout
@@ -51,10 +48,17 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	if req.MaxDuration > 0 && (timeout <= 0 || req.MaxDuration < timeout) {
 		timeout = req.MaxDuration
 	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+	stallTimeout := b.options.StallTimeout
+	if stallTimeout <= 0 {
+		stallTimeout = sessiontimeout.DefaultIdle
+	}
+	lifetime := sessiontimeout.Start(ctx, stallTimeout, timeout, nil)
+	defer lifetime.Close()
+	defer func() { turnErr = lifetime.Result(turnErr) }()
+	ctx = lifetime.Context()
+	args, err := b.argv(ctx, req)
+	if err != nil {
+		return result, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -94,7 +98,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 	waitDone := make(chan error, 1)
 	go func() {
 		waitErr := cmd.Wait()
-		waitDone <- errors.Join(waitErr, runner.NewAgentTurnCleanupError(procgroup.Cleanup(groupID)))
+		waitDone <- errors.Join(waitErr, runner.NewAgentProcessCleanupError(procgroup.Cleanup(groupID)))
 	}()
 	records := make(chan scanResult, 16)
 	readerDone := make(chan struct{})
@@ -119,7 +123,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 			timer.Stop()
 		}
 		if !waited {
-			turnErr = errors.Join(turnErr, runner.NewAgentTurnCleanupError(procgroup.TerminateTree(cmd, groupID)))
+			turnErr = errors.Join(turnErr, runner.NewAgentProcessCleanupError(procgroup.TerminateTree(cmd, groupID)))
 			cancel()
 			waitErr = <-waitDone
 			if errors.Is(waitErr, runner.ErrAgentTurnCleanup) {
@@ -167,7 +171,7 @@ func (b *AgentBackend) RunTurn(ctx context.Context, req runner.AgentTurnRequest,
 
 	writeStarted = true
 	go func() { writeDone <- writePrompt(input, req) }()
-	state = &turnState{req: req, emit: emit, provider: b.provider(req), effort: b.effort(req)}
+	state = &turnState{req: req, emit: emit, lifetime: lifetime, provider: b.provider(req), effort: b.effort(req)}
 	err = b.exchange(ctx, records, writeDone, state)
 	result = state.result()
 	if err != nil {

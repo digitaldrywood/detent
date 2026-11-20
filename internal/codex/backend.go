@@ -377,6 +377,7 @@ func agentUpdateFromCodex(update Update) runner.AgentUpdate {
 		ThreadID:            update.ThreadID,
 		TurnID:              update.TurnID,
 		AuxiliaryTurn:       update.AuxiliaryTurn,
+		NonActivity:         update.NonActivity,
 		ProviderSessionID:   providerSessionID,
 		ItemID:              update.ItemID,
 		Tool:                update.Tool,

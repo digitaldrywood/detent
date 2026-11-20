@@ -480,8 +480,11 @@ func (b *AgentBackend) consumeStream(
 				if event.SessionID != "" && expected != "" && event.SessionID != expected {
 					continue
 				}
-				state.observeActivity(lifetime, item.event)
-				err = state.apply(item.event, b.options.IncludePartialMessages, onUpdate)
+				active := state.observeActivity(lifetime, event)
+				err = state.apply(event, b.options.IncludePartialMessages, func(update runner.AgentUpdate) error {
+					update.NonActivity = !active
+					return emitUpdate(onUpdate, update)
+				})
 			}
 			if err != nil {
 				err = terminateWithCause(cmd, processGroupID, err)

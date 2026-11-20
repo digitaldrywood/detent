@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,17 +14,46 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 // These cases catch accepting an ack as completion, broken response correlation,
 // missing provider failures, duplicate streamed/final output or usage, and hangs
 // when a peer stops reading or exits without a settled event.
+func TestProviderKeepalivesDoNotExtendIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lifetime := sessiontimeout.Start(t.Context(), 5*time.Minute, time.Hour, nil)
+		defer lifetime.Close()
+		records := make(chan scanResult, 5)
+		go func() {
+			records <- scanResult{record: rpcRecord{Type: "response", ID: "state", Command: "get_state", Success: new(true), Data: json.RawMessage(`{"sessionId":"session","model":{"id":"model"}}`)}}
+			records <- scanResult{record: rpcRecord{Type: "response", ID: "prompt", Command: "prompt", Success: new(true), Data: json.RawMessage(`{"disposition":"started"}`)}}
+			for range 2 {
+				select {
+				case <-lifetime.Context().Done():
+					return
+				case <-time.After(4 * time.Minute):
+				}
+				records <- scanResult{record: rpcRecord{Type: "keepalive"}}
+			}
+			records <- scanResult{record: rpcRecord{Type: "agent_settled"}}
+		}()
+		backend, _ := NewAgentBackend(Options{StallTimeout: 5 * time.Minute})
+		state := &turnState{lifetime: lifetime, emit: func(runner.AgentUpdate) error { return nil }}
+		err := backend.exchange(lifetime.Context(), io.Discard, records, state)
+		if err := lifetime.Result(err); !errors.Is(err, sessiontimeout.ErrIdle) {
+			t.Fatalf("idle session result = %v", err)
+		}
+	})
+}
+
 func TestRunTurnRPC(t *testing.T) {
 	for _, test := range []struct {
 		mode      string

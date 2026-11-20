@@ -331,6 +331,7 @@ type Update struct {
 	ThreadID            string
 	TurnID              string
 	AuxiliaryTurn       bool
+	NonActivity         bool
 	ItemID              string
 	Tool                string
 	Command             string
@@ -1402,9 +1403,7 @@ func (s *AppServer) streamTurn(
 			continue
 		}
 		update.AuxiliaryTurn = !turnUpdateMatches(update, threadID, turnID)
-		if update.ThreadID == threadID && update.TurnID == turnID {
-			observeTurnActivity(lifetime, update)
-		}
+		update.NonActivity = update.ThreadID != threadID || update.TurnID != turnID || !observeTurnActivity(lifetime, update)
 		if err := emitUpdate(update, onUpdate); err != nil {
 			return err
 		}
@@ -1422,29 +1421,10 @@ func (s *AppServer) streamTurn(
 	}
 }
 
-func observeTurnActivity(lifetime *sessiontimeout.Session, update Update) {
-	if update.ItemID == "" {
-		return
-	}
-	scope := update.ThreadID + "/" + update.TurnID + "/" + update.ItemID
-	switch update.Type {
-	case UpdateToolStarted:
-		if update.Tool == "commandExecution" && update.Status == "inProgress" {
-			lifetime.StartCommand(scope)
-			return
-		}
-		lifetime.Event("item/start/" + scope)
-	case UpdateToolCompleted:
-		if update.Tool == "commandExecution" {
-			lifetime.EndCommand(scope)
-			return
-		}
-		lifetime.Event("item/end/" + scope)
-	case UpdateAgentMessageDelta, UpdateToolOutput:
-		if update.Delta != "" {
-			lifetime.Event(update.Method + "/" + scope + "/" + update.Delta)
-		}
-	}
+func observeTurnActivity(lifetime *sessiontimeout.Session, update Update) bool {
+	return runner.ObserveProviderActivity(lifetime, runner.AgentUpdate{
+		Type: runner.AgentUpdateType(update.Type), ThreadID: update.ThreadID, TurnID: update.TurnID, ItemID: update.ItemID, Delta: update.Delta,
+	}, update.Type == UpdateToolStarted && update.Tool == "commandExecution" && update.Status == "inProgress")
 }
 
 func turnUpdateMatches(update Update, threadID string, turnID string) bool {

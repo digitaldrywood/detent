@@ -153,11 +153,11 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 	}
 }
 
-func (s *Session) StartCommand(id string) {
+func (s *Session) StartCommand(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, finished := s.seen[sha256.Sum256([]byte("command/end/"+id))]; finished || !s.newEvent("command/start/"+id) {
-		return
+		return false
 	}
 	if s.commands == nil {
 		s.commands = make(map[string]struct{})
@@ -166,16 +166,22 @@ func (s *Session) StartCommand(id string) {
 	if s.timer != nil {
 		s.timer.Stop()
 	}
+	return true
 }
 
-func (s *Session) EndCommand(id string) {
+func (s *Session) EndCommand(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.newEvent("command/end/" + id) {
-		return
+	if s.ctx.Err() != nil {
+		return false
+	}
+	_, running := s.commands[id]
+	if !s.newEvent("command/end/"+id) && !running {
+		return false
 	}
 	delete(s.commands, id)
 	s.activity()
+	return true
 }
 
 func (s *Session) newEvent(identity string) bool {

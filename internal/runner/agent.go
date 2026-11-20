@@ -1285,7 +1285,7 @@ func (r *Runner) runAgentTurn(
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
-		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID); err != nil {
+		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, false); err != nil {
 			return agentTurnExecution{result: result, err: err}
 		}
 	}
@@ -1366,7 +1366,7 @@ func (r *Runner) runAgentTurn(
 				deliverableErr.TargetRef = cloneDeliverableTargetRefEvidence(targetRefObserver(updateCtx))
 			}
 		}
-		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID); err != nil {
+		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, providerUpdateIsActivity(update)); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -2645,6 +2645,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		RSSPollInterval:       r.rssPollInterval,
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
+	}
+	if req.phaseReceipts && mode == RunModeImplement && turnRequest.MaxDuration <= 0 {
+		turnRequest.MaxDuration = sessiontimeout.DefaultTurn
 	}
 	if mergeFallback && sessionDuration > 0 && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
@@ -4258,7 +4261,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
-	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
+	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, false); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	var output strings.Builder
@@ -4336,7 +4339,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			}
 		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID); err != nil {
+		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update)); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
@@ -6430,8 +6433,9 @@ func (r *Runner) publishRunUpdate(
 	eventAt time.Time,
 	runStartedAt time.Time,
 	detentSessionID int64,
+	activity bool,
 ) error {
-	if runtime, ok := req.Execution.(RuntimeExecution); ok {
+	if runtime, ok := req.Execution.(RuntimeExecution); ok && activity {
 		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil {
 			return err
 		}
@@ -6470,6 +6474,48 @@ func (r *Runner) publishRunUpdate(
 		}
 	}
 	return req.OnUsageUpdate(usage)
+}
+
+func providerUpdateIsActivity(update AgentUpdate) bool {
+	if update.NonActivity || update.AuxiliaryTurn {
+		return false
+	}
+	switch update.Type {
+	case AgentUpdateTurnStarted, AgentUpdateTurnCompleted, AgentUpdateToolStarted, AgentUpdateToolOutput, AgentUpdateToolCompleted:
+		return true
+	case AgentUpdateMessageDelta:
+		return update.Delta != ""
+	default:
+		return false
+	}
+}
+
+func ObserveProviderActivity(lifetime *sessiontimeout.Session, update AgentUpdate, runningCommand bool) bool {
+	if lifetime == nil || update.AuxiliaryTurn || update.ThreadID == "" {
+		return false
+	}
+	scope := update.ThreadID + "/" + update.TurnID + "/" + update.ItemID
+	switch update.Type {
+	case AgentUpdateTurnStarted, AgentUpdateTurnCompleted:
+		return lifetime.Event(string(update.Type) + "/" + scope)
+	case AgentUpdateToolStarted, AgentUpdateToolOutput:
+		if update.ItemID != "" && runningCommand {
+			return lifetime.StartCommand(scope)
+		}
+		if update.ItemID != "" && update.Type == AgentUpdateToolStarted {
+			return lifetime.Event("tool/start/" + scope)
+		}
+		fallthrough
+	case AgentUpdateMessageDelta:
+		if update.Delta != "" {
+			return lifetime.Event(string(update.Type) + "/" + scope + "/" + update.Delta)
+		}
+	case AgentUpdateToolCompleted:
+		if update.ItemID != "" {
+			return lifetime.EndCommand(scope)
+		}
+	}
+	return false
 }
 
 func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {
