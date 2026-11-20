@@ -134,6 +134,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	}
 	providerBoundary := progresscheck.ProviderRoundOutcome(runErr, ErrTurnDurationExceeded, "")
 	if providerBoundary != "" {
+		findings = strings.TrimSpace(findings + "\nProvider round outcome: " + providerBoundary)
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: phase}
 	}
 	canAskHuman := runErr == nil && result.NativeLanding == nil && runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement
@@ -177,22 +178,4 @@ func applyRoundHumanAction(result *RunResult, v progresscheck.RoundAssessment) {
 	if v.Action == progresscheck.RoundHumanAction {
 		result.FinalMessage = workpad.BlockedDetail(result.FinalMessage, v.HumanAction)
 	}
-}
-
-func fileRepeatedTimeout(ctx context.Context, req RunRequest, phase, backend string, timeout *sessiontimeout.Error) error {
-	if req.AgentToolHandler == nil {
-		return errors.New("runner incident owner is unavailable")
-	}
-	arguments, err := progresscheck.RepeatedTimeoutIncident(phase, backend, timeout)
-	if err != nil {
-		return err
-	}
-	result, err := req.AgentToolHandler(ctx, AgentToolCall{Name: "file_machine_issue", Arguments: arguments})
-	if err != nil {
-		return fmt.Errorf("record repeated provider timeout: %w", err)
-	}
-	if !result.Success {
-		return errors.New("runner incident owner refused the repeated timeout")
-	}
-	return nil
 }

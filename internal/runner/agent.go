@@ -2751,8 +2751,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workerGitHub:          workerGitHub,
 		processRSS:            r.processRSS,
 	}
-	if req.phaseReceipts && mode == RunModeImplement && turnRequest.MaxDuration <= 0 {
-		turnRequest.MaxDuration = sessiontimeout.DefaultTurn
+	if req.phaseReceipts && mode == RunModeImplement {
+		if capable, ok := backend.(interface{ SupportsToolLoopDetection() bool }); ok && capable.SupportsToolLoopDetection() {
+			turnRequest.DetectToolLoops = true
+			turnRequest.TurnTimeout = turnRequest.MaxDuration
+			turnRequest.MaxDuration = 0
+		} else if turnRequest.MaxDuration <= 0 {
+			turnRequest.MaxDuration = sessiontimeout.DefaultTurn
+		}
 	}
 	if mergeFallback && sessionDuration > 0 && (turnRequest.MaxDuration <= 0 || sessionDuration < turnRequest.MaxDuration) {
 		turnRequest.MaxDuration = sessionDuration
@@ -2788,7 +2794,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		var providerTimeout *sessiontimeout.Error
 		timedOut := errors.As(execution.err, &providerTimeout)
-		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded)
+		var noProgress *progresscheck.NoProgressError
+		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded) || errors.As(execution.err, &noProgress)
 		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
 			deadlines.Observe("implement", providerTimeout)
 			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
@@ -2802,13 +2809,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				return execution.result, errors.Join(execution.err, verdictErr)
 			}
 			diagnosis := progresscheck.ProviderRoundOutcome(execution.err, ErrTurnDurationExceeded, assessment.Reason)
-			guidance, err := deadlines.Continue(ctx, sessionCtx, providerTimeout, diagnosis, assessment.Reason, validate,
-				func(ctx context.Context, timeout *sessiontimeout.Error) error {
-					ctx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
-					defer cancel()
-					return fileRepeatedTimeout(ctx, req, "implement", backendConfig.Kind, timeout)
-				}, retryDelay)
-			if err != nil {
+			if err := deadlines.Continue(ctx, sessionCtx, providerTimeout, diagnosis, validate, retryDelay); err != nil {
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, err)
 			}
@@ -2817,7 +2818,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				turnRequest.Resume = AgentResume{}
 				req.RetryMode = RetryModeFresh
 			}
-			turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + guidance
+			turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + assessment.Reason
 			req.sessionTurnOffset = 0
 			req.sessionTokenOffset = execution.result.Tokens.TotalTokens
 			if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok {
@@ -5501,6 +5502,10 @@ func tokenCeilingOverrideEnabled(value string) bool {
 }
 
 func finalStateForTurnError(err error) string {
+	var noProgress *progresscheck.NoProgressError
+	if errors.As(err, &noProgress) {
+		return FinalStateNoProgress
+	}
 	if errors.Is(err, ErrOperatorStopped) {
 		return FinalStateOperatorStopped
 	}
