@@ -23,8 +23,8 @@ type FleetLease struct {
 	WorkflowState      string
 	CapacityProject    string
 	RuntimeAttemptID   string
-	RuntimeHeartbeatAt *time.Time
-	RenewedAt          time.Time
+	RuntimeTimeoutAt   *time.Time
+	RuntimeTimeoutCode string
 	PolicyID           string
 	CurrentPolicyID    string
 	RunnerID           string

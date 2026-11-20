@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/provider"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,7 +21,10 @@ func nativeAuthorityLost(err error) bool        { return api.NativeAuthorityLost
 func diagnosticError(err error) string { return api.DiagnosticError(err) }
 func diagnosticErrorCode(err error) string {
 	var mismatch *provider.IdentityMismatchError
+	var timeout *sessiontimeout.Error
 	switch {
+	case errors.As(err, &timeout):
+		return string(timeout.Kind)
 	case errors.Is(err, provider.ErrReportSourceMissing):
 		return "provider_report_source_missing"
 	case errors.As(err, &mismatch):

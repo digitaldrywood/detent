@@ -120,7 +120,7 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 	now = asOf.Add(time.Second)
 	e := echo.New()
 	service.registerPostgresRoutes(e)
-	t.Run("expired runtime", func(t *testing.T) {
+	t.Run("stale runtime telemetry", func(t *testing.T) {
 		for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 			if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 				for _, id := range []string{"one", "two"} {
@@ -154,11 +154,10 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 			name                                                     string
 			age                                                      time.Duration
 			missing, released, expired, terminal, unrenewed, unknown bool
-			want                                                     bool
 		}{
 			{name: "fresh", age: 90*time.Second - time.Microsecond},
-			{name: "expiry boundary", age: 90 * time.Second, want: true},
-			{name: "stale", age: 10 * time.Minute, want: true},
+			{name: "expiry boundary", age: 90 * time.Second},
+			{name: "stale", age: 10 * time.Minute},
 			{name: "no runtime", missing: true},
 			{name: "released lease", age: 10 * time.Minute, released: true},
 			{name: "expired lease", age: 10 * time.Minute, expired: true},
@@ -206,14 +205,8 @@ func TestPostgresRunnerRoutingHTTPWithoutLegacyDatabase(t *testing.T) {
 						if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 							t.Fatal(err)
 						}
-						if (len(got.Problems) == 1) != test.want || (got.Health == "needs_attention") != test.want {
-							t.Fatalf("%s/%s health=%s problems=%+v want runtime warning=%t", org, id, got.Health, got.Problems, test.want)
-						}
-						if test.want {
-							p := got.Problems[0]
-							if p.Code != "runtime_expired" || p.Subject != "attempt_"+id || p.ProjectID != "project_"+id || !p.FirstSeen.Equal(heartbeat.Add(90*time.Second)) || !p.ReportedAt.Equal(now) {
-								t.Fatalf("runtime problem=%+v", p)
-							}
+						if len(got.Problems) != 0 || got.Health == "needs_attention" {
+							t.Fatalf("%s/%s stale telemetry changed health=%s problems=%+v", org, id, got.Health, got.Problems)
 						}
 					}
 				}

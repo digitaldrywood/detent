@@ -171,10 +171,18 @@ LEFT JOIN LATERAL (
 ) pending ON true
 `
 	}
-	rows, err := s.db.Query(ctx, prefix+`SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce((SELECT array_agg(m.model_id ORDER BY m.position) FROM provider_reservation_models m WHERE m.organization_id=p.organization_id AND m.lease_id=p.lease_id),'{}'::text[]),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),l.renewed_at,coalesce(runtime.id,''),runtime.runtime_heartbeat_at`+workflowColumns+`
+	rows, err := s.db.Query(ctx, prefix+`SELECT coalesce(r.runner_id,''),l.machine_id,l.session_id,l.landing_capacity,l.lease_id,l.fencing_token,i.native_id,i.title,i.project_id,l.expires_at,coalesce(i.actor_principal_id,''),coalesce(p.requirement_role,''),coalesce(p.requirement_backend,''),coalesce(p.requirement_model,''),coalesce(p.provider,''),coalesce(p.backend,''),coalesce(p.account_alias,''),coalesce(p.shared_account_alias,''),coalesce(p.billing,''),coalesce(p.max_concurrent,0),coalesce(p.availability,''),p.observed_at,p.reset_at,coalesce(p.reason,''),coalesce((SELECT array_agg(m.model_id ORDER BY m.position) FROM provider_reservation_models m WHERE m.organization_id=p.organization_id AND m.lease_id=p.lease_id),'{}'::text[]),coalesce(policy.policy_id,''),coalesce(current_policy.policy_id,''),coalesce(timeout.native_attempt_id,''),timeout.operation_observed_at,coalesce(timeout.latest_error_code,'')`+workflowColumns+`
 FROM candidates l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
 LEFT JOIN runner_lease_assignments r ON r.organization_id=l.organization_id AND r.lease_id=l.lease_id
-LEFT JOIN native_attempts runtime ON runtime.organization_id=l.organization_id AND runtime.lease_id=l.lease_id AND runtime.fencing_token=l.fencing_token AND runtime.status='running' AND runtime.runtime_summary_sequence=runtime.sequence
+LEFT JOIN LATERAL (
+ SELECT diagnostic.native_attempt_id,diagnostic.operation_observed_at,diagnostic.latest_error_code
+ FROM runner_project_diagnostic_attempts diagnostic
+ JOIN native_attempts attempt ON attempt.organization_id=l.organization_id AND attempt.issue_id=l.issue_id AND attempt.lease_id=l.lease_id AND attempt.fencing_token=l.fencing_token AND attempt.id=diagnostic.native_attempt_id AND attempt.status='running'
+ WHERE diagnostic.organization_id=l.organization_id AND diagnostic.runner_id=r.runner_id AND diagnostic.project_id=i.project_id AND diagnostic.issue_id=i.native_id
+ AND diagnostic.fence=l.fencing_token AND diagnostic.native_claim AND diagnostic.host_operation='provider.session' AND NOT diagnostic.operation_pending
+ AND diagnostic.operation_observed_at>=l.acquired_at AND diagnostic.operation_observed_at<=$2
+ ORDER BY diagnostic.position LIMIT 1
+) timeout ON true
 LEFT JOIN provider_reservations p ON p.organization_id=l.organization_id AND p.lease_id=l.lease_id
 LEFT JOIN lease_policy_bindings binding ON binding.organization_id=l.organization_id AND binding.lease_id=l.lease_id
 LEFT JOIN policy_revisions policy ON policy.organization_id=binding.organization_id AND policy.project_id=binding.project_id AND policy.policy_id=binding.policy_id
@@ -189,7 +197,7 @@ LEFT JOIN project_policies current_policy ON current_policy.organization_id=i.or
 		var row runnerstore.FleetLease
 		var reservation providercapacity.Reservation
 		var observed, reset pgtype.Timestamptz
-		destinations := []any{&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &reservation.Report.Models, &row.PolicyID, &row.CurrentPolicyID, &row.RenewedAt, &row.RuntimeAttemptID, &row.RuntimeHeartbeatAt}
+		destinations := []any{&row.RunnerID, &row.MachineID, &row.SessionID, &row.LandingCapacity, &row.Lease.ID, &row.Lease.FencingToken, &row.Lease.WorkItemID, &row.Lease.Title, &row.Lease.ProjectID, &row.Lease.ExpiresAt, &row.ActorPrincipalID, &reservation.Role, &reservation.Backend, &reservation.Model, &reservation.Report.Provider, &reservation.Report.Backend, &reservation.Report.AccountAlias, &reservation.Report.SharedAccountAlias, &reservation.Report.Billing, &reservation.Report.MaxConcurrent, &reservation.Report.Availability, &observed, &reset, &reservation.Reason, &reservation.Report.Models, &row.PolicyID, &row.CurrentPolicyID, &row.RuntimeAttemptID, &row.RuntimeTimeoutAt, &row.RuntimeTimeoutCode}
 		if runtime {
 			destinations = append(destinations, &row.WorkflowState, &row.CapacityProject, &row.LandingRequired)
 		}

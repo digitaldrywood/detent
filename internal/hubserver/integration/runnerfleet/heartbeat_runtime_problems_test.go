@@ -217,24 +217,30 @@ func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
 func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	h := hubfixture.Open(t, hubfixture.Config{Clock: func() time.Time { return now }})
+	var clock atomic.Int64
+	clock.Store(now.UnixMicro())
+	h := hubfixture.Open(t, hubfixture.Config{Clock: func() time.Time { return time.UnixMicro(clock.Load()).UTC() }})
 	for _, test := range []struct {
-		name     string
-		phase    string
-		age      time.Duration
-		released bool
-		expired  bool
-		finished bool
-		want     bool
+		name       string
+		phase      string
+		age        time.Duration
+		released   bool
+		expired    bool
+		finished   bool
+		timeout    bool
+		staleFence bool
+		want       bool
 	}{
 		{name: "fresh completion", phase: "completed", age: 89 * time.Second},
-		{name: "expired completion", phase: "completed", age: 90 * time.Second, want: true},
-		{name: "expired implementation", phase: "implementation", age: 90 * time.Second, want: true},
-		{name: "released attempt", phase: "completed", age: 3 * time.Hour, released: true},
-		{name: "expired lease", phase: "completed", age: 3 * time.Hour, expired: true},
-		{name: "terminal attempt", phase: "completed", age: 3 * time.Hour, finished: true},
+		{name: "aged telemetry", phase: "implementation", age: 3 * time.Hour},
+		{name: "provider timeout", phase: "implementation", age: time.Minute, timeout: true, want: true},
+		{name: "stale fence", phase: "implementation", age: time.Minute, timeout: true, staleFence: true},
+		{name: "released attempt", phase: "completed", age: 3 * time.Hour, timeout: true, released: true},
+		{name: "expired lease", phase: "completed", age: 3 * time.Hour, timeout: true, expired: true},
+		{name: "terminal attempt", phase: "completed", age: 3 * time.Hour, timeout: true, finished: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			clock.Store(now.UnixMicro())
 			f := hubfixture.NewNative(t, h, h.CreateOrganization(t, test.name), "Runtime problem test")
 			r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
 			r.Enroll(t)
@@ -250,7 +256,7 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			event := hubfixture.StartedEvent(lease)
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age)}
 			hubfixture.RequireStatus(t, h.Request(t, http.MethodPost, f.Base+"/work-items/"+string(issue.WorkItemID)+"/events", r.Redemption.Credential, event), http.StatusOK)
-			renewed, expires := now, now.Add(90*time.Second)
+			renewed, expires := now, now.Add(90*time.Minute)
 			if test.expired {
 				renewed, expires = now.Add(-90*time.Second), now
 			}
@@ -267,6 +273,29 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			publishDiagnostic := func(timeout bool) {
+				t.Helper()
+				var records []runnerauth.DiagnosticAttempt
+				if timeout {
+					fence := uint64(lease.FencingToken)
+					if test.staleFence {
+						fence++
+					}
+					records = []runnerauth.DiagnosticAttempt{{
+						Key: event.Data.AttemptID, IssueID: string(issue.WorkItemID), NativeAttemptID: event.Data.AttemptID, Fence: fence,
+						Membership: []string{"native_claim"}, HostOperation: "provider.session", LatestErrorCode: "session_idle_timeout", OperationObservedAt: now,
+					}}
+				}
+				reportAt := time.UnixMicro(clock.Load()).UTC()
+				view := runnerauth.ProjectConfiguration{ProjectID: string(f.Project.ID), Authority: "local_global_configuration", Source: "cloud_workflow", ObservedAt: reportAt, Diagnostics: &runnerauth.ProjectDiagnostics{
+					ObservedAt: reportAt, Source: "runner_runtime_and_durable_attempt_owners", Records: records, Counts: map[string]int{}, Unavailable: map[string]string{},
+				}}
+				response := h.Request(t, http.MethodPost, f.Base+"/machines/"+string(r.Binding.MachineID)+"/heartbeat", r.Redemption.Credential, map[string]any{
+					"display_name": "runner", "capacity": 2, "version": "test", "protocol_major": 2, "backend_isolation": r.Redemption.BackendIsolation, "project_configuration": view,
+				})
+				hubfixture.RequireStatus(t, response, http.StatusOK)
+			}
+			publishDiagnostic(test.timeout)
 			read := func(runner hubfixture.Runner) runnerauth.Runner {
 				t.Helper()
 				response := h.Request(t, http.MethodGet, runner.IdentityPath()+"/routing", h.AdminToken(), nil)
@@ -297,9 +326,8 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 				if problem.Code != "runtime_expired" || problem.ProjectID != string(f.Project.ID) || problem.Subject != event.Data.AttemptID || problem.FirstSeen.IsZero() || !problem.ReportedAt.Equal(now) {
 					t.Fatalf("missing attempt attribution: %+v", problem)
 				}
-				event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "fresh-runtime", 2
-				event.Data.Runtime.HeartbeatAt = now
-				hubfixture.RequireStatus(t, h.Request(t, http.MethodPost, f.Base+"/work-items/"+string(issue.WorkItemID)+"/events", r.Redemption.Credential, event), http.StatusOK)
+				clock.Add(1)
+				publishDiagnostic(false)
 				if fresh := read(r); len(fresh.Problems) != 0 || fresh.Health != "online" {
 					t.Fatalf("runtime warning did not clear: %+v", fresh)
 				}
