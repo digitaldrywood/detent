@@ -98,7 +98,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read frozen checklist: %w", err)
 		}
 		if checklist == nil || checklist.Revision != req.checklistRevision {
-			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, progresscheck.ErrRoundVerdictRejected
+			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, progresscheck.ErrChecklistSuperseded
 		}
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()

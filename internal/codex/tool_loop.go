@@ -43,7 +43,6 @@ type turnToolLoop struct {
 	probeContext   context.Context
 	sequence       uint64
 	decisions      []string
-	lastStarted    uint64
 	decisionCalls  int
 	decisionResult string
 	active         map[string]struct{}
@@ -62,7 +61,7 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 				TurnID string `json:"turnId"`
 			}
 			if json.Unmarshal(message.Result, &response) == nil && response.TurnID == l.turn {
-				l.observer.Acknowledge(l.pendingSteer.Fingerprint, l.lastStarted)
+				l.observer.Acknowledge(l.pendingSteer.Fingerprint, l.sequence)
 				l.report(ctx, l.pendingSteer, l.steerSequence)
 			}
 		}
@@ -118,7 +117,6 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		}
 		l.active[item.ID] = struct{}{}
 		l.decisionCalls++
-		l.lastStarted = l.sequence
 		return nil
 	}
 	l.rememberID(&l.completed, item.ID)
@@ -136,6 +134,11 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		experiment.Source = l.source(probeCtx, l.workspace)
 		cancel()
 		l.decisionResult = experiment.Fingerprint()
+		if l.pendingSteer.Action == "" && l.decisionResult != "" {
+			if evidence := l.observer.PreviewSteer(l.sequence, l.decisionResult); evidence.Action != "" {
+				return l.intervene(ctx, transport, evidence)
+			}
+		}
 	}
 	return nil
 }
@@ -153,7 +156,10 @@ func (l *turnToolLoop) finishDecision(ctx context.Context, transport Transport) 
 	if l.decisionCalls != 1 {
 		fingerprint = ""
 	}
-	evidence := l.observer.Observe(l.sequence, fingerprint)
+	return l.intervene(ctx, transport, l.observer.Observe(l.sequence, fingerprint))
+}
+
+func (l *turnToolLoop) intervene(ctx context.Context, transport Transport, evidence progresscheck.ToolLoopEvidence) error {
 	switch evidence.Action {
 	case progresscheck.ToolLoopSteer:
 		if l.pendingSteer.Action != "" {
@@ -188,6 +194,9 @@ func (l *turnToolLoop) report(ctx context.Context, evidence progresscheck.ToolLo
 
 func (i loopToolItem) experiment(root string) (progresscheck.ToolExperiment, bool) {
 	e := progresscheck.ToolExperiment{Tool: i.Type, Status: i.Status, ExitCode: i.ExitCode}
+	if i.Source == "unifiedExecInteraction" {
+		return e, false
+	}
 	if i.Status != "completed" && i.Status != "failed" && i.Status != "declined" {
 		return e, false
 	}

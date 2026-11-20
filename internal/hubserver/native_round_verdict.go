@@ -374,7 +374,7 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		return record, err
 	}
 	if input.ChecklistRevision != "" && (list == nil || list.Revision != input.ChecklistRevision) || list != nil && list.Revision != progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
-		return record, terminalProgressConflict()
+		return record, checklistSuperseded()
 	}
 	if list != nil {
 		record.ChecklistRevision = list.Revision

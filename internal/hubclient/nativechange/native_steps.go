@@ -279,6 +279,9 @@ func (e *nativeExecution) RecordLoopIntervention(ctx context.Context, event trac
 	err = e.executionError(ctx, err)
 	var refusal *APIError
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+		if refusal.Code == progresscheck.ChecklistSupersededCode {
+			return errors.Join(progresscheck.ErrChecklistSuperseded, err)
+		}
 		switch refusal.Status {
 		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
 		default:
@@ -354,6 +357,9 @@ func (e *nativeExecution) publishRoundVerdict(ctx context.Context, input progres
 	err = e.executionError(ctx, err)
 	var refusal *APIError
 	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+		if refusal.Code == progresscheck.ChecklistSupersededCode {
+			return errors.Join(progresscheck.ErrChecklistSuperseded, err)
+		}
 		switch refusal.Status {
 		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
 		default:
