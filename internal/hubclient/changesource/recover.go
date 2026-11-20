@@ -23,7 +23,7 @@ type Authority interface {
 	Accept(tracker.NativeChangeReference)
 }
 
-func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, host Authority) (workspace.ChangeSource, error) {
+func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, host Authority, phase *tracker.NativePhaseReceipt) (workspace.ChangeSource, error) {
 	detail, err := reader.CurrentChange(ctx, item)
 	if err != nil {
 		return workspace.ChangeSource{}, err
@@ -50,7 +50,9 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 			}
 			source.PreviousHeads = append(source.PreviousHeads, previous.HeadSHA)
 		}
-		if version.Source != nil {
+		if phase != nil && phase.HeadSHA == version.HeadSHA && phase.PolicyID == version.PolicyID {
+			source.PushedPhase = phase
+		} else if version.Source != nil {
 			source.Bundle, err = reader.ChangeSource(ctx, item, detail.Change.ID, version.ID)
 			if err == nil {
 				err = version.Source.Validate(version.BaseSHA, version.HeadSHA, source.Bundle)

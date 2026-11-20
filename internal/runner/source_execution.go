@@ -79,6 +79,7 @@ type PhaseReceiptExecution interface {
 type itemPhaseWorkspace interface {
 	PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
 	ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
+	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error
 }
 
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {

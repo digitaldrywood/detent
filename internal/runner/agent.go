@@ -1815,6 +1815,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement && req.phaseContinuation != nil && !req.operatorFreshRetry() && !publicationRecovery {
 		phaseSource = req.phaseContinuation.LastPushed
 		if phaseSource != nil {
+			recovery := req.Execution.Recovery()
+			previous := recovery.SourceAttempt()
+			explicitRework := runRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
+			if explicitRework || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
+				phaseSource = nil
+			}
+		}
+		if phaseSource != nil {
 			reviewRecovery, turnRecovery, repairResume = nil, nil, false
 			if req.phaseContinuation.NextPhase != RunModeImplement {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
@@ -3929,6 +3937,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 					return gate.ValidatorResult{}, fmt.Errorf("%w: recovered review source differs from the immutable version", ErrValidatorInfrastructure)
 				}
 				workspaceIssue.Source.Bundle = recovered.Bundle
+				workspaceIssue.Source.PushedPhase = recovered.PushedPhase
 			}
 			req.workspacePrepared = false
 		}

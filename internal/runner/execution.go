@@ -391,12 +391,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	guarded = r.installDependencyReasonGenerator(guarded, req)
 	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
 	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
-	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (normalizeRunMode(req.Mode) == RunModeImplement || req.RetainItemWorkspace) {
+	mode := normalizeRunMode(req.Mode)
+	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
-		req.phaseReceipts = req.phaseContinuation != nil
+		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
 	}
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {
@@ -815,7 +816,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
 	}
 	if phaseCompleted && req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
-		finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
+		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || req.Execution.Recovery().SourceVersionID != "") {
+			if publisher, ok := backend.(itemPhaseWorkspace); ok {
+				finalizationErr = failedStep("publication", publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority))
+			}
+		}
+		if finalizationErr == nil {
+			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
+		}
 		if finalizationErr == nil {
 			finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
 		}

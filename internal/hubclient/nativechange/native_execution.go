@@ -104,6 +104,7 @@ type nativeExecution struct {
 	recoveredSource *tracker.NativeChangeReference
 	mergeResolution bool
 	releaseDelivery *tracker.ReleaseDeliveryStatus
+	phaseSource     *tracker.NativePhaseReceipt
 
 	workerLaunchMu      sync.Mutex
 	worker              *tracker.NativeAttemptWorker

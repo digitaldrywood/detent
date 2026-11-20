@@ -357,7 +357,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						return
 					}
 					faultSource(false)
-					h.candidates(t)
 				}
 				candidate := h.claim(t, issue.ID)
 				faultSource(test.sourceFailure != "intact")
@@ -452,7 +451,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if len(targets) == 0 {
 					result, err = agent.Run(t.Context(), request)
 				} else {
-					result, _, err = runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1), gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}, expectPendingLanding: expectPendingLanding}, request, targets[0])
+					result, _, err = runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, completed: make(chan nativeCompletionRun, 1), landed: make(chan nativeCompletionRun, 1), gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}, expectPendingLanding: expectPendingLanding}, request, targets[0])
 				}
 				if test.transferDirty && (candidate.State == "Rework" || transferredCode) {
 					paths, err := filepath.Glob(filepath.Join(root, ".detent", "quarantine", "*"))
@@ -497,8 +496,17 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			providerA := &committingAgent{staged: true, validator: "pass", complete: true}
 			first := run(sourceA, providerA, candidateA, h.scheduler.RunExecution(issue.ID))
 			oldHead := first.NativeChange.HeadSHA
-			if _, err := exec.CommandContext(t.Context(), "git", "-C", remote, "merge-base", "--is-ancestor", oldHead, "refs/detent/checkpoints/"+issue.ID).Output(); err != nil {
-				t.Fatalf("reviewed commit is not reachable from the forge checkpoint ref: %v", err)
+			phases, err := h.native.ItemPhaseReceipts(t.Context(), item)
+			if err != nil || len(phases) == 0 || phases[0].HeadSHA != oldHead || phases[0].TreeSHA != headTree(remote, oldHead) ||
+				phases[0].Branch != first.WorkspaceBranch || phases[0].AttemptID != ownerAttempt || phases[0].LeaseID != owner.claim.lease.ID ||
+				phases[0].FencingToken != owner.claim.lease.FencingToken || phases[0].PolicyID != h.descriptor.ID {
+				t.Fatalf("reviewed commit has no source-bound phase receipt: %+v, %v", phases, err)
+			}
+			readBranch := exec.CommandContext(t.Context(), "git", "rev-parse", "refs/heads/"+phases[0].Branch)
+			readBranch.Dir = remote
+			branchHead, err := readBranch.Output()
+			if err != nil || strings.TrimSpace(string(branchHead)) != oldHead {
+				t.Fatalf("reviewed commit is not the pushed phase branch head: %q, %v", branchHead, err)
 			}
 			old, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
 			if err != nil || old.Versions[0].Source == nil || len(old.Reviews) != 1 {
@@ -573,13 +581,13 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			nativeChangeGit(t, sourceA, "push", "origin", "dev")
 			newBase := head(sourceA)
 			sourceB := filepath.Join(t.TempDir(), "air")
-			nativeChangeGit(t, sourceA, "clone", "--no-local", remote, sourceB)
+			nativeChangeGit(t, sourceA, "clone", "--no-local", "--single-branch", "--branch", "dev", remote, sourceB)
 			nativeChangeGit(t, sourceB, "remote", "set-url", "origin", nativeChangeRepository)
 			nativeChangeGit(t, sourceB, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, sourceB, "config", "user.name", "Air")
 			nativeChangeGit(t, sourceB, "config", "user.email", "air@example.com")
 			if _, err := exec.CommandContext(t.Context(), "git", "-C", sourceB, "cat-file", "-e", oldHead+"^{commit}").Output(); err == nil {
-				t.Fatal("second Mac already had the unpushed commit")
+				t.Fatal("second Mac already had the phase commit before recovery")
 			}
 			current, err := h.admin.Issue(t.Context(), item)
 			if err != nil {
@@ -675,6 +683,17 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			recovered, err := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
 			if err != nil || slices.Contains(recovered.PreviousHeads, oldHead) != test.republish {
 				t.Fatalf("superseded source provenance=%v: %v", recovered.PreviousHeads, err)
+			}
+			if test.name == "same policy" {
+				client := fixtureClient(h.native.Transport())
+				next := client.requests.Load()
+				client.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/versions/"+first.NativeChange.VersionID+"/source") {
+						return nil, errors.New("phase recovery must fetch the reviewed commit from Git")
+					}
+					return next.RoundTrip(request)
+				}))
+				t.Cleanup(func() { client.requests.Store(next) })
 			}
 			if test.transfer {
 				execution := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -780,10 +799,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 				target := "Rework"
 				if test.restartIntent == "resolved" {
-					target = "Merging"
-					if test.landing {
-						target = "Done"
-					}
+					target = "Done"
 				}
 				second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID), target)
 				detail, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
@@ -847,9 +863,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if version.ID != second.NativeChange.VersionID || version.HeadSHA != second.NativeChange.HeadSHA || version.PolicyID != h.descriptor.ID || version.Source == nil || version.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) || review.VersionID != version.ID || review.Decision != "approved" {
 					t.Fatalf("resolved source lost current-head/policy review: version=%+v review=%+v", version, review)
 				}
-				if detail.Change.CurrentLanding() != nil || version.LandingQuality != nil {
-					t.Fatal("reviewed resolution acquired quality before landing")
-				}
 				path, err := api.NativeAttemptDiffPath(version.AttemptID)
 				if err != nil {
 					t.Fatal(err)
@@ -862,19 +875,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if err != nil || attempt.AttemptID != version.AttemptID || attempt.RunID != version.RunID || attempt.PolicyID != version.PolicyID || attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.Sequence <= 0 || finalDiff.AttemptID != version.AttemptID || finalDiff.BaseSHA != version.BaseSHA || finalDiff.HeadSHA != version.HeadSHA || finalDiff.Generation.Source != tracker.DiffSourceAttempt || finalDiff.Generation.Seq != attempt.Sequence || finalDiff.Producer.Kind != tracker.DiffSourceAttempt || finalDiff.Producer.ID != version.AttemptID || finalDiff.Producer.LeaseID != attempt.LeaseID || finalDiff.Producer.FencingToken != attempt.FencingToken || attempt.Checkpoint == nil || attempt.Checkpoint.HeadSHA != version.HeadSHA {
 					t.Fatalf("resolved source lost final diff/checkpoint/producer authority: diff=%+v attempt=%+v error=%v", finalDiff, attempt, err)
 				}
-				if !test.landing {
-					candidates := h.candidatesIn(t, "Merging")
-					if len(candidates) != 1 || candidates[0].ID != issue.ID {
-						t.Fatalf("reviewed resolution lost its landing candidate: %+v", candidates)
-					}
-					if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
-						t.Fatal(err)
-					}
-					provider := &committingAgent{validator: "pass", complete: true}
-					second = run(sourceB, provider, candidates[0], h.scheduler.RunExecution(issue.ID), "Done")
-					if provider.writableCalls != 0 {
-						t.Fatalf("current reviewed resolution dispatched another coding turn: %d", provider.writableCalls)
-					}
+				if providerB.writableCalls != 1 {
+					t.Fatalf("in-claim landing dispatched another coding turn: %d", providerB.writableCalls)
 				}
 				landing := second.NativeLanding
 				if landing == nil && second.NativeChange != nil {
@@ -945,6 +947,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != expectedBase || providerB.calls != 2 {
 				t.Fatalf("rework reused old head or validation: %+v, calls=%d", second.NativeChange, providerB.calls)
 			}
+			nativeChangeGit(t, remote, "merge-base", "--is-ancestor", oldHead, second.NativeChange.HeadSHA)
 			detail, err := h.admin.Change(context.Background(), item, first.NativeChange.ChangeID)
 			if err != nil || len(detail.Versions) != versionCount || len(detail.Reviews) != 2 || detail.Versions[versionCount-1].PolicyID != h.descriptor.ID || detail.Reviews[1].VersionID != second.NativeChange.VersionID || detail.Versions[0].ID != old.Versions[0].ID {
 				t.Fatalf("new source did not get current-policy review: %+v, %v", detail, err)

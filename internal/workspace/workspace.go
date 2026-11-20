@@ -686,13 +686,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return Info{}, err
 	}
 	if issue.Source != nil {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return Info{}, err
-		}
-		err = l.importChangeSource(ctx, issue.Source)
-		release()
-		if err != nil {
+		if err := l.importWorkspaceChangeSource(ctx, issue); err != nil {
 			return Info{}, err
 		}
 	}
