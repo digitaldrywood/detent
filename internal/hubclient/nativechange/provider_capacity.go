@@ -30,7 +30,7 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 		return nil
 	}
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
-		return err
+		return e.unavailable(err)
 	}
 	identity := tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
 	var expected providercapacity.Requirement
@@ -45,16 +45,16 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 	sequence := e.data.Sequence
 	e.mu.Unlock()
 	if err != nil {
-		return err
+		return e.unavailable(err)
 	}
 	client, lease := e.claim.source.NativeClient(), e.claim.lease
 	ttl := int64(e.scheduler.host.LeaseDuration() / time.Second)
 	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: sequence})
 	if err != nil {
-		return e.executionError(ctx, err)
+		return e.unavailable(e.executionError(ctx, err))
 	}
 	if current.ID != lease.ID || current.FencingToken != lease.FencingToken || current.ProviderReservation == nil || current.ProviderReservation.Requirement != requirement {
-		return errors.New("Hub returned a different phase provider reservation")
+		return e.unavailable(errors.New("Hub returned a different phase provider reservation"))
 	}
 	e.phaseReservation.Store(current.ProviderReservation)
 	return e.validateProviderStart(identity)
