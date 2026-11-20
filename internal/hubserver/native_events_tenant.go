@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -135,16 +136,18 @@ func (s *Service) prepareNativeLandingAuthority(ctx context.Context, scope hubsc
 }
 
 type preparedNativeRunEvent struct {
-	dependencies     *preparedRunnerDependencies
-	independent      *preparedIndependentRepairs
-	claimDisposition string
-	completion       *hubrecords.AttachmentEvidencePublication
-	authority        NativeRunEventAuthority
-	attempt          leasestore.AttemptEvent
-	history          eventstore.Event
-	artifactList     attachment.ArchiveReference
-	previousAttempt  leasestore.Attempt
-	previousEvent    eventstore.Event
+	checklistRevision string
+	checklistChanges  []tracker.ExecutionCheckUpdate
+	dependencies      *preparedRunnerDependencies
+	independent       *preparedIndependentRepairs
+	claimDisposition  string
+	completion        *hubrecords.AttachmentEvidencePublication
+	authority         NativeRunEventAuthority
+	attempt           leasestore.AttemptEvent
+	history           eventstore.Event
+	artifactList      attachment.ArchiveReference
+	previousAttempt   leasestore.Attempt
+	previousEvent     eventstore.Event
 }
 
 func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.NativeRunEvent) (result json.RawMessage, resultErr error) {
@@ -500,6 +503,8 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 	if cleanupPredecessor != nil {
 		landingState = cleanupPredecessor.event.FromState
 	}
+	var checklist *tracker.ExecutionChecklist
+	var checklistRead bool
 	for i, event := range events {
 		predecessor := cleanupData
 		if committed := committedCleanupData[event.Data.Sequence]; committed != nil {
@@ -731,6 +736,32 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			effectiveCheckpoint = event.Data.Handoff
 		}
 		preparedEvent := preparedNativeRunEvent{artifactList: artifactList, independent: independent, dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.Project)}
+		if !termination && !attemptEvent.UsageCorrection {
+			if command := progresscheck.RunChecklistEvidence(predecessor, event.Data); command != nil && validNativeGitSource(command.HeadSHA, command.TreeSHA) {
+				if !checklistRead {
+					checklist, err = s.readExecutionChecklist(ctx, scope, event.Data.AttemptID)
+					if err != nil {
+						return nil, err
+					}
+					checklistRead = true
+					if checklist != nil {
+						issue, err := s.readWorkItem(ctx, scope, item)
+						if err != nil {
+							return nil, err
+						}
+						if checklist.Revision != progresscheck.ChecklistRevision(issue.Body, event.Data.PolicyID) {
+							checklist = nil
+						}
+					}
+				}
+				if checklist != nil {
+					verdict := progresscheck.RoundVerdict{RoundInput: progresscheck.RoundInput{HeadSHA: command.HeadSHA, TreeSHA: command.TreeSHA}, PolicyID: event.Data.PolicyID}
+					preparedEvent.checklistRevision = checklist.Revision
+					preparedEvent.checklistChanges = progresscheck.ChecklistChanges(checklist.Checks, verdict, command, event.Data.Steps)
+					progresscheck.ApplyChecklistChanges(checklist.Checks, preparedEvent.checklistChanges)
+				}
+			}
+		}
 		if recordedDisposition {
 			preparedEvent.claimDisposition = *cleanupPredecessor.attempt.ClaimDisposition
 		}
@@ -930,6 +961,15 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 			if duplicate {
 				unpublished[event.history.PayloadObjectKey] = struct{}{}
 				continue
+			}
+			if len(event.checklistChanges) != 0 && hubapi.StringValue(workItem.BodyObjectKey) == hubapi.StringValue(event.authority.WorkItem.BodyObjectKey) {
+				owner, ok := w.(leasestore.ChecklistWriter)
+				if !ok {
+					return hubapi.NativeWorkItemStorageUnavailable()
+				}
+				if err := owner.RecordExecutionCheckChanges(ctx, scope.Project, attempt.ID, event.checklistRevision, "evidence:"+event.history.ID, event.history.RecordedAt, event.checklistChanges); err != nil {
+					return err
+				}
 			}
 			if err := w.SetAttemptClaimFacts(ctx, attemptClaimFacts(attempt, event.claimDisposition, false)); err != nil {
 				return err

@@ -115,3 +115,31 @@ func TestRunRoundHandsBackSupersededChecklist(t *testing.T) {
 		})
 	}
 }
+
+func TestRunChecklistEvidenceOnlyProjectsNewReceipts(t *testing.T) {
+	command := &gate.CommandResult{ReceiptID: "gate-1", HeadSHA: "head", TreeSHA: "tree"}
+	previous := tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Validation: command}}
+	for _, test := range []struct {
+		name     string
+		previous *tracker.NativeRunData
+		current  tracker.NativeRunData
+		want     string
+	}{
+		{name: "first gate result", current: previous, want: "gate-1"},
+		{name: "same validation heartbeat", previous: &previous, current: previous},
+		{name: "distinct gate receipt", previous: &previous, current: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{ReceiptID: "gate-2"}}}, want: "gate-2"},
+		{name: "independent review on same source", previous: &previous, current: tracker.NativeRunData{Runtime: previous.Runtime, Steps: []tracker.NativeStepReceipt{{Step: "validator", Validator: &gate.ValidatorResult{Submitted: true}}}}, want: "gate-1"},
+		{name: "unrelated tracked step", previous: &previous, current: tracker.NativeRunData{Runtime: previous.Runtime, Steps: []tracker.NativeStepReceipt{{Step: "agent_turn"}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := RunChecklistEvidence(test.previous, test.current)
+			var receipt string
+			if result != nil {
+				receipt = result.ReceiptID
+			}
+			if receipt != test.want {
+				t.Fatalf("selected receipt %q, want %q", receipt, test.want)
+			}
+		})
+	}
+}
