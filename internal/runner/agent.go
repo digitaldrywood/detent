@@ -3705,11 +3705,11 @@ func addAgentTokenTotals(initial TokenTotals, recovery TokenTotals) TokenTotals 
 		ReasoningOutputTokens: initial.ReasoningOutputTokens + recovery.ReasoningOutputTokens,
 		TotalTokens:           initial.TotalTokens + recovery.TotalTokens,
 		RuntimeSeconds:        initial.RuntimeSeconds + recovery.RuntimeSeconds,
-		Last:                  cloneAgentTokenCounts(recovery.Last),
+		Last:                  runobserve.CloneAgentTokenCounts(recovery.Last),
 		ModelContextWindow:    recovery.ModelContextWindow,
 	}
 	if result.Last == nil {
-		result.Last = cloneAgentTokenCounts(initial.Last)
+		result.Last = runobserve.CloneAgentTokenCounts(initial.Last)
 	}
 	if result.ModelContextWindow == nil {
 		result.ModelContextWindow = initial.ModelContextWindow
@@ -5555,7 +5555,7 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 		result.Tokens.OutputTokens = update.Tokens.OutputTokens
 		result.Tokens.ReasoningOutputTokens = update.Tokens.ReasoningOutputTokens
 		result.Tokens.TotalTokens = update.Tokens.TotalTokens
-		result.Tokens.Last = cloneAgentTokenCounts(update.Tokens.Last)
+		result.Tokens.Last = runobserve.CloneAgentTokenCounts(update.Tokens.Last)
 		result.Tokens.ModelContextWindow = update.Tokens.ModelContextWindow
 	case AgentUpdateRateLimits:
 		result.RateLimits = mergeAgentRateLimits(result.RateLimits, update.RateLimits)
@@ -5564,14 +5564,6 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 
 func NewTokenUsageNormalizer(resumed bool) func(AgentTokenUsage) AgentTokenUsage {
 	return runobserve.NewSessionTokenUsage(resumed).Normalize
-}
-
-func cloneAgentTokenCounts(tokens *AgentTokenCounts) *AgentTokenCounts {
-	if tokens == nil {
-		return nil
-	}
-	clone := *tokens
-	return &clone
 }
 
 type agentRunProgress struct {
