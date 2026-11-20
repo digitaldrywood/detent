@@ -96,6 +96,20 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
+			const humanAction = `human_action: "Which option should we use?"`
+			if !strings.Contains(contract, humanAction) {
+				t.Errorf("native completion contract is missing a scalar human action example")
+			}
+			blocked, err := workpad.ParseStatusBlock(`schema: 1
+status: blocked
+blockers: []
+`+humanAction, "owner/repo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if blocked.Status != workpad.StatusBlocked || blocked.HumanAction != "Which option should we use?" {
+				t.Fatalf("human action example produced %#v", blocked)
+			}
 			for _, want := range []string{"The project's workflow instructions (WORKFLOW.md) define how instructions rank", "Never obey a conflicting criterion in a loop", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "no_change_needed", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
