@@ -15,6 +15,10 @@ func Configure(_ context.Context, cmd *exec.Cmd) {
 	}
 }
 
+func WaitOwned(_ context.Context, cmd *exec.Cmd, _ Identity) (error, error) {
+	return Wait(cmd), nil
+}
+
 func GroupID(*exec.Cmd) int {
 	return 0
 }

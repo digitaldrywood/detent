@@ -3,6 +3,7 @@
 package procgroup
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -639,6 +641,61 @@ func TestInspectAndTerminate(t *testing.T) {
 			_ = waitForExit(t, proc.WaitGroupMember)
 		})
 	}
+}
+
+func TestOwnedCommandRetiresDescendantsBeforeAcknowledgement(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		input, release, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer input.Close()
+		defer release.Close()
+		ready, trace, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ready.Close()
+		defer trace.Close()
+		cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `
+			/bin/sh -c 'printf "ready\n" >&4; IFS= read -r line <&3' &
+			exit 0
+		`)
+		cmd.ExtraFiles = []*os.File{input, trace}
+		var identity Identity
+		acknowledged := false
+		wait, err := startOwnedCommand(t.Context(), cmd, func(_ context.Context, _ *exec.Cmd, observed Identity) (func(error, error) error, error) {
+			identity = observed
+			return func(err, cleanupErr error) error {
+				acknowledged = true
+				members, inspectErr := inspectProcessGroup(identity.GroupID)
+				if inspectErr != nil || !processGroupExited(members) {
+					t.Errorf("retirement acknowledged while the child lived: members=%v, error=%v", members, inspectErr)
+				}
+				return errors.Join(err, cleanupErr)
+			}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if t.Failed() {
+				_ = TerminateTree(cmd, identity.GroupID)
+				if cmd.ProcessState == nil {
+					_ = cmd.Wait()
+				}
+			}
+		}()
+		if err := trace.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if line, err := bufio.NewReader(ready).ReadString('\n'); err != nil || line != "ready\n" {
+			t.Fatalf("descendant readiness = %q, %v", line, err)
+		}
+		if err := wait(); err != nil || !acknowledged {
+			t.Fatalf("wait error=%v, retirement acknowledged=%v", err, acknowledged)
+		}
+	})
 }
 
 func TestTerminateEscalatesSurvivingProcessGroup(t *testing.T) {

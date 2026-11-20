@@ -94,9 +94,9 @@ func TestOwnedCommandSuspendsProviderIdleUntilItsDeadline(t *testing.T) {
 		cmd.Env = append(os.Environ(), "DETENT_START_AUTHORIZED_TEST="+filepath.Join(t.TempDir(), "effect"), "GOCOVERDIR="+t.TempDir())
 		cmd.Stdin = stdin
 		var identity Identity
-		wait, err := startOwnedCommand(commandContext, cmd, func(_ context.Context, _ *exec.Cmd, id Identity) (func(error) error, error) {
+		wait, err := startOwnedCommand(commandContext, cmd, func(_ context.Context, _ *exec.Cmd, id Identity) (func(error, error) error, error) {
 			identity = id
-			return func(err error) error { return errors.Join(err, Cleanup(id.GroupID)) }, nil
+			return func(err, cleanupErr error) error { return errors.Join(err, cleanupErr) }, nil
 		})
 		if err != nil {
 			t.Fatal(err)
