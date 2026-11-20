@@ -41,9 +41,18 @@ func Configure(ctx context.Context, cmd *exec.Cmd) {
 }
 
 func WaitOwned(ctx context.Context, cmd *exec.Cmd, identity Identity) (error, error) {
+	return waitOwned(ctx, cmd, identity, Terminate)
+}
+
+func waitOwned(ctx context.Context, cmd *exec.Cmd, identity Identity, terminate func(context.Context, Identity, time.Duration) (TerminationOutcome, error)) (error, error) {
 	waitErr := Wait(cmd)
-	outcome, cleanupErr := Terminate(context.WithoutCancel(ctx), identity, DefaultTerminationGrace)
+	outcome, cleanupErr := terminate(context.WithoutCancel(ctx), identity, DefaultTerminationGrace)
 	if cleanupErr != nil {
+		if errors.Is(cleanupErr, syscall.EPERM) && cmd.ProcessState != nil &&
+			cmd.ProcessState.Pid() == identity.PID && identity.PID == identity.GroupID &&
+			reapedProcessGroupEmpty(identity.GroupID) {
+			return waitErr, nil
+		}
 		return waitErr, fmt.Errorf("retire owned process group: %w", cleanupErr)
 	}
 	if outcome == TerminationOutcomeStaleIdentity {
