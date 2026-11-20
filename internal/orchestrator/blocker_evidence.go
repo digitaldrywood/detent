@@ -803,7 +803,7 @@ func recordedBlockerRecoveryComment(
 }
 
 func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running, reports ...*workpad.Signal) bool {
-	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
+	if event.Err != nil || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
 		return false
 	}
 	issue := running.Issue

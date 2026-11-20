@@ -237,7 +237,7 @@ func ciAvailabilityIssue(id string, number int, count int, checks []connector.Pu
 func TestCIUnavailableRepairImplementParity(t *testing.T) {
 	t.Parallel()
 	for _, lane := range []string{"In Progress", "Rework", "Merging"} {
-		for _, mode := range []string{runpkg.RunModeImplement, runpkg.RunModeMerge, runpkg.RunModePlan} {
+		for _, mode := range []string{runpkg.RunModeImplement, runpkg.RunModeMerge} {
 			for _, tt := range []struct {
 				name    string
 				pushed  bool
@@ -266,7 +266,7 @@ func TestCIUnavailableRepairImplementParity(t *testing.T) {
 							t.Fatalf("phase = %q, want %q", got, tt.phase)
 						}
 					}
-					want := lane == "Merging" || (mode != runpkg.RunModePlan && tt.waiting)
+					want := lane == "Merging" || tt.waiting
 					if got := ciUnavailableWaitingRun(running, &state); got != want {
 						t.Fatalf("waiting = %t, want %t", got, want)
 					}
