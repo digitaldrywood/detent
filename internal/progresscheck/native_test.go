@@ -164,6 +164,12 @@ func TestNativeNoProgressSuccessRequiresCheck(t *testing.T) {
 			}
 			r.Attempts[1].Runtime.Landing.HeadSHA = "new-head"
 		}, false},
+		{"changed base refusal", func(r *tracker.NativeRecovery) {
+			for i := range r.Attempts {
+				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}
+			}
+			r.Attempts[1].Runtime.Landing.BaseSHA = "new-base"
+		}, false},
 		{"different typed refusal", func(r *tracker.NativeRecovery) {
 			for i := range r.Attempts {
 				r.Attempts[i].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}

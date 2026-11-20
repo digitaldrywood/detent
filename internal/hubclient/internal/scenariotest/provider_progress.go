@@ -1,8 +1,11 @@
 package scenariotest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -56,20 +59,41 @@ func RunNativeRetryUsesCurrentClaim(t *testing.T, factories Constructors) {
 	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	issue = h.claim(t, issue.ID)
-	original := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
-	requests := fixtureClient(original.claim.source.NativeClient().Transport()).requests
+	requests := fixtureClient(h.scheduler.Transport()).requests
 	transport := requests.Load()
 	var investigations atomic.Int64
 	requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(request.URL.Path, "/progress") {
+		if !strings.HasSuffix(request.URL.Path, "/progress") {
+			return transport.RoundTrip(request)
+		}
+		switch request.Method {
+		case http.MethodGet:
 			query, _ := url.ParseQuery(request.URL.RawQuery)
-			if query.Get("attempt") == "" && query.Get("round") == "" {
+			if query.Get("round") == "" && query.Get("attempt") == "" {
+				investigations.Add(1)
+			}
+		case http.MethodPost:
+			var publication progresscheck.Publication
+			if request.Body != nil {
+				defer request.Body.Close()
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				request = request.Clone(request.Context())
+				request.Body = io.NopCloser(bytes.NewReader(body))
+				if err := json.Unmarshal(body, &publication); err != nil {
+					t.Errorf("decode progress publication: %v", err)
+				}
+			}
+			if publication.RoundID == "" && publication.AttemptID == "" {
 				investigations.Add(1)
 			}
 		}
 		return transport.RoundTrip(request)
 	}))
+	issue = h.claim(t, issue.ID)
+	original := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
 	backend := &nativeCurrentClaimRunner{started: make(chan nativeCompletionRun, 1)}
 	source := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}
 	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})

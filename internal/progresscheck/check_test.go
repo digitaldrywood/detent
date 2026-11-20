@@ -1,6 +1,10 @@
 package progresscheck
 
-import "testing"
+import (
+	"strconv"
+	"strings"
+	"testing"
+)
 
 func refusalRequest() Request {
 	return Request{
@@ -72,6 +76,91 @@ func TestRetainedLegacyDecisionsRemainValid(t *testing.T) {
 			}
 			if err := record.ValidatePublication(request); err == nil {
 				t.Fatal("new publication accepted legacy shape")
+			}
+		})
+	}
+}
+
+func TestRecordValidatePublicationRequiresDecisionEvidence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		outcome Outcome
+		mutate  func(*Decision)
+	}{
+		{"cited reroute with instruction", Reroute, nil},
+		{"uncited diagnosis", Reroute, func(d *Decision) { d.Diagnosis = "The validation receipt is missing" }},
+		{"missing reroute instruction", Reroute, func(d *Decision) { d.Instruction = "" }},
+		{"progressing with convergence evidence", Progressing, nil},
+		{"missing convergence evidence", Progressing, func(d *Decision) { d.Convergence = "" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := refusalRequest()
+			id, err := request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := Decision{
+				Outcome:   test.outcome,
+				Reason:    "Resolve the missing validation receipt",
+				Diagnosis: "attempt-2 failed because the validation receipt was missing",
+				Evidence:  []string{"attempt-2"},
+			}
+			if test.outcome == Reroute {
+				decision.Step = "implement"
+				decision.Instruction = "Run the missing validation and retain its receipt"
+			} else {
+				decision.Convergence = "The repaired source passed validation and now has its receipt"
+			}
+			if test.mutate != nil {
+				test.mutate(&decision)
+			}
+			record := Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision, CommentID: "comment"}
+			if err := record.ValidatePublication(request); (err != nil) != (test.mutate != nil) {
+				t.Fatalf("ValidatePublication error = %v, want rejection = %t", err, test.mutate != nil)
+			}
+		})
+	}
+}
+
+func TestRequestIDRejectsInvalidEvidence(t *testing.T) {
+	t.Parallel()
+	if id, err := refusalRequest().ID(); err != nil || id == "" {
+		t.Fatalf("valid request ID = %q, error = %v", id, err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Request)
+	}{
+		{"attempt count", func(r *Request) {
+			attempts := make([]Attempt, MaxAttempts+1)
+			for i := range attempts {
+				attempts[i] = Attempt{ID: strconv.Itoa(i), Outcome: "failed"}
+			}
+			r.Attempts = attempts
+		}},
+		{"receipt count", func(r *Request) {
+			r.Receipts = make([]Receipt, MaxReceipts+1)
+			for i := range r.Receipts {
+				r.Receipts[i].ID = strconv.Itoa(i)
+			}
+		}},
+		{"comment count", func(r *Request) {
+			r.Comments = make([]Comment, MaxComments+1)
+			for i := range r.Comments {
+				r.Comments[i].ID = strconv.Itoa(i)
+			}
+		}},
+		{"byte count", func(r *Request) { r.Attempts[0].Error = strings.Repeat("x", MaxInputBytes) }},
+		{"receipt ID collides with attempt ID", func(r *Request) { r.Receipts = []Receipt{{ID: "attempt-2"}} }},
+		{"comment ID collides with attempt ID", func(r *Request) { r.Comments = []Comment{{ID: "attempt-2"}} }},
+		{"nonterminal attempt", func(r *Request) { r.Attempts[1].Outcome = "running" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := refusalRequest()
+			test.mutate(&request)
+			if id, err := request.ID(); err == nil || id != "" {
+				t.Fatalf("invalid request ID = %q, error = %v", id, err)
 			}
 		})
 	}
