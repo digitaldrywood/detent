@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -813,11 +814,28 @@ func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Rea
 		}
 		return nil
 	}
-	now := s.config.Clock().UTC()
 	identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		return err
 	}
+	if err := s.authorizeProgressRunnerIdentity(ctx, r, scope, identity); err != nil || input == nil {
+		return err
+	}
+	if string(input.LeaseID) != attempt.LeaseID || int64(input.FencingToken) != attempt.FencingToken {
+		return tracker.ErrStaleFencingToken
+	}
+	assigned, err := r.RunnerForLease(ctx, attempt.LeaseID)
+	if err != nil {
+		return err
+	}
+	if assigned.RunnerID != identity.RunnerID {
+		return hubscope.RunnerUnauthorized()
+	}
+	return s.authorizeProgressRunnerLease(ctx, r, scope, identity, attempt)
+}
+
+func (s *Service) authorizeProgressRunnerIdentity(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity) error {
+	now := s.config.Clock().UTC()
 	runner := scope.Credential.Runner
 	if !runnerIdentityMatchesHeldLease(identity, scope.Organization, runner.RunnerID, scope.Credential.ID, runner.MachineID, now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
 		return hubscope.RunnerUnauthorized()
@@ -829,24 +847,18 @@ func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Rea
 	if !allowed {
 		return corestore.ErrNotFound
 	}
-	if input == nil {
-		return nil
-	}
-	if string(input.LeaseID) != attempt.LeaseID || int64(input.FencingToken) != attempt.FencingToken {
-		return tracker.ErrStaleFencingToken
-	}
-	assigned, err := r.RunnerForLease(ctx, attempt.LeaseID)
-	if err != nil {
-		return err
-	}
-	if assigned.RunnerID != identity.RunnerID || !slices.Contains(identity.Operations, runnerauth.Collaborate) {
+	return nil
+}
+
+func (s *Service) authorizeProgressRunnerLease(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, attempt leasestore.Attempt) error {
+	if !slices.Contains(identity.Operations, runnerauth.Collaborate) {
 		return hubscope.RunnerUnauthorized()
 	}
 	lease, err := r.Lease(ctx, attempt.LeaseID)
 	if err != nil {
 		return err
 	}
-	if lease.OrganizationID != scope.Organization || lease.IssueID != attempt.IssueID || lease.FencingToken != attempt.FencingToken || lease.MachineID != string(identity.MachineID) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+	if lease.OrganizationID != scope.Organization || lease.IssueID != attempt.IssueID || lease.FencingToken != attempt.FencingToken || lease.MachineID != string(identity.MachineID) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(s.config.Clock().UTC()) {
 		return tracker.ErrStaleFencingToken
 	}
 	return nil

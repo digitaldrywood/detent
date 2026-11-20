@@ -1,13 +1,19 @@
 package hubserver
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -169,4 +175,101 @@ func TestNativePhaseReceiptsKeepSourceAcrossLeaseTransfer(t *testing.T) {
 	if rows := read(replacement.redemption.Credential); len(rows) != 1 || rows[0].HeadSHA != receipt.HeadSHA {
 		t.Fatalf("foreign request changed the pinned phase: %+v", rows)
 	}
+}
+
+func TestNativePhaseReceiptAndRoundVerdictOrderLocksWithRenewal(t *testing.T) {
+	t.Parallel()
+	admin := postgresStartupTemplate.Database(t)
+	cfg := startupConfig(startupConnection(t, admin, "detent_runtime_v2", ""))
+	cfg.Postgres.Pool.MaxConnections = 4
+	cfg.Postgres.Pool.ServingConnections = 2
+	seedHostedStartup(t, cfg)
+	service, err := Open(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	f := seedRunnerPGFixture(t, admin, service, "org_startup")
+	lease, attempt := f.leases[0], f.data[0].AttemptID
+	base := "/api/v2/organizations/" + string(f.organization) + "/projects/prj_runner"
+	item := base + "/work-items/" + string(lease.WorkItemID)
+	fence := tracker.Mutation{IdempotencyKey: "publication", LeaseID: lease.ID, FencingToken: lease.FencingToken}
+	receipt := phaseReceiptFixture{
+		Mutation: fence, Phase: "implement", AttemptID: attempt, PolicyID: lease.PolicyID,
+		Branch: "detent/example-item", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40),
+		InputDigest: strings.Repeat("c", 64),
+	}
+	verdict := progresscheck.Publication{
+		Mutation: fence, AttemptID: attempt, PolicyID: lease.PolicyID,
+		RoundInput: progresscheck.RoundInput{RoundID: "setup", Phase: "workspace_preparation", Action: "continue", NextPhase: "implement"},
+	}
+	for _, publication := range []struct {
+		path  string
+		input any
+	}{
+		{path: "/phases", input: receipt},
+		{path: "/progress", input: verdict},
+	} {
+		t.Run(publication.path[1:], func(t *testing.T) {
+			ctx := testenv.WaitContext(t, t.Context())
+			barrier, err := f.admin.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var workers sync.WaitGroup
+			t.Cleanup(func() {
+				_ = barrier.Rollback()
+				workers.Wait()
+			})
+			var barrierPID int
+			if err := barrier.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&barrierPID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := barrier.ExecContext(ctx, `SELECT id FROM projects WHERE organization_id=$1 AND id=$2 FOR NO KEY UPDATE`, f.organization, "prj_runner"); err != nil {
+				t.Fatal(err)
+			}
+			post := func(path string, input any) <-chan *httptest.ResponseRecorder {
+				request := newHubAPIRequest(t, http.MethodPost, path, f.tokens[0], input).WithContext(ctx)
+				result := make(chan *httptest.ResponseRecorder, 1)
+				workers.Go(func() {
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request)
+					result <- response
+				})
+				return result
+			}
+			waitForLock := func(blocker int, queryPart string, result <-chan *httptest.ResponseRecorder) int {
+				t.Helper()
+				var pid int
+				testenv.WaitUntil(t, ctx, func() error {
+					select {
+					case response := <-result:
+						t.Fatalf("request finished before waiting for %s: %d %s", queryPart, response.Code, response.Body)
+					default:
+					}
+					err := f.admin.QueryRowContext(ctx, `SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE $2`, blocker, "%"+queryPart+"%").Scan(&pid)
+					if errors.Is(err, sql.ErrNoRows) {
+						return errors.New("waiting for " + queryPart + " row lock")
+					}
+					return err
+				})
+				return pid
+			}
+			published := post(item+publication.path, publication.input)
+			publisherPID := waitForLock(barrierPID, "name: LockWorkItemProject", published)
+			renewed := post(base+"/leases/"+string(lease.ID)+"/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 5400})
+			waitForLock(publisherPID, "runner_identities", renewed)
+			if err := barrier.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, <-published, http.StatusOK)
+			requireNativeStatus(t, <-renewed, http.StatusOK)
+		})
+	}
+	receipt.FencingToken++
+	requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, item+"/phases", f.tokens[0], receipt), http.StatusConflict, "stale_execution")
 }
