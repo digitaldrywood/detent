@@ -368,3 +368,5 @@ func processStartedAt(handle windows.Handle) (time.Time, error) {
 	}
 	return time.Unix(0, created.Nanoseconds()).UTC(), nil
 }
+
+func reapedProcessGroupEmpty(int) bool { return false }

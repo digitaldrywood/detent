@@ -3,8 +3,10 @@ package procgroup
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
@@ -41,6 +43,14 @@ const (
 	TerminationOutcomeAlreadyExited TerminationOutcome = "already_exited"
 	TerminationOutcomeStaleIdentity TerminationOutcome = "stale_identity"
 )
+
+func ReapedGroupSignalError(state *os.ProcessState, groupID int, err error) error {
+	if errors.Is(err, syscall.EPERM) && groupID > 0 && state != nil &&
+		state.Pid() == groupID && reapedProcessGroupEmpty(groupID) {
+		return nil
+	}
+	return err
+}
 
 func Inspect(cmd *exec.Cmd) (Identity, error) {
 	if cmd == nil || cmd.Process == nil || cmd.Process.Pid <= 0 {

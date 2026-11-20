@@ -7,14 +7,43 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 const lifecycleWaitTimeout = 10 * time.Second
+
+func TestLocalTransportCloseDisambiguatesReapedGroupEPERM(t *testing.T) {
+	t.Parallel()
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", "exit 17")
+	procgroup.Configure(t.Context(), cmd)
+	if err := procgroup.Start(cmd); err != nil {
+		t.Fatal(err)
+	}
+	group := procgroup.GroupID(cmd)
+	waitErr := cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 17 {
+		t.Fatalf("command error = %v, want exit status 17", waitErr)
+	}
+	transport := &localTransport{
+		cmd: cmd, processGroupID: group, waitErr: waitErr,
+		terminationRequested: true, exitedAt: time.Now(), cleanupComplete: true,
+	}
+	err := transport.closeAfterTermination(context.Canceled, syscall.EPERM, nil)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, waitErr) {
+		t.Fatalf("close error lost cancellation or exit status: %v", err)
+	}
+	if permissionDenied := errors.Is(err, syscall.EPERM); permissionDenied != (runtime.GOOS != "darwin") {
+		t.Fatalf("close error after empty group was reaped: %v", err)
+	}
+}
 
 func TestLocalTransportReapsChildAfterParentExits(t *testing.T) {
 	t.Parallel()
