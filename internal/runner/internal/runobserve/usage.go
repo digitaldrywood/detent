@@ -64,3 +64,11 @@ func subtractAgentTokenCounts(total AgentTokenCounts, baseline AgentTokenCounts)
 		TotalTokens:           max(0, total.TotalTokens-baseline.TotalTokens),
 	}
 }
+
+func CloneAgentTokenCounts(tokens *AgentTokenCounts) *AgentTokenCounts {
+	if tokens == nil {
+		return nil
+	}
+	clone := *tokens
+	return &clone
+}
