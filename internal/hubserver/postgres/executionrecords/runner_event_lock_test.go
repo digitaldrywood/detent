@@ -417,4 +417,22 @@ func testRunnerEventActivityDelivery(t *testing.T, repository *postgres.Reposito
 		t.Fatalf("queued runner event fence refusal=%+v err=%v", refused, err)
 	}
 	checkCommitted()
+
+	finished := prepare("event_delivery_finished", "run.finished", 2)
+	next.Status, next.WorkspaceRetired = "succeeded", true
+	if _, err := write(finished, next, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := write(finished, next, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenantSnapshot(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+		current, err := r.Attempt(ctx, attempt.ID)
+		if err == nil && (current.CleanupAcknowledgedAt == nil || current.Status != "succeeded" || current.Sequence != 2) {
+			t.Errorf("terminal cleanup receipt missing from committed attempt: %+v", current)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

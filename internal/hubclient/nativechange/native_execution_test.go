@@ -922,6 +922,37 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 	}
 }
 
+func TestNativeLandingClosesWorkersBeforeFinishing(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Retire the landing worker")
+	h.claim(t, issue.ID)
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.StartLanding(t.Context(), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	execution.mu.Lock()
+	execution.landed = true
+	execution.preparedOutcome = "succeeded"
+	execution.mu.Unlock()
+	if err := execution.KeepWorker(func(ctx context.Context) error {
+		if outcome := execution.CompletionData().Outcome; outcome != "" {
+			return fmt.Errorf("worker retirement started after run finished with %s", outcome)
+		}
+		return execution.Validate(ctx)
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.FinishPrepared(t.Context(), "completed"); err != nil {
+		t.Fatal(err)
+	}
+	if outcome := execution.CompletionData().Outcome; outcome != "succeeded" {
+		t.Fatalf("outcome = %q, want succeeded", outcome)
+	}
+}
+
 func TestNativePublicationFailureReleasesMovedItem(t *testing.T) {
 	for _, test := range []struct {
 		name, state string
