@@ -15,13 +15,19 @@ func ReplyToRoundVerdict(request runner.AgentTurnRequest, update runner.AgentUpd
 	if !request.ReadOnly || !request.TextOnly || request.Resume != (runner.AgentResume{}) {
 		return true, errors.New("round verdict did not use a fresh read-only turn")
 	}
-	_, required, _ := strings.Cut(request.Prompt, "The required action is ")
-	action, next, ok := strings.Cut(required, " and the required next phase: ")
-	if !ok {
-		return true, errors.New("round verdict omitted its action or phase")
+	choice := map[string]string{"action": "continue", "next_phase": "implement", "reason": "The fixture assessed the recorded evidence for the current round."}
+	switch {
+	case strings.Contains(request.Prompt, "\nVerified completion evidence: verified landing"), strings.Contains(request.Prompt, "\nVerified completion evidence: independently verified no-change"):
+		choice["action"], choice["next_phase"] = "done", ""
+	case strings.Contains(request.Prompt, "\nAvailable phases: merge"):
+		choice["next_phase"] = "merge"
 	}
-	phase, _, _ := strings.Cut(next, ".")
-	body, err := json.Marshal(map[string]string{"action": action, "next_phase": phase, "reason": "The fixture assessed the recorded evidence for the current round."})
+	if _, rest, ok := strings.Cut(request.Prompt, "\nExisting human question: "); ok {
+		if question, _, _ := strings.Cut(rest, "\n"); question != "" {
+			choice["action"], choice["next_phase"], choice["human_action"] = "human_action", "", question
+		}
+	}
+	body, err := json.Marshal(choice)
 	if err != nil {
 		return true, err
 	}
