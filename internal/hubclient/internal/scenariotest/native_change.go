@@ -1330,7 +1330,11 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatal("explicit resume did not receive fresh execution authority")
 				}
 				freshRoot := filepath.Join(nativeChangeTempDir(t), "review-resume")
-				freshBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: freshRoot, SourceRoot: source, AutoBranch: true})
+				freshSource := nativeChangeTempDir(t)
+				nativeChangeGit(t, freshSource, "clone", "--no-local", "--single-branch", "--branch", "main", remote, ".")
+				nativeChangeGit(t, freshSource, "remote", "set-url", "origin", nativeChangeRepository)
+				nativeChangeGit(t, freshSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				freshBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: freshRoot, SourceRoot: freshSource, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
