@@ -145,7 +145,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 				t.Fatal("receiver already has the external commit")
 			}
 			repository := "https://github.com/example/repo"
-			useFixtureGitHubRemote(t, receiver, fixture.remote, repository)
+			testenv.UseGitHubFixtureRemote(t, receiver, fixture.remote, repository)
 			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(testenv.TempDir(t), "workspaces"), SourceRoot: receiver, AutoBranch: !test.detached})
 			if err != nil {
 				t.Fatal(err)
@@ -774,7 +774,7 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 			var result LandResult
 			if test.integration {
 				const repository = "https://github.com/example/integration"
-				useFixtureGitHubRemote(t, f.source, f.remote, repository)
+				testenv.UseGitHubFixtureRemote(t, f.source, f.remote, repository)
 				opts.Repository = repository
 				base := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
 				result, verifyErr := f.backend.VerifyIntegratedChange(t.Context(), f.info, f.issue, opts, sourceBase, base)
