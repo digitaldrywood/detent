@@ -1302,19 +1302,27 @@ func (r *Runner) runAgentTurn(
 	}
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
-	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
+	usage := runobserve.NewSessionTokenUsage(!agentResumeEmpty(providerResume))
 	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(detentSessionID, 10)}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	worker := &sessionWorkerRegistration{sessionID: detentSessionID, cleanupRoot: info.Path}
 	turnRequest.acknowledgeProcess = r.acknowledgeProviderProcess(ctx, worker, "")
 	turnCtx := ctx
-	var observe func(func(context.Context) error) bool
+	var observe func(func(context.Context) error)
 	var finishObservations func() error
-	var observedIdentity store.SessionProviderIdentity
+	var offerIdentity func(store.SessionProviderIdentity)
+	var finishIdentity func()
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
+		})
+	}
+	if providerStore, ok := r.store.(sessionProviderStore); observe != nil && ok && detentSessionID > 0 {
+		offerIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
+			return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
+		}, func(err error) {
+			r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", detentSessionID, "error", err)
 		})
 	}
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(turnCtx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
@@ -1322,7 +1330,7 @@ func (r *Runner) runAgentTurn(
 		r.providerUsage.ObserveUpdate(initialIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt)
 		if update.Type == AgentUpdateTokenUsage {
-			update.Tokens = usage.normalize(update.Tokens)
+			update.Tokens = usage.Normalize(update.Tokens)
 		}
 		if !update.RuntimeIdentity.IsZero() {
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
@@ -1345,9 +1353,6 @@ func (r *Runner) runAgentTurn(
 		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
-		if observe == nil {
-			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
-		}
 		if !update.AuxiliaryTurn {
 			if strings.TrimSpace(update.ThreadID) != "" {
 				providerResume.ThreadID = strings.TrimSpace(update.ThreadID)
@@ -1356,15 +1361,10 @@ func (r *Runner) runAgentTurn(
 				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
 			}
 		}
-		if observe != nil && detentSessionID > 0 && !update.AuxiliaryTurn {
-			identity := store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID}
-			if providerStore, ok := r.store.(sessionProviderStore); ok && identity != observedIdentity {
-				if observe(func(ctx context.Context) error {
-					return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
-				}) {
-					observedIdentity = identity
-				}
-			}
+		if observe == nil {
+			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
+		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
+			offerIdentity(store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID})
 		}
 		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
 			return err
@@ -1421,6 +1421,9 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
+	if finishIdentity != nil {
+		finishIdentity()
+	}
 	if finishObservations != nil {
 		turnErr = errors.Join(turnErr, finishObservations())
 	}
@@ -4305,7 +4308,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		return gate.ValidatorResult{}, err
 	}
 	var output strings.Builder
-	usage := newSessionTokenUsage(false)
+	usage := runobserve.NewSessionTokenUsage(false)
 	usageReport := &turnUsageReporter{startedAt: r.now(), sourceID: "session_" + strconv.FormatInt(sessionID, 10)}
 	workerProcessObserved := false
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
@@ -4341,7 +4344,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
 		activityProfile.observe(update, eventAt, workspaceIssue.PullRequestHeadSHA, runStartedAt)
 		if update.Type == AgentUpdateTokenUsage {
-			update.Tokens = usage.normalize(update.Tokens)
+			update.Tokens = usage.Normalize(update.Tokens)
 		}
 		if update.Type == AgentUpdateProcessStarted && update.WorkerProcess.PID > 0 {
 			workerProcessObserved = true
@@ -5548,53 +5551,7 @@ func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 }
 
 func NewTokenUsageNormalizer(resumed bool) func(AgentTokenUsage) AgentTokenUsage {
-	return newSessionTokenUsage(resumed).normalize
-}
-
-type sessionTokenUsage struct {
-	resumed  bool
-	baseline *AgentTokenCounts
-}
-
-func newSessionTokenUsage(resumed bool) *sessionTokenUsage {
-	return &sessionTokenUsage{resumed: resumed}
-}
-
-func (s *sessionTokenUsage) normalize(tokens AgentTokenUsage) AgentTokenUsage {
-	if tokens.ThreadTotal == nil {
-		return tokens
-	}
-	threadTotal := *tokens.ThreadTotal
-	if !s.resumed {
-		return agentTokenUsageWithCounts(tokens, threadTotal)
-	}
-	if s.baseline == nil {
-		baseline := AgentTokenCounts{}
-		if tokens.Last != nil {
-			baseline = subtractAgentTokenCounts(threadTotal, *tokens.Last)
-		}
-		s.baseline = &baseline
-	}
-	return agentTokenUsageWithCounts(tokens, subtractAgentTokenCounts(threadTotal, *s.baseline))
-}
-
-func agentTokenUsageWithCounts(tokens AgentTokenUsage, counts AgentTokenCounts) AgentTokenUsage {
-	tokens.InputTokens = counts.InputTokens
-	tokens.CachedInputTokens = counts.CachedInputTokens
-	tokens.OutputTokens = counts.OutputTokens
-	tokens.ReasoningOutputTokens = counts.ReasoningOutputTokens
-	tokens.TotalTokens = counts.TotalTokens
-	return tokens
-}
-
-func subtractAgentTokenCounts(total AgentTokenCounts, baseline AgentTokenCounts) AgentTokenCounts {
-	return AgentTokenCounts{
-		InputTokens:           max(0, total.InputTokens-baseline.InputTokens),
-		CachedInputTokens:     max(0, total.CachedInputTokens-baseline.CachedInputTokens),
-		OutputTokens:          max(0, total.OutputTokens-baseline.OutputTokens),
-		ReasoningOutputTokens: max(0, total.ReasoningOutputTokens-baseline.ReasoningOutputTokens),
-		TotalTokens:           max(0, total.TotalTokens-baseline.TotalTokens),
-	}
+	return runobserve.NewSessionTokenUsage(resumed).Normalize
 }
 
 func cloneAgentTokenCounts(tokens *AgentTokenCounts) *AgentTokenCounts {
