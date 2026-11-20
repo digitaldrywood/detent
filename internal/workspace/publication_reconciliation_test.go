@@ -26,8 +26,7 @@ func TestPublicationReconciliationBeforeForgeRead(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
-			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")
-			runGit(t, f.source, "remote", "set-url", "origin", repository+".git")
+			useFixtureGitHubRemote(t, f.source, f.remote, repository)
 			if test.remote == "intended" {
 				runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/"+f.info.Branch)
 			}
