@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+if [ -n "${DETENT_LOCAL_GIT_PROXY:-}" ]; then
+    export GIT_SSL_CAINFO="${DETENT_LOCAL_GIT_CERT:?}"
+    export https_proxy="$DETENT_LOCAL_GIT_PROXY"
+    export HTTPS_PROXY="$DETENT_LOCAL_GIT_PROXY"
+    export NO_PROXY=127.0.0.1,localhost
+    export no_proxy="$NO_PROXY"
+fi
+exec "${DETENT_SMOKE_GIT:?}" "$@"
