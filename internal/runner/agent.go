@@ -2665,6 +2665,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	var priorSource *agentTurnExecution
 	sourceCostOffsetUSD := 0.0
 	var timeouts int
+	filedTimeouts := make(map[sessiontimeout.Kind]bool)
 	var priorDeadlines []string
 
 	for {
@@ -2687,6 +2688,25 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, verdictErr)
 			}
+			diagnosis := providerRoundOutcome(execution.err, assessment)
+			if timedOut && slices.Contains(priorDeadlines, diagnosis) {
+				if !filedTimeouts[providerTimeout.Kind] {
+					if authorityErr := req.Execution.Validate(ctx); authorityErr != nil {
+						afterRunPending = false
+						return execution.result, errors.Join(execution.err, authorityErr)
+					}
+					incidentCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
+					incidentErr := fileRepeatedTimeout(incidentCtx, req, "implement", backendConfig.Kind, providerTimeout)
+					cancel()
+					if incidentErr != nil {
+						afterRunPending = false
+						return execution.result, errors.Join(execution.err, incidentErr)
+					}
+					filedTimeouts[providerTimeout.Kind] = true
+				}
+				assessment = "The repeated timeout is recorded as a runner incident. Choose a different bounded check that can establish the next acceptance criterion. Preserve the existing source edits."
+			}
+
 			resume := AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
 			if timedOut {
 				timeouts++
@@ -2710,7 +2730,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, err)
 			}
-			priorDeadlines = append(priorDeadlines, providerRoundOutcome(execution.err, assessment))
+			priorDeadlines = append(priorDeadlines, diagnosis)
 			if len(priorDeadlines) > 6 {
 				priorDeadlines = priorDeadlines[1:]
 			}
@@ -2724,6 +2744,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					budget.remaining = config.Default().Agent.MaxTurns
 				}
 			}
+			execution.result.Output = ""
 			priorSource = &execution
 			sourceCostOffsetUSD = r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
 			continue

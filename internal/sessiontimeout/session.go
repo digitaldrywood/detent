@@ -29,8 +29,12 @@ const (
 )
 
 type Error struct {
-	Kind  Kind
-	Limit time.Duration
+	Kind  Kind          `json:"kind"`
+	Limit time.Duration `json:"limit_ns"`
+}
+
+func (e *Error) Valid() bool {
+	return e != nil && e.Limit > 0 && (e.Kind == Idle || e.Kind == CommandDeadline || e.Kind == TurnDeadline)
 }
 
 func (e *Error) Error() string {
@@ -135,7 +139,7 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 	}
 	id = "host/" + id
 	s.StartCommand(id)
-	limit := time.Until(deadline)
+	limit := max(time.Nanosecond, time.Until(deadline))
 	onDeadline := func() {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			s.cancel(&Error{Kind: CommandDeadline, Limit: limit})
