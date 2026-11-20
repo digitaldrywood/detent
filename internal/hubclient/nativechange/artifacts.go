@@ -124,10 +124,18 @@ func writeArtifactFile(path string, data []byte) error {
 }
 
 func (e *nativeExecution) ArtifactLog(ctx context.Context, delta string) error {
+	return e.appendArtifactLog(ctx, delta, true)
+}
+
+func (e *nativeExecution) SpoolArtifactLog(ctx context.Context, delta string) error {
+	return e.appendArtifactLog(ctx, delta, false)
+}
+
+func (e *nativeExecution) appendArtifactLog(ctx context.Context, delta string, upload bool) error {
 	a := &e.artifacts
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.directory == "" || delta == "" {
+	if a.directory == "" || a.finished || delta == "" {
 		return nil
 	}
 	if !utf8.ValidString(delta) {
@@ -151,6 +159,9 @@ func (e *nativeExecution) ArtifactLog(ctx context.Context, delta string) error {
 	if err := errors.Join(writeErr, file.Sync(), file.Close()); err != nil {
 		a.incomplete = true
 		return err
+	}
+	if !upload {
+		return nil
 	}
 	err = a.flush(ctx, false)
 	if errors.Is(err, artifact.ErrQuota) || errors.Is(err, artifact.ErrInvalid) {
@@ -231,12 +242,17 @@ func (a *nativeArtifacts) flush(ctx context.Context, final bool) (resultErr erro
 }
 
 func (e *nativeExecution) FinalizeArtifacts(ctx context.Context, directory string) error {
+	return e.FinalizeArtifactsWithLogState(ctx, directory, false)
+}
+
+func (e *nativeExecution) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
 	a := &e.artifacts
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.directory == "" || a.finished {
 		return nil
 	}
+	a.incomplete = a.incomplete || incomplete
 	// Freeze the remote capture before publishing any of it. Retries use the
 	// same bytes even if the checkout changes or the SSH channel disappears.
 	bundlePath := filepath.Join(a.directory, "diff.json")

@@ -369,6 +369,14 @@ func (e *sshNativeExecution) ArtifactLog(ctx context.Context, delta string) erro
 	return e.peer.Call(ctx, "execution.ArtifactLog", nil, delta)
 }
 
+func (e *sshNativeExecution) SpoolArtifactLog(ctx context.Context, delta string) error {
+	return e.peer.Call(ctx, "execution.SpoolArtifactLog", nil, delta)
+}
+
+func (e *sshNativeExecution) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
+	return e.peer.Call(ctx, "execution.FinalizeArtifactsWithLogState", nil, directory, incomplete)
+}
+
 func (e *sshNativeExecution) FinalizeArtifacts(ctx context.Context, directory string) error {
 	return e.peer.Call(ctx, "execution.FinalizeArtifacts", nil, directory)
 }

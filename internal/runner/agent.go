@@ -1311,6 +1311,9 @@ func (r *Runner) runAgentTurn(
 	turnCtx := ctx
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
+	var artifactLog runobserve.ArtifactLog
+	updates := runRequest
+	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
 	var offerIdentity func(store.SessionProviderIdentity)
 	var finishIdentity func()
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
@@ -1324,6 +1327,18 @@ func (r *Runner) runAgentTurn(
 		}, func(err error) {
 			r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", detentSessionID, "error", err)
 		})
+	}
+	if peer := runRequest.observationPeer; observe != nil && peer != nil {
+		updates.OnUsageUpdate = func(usage UsageUpdate) error {
+			observe(func(ctx context.Context) error { return peer.Call(ctx, "usage", nil, usage) })
+			return nil
+		}
+		if updates.OnActivityUpdate != nil {
+			updates.OnActivityUpdate = func(activity AgentActivityUpdate) error {
+				observe(func(ctx context.Context) error { return peer.Call(ctx, "activity", nil, activity) })
+				return nil
+			}
+		}
 	}
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(turnCtx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
 		eventAt := r.now()
@@ -1346,7 +1361,9 @@ func (r *Runner) runAgentTurn(
 			runRequest.checkpointRefs.requestPush()
 		}
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
+			if observe != nil && artifactWriter != nil {
+				artifactLog.Record(observe, artifactWriter.SpoolArtifactLog, update.Delta)
+			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
@@ -1366,7 +1383,7 @@ func (r *Runner) runAgentTurn(
 		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
 			offerIdentity(store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID})
 		}
-		if err := publishAgentActivity(runRequest, detentSessionID, update, eventAt); err != nil {
+		if err := publishAgentActivity(updates, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
@@ -1399,12 +1416,12 @@ func (r *Runner) runAgentTurn(
 		activity := providerUpdateIsActivity(update)
 		if observe != nil && activity {
 			if runtime, ok := runRequest.Execution.(RuntimeExecution); ok {
-				observation := tracker.NativeRuntimeObservation{LocalAttemptID: runRequest.WorkAttemptID, Generation: runRequest.Generation, Phase: nativeRuntimePhase(runRequest), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}
+				observation := tracker.NativeRuntimeObservation{LocalAttemptID: runRequest.WorkAttemptID, Generation: runRequest.Generation, HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}
 				observe(func(ctx context.Context) error { return runtime.ObserveRuntime(ctx, observation) })
 			}
 			activity = false
 		}
-		if err := r.publishRunUpdate(updateCtx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity); err != nil {
+		if err := r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -1491,6 +1508,9 @@ func (r *Runner) runAgentTurn(
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
 	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	if runRequest.artifactLogIncomplete != nil && artifactLog.Incomplete() {
+		*runRequest.artifactLogIncomplete = true
+	}
 	turnErr = errors.Join(turnErr, usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, true))
 	usageCancel()
 	return agentTurnExecution{
@@ -1837,6 +1857,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		ctx = context.Background()
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
+	if _, ok := req.Execution.(spooledArtifactExecution); ok {
+		req.artifactLogIncomplete = new(bool)
+	}
 	mode := normalizeRunMode(req.Mode)
 	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		result, err := execution.ReconcileReleaseDelivery(ctx, req.WorkAttemptID, req.Generation)

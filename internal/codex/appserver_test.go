@@ -19,9 +19,14 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestAppServerEarlyTurnRejection(t *testing.T) {
@@ -953,6 +958,141 @@ func TestAppServerToolDoesNotBlockProtocol(t *testing.T) {
 			t.Fatal("tool not joined")
 		}
 	})
+}
+
+func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
+	ctx := testenv.WaitContext(t, t.Context())
+	artifactStarted, toolStarted := make(chan struct{}), make(chan struct{})
+	stream := &artifactBlockedStream{
+		fakeAppServerTransport: newFakeAppServerTransport([]Message{
+			responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+			responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"},"model":"example-model"}`),
+			responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-1"}}`),
+			serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
+			notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":"complete"}`),
+			notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+		}),
+		artifactStarted: artifactStarted, toolStarted: toolStarted,
+	}
+	stream.allowPendingTools = true
+	server, err := NewAppServer(staticTransportFactory{transport: stream}, WithReadTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewAgentBackend(server, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &artifactBlockedWorkspace{path: t.TempDir()}
+	execution := &artifactBlockedExecution{started: artifactStarted}
+	r, err := runner.NewRunner(runner.Dependencies{
+		ProcessSource: func(context.Context, string) ([]int, error) { return nil, nil },
+		Workflow:      config.Workflow{Prompt: "Complete the issue"}, Workspace: source, AgentBackend: backend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.Run(ctx, runner.RunRequest{
+		Issue: connector.Issue{ID: "example", Identifier: "example#1", ModelOverride: "example-model"},
+		Mode:  runner.RunModeImplement, Execution: execution,
+		AgentTools: []runner.AgentTool{{Name: "get_change"}},
+		AgentToolHandler: func(ctx context.Context, _ runner.AgentToolCall) (runner.AgentToolResult, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			return runner.AgentToolResult{}, ctx.Err()
+		},
+	})
+	if err != nil || result.FinalMessage != "complete" || source.finalizations != 1 || execution.outcome != "succeeded" {
+		t.Fatalf("error=%v final=%q source finalizations=%d outcome=%q", err, result.FinalMessage, source.finalizations, execution.outcome)
+	}
+}
+
+type artifactBlockedStream struct {
+	*fakeAppServerTransport
+	artifactStarted, toolStarted <-chan struct{}
+}
+
+func (s *artifactBlockedStream) Receive(ctx context.Context) (Message, error) {
+	msg, err := s.fakeAppServerTransport.Receive(ctx)
+	if err != nil || msg.Method != "turn/completed" {
+		return msg, err
+	}
+	for _, started := range []<-chan struct{}{s.artifactStarted, s.toolStarted} {
+		select {
+		case <-started:
+		case <-ctx.Done():
+			return Message{}, ctx.Err()
+		}
+	}
+	return msg, nil
+}
+
+type artifactBlockedExecution struct {
+	started chan struct{}
+	outcome string
+}
+
+func (*artifactBlockedExecution) Guard(ctx context.Context) (context.Context, func(), error) {
+	return ctx, func() {}, nil
+}
+
+func (*artifactBlockedExecution) Validate(ctx context.Context) error { return ctx.Err() }
+func (*artifactBlockedExecution) Start(context.Context, tracker.NativeExecutionIdentity) error {
+	return nil
+}
+func (*artifactBlockedExecution) Checkpoint(context.Context, tracker.NativeCheckpoint) error {
+	return nil
+}
+func (e *artifactBlockedExecution) Finish(_ context.Context, outcome string) error {
+	e.outcome = outcome
+	return nil
+}
+
+func (*artifactBlockedExecution) Recovery() tracker.NativeRecovery                { return tracker.NativeRecovery{} }
+func (*artifactBlockedExecution) PrepareArtifacts(context.Context, string) error  { return nil }
+func (*artifactBlockedExecution) FinalizeArtifacts(context.Context, string) error { return nil }
+func (e *artifactBlockedExecution) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
+	if !incomplete {
+		return errors.New("blocked artifact spool was reported as complete")
+	}
+	return e.FinalizeArtifacts(ctx, directory)
+}
+
+func (e *artifactBlockedExecution) SpoolArtifactLog(ctx context.Context, delta string) error {
+	return e.ArtifactLog(ctx, delta)
+}
+
+func (e *artifactBlockedExecution) ArtifactLog(ctx context.Context, _ string) error {
+	close(e.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type artifactBlockedWorkspace struct {
+	path          string
+	finalizations int
+}
+
+func (w *artifactBlockedWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{Path: w.path, Branch: "example"}, nil
+}
+
+func (*artifactBlockedWorkspace) Cleanup(context.Context, string) error { return nil }
+func (*artifactBlockedWorkspace) BeforeRun(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
+func (*artifactBlockedWorkspace) AfterRun(context.Context, workspace.Info, workspace.Issue) {}
+func (*artifactBlockedWorkspace) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
+	return workspace.DiffStat{}, nil
+}
+
+func (*artifactBlockedWorkspace) PreserveIssue(context.Context, workspace.Issue) (workspace.Preservation, error) {
+	return workspace.Preservation{Preserved: true}, nil
+}
+
+func (w *artifactBlockedWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	w.finalizations++
+	return "", validate(ctx)
 }
 
 func TestAppServerRunTurnExecutesDynamicToolRequest(t *testing.T) {

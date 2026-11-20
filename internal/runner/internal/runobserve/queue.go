@@ -44,3 +44,22 @@ func Start(ctx context.Context, authorityLost error, report func(error)) (contex
 			return nil
 		}
 }
+
+type ArtifactLog struct {
+	queued, written int
+}
+
+func (a *ArtifactLog) Record(submit func(func(context.Context) error), write func(context.Context, string) error, delta string) {
+	a.queued++
+	submit(func(ctx context.Context) error {
+		if err := write(ctx, delta); err != nil {
+			return err
+		}
+		a.written++
+		return nil
+	})
+}
+
+func (a *ArtifactLog) Incomplete() bool {
+	return a.queued != a.written
+}
