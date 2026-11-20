@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -87,14 +88,28 @@ func (e *nativeExecution) CompletionData() tracker.NativeRunData {
 	return e.data
 }
 func (e *nativeExecution) FinishPrepared(ctx context.Context, reason string) error {
+	e.cancelMu.Lock()
+	unretired := e.unretiredProvider
+	e.cancelMu.Unlock()
+	if unretired {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
 	return e.finishPrepared(ctx, reason)
 }
-func (e *nativeExecution) Cancel(cause error) { e.cancelExecution(cause) }
+func (e *nativeExecution) Cancel(cause error) {
+	if runner.UnretiredProviderSession(cause) {
+		e.cancelMu.Lock()
+		e.supervisionLost = true
+		e.unretiredProvider = true
+		e.cancelMu.Unlock()
+	}
+	e.cancelExecution(cause)
+}
 func (e *nativeExecution) OwnsWork() bool {
 	pending := e.hasWorkers() || e.completionOwner.Load() || e.preparedPublisher.Load()
 	e.cancelMu.Lock()
 	defer e.cancelMu.Unlock()
-	return pending || e.cancel != nil
+	return pending || e.cancel != nil || e.unretiredProvider
 }
 func (e *nativeExecution) LandedStatus() (bool, bool) {
 	if !e.mu.TryLock() {

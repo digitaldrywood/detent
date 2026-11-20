@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 const defaultStderrTailBytes = 64 * 1024
@@ -389,9 +390,9 @@ func (t *localTransport) Close(ctx context.Context) error {
 		}
 
 		if killErr != nil {
-			return errors.Join(transportContextError(ctx.Err(), "kill process", killErr), closeErr)
+			return errors.Join(runner.ErrWorkerProcessReap, transportContextError(ctx.Err(), "kill process", killErr), closeErr)
 		}
-		return errors.Join(ctx.Err(), closeErr)
+		return errors.Join(runner.ErrWorkerProcessReap, ctx.Err(), closeErr)
 	}
 }
 
@@ -551,6 +552,9 @@ func (t *localTransport) wait() {
 	}
 	t.waitMu.Unlock()
 	cleanupErr := procgroup.Cleanup(t.processGroupID)
+	if cleanupErr != nil {
+		cleanupErr = errors.Join(runner.ErrWorkerProcessReap, cleanupErr)
+	}
 	<-t.readDone
 	cleanupErr = errors.Join(cleanupErr, t.readDrainErr)
 	if stderrErr := <-t.stderrDone; stderrErr != nil {

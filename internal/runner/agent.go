@@ -2667,6 +2667,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	for {
 		r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 		execution := runWithCheckpoint(turnRequest, req, runtimeIdentity, sourceCostOffsetUSD)
+		if retirementErr := errors.Join(execution.err, execution.cleanupErr); StopProviderSupervision(req.Execution, retirementErr) {
+			afterRunPending = false
+			execution.result.FinalState = FinalStateFailed
+			return execution.result, retirementErr
+		}
 		if priorSource != nil {
 			execution = mergeAgentTurnExecutions(*priorSource, execution)
 		}

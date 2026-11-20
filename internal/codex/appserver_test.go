@@ -804,9 +804,9 @@ func TestAppServerRunTurnRequiresSubscriptionAuthenticationInSameTransport(t *te
 
 func TestAppServerPreservesToolFailure(t *testing.T) {
 	for _, test := range []struct {
-		name                                            string
-		failed, followup, blocking, hang, stall, parent bool
-		capacity                                        string
+		name                                                      string
+		failed, followup, blocking, hang, stall, parent, stubborn bool
+		capacity                                                  string
 	}{
 		{name: "recovered refusal then success"},
 		{name: "recovered refusal then failed completion", failed: true},
@@ -816,6 +816,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 		{name: "unresolved tool at parent deadline", blocking: true, hang: true, parent: true},
 		{name: "recovered refusal then stream stall", blocking: true, stall: true},
 		{name: "unresolved tool at stall deadline", blocking: true, stall: true, hang: true},
+		{name: "tool exceeds retirement bound", blocking: true, stall: true, hang: true, stubborn: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -840,9 +841,20 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				release := make(chan struct{})
+				defer func() {
+					close(release)
+					synctest.Wait()
+				}()
 				request := RunTurnRequest{Model: "example-model", ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
 					if test.hang {
 						<-ctx.Done()
+						if test.stubborn {
+							select {
+							case <-release:
+							case <-time.After(10 * time.Second):
+							}
+						}
 						return DynamicToolResult{}, ctx.Err()
 					}
 					return DynamicToolResult{}, &operatortool.RequestError{Code: "invalid_request", Message: "private refusal"}
@@ -860,6 +872,12 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 					defer cancel()
 				}
 				_, err = server.RunTurn(callCtx, request, nil)
+				if test.stubborn {
+					if !errors.Is(err, runner.ErrWorkerProcessReap) || !errors.Is(err, ErrStreamStalled) {
+						t.Fatalf("unretired tool error = %v", err)
+					}
+					return
+				}
 				var tool *ToolError
 				if errors.As(err, &tool) != test.hang {
 					t.Fatalf("tool cause = %v, want %t: %v", tool, test.hang, err)
