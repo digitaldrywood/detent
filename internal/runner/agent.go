@@ -1418,8 +1418,14 @@ func (r *Runner) runAgentTurn(
 	}
 	if len(interventions) != 0 {
 		retry := r.roundRetry(ctx, runRequest, "implement", nil, &progresscheck.RoundDeadlines{}, roundRetryDelay(agentConfig.MaxRetryBackoffMS))
+		retryPublication := func(err error) error {
+			if errors.Is(err, progresscheck.ErrRoundVerdictRejected) {
+				return err
+			}
+			return retry(err)
+		}
 		for _, event := range interventions {
-			err := progresscheck.AwaitRoundAuthority(ctx, func(ctx context.Context) error { return loopOwner.RecordLoopIntervention(ctx, event) }, retry)
+			err := progresscheck.AwaitRoundAuthority(ctx, func(ctx context.Context) error { return loopOwner.RecordLoopIntervention(ctx, event) }, retryPublication)
 			if err != nil {
 				turnErr = errors.Join(turnErr, progresscheck.ErrRoundVerdictRejected, fmt.Errorf("publish provider loop intervention: %w", err))
 				break

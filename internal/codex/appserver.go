@@ -489,7 +489,14 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	lifetime := sessiontimeout.Start(ctx, req.StallTimeout, req.turnTimeout(s.turnTimeout), s.timeoutContext)
 	ctx = lifetime.Context()
 	defer lifetime.Close()
-	defer func() { err = lifetime.Result(err) }()
+	confirmedTerminal := false
+	turnError := func(err error) error {
+		if confirmedTerminal {
+			return errors.Join(err, context.Cause(turnAuthority))
+		}
+		return lifetime.Result(err)
+	}
+	defer func() { err = turnError(err) }()
 
 	prompt, cleanupPrompt, err := prepareTurnPrompt(req.Prompt, req.TempDir)
 	if err != nil {
@@ -598,11 +605,12 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	var tools *toolTransport
 	if req.ToolHandler != nil {
 		tools = newToolTransport(ctx, transport, req.ToolHandler, s.logger)
-		defer func() { err = tools.finish(lifetime.Result(err)) }()
+		defer func() { err = tools.finish(turnError(err)) }()
 		turnTransport = tools
 	}
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
 	for turnIndex := range 2 {
+		confirmedTerminal = false
 		startID := turnStartRequestID
 		if turnIndex > 0 {
 			startID = finalTurnStartRequestID
@@ -647,13 +655,16 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			}
 		}
 
-		if err := s.streamTurn(turnAuthority, lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate, newTurnToolLoop(req, threadID, turnID, s.logger)); err != nil {
+		err = s.streamTurn(turnAuthority, lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate, newTurnToolLoop(req, threadID, turnID, s.logger))
+		if err != nil {
 			var noProgress *progresscheck.NoProgressError
 			if errors.As(err, &noProgress) {
+				confirmedTerminal = true
 				return result, err
 			}
 			return RunTurnResult{}, err
 		}
+		confirmedTerminal = req.DetectToolLoops
 
 		if turnIndex == 0 && req.FinalPrompt != nil {
 			if prompt := req.FinalPrompt(); prompt != "" {
@@ -1396,10 +1407,11 @@ func (s *AppServer) streamTurn(
 	}
 	var snapshotRequested bool
 	for {
-		if ctx.Err() != nil {
-			return context.Cause(ctx)
+		var msg Message
+		err := context.Cause(ctx)
+		if err == nil {
+			msg, err = receive(ctx)
 		}
-		msg, err := receive(ctx)
 		if err != nil {
 			if toolLoop != nil && authority.Err() == nil {
 				if update, confirmed := s.reconcileTerminalTurn(authority, threadID, turnID); confirmed {
