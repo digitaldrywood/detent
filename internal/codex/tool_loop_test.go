@@ -22,7 +22,10 @@ func TestStreamToolLoopControl(t *testing.T) {
 		stop                                        bool
 		lateAck                                     bool
 		freshThird, sealFirst                       bool
+		customTool, nestedSibling                   bool
 	}{
+		{name: "custom tool output joins its native execution without reasoning markers", sealFirst: true, customTool: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
 		{name: "response closes before final tool result", sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "third response contains new sibling evidence", freshThird: true, terminalStatus: "completed"},
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
@@ -50,7 +53,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 				repeats = 3
 			}
 			for ordinal := 1; ordinal <= repeats; ordinal++ {
-				if ordinal == 1 || !test.parallel && !test.serializedSiblings {
+				if !test.customTool && (ordinal == 1 || !test.parallel && !test.serializedSiblings) {
 					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
 					messages = append(messages, notificationMessage(t, "item/started", marker))
 				}
@@ -62,8 +65,12 @@ func TestStreamToolLoopControl(t *testing.T) {
 					source = "userShell"
 				}
 				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal, source)
-				messages = append(messages, notificationMessage(t, "item/started", item))
-				if source == "agent" {
+				if !test.customTool {
+					messages = append(messages, notificationMessage(t, "item/started", item))
+				}
+				if test.customTool {
+					messages = append(messages, notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"custom_tool_call","call_id":"call-%d"}}`, turn, ordinal)))
+				} else if source == "agent" {
 					messages = append(messages, rawLoopCall(t, turn, fmt.Sprintf("tool-%d", ordinal)))
 				}
 				var sibling string
@@ -75,6 +82,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if test.sealFirst {
 					messages = append(messages, sealed)
 				}
+				if test.customTool {
+					messages = append(messages, notificationMessage(t, "item/started", item))
+				}
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
 				}
@@ -83,6 +93,13 @@ func TestStreamToolLoopControl(t *testing.T) {
 				}
 				if sibling != "" {
 					messages = append(messages, notificationMessage(t, "item/started", sibling), notificationMessage(t, "item/completed", sibling))
+				}
+				if test.nestedSibling {
+					nested := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"fileChange","id":"nested-%d"}}`, turn, ordinal)
+					messages = append(messages, notificationMessage(t, "item/started", nested), notificationMessage(t, "item/completed", nested))
+				}
+				if test.customTool {
+					messages = append(messages, notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"custom_tool_call_output","call_id":"call-%d"}}`, turn, ordinal)))
 				}
 				if ordinal == 3 && !test.lateAck && test.steerResult != "" {
 					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))

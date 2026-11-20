@@ -47,6 +47,8 @@ type turnToolLoop struct {
 	decisionResult string
 	decisionToolID string
 	rawToolID      string
+	rawCustom      bool
+	rawResult      bool
 	rawMultiple    bool
 	rawClosed      bool
 	responses      []string
@@ -103,14 +105,11 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		if len(l.active) != 0 || slices.Contains(l.decisions, item.ID) {
 			return nil
 		}
-		if err := l.finishDecision(ctx, transport); err != nil || l.interrupted.Action != "" {
+		if err := l.finishDecision(ctx, transport, false); err != nil || l.interrupted.Action != "" {
 			return err
 		}
 		l.rememberID(&l.decisions, item.ID)
-		l.sequence++
-		l.decisionCalls = 0
-		l.decisionResult, l.decisionToolID, l.rawToolID = "", "", ""
-		l.rawMultiple, l.rawClosed = false, false
+		l.nextDecision()
 		return nil
 	}
 	if !toolItemType(item.Type) || item.Source == "userShell" || slices.Contains(l.completed, item.ID) {
@@ -139,17 +138,16 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		return nil
 	}
 	delete(l.active, item.ID)
-	if l.sequence == 0 || l.decisionCalls != 1 {
-		return nil
+	if l.decisionCalls == 1 {
+		if experiment, ok := item.experiment(l.workspace); ok {
+			probeCtx, cancel := context.WithTimeout(l.probeContext, time.Second)
+			experiment.Source = l.source(probeCtx, l.workspace)
+			cancel()
+			l.decisionResult = experiment.Fingerprint()
+			l.decisionToolID = item.ID
+		}
 	}
-	if experiment, ok := item.experiment(l.workspace); ok {
-		probeCtx, cancel := context.WithTimeout(l.probeContext, time.Second)
-		experiment.Source = l.source(probeCtx, l.workspace)
-		cancel()
-		l.decisionResult = experiment.Fingerprint()
-		l.decisionToolID = item.ID
-	}
-	return l.finishConfirmedResponse(ctx, transport)
+	return l.finishRawDecision(ctx, transport)
 }
 
 func (l *turnToolLoop) observeResponse(ctx context.Context, transport Transport, message Message) error {
@@ -163,7 +161,7 @@ func (l *turnToolLoop) observeResponse(ctx context.Context, transport Transport,
 			Type   string
 		}
 	}
-	if json.Unmarshal(message.Params, &params) != nil || params.ThreadID != l.thread || params.TurnID != l.turn || l.sequence == 0 {
+	if json.Unmarshal(message.Params, &params) != nil || params.ThreadID != l.thread || params.TurnID != l.turn {
 		return nil
 	}
 	if message.Method == "rawResponse/completed" {
@@ -172,24 +170,49 @@ func (l *turnToolLoop) observeResponse(ctx context.Context, transport Transport,
 		}
 		l.rememberID(&l.responses, params.ResponseID)
 		l.rawClosed = true
-		return l.finishConfirmedResponse(ctx, transport)
+		return l.finishRawDecision(ctx, transport)
 	}
 	switch params.Item.Type {
+	case "custom_tool_call_output":
+		if l.rawCustom && l.rawToolID != "" && l.rawToolID == params.Item.CallID {
+			l.rawResult = true
+			return l.finishRawDecision(ctx, transport)
+		}
 	case "function_call", "local_shell_call", "custom_tool_call", "tool_search_call", "web_search_call", "image_generation_call":
 		id := firstNonBlank(params.Item.CallID, params.Item.ID)
+		custom := params.Item.Type == "custom_tool_call"
+		if l.rawClosed && l.rawToolID != "" && l.rawCustom && custom && l.rawToolID != id && len(l.active) == 0 {
+			if err := l.finishDecision(ctx, transport, false); err != nil || l.interrupted.Action != "" {
+				return err
+			}
+			l.nextDecision()
+		}
+		if l.sequence == 0 && custom {
+			l.sequence++
+		}
 		if id == "" || l.rawToolID != "" && l.rawToolID != id {
 			l.rawMultiple = true
 		}
-		l.rawToolID = id
+		l.rawToolID, l.rawCustom = id, custom
 	}
 	return nil
 }
 
-func (l *turnToolLoop) finishConfirmedResponse(ctx context.Context, transport Transport) error {
-	if !l.rawClosed || l.rawMultiple || l.decisionToolID == "" || l.rawToolID != l.decisionToolID || len(l.active) != 0 {
+func (l *turnToolLoop) nextDecision() {
+	l.sequence++
+	l.decisionCalls = 0
+	l.decisionResult, l.decisionToolID, l.rawToolID = "", "", ""
+	l.rawCustom, l.rawResult, l.rawMultiple, l.rawClosed = false, false, false, false
+}
+
+func (l *turnToolLoop) finishRawDecision(ctx context.Context, transport Transport) error {
+	if !l.rawClosed || l.rawMultiple || l.decisionToolID == "" || len(l.active) != 0 {
 		return nil
 	}
-	return l.finishDecision(ctx, transport)
+	if l.rawCustom && !l.rawResult || !l.rawCustom && l.rawToolID != l.decisionToolID {
+		return nil
+	}
+	return l.finishDecision(ctx, transport, true)
 }
 
 func (l *turnToolLoop) rememberID(ids *[]string, id string) {
@@ -200,9 +223,9 @@ func (l *turnToolLoop) rememberID(ids *[]string, id string) {
 	*ids = append(*ids, id)
 }
 
-func (l *turnToolLoop) finishDecision(ctx context.Context, transport Transport) error {
+func (l *turnToolLoop) finishDecision(ctx context.Context, transport Transport, confirmed bool) error {
 	fingerprint := l.decisionResult
-	if l.decisionCalls != 1 {
+	if l.decisionCalls != 1 || !confirmed && l.rawToolID != "" {
 		fingerprint = ""
 	}
 	return l.intervene(ctx, transport, l.observer.Observe(l.sequence, fingerprint))
