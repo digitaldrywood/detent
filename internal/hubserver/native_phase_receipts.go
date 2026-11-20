@@ -40,7 +40,7 @@ func validNativePhaseBranch(branch string) bool {
 	return true
 }
 
-func (s *Service) nativePhaseItem(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id tracker.NativeWorkItemID, write bool) (corestore.WorkItem, error) {
+func (s *Service) nativeExecutionItem(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, id tracker.NativeWorkItemID, write bool) (corestore.WorkItem, error) {
 	if err := s.authorizeAccessScope(ctx, r, scope, write); err != nil {
 		return corestore.WorkItem{}, err
 	}
@@ -61,7 +61,7 @@ func (s *Service) nativePhaseItem(ctx context.Context, r tenantstore.Reader, sco
 	return item, nil
 }
 
-func (s *Service) lockNativePhaseAttempt(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation) (leasestore.Attempt, error) {
+func (s *Service) lockNativeExecutionAttempt(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation) (leasestore.Attempt, error) {
 	stale := hubapi.NativeStaleExecution("The item lease is no longer current")
 	locker, ok := w.(leasestore.FencedLeaseLocker)
 	if !ok {
@@ -73,20 +73,25 @@ func (s *Service) lockNativePhaseAttempt(ctx context.Context, w tenantstore.Writ
 		}
 		return leasestore.Attempt{}, err
 	}
-	attempt, err := w.Attempt(ctx, attemptID)
-	if errors.Is(err, corestore.ErrNotFound) || (err == nil && (attempt.IssueID != item.ID || attempt.Status != "running")) {
+	return s.nativeExecutionAttempt(ctx, w, scope, item, attemptID, policyID, fence)
+}
+
+func (s *Service) nativeExecutionAttempt(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, fence tracker.Mutation) (leasestore.Attempt, error) {
+	stale := hubapi.NativeStaleExecution("The item lease is no longer current")
+	attempt, err := r.Attempt(ctx, attemptID)
+	if errors.Is(err, corestore.ErrNotFound) || (err == nil && attempt.IssueID != item.ID) {
 		return leasestore.Attempt{}, stale
 	}
 	if err != nil {
 		return leasestore.Attempt{}, err
 	}
-	if err := s.authorizeProgressRunner(ctx, w, scope, attempt, &fence); err != nil {
+	if err := s.authorizeProgressRunner(ctx, r, scope, attempt, &fence); err != nil {
 		if errors.Is(err, tracker.ErrStaleFencingToken) {
 			return leasestore.Attempt{}, stale
 		}
 		return leasestore.Attempt{}, err
 	}
-	pinned, err := w.LeasePolicy(ctx, fence.LeaseID)
+	pinned, err := r.LeasePolicy(ctx, fence.LeaseID)
 	if err != nil {
 		return leasestore.Attempt{}, err
 	}
@@ -111,7 +116,7 @@ func (s *Service) publishNativePhaseReceipt(c echo.Context) error {
 	itemID := tracker.NativeWorkItemID(c.Param("item"))
 	var recorded tracker.NativePhaseReceipt
 	err := s.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		item, err := s.nativePhaseItem(ctx, w, scope, itemID, true)
+		item, err := s.nativeExecutionItem(ctx, w, scope, itemID, true)
 		if err != nil {
 			return err
 		}
@@ -122,8 +127,12 @@ func (s *Service) publishNativePhaseReceipt(c echo.Context) error {
 		if item.Archived {
 			return corestore.ErrNotFound
 		}
-		if _, err := s.lockNativePhaseAttempt(ctx, w, scope, item, input.AttemptID, input.PolicyID, input.Mutation); err != nil {
+		attempt, err := s.lockNativeExecutionAttempt(ctx, w, scope, item, input.AttemptID, input.PolicyID, input.Mutation)
+		if err != nil {
 			return err
+		}
+		if attempt.Status != "running" {
+			return hubapi.NativeStaleExecution("The item attempt has ended")
 		}
 		owner, ok := w.(leasestore.PhaseReceiptWriter)
 		if !ok {
@@ -156,7 +165,7 @@ func (s *Service) getNativePhaseReceipts(c echo.Context) error {
 	ctx := c.Request().Context()
 	var response any
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		item, err := s.nativePhaseItem(ctx, r, scope, tracker.NativeWorkItemID(c.Param("item")), false)
+		item, err := s.nativeExecutionItem(ctx, r, scope, tracker.NativeWorkItemID(c.Param("item")), false)
 		if err != nil {
 			return err
 		}

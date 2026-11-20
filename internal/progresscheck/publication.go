@@ -15,6 +15,7 @@ const RetrievedEvidenceCapability = "progress_retrieved_evidence"
 
 type Publication struct {
 	tracker.Mutation
+	RoundInput
 	AttemptID        string           `json:"attempt_id,omitempty"`
 	EvidenceRevision string           `json:"evidence_revision,omitempty"`
 	ExpectedRevision tracker.Revision `json:"expected_revision,string,omitempty"`
