@@ -565,9 +565,6 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		})
 	}
 	if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
-		if identity.PID != 0 {
-			groupCleanupErr = err
-		}
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true
