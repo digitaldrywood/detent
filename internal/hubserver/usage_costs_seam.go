@@ -63,7 +63,7 @@ func (d *database) monthlyCosts(ctx context.Context, organization, scope string,
 	return v, hubapi.FromFeatureError(e)
 }
 func (s *Service) costService() *usagecosts.Service {
-	deps := usagecosts.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.Clock, Prices: usagecosts.Prices(s.usagePrices()), ContentContext: func(ctx context.Context) context.Context {
+	deps := usagecosts.Deps{Repository: s.config.TenantRepository, Details: s.runDetailStore(), Now: s.config.Clock, Prices: s.usagePrices(), ContentContext: func(ctx context.Context) context.Context {
 		return hubcontent.IsolateContentContext(s.runDetailContext(ctx))
 	}, RecordError: hubapi.ProjectRecordError, ValidateDetail: validateNativeDetailReference}
 	if s.database != nil && s.database.billingRepository != nil {

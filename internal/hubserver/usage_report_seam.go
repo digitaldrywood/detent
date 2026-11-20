@@ -21,6 +21,6 @@ func usageBusySeconds(p0 string, p1 string, p2 usagecosts.Window) int64 {
 	return usagereport.BusySeconds(p0, p1, p2)
 }
 func buildUsageReport(p0 usagecosts.Window, p1 []usagereport.Row, p2 map[string]usagereport.Limit, p3 map[string]usagereport.RunnerCapacity, p4 UsageConfig) usagereport.Report {
-	return usagereport.Build(p0, p1, p2, p3, usagecosts.Prices(p4))
+	return usagereport.Build(p0, p1, p2, p3, p4)
 }
 func usageRound(value float64) float64 { return usagereport.Round(value) }
