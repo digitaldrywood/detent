@@ -25,8 +25,10 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 		return result, errors.New("claude worker tool handler is unavailable")
 	}
 	handle = req.ToolBudget.Handler(tools, handle)
-	ctx, cancel := context.WithCancel(contextOrBackground(ctx))
-	defer cancel()
+	lifetime := b.startSession(ctx, req)
+	ctx = lifetime.Context()
+	defer lifetime.Close()
+	defer func() { turnErr = lifetime.Result(turnErr) }()
 	bounded := *b
 	var definitions []operatortool.Definition
 	for _, tool := range tools {
@@ -34,7 +36,9 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 		bounded.toolNames = append(bounded.toolNames, "mcp__detent__"+tool.Name)
 	}
 	executor, err := mcp.NewConnectionExecutor(definitions, func(callCtx context.Context, call operatortool.Call) (operatortool.Result, error) {
+		lifetime.Activity()
 		response, callErr := handle(callCtx, runner.AgentToolCall{Name: call.Name, Arguments: call.Arguments})
+		lifetime.Activity()
 		if callErr != nil || !response.Success {
 			message := response.Content
 			if message == "" {
@@ -73,7 +77,6 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	defer func() {
-		cancel()
 		closeErr := server.Close()
 		shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stop()
@@ -81,6 +84,9 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 		serveErr := <-done
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
+		}
+		if shutdownErr != nil {
+			shutdownErr = errors.Join(runner.ErrWorkerProcessReap, shutdownErr)
 		}
 		turnErr = errors.Join(turnErr, closeErr, shutdownErr, serveErr)
 	}()
@@ -93,5 +99,5 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 	if err := os.WriteFile(bounded.toolConfig, config, 0o600); err != nil {
 		return result, err
 	}
-	return bounded.RunTurn(ctx, req, update)
+	return bounded.runTurn(lifetime, req, update, false)
 }

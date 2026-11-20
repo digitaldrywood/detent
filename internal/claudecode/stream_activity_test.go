@@ -1,14 +1,69 @@
 package claudecode
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
+
+func TestClaudeStreamActivity(t *testing.T) {
+	const init = `{"type":"system","subtype":"init","session_id":"session-1"}`
+	const keepalive = `{"type":"system","subtype":"keepalive","session_id":"session-1"}`
+	const foreign = `{"type":"assistant","session_id":"session-2","message":{"id":"foreign","content":[{"type":"text","text":"other session"}]}}`
+	const replay = `{"type":"assistant","uuid":"event-1","session_id":"session-1","message":{"id":"message-1","content":[{"type":"text","text":"already seen"}]}}`
+	const command = `{"type":"assistant","session_id":"session-1","message":{"id":"message-2","content":[{"type":"tool_use","id":"command-1","name":"Bash","input":{"command":"make test"}}]}}`
+	for _, tc := range []struct {
+		name           string
+		initial, later string
+		want           error
+		limit          time.Duration
+		kind           sessiontimeout.Kind
+	}{
+		{name: "keepalive", later: keepalive, want: ErrStreamStalled},
+		{name: "unrelated session", later: foreign, want: ErrStreamStalled},
+		{name: "replay", initial: replay, later: replay, want: ErrStreamStalled},
+		{name: "quiet command", initial: command},
+		{name: "quiet command exceeds deadline", initial: command, limit: 6 * time.Minute, kind: sessiontimeout.CommandDeadline, want: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				backend := newTestBackend(t, Options{StallTimeout: 5 * time.Minute})
+				stdout, writer := io.Pipe()
+				defer stdout.Close()
+				go func() {
+					defer writer.Close()
+					_, _ = io.WriteString(writer, init+"\n"+tc.initial+"\n")
+					for range 2 {
+						<-time.After(4 * time.Minute)
+						_, _ = io.WriteString(writer, tc.later+"\n")
+					}
+				}()
+				lifetime := backend.startSession(t.Context(), runner.AgentTurnRequest{TurnTimeout: tc.limit})
+				defer lifetime.Close()
+				_, err := backend.consumeStream(lifetime, nil, 0, stdout, "", nil)
+				err = lifetime.Result(err)
+				if !errors.Is(err, tc.want) {
+					t.Fatalf("stream error = %v, want %v", err, tc.want)
+				}
+				if tc.kind != "" {
+					var timeout *sessiontimeout.Error
+					if !errors.As(err, &timeout) || timeout.Kind != tc.kind {
+						t.Fatalf("timeout = %v, want kind %s", err, tc.kind)
+					}
+				}
+			})
+		})
+	}
+}
 
 func TestTurnStateEmitsStructuredRateLimit(t *testing.T) {
 	t.Parallel()

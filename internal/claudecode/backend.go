@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 var (
 	ErrNilCommand     = errors.New("claude command factory returned nil command")
 	ErrMissingResult  = errors.New("claude result event missing")
-	ErrStreamStalled  = errors.New("claude stream stalled")
+	ErrStreamStalled  = sessiontimeout.ErrIdle
 	ErrTurnFailed     = errors.New("claude turn failed")
 	ErrUpdateRejected = errors.New("claude update rejected")
 )
