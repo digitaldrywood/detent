@@ -105,6 +105,14 @@ func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
 	})
 }
 
+type launchRollbackError struct {
+	launch  error
+	cleanup error
+}
+
+func (e launchRollbackError) Error() string   { return errors.Join(e.launch, e.cleanup).Error() }
+func (e launchRollbackError) Unwrap() []error { return []error{e.launch, e.cleanup} }
+
 type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error)
 
 func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
@@ -130,7 +138,12 @@ func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (
 	})
 	if err := StartAuthorized(launch, cmd); err != nil {
 		if finish != nil {
-			err = finish(err, nil)
+			var rollback launchRollbackError
+			if errors.As(err, &rollback) {
+				err = finish(rollback.launch, rollback.cleanup)
+			} else {
+				err = finish(err, nil)
+			}
 		}
 		return nil, err
 	}

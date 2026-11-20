@@ -107,7 +107,7 @@ func TestWindowsProcessHelper(t *testing.T) {
 }
 
 func TestWindowsJobTree(t *testing.T) {
-	for _, mode := range []string{"terminate", "cleanup", "cleanup after parent exit", "wait", "cancel", "identity"} {
+	for _, mode := range []string{"terminate", "cleanup", "cleanup after parent exit", "wait", "owned wait", "cancel", "identity"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
@@ -170,6 +170,16 @@ func TestWindowsJobTree(t *testing.T) {
 					t.Fatal(err)
 				}
 				err = Wait(cmd)
+			case "owned wait":
+				identity, inspectErr := Inspect(cmd)
+				if inspectErr != nil {
+					t.Fatal(inspectErr)
+				}
+				if err := input.Close(); err != nil {
+					t.Fatal(err)
+				}
+				waitErr, cleanupErr := WaitOwned(ctx, cmd, identity)
+				err = errors.Join(waitErr, cleanupErr)
 			case "cancel":
 				cancel()
 			case "identity":
@@ -182,7 +192,11 @@ func TestWindowsJobTree(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if event, err := windows.WaitForSingleObject(grandchild, 5000); err != nil || event != windows.WAIT_OBJECT_0 {
+			waitMillis := uint32(0)
+			if mode == "cancel" {
+				waitMillis = 5000
+			}
+			if event, err := windows.WaitForSingleObject(grandchild, waitMillis); err != nil || event != windows.WAIT_OBJECT_0 {
 				t.Fatalf("grandchild survived %s: event=%d, error=%v", mode, event, err)
 			}
 			if cmd.ProcessState == nil {
@@ -192,6 +206,33 @@ func TestWindowsJobTree(t *testing.T) {
 				t.Fatalf("repeated cleanup: %v", err)
 			}
 		})
+	}
+}
+
+func TestWindowsOwnedLaunchReportsRollbackFailure(t *testing.T) {
+	refused := errors.New("registration refused")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestWindowsJobHelper$")
+	var cleanupErr error
+	wait, err := startOwnedCommand(t.Context(), cmd, func(_ context.Context, _ *exec.Cmd, id Identity) (func(error, error) error, error) {
+		windowsJobs.Lock()
+		process := windowsJobs.byPID[id.GroupID].process
+		windowsJobs.Unlock()
+		if err := windows.CloseHandle(process); err != nil {
+			return nil, err
+		}
+		return func(launch, cleanup error) error {
+			cleanupErr = cleanup
+			if launch != refused && !errors.Is(launch, refused) {
+				t.Errorf("launch refusal = %v", launch)
+			}
+			if errors.Is(launch, windows.ERROR_INVALID_HANDLE) {
+				t.Errorf("cleanup failure was mixed into launch refusal: %v", launch)
+			}
+			return errors.Join(launch, cleanup)
+		}, refused
+	})
+	if wait != nil || !errors.Is(err, refused) || !errors.Is(cleanupErr, windows.ERROR_INVALID_HANDLE) {
+		t.Fatalf("launch = %v, owner cleanup = %v", err, cleanupErr)
 	}
 }
 

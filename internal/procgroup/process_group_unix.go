@@ -223,6 +223,13 @@ func describeProcessGroup(members []processGroupMember, err error) string {
 }
 
 func Terminate(ctx context.Context, identity Identity, grace time.Duration) (TerminationOutcome, error) {
+	return terminate(ctx, identity, grace, inspectProcess, processTargetAlive, signalProcessTarget, waitForProcessTargetExit, inspectProcessGroup)
+}
+
+func terminate(ctx context.Context, identity Identity, grace time.Duration, inspect func(int) (Identity, error),
+	alive func(int, int) bool, signal func(int, int, syscall.Signal) error,
+	wait func(context.Context, int, int, time.Duration) bool, inspectGroup func(int) ([]processGroupMember, error),
+) (TerminationOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -233,44 +240,53 @@ func Terminate(ctx context.Context, identity Identity, grace time.Duration) (Ter
 		return TerminationOutcomeStaleIdentity, nil
 	}
 
-	current, err := inspectProcess(identity.PID)
+	if outcome, err := checkTerminationIdentity(identity, inspect); err != nil || outcome != "" {
+		return outcome, err
+	}
+	groupID := identity.GroupID
+	if !alive(identity.PID, groupID) {
+		return TerminationOutcomeAlreadyExited, nil
+	}
+	if err := signal(identity.PID, groupID, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) ||
+			errors.Is(err, syscall.EPERM) && confirmProcessTargetExit(identity.PID, groupID, signal, inspectGroup) {
+			return TerminationOutcomeAlreadyExited, nil
+		}
+		return "", err
+	}
+	if wait(ctx, identity.PID, groupID, grace) ||
+		confirmProcessTargetExit(identity.PID, groupID, signal, inspectGroup) {
+		return TerminationOutcomeTerminated, nil
+	}
+	if outcome, err := checkTerminationIdentity(identity, inspect); err != nil || outcome != "" {
+		return outcome, err
+	}
+	if err := signal(identity.PID, groupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if !errors.Is(err, syscall.EPERM) ||
+			!confirmProcessTargetExit(identity.PID, groupID, signal, inspectGroup) {
+			return "", err
+		}
+		return TerminationOutcomeKilled, nil
+	}
+	if !wait(context.Background(), identity.PID, groupID, grace) &&
+		!confirmProcessTargetExit(identity.PID, groupID, signal, inspectGroup) {
+		return "", fmt.Errorf("process group %d remained alive after SIGKILL", groupID)
+	}
+	return TerminationOutcomeKilled, nil
+}
+
+func checkTerminationIdentity(identity Identity, inspect func(int) (Identity, error)) (TerminationOutcome, error) {
+	current, err := inspect(identity.PID)
 	if err != nil && !errors.Is(err, ErrProcessNotRunning) {
 		return "", err
 	}
 	if err == nil && !sameIdentity(current, identity) {
 		return TerminationOutcomeStaleIdentity, nil
 	}
-	groupID := identity.GroupID
-	if !processTargetAlive(identity.PID, groupID) {
-		return TerminationOutcomeAlreadyExited, nil
-	}
-	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGTERM); err != nil {
-		if errors.Is(err, syscall.ESRCH) ||
-			errors.Is(err, syscall.EPERM) && confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
-			return TerminationOutcomeAlreadyExited, nil
-		}
-		return "", err
-	}
-	if waitForProcessTargetExit(ctx, identity.PID, groupID, grace) ||
-		confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
-		return TerminationOutcomeTerminated, nil
-	}
-	if err := signalProcessTarget(identity.PID, groupID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		if !errors.Is(err, syscall.EPERM) ||
-			!confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
-			return "", err
-		}
-		return TerminationOutcomeKilled, nil
-	}
-	if !waitForProcessTargetExit(context.Background(), identity.PID, groupID, grace) &&
-		!confirmProcessTargetExit(identity.PID, groupID, signalProcessTarget, inspectProcessGroup) {
-		return "", fmt.Errorf("process group %d remained alive after SIGKILL", groupID)
-	}
-	return TerminationOutcomeKilled, nil
+	return "", nil
 }
 
 type observedProcess struct {
-	identity Identity
 	rssBytes int64
 	zombie   bool
 }
@@ -288,7 +304,7 @@ func psCommand(args ...string) (*exec.Cmd, error) {
 }
 
 func observeProcesses(identities []Identity) ([]Observation, error) {
-	cmd, err := psCommand("-axo", "pid=,pgid=,rss=,stat=,lstart=")
+	cmd, err := psCommand("-axo", "pid=,pgid=,rss=,stat=")
 	if err != nil {
 		return nil, err
 	}
@@ -297,26 +313,24 @@ func observeProcesses(identities []Identity) ([]Observation, error) {
 		return nil, fmt.Errorf("inspect worker processes: %w", err)
 	}
 
-	byPID := make(map[int]observedProcess)
+	leaders := make(map[int]struct{})
 	byGroup := make(map[int][]observedProcess)
 	for line := range strings.Lines(string(output)) {
 		fields := strings.Fields(line)
-		if len(fields) != 9 {
+		if len(fields) != 4 {
 			continue
 		}
 		pid, pidErr := strconv.Atoi(fields[0])
 		groupID, groupErr := strconv.Atoi(fields[1])
 		rssKB, rssErr := strconv.ParseInt(fields[2], 10, 64)
-		startedAt, startedErr := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(fields[4:], " "), time.Local)
-		if pidErr != nil || groupErr != nil || rssErr != nil || startedErr != nil {
+		if pidErr != nil || groupErr != nil || rssErr != nil {
 			continue
 		}
 		process := observedProcess{
-			identity: Identity{PID: pid, GroupID: groupID, StartedAt: startedAt.UTC()},
 			rssBytes: max(rssKB, 0) * 1024,
 			zombie:   strings.HasPrefix(fields[3], "Z"),
 		}
-		byPID[pid] = process
+		leaders[pid] = struct{}{}
 		byGroup[groupID] = append(byGroup[groupID], process)
 	}
 
@@ -327,11 +341,16 @@ func observeProcesses(identities []Identity) ([]Observation, error) {
 			observations = append(observations, observation)
 			continue
 		}
-		leader, leaderFound := byPID[identity.PID]
-		if leaderFound && !sameIdentity(leader.identity, identity) {
-			observation.Stale = true
-			observations = append(observations, observation)
-			continue
+		if _, present := leaders[identity.PID]; present {
+			outcome, err := checkTerminationIdentity(identity, inspectProcess)
+			if err != nil {
+				return nil, err
+			}
+			if outcome == TerminationOutcomeStaleIdentity {
+				observation.Stale = true
+				observations = append(observations, observation)
+				continue
+			}
 		}
 		groupID := identity.GroupID
 		if groupID <= 0 {
@@ -432,10 +451,21 @@ func startAcknowledged(cmd *exec.Cmd, acknowledge func(Identity) error) error {
 		err = acknowledge(identity)
 	}
 	if err != nil {
-		return errors.Join(fmt.Errorf("acknowledge worker launch: %w", err), release.Close(), Wait(cmd))
+		launchErr := fmt.Errorf("acknowledge worker launch: %w", err)
+		closeErr := release.Close()
+		_ = Wait(cmd)
+		if closeErr != nil {
+			return launchRollbackError{launch: launchErr, cleanup: closeErr}
+		}
+		return launchErr
 	}
 	if _, err := release.WriteString("go\n"); err != nil {
-		return errors.Join(err, release.Close(), TerminateTree(cmd, group), Wait(cmd))
+		cleanupErr := errors.Join(release.Close(), TerminateTree(cmd, group))
+		_ = Wait(cmd)
+		if cleanupErr != nil {
+			return launchRollbackError{launch: err, cleanup: cleanupErr}
+		}
+		return err
 	}
 	return nil
 }
