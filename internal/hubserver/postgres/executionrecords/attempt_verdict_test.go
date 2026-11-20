@@ -23,10 +23,10 @@ func TestAttemptVerdictPreservesTenantFailures(t *testing.T) {
 			event.Sequence, event.Status, event.PayloadObjectKey = 2, "failed", "example/failed"
 			event.Failure = &leasestore.AttemptFailure{Example: string(org) + " original failure", Class: "attempt"}
 			pgstoretest.RecordLeaseAttempt(t, r, org, event)
-			verdict := leasestore.TerminalProgressVerdict{OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", id)), AttemptID: event.ID, TerminalSequence: 2, EvidenceRevision: fmt.Sprintf("%s/%d", org, id), AttemptedStep: "implement", Success: true, Outcome: "progressing", Reason: string(org) + " model reason", NextStep: new("implement")}
-			write := func(v leasestore.TerminalProgressVerdict) error {
+			verdict := leasestore.ProgressVerdict{OrganizationID: org, ProjectID: tracker.ProjectID(fmt.Sprintf("prj_%d", id)), AttemptID: event.ID, AttemptSequence: 2, EvidenceRevision: fmt.Sprintf("%s/%d", org, id), AttemptedStep: "implement", Success: true, Outcome: "progressing", Reason: string(org) + " model reason", NextStep: new("implement")}
+			write := func(v leasestore.ProgressVerdict) error {
 				return r.WriteLeases(t.Context(), org, corestore.Serving, func(w leasestore.Writer) error {
-					return w.(leasestore.TerminalProgressWriter).RecordTerminalProgressVerdict(t.Context(), v)
+					return w.(leasestore.ProgressVerdictWriter).RecordProgressVerdict(t.Context(), v)
 				})
 			}
 			wrong := verdict

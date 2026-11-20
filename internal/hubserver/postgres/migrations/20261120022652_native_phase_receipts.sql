@@ -1,7 +1,8 @@
+-- +goose NO TRANSACTION
 -- +goose Up
-SET LOCAL lock_timeout = '5s';
+SET lock_timeout = '5s';
 
-CREATE TABLE native_phase_receipts (
+CREATE TABLE IF NOT EXISTS native_phase_receipts (
     organization_id text NOT NULL,
     project_id text NOT NULL,
     issue_id bigint NOT NULL,
@@ -22,9 +23,9 @@ CREATE TABLE native_phase_receipts (
     FOREIGN KEY (organization_id, attempt_id) REFERENCES native_attempts (organization_id, id) ON DELETE CASCADE
 );
 
-CREATE INDEX native_phase_receipts_attempt_idx ON native_phase_receipts (organization_id, attempt_id);
+CREATE INDEX IF NOT EXISTS native_phase_receipts_attempt_idx ON native_phase_receipts (organization_id, attempt_id);
 
-CREATE INDEX native_phase_receipts_source_idx
+CREATE INDEX IF NOT EXISTS native_phase_receipts_source_idx
 ON native_phase_receipts (organization_id, project_id, issue_id, branch, head_sha, tree_sha, policy_id, phase, input_digest, position DESC);
 
 ALTER TABLE native_phase_receipts ENABLE ROW LEVEL SECURITY;
@@ -32,16 +33,21 @@ ALTER TABLE native_phase_receipts FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON native_phase_receipts FROM PUBLIC;
 GRANT SELECT, INSERT ON native_phase_receipts TO detent_runtime, detent_platform;
 GRANT USAGE ON SEQUENCE native_phase_receipts_position_seq TO detent_runtime, detent_platform;
+DROP POLICY IF EXISTS tenant_isolation ON native_phase_receipts;
 CREATE POLICY tenant_isolation ON native_phase_receipts TO detent_runtime, detent_migration
     USING (organization_id = NULLIF(current_setting('detent.organization_id', true), ''))
     WITH CHECK (organization_id = NULLIF(current_setting('detent.organization_id', true), ''));
+DROP POLICY IF EXISTS platform_access ON native_phase_receipts;
 CREATE POLICY platform_access ON native_phase_receipts TO detent_platform USING (true) WITH CHECK (true);
 
-ALTER TABLE native_attempts ADD COLUMN verdict_round_id text;
-CREATE INDEX native_attempts_round_verdict_idx ON native_attempts (organization_id, project_id, issue_id, fencing_token DESC) WHERE verdict_round_id IS NOT NULL;
+ALTER TABLE native_attempts ADD COLUMN IF NOT EXISTS verdict_round_id text;
+DROP INDEX CONCURRENTLY IF EXISTS native_attempts_round_verdict_idx;
+CREATE INDEX CONCURRENTLY native_attempts_round_verdict_idx ON native_attempts (organization_id, project_id, issue_id, fencing_token DESC) WHERE verdict_round_id IS NOT NULL;
+RESET lock_timeout;
 
 -- +goose Down
-SET LOCAL lock_timeout = '5s';
-DROP INDEX native_attempts_round_verdict_idx;
-ALTER TABLE native_attempts DROP COLUMN verdict_round_id;
-DROP TABLE native_phase_receipts;
+SET lock_timeout = '5s';
+DROP INDEX CONCURRENTLY IF EXISTS native_attempts_round_verdict_idx;
+ALTER TABLE native_attempts DROP COLUMN IF EXISTS verdict_round_id;
+DROP TABLE IF EXISTS native_phase_receipts;
+RESET lock_timeout;

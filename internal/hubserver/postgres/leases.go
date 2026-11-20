@@ -697,21 +697,35 @@ AND EXISTS (SELECT 1 FROM runner_identities r WHERE r.organization_id=m.organiza
 	return updateOwned(ctx, result, err)
 }
 
-func (s *session) RecordTerminalProgressVerdict(ctx context.Context, verdict leasestore.TerminalProgressVerdict) error {
+func (s *session) RecordProgressVerdict(ctx context.Context, verdict leasestore.ProgressVerdict) error {
 	if err := s.checkOrganization(verdict.OrganizationID); err != nil {
 		return err
 	}
 	if verdict.ProjectID == "" || verdict.AttemptID == "" || verdict.EvidenceRevision == "" {
 		return corestore.ErrTenantMismatch
 	}
-	updated, err := s.queries.RecordTerminalProgressVerdict(ctx, pgquery.RecordTerminalProgressVerdictParams{
+	updated, err := s.queries.RecordProgressVerdict(ctx, pgquery.RecordProgressVerdictParams{
 		OrganizationID: verdict.OrganizationID, ProjectID: verdict.ProjectID, AttemptID: verdict.AttemptID,
-		TerminalSequence: verdict.TerminalSequence, EvidenceRevision: &verdict.EvidenceRevision,
+		AttemptSequence: verdict.AttemptSequence, EvidenceRevision: &verdict.EvidenceRevision,
 		AttemptedStep: &verdict.AttemptedStep, Success: pgtype.Bool{Bool: verdict.Success, Valid: true},
 		Outcome: &verdict.Outcome, Reason: &verdict.Reason, NextStep: verdict.NextStep, Disposition: verdict.Disposition,
+		RoundID: verdict.RoundID, PreviousRoundID: verdict.PreviousRoundID,
 	})
 	if err == nil && updated != 1 {
 		return corestore.ErrRevisionConflict
 	}
 	return mapError(ctx, err)
+}
+
+func (s *session) LatestRoundVerdictID(ctx context.Context, project tracker.ProjectID, issueID int64) (string, string, error) {
+	row, err := s.queries.LatestRoundVerdictID(ctx, pgquery.LatestRoundVerdictIDParams{
+		OrganizationID: s.organization, ProjectID: project, IssueID: issueID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", mapError(ctx, err)
+	}
+	return row.ID, *row.VerdictRoundID, nil
 }

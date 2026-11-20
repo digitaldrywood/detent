@@ -170,6 +170,9 @@ func readNativeProgressDependencies(ctx context.Context, reader corestore.Reader
 
 func (s *Service) getNativeProgress(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
+	if round := c.QueryParam("round"); round != "" {
+		return s.getNativeRoundVerdict(c, scope, round)
+	}
 	if attempt := c.QueryParam("attempt"); attempt != "" {
 		ctx := s.runDetailContext(s.contentContext(c.Request().Context()))
 		owner := terminalProgressOwner{service: s, scope: scope, item: tracker.NativeWorkItemID(c.Param("item")), attempt: attempt}
@@ -206,6 +209,9 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
+	if input.RoundID != "" {
+		return s.publishNativeRoundVerdict(c, scope, input)
+	}
 	if input.AttemptID != "" {
 		ctx := s.runDetailContext(s.contentContext(c.Request().Context()))
 		owner := terminalProgressOwner{service: s, scope: scope, item: tracker.NativeWorkItemID(c.Param("item")), attempt: input.AttemptID}
