@@ -75,11 +75,6 @@ func uploadConversationAttachmentFile(t *testing.T, service *Service, base, toke
 	return upload
 }
 
-func (f conversationAPIFixture) uploadAttachment(t *testing.T, token, id, name, media string, content []byte, key string) *httptest.ResponseRecorder {
-	t.Helper()
-	return postConversationAttachment(t, f.service, f.base, token, id, name, media, content, key)
-}
-
 func (f conversationAPIFixture) upload(t *testing.T, token, id, name, media string, content []byte) conversation.AttachmentUpload {
 	t.Helper()
 	return uploadConversationAttachmentFile(t, f.service, f.base, token, id, name, media, content)

@@ -1,11 +1,6 @@
 package hubserver
 
 const (
-	coordinatorProposalTitleBytes = 500
-	coordinatorProposalBodyRunes  = 4000
-)
-
-const (
 	coordinatorToolListAttention = "list_attention"
 	coordinatorToolExplainIssue  = "explain_issue"
 	coordinatorToolProposeIssue  = "propose_issue"

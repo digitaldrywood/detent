@@ -207,26 +207,20 @@ func conversationWorkerAuthorityAt(now time.Time) ConversationWorkerAuthority {
 }
 
 type conversationAttachmentRecord = conversations.ConversationAttachmentRecord
-type conversationAttachmentUpload = conversations.ConversationAttachmentUpload
 type conversationContent = conversations.ConversationContent
 type conversationCoordinator = conversations.ConversationCoordinator
 type conversationCreateRequest = conversations.ConversationCreateRequest
 type conversationDeltaFact = conversations.ConversationDeltaFact
-type conversationLinkRequest = conversations.ConversationLinkRequest
 type conversationListQuery = conversations.ConversationListQuery
 type conversationMessageRecord = conversations.ConversationMessageRecord
-type conversationMessageReference = conversations.ConversationMessageReference
 type conversationMessageResource = conversations.ConversationMessageResource
 type conversationMessagesPage = conversations.ConversationMessagesPage
 type conversationModel = conversations.ConversationModel
 type conversationPatchRequest = conversations.ConversationPatchRequest
-type conversationPublicationKey = conversations.ConversationPublicationKey
 type conversationPublicationPlan = conversations.ConversationPublicationPlan
 type conversationRecord = conversations.ConversationRecord
 type conversationService = conversations.ConversationService
 type conversationSnapshot = conversations.ConversationSnapshot
-type conversationWorkItem = conversations.ConversationWorkItem
-type queryMessageData = conversations.QueryMessageData
 
 const (
 	conversationAuthorizeInterval  = conversations.ConversationAuthorizeInterval
@@ -234,22 +228,8 @@ const (
 	conversationLifecycleBatchSize = conversations.ConversationLifecycleBatchSize
 )
 
-func authorizeConversationLinkedItemPG(p0 context.Context, p1 tenantstore.Reader, p2 hubscope.NativeScope, p3 conversations.ConversationRecord) error {
-	return hubapi.FromFeatureError(conversations.AuthorizeConversationLinkedItemPG(p0, p1, conversationInput(p2), p3))
-}
-
-func boundRunes(p0 string, p1 int) string { return conversations.BoundRunes(p0, p1) }
-
 func contentArchiveID(p0 string, p1 attachment.ArchiveReference) string {
 	return conversations.ContentArchiveID(p0, p1)
-}
-
-func conversationAgentOverrideBody(p0 string, p1 conversation.Preferences) string {
-	return conversations.ConversationAgentOverrideBody(p0, p1)
-}
-
-func conversationAttachmentFromStore(p0 conversationstore.Attachment) conversations.ConversationAttachmentRecord {
-	return conversations.ConversationAttachmentFromStore(p0)
 }
 
 func conversationContentUnavailable() error {
@@ -266,10 +246,6 @@ func conversationMessageFromStore(p0 conversationstore.Message) conversations.Co
 
 func conversationMessageToStore(p0 tracker.OrganizationID, p1 conversations.ConversationMessageRecord) conversationstore.Message {
 	return conversations.ConversationMessageToStore(p0, p1)
-}
-
-func conversationOlderCursor(p0 []conversations.ConversationMessageResource) (bool, *string) {
-	return conversations.ConversationOlderCursor(p0)
 }
 
 func conversationOptional(p0 string) *string { return conversations.ConversationOptional(p0) }
@@ -306,10 +282,6 @@ func newConversationArchiveReads(p0 context.Context) context.Context {
 
 func projectConversation(p0 conversations.ConversationRecord) conversations.ConversationResource {
 	return conversations.ProjectConversation(p0)
-}
-
-func projectExecution(p0 conversation.Execution) conversations.ConversationExecutionResource {
-	return conversations.ProjectExecution(p0)
 }
 
 func projectMessage(p0 conversations.ConversationMessageRecord) conversations.ConversationMessageResource {

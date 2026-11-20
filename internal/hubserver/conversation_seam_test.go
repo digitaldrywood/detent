@@ -27,13 +27,10 @@ type conversationControlsResponse = conversations.WorkerControlsResponse
 type conversationTurnEventsResponse = conversations.WorkerTurnEventsResponse
 type conversationCreatedResponse = conversations.ConversationCreatedResponse
 type conversationFirstMessage = conversations.ConversationFirstMessage
-type conversationLinkIssue = conversations.ConversationLinkIssue
 type conversationLinkResult = conversations.ConversationLinkResult
 type conversationLinkedIssue = conversations.ConversationLinkedIssue
 type conversationListPage = conversations.ConversationListPage
 type conversationQuestionContent = conversations.ConversationQuestionContent
-type conversationRecordContent = conversations.ConversationRecordContent
-type conversationReferenceResource = conversations.ConversationReferenceResource
 type conversationResource = conversations.ConversationResource
 type conversationStore = conversations.ConversationStore
 type conversationStream = conversations.ConversationStream
@@ -89,18 +86,6 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 
 func (s *Service) streamConversationEvents(c echo.Context) error {
 	return s.conversationHTTP().StreamEvents(c)
-}
-
-func (s *Service) archiveConversation(c echo.Context) error {
-	return s.conversationHTTP().Archive(c)
-}
-
-func (s *Service) deleteConversation(c echo.Context) error {
-	return s.conversationHTTP().Delete(c)
-}
-
-func (s *Service) getConversation(c echo.Context) error {
-	return s.conversationHTTP().Get(c)
 }
 
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *hubscope.NativeScope, conversationID string) (conversationRecord, error) {

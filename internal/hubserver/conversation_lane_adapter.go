@@ -308,10 +308,6 @@ func (s *Service) deleteCloudAttachment(c echo.Context) error {
 	return s.attachmentHTTP().DeleteCloudAttachment(c)
 }
 
-func (s *Service) deleteCloudAttachmentCommand(ctx context.Context, scope hubscope.NativeScope, id string) error {
-	return s.attachmentHTTP().DeleteCloudAttachmentCommand(ctx, scope, id)
-}
-
 func (s *Service) referenceCloudAttachment(c echo.Context) error {
 	return s.attachmentHTTP().ReferenceCloudAttachment(c)
 }
@@ -454,18 +450,8 @@ func (s *Service) artifactCatalogHTTP() conversations.ArtifactCatalogHTTP {
 	})
 }
 
-var coordinatorTool = coordinator.Tool
 var decodeCoordinatorArguments = coordinator.DecodeArguments
-var decodeCoordinatorArgumentsWithLimit = coordinator.DecodeArgumentsWithLimit
-var errCoordinatorToolArguments = coordinator.ErrToolArguments
-var coordinatorActionRequestID = coordinator.ActionRequestID
 var escapeCoordinatorData = coordinator.EscapeData
-var coordinatorWorkflowTool = coordinator.WorkflowTool
-var coordinatorWorkflowMutation = coordinator.WorkflowMutation
-var coordinatorWorkflowTools = coordinator.WorkflowTools
-var coordinatorSettingsDiff = coordinator.SettingsDiff
-var coordinatorPolicyEvidence = coordinator.PolicyEvidence
-var errCoordinatorProjectUnreadable = coordinator.ErrProjectUnreadable
 
 func (t *coordinatorToolset) workflowTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
 	return coordinator.PreviewWorkflow(ctx, record, call, t.workflowPreviewDeps())
@@ -535,20 +521,10 @@ func (t *coordinatorToolset) workReadContext(ctx context.Context, record convers
 	return t.issueContextDeps().WorkReadContext(ctx, record)
 }
 
-var coordinatorRunnerTools = coordinator.RunnerTools
-
-type coordinatorRunnerArguments = coordinator.RunnerArguments
-
 var coordinatorSettingsNames = coordinator.SettingsNames
-var coordinatorSettingsTool = coordinator.SettingsTool
-var coordinatorSettingsTools = coordinator.SettingsTools
 
 func (s *Service) coordinatorRunner(ctx context.Context, scope hubscope.NativeScope, id string) (runnerauth.Runner, error) {
 	return s.coordinatorRunnerDeps().Runner(ctx, scope, id)
-}
-
-func (s *Service) coordinatorRunners(ctx context.Context, scope hubscope.NativeScope, args coordinatorRunnerArguments) ([]runnerauth.Runner, error) {
-	return s.coordinatorRunnerDeps().Runners(ctx, scope, args)
 }
 
 func (t *coordinatorToolset) runnerTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -561,10 +537,6 @@ func (s *Service) executeCoordinatorRunnerAction(ctx context.Context, action cha
 
 func coordinatorSettingsRequirement(name, project string) operatortool.Requirement {
 	return coordinator.SettingsRequirement(name, project, hubFleetRequirement, projectToolScope)
-}
-
-func (s *Service) coordinatorSettingsTarget(ctx context.Context, record conversationRecord, name string, raw json.RawMessage) error {
-	return s.coordinatorSettingsDeps().CheckTarget(ctx, record, name, raw)
 }
 
 func (t *coordinatorToolset) settingsTool(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
@@ -641,9 +613,6 @@ func (t *coordinatorToolset) settingsPreviewDeps() coordinator.SettingsPreviewDe
 		ProjectError: projectToolError,
 	}
 }
-
-var coordinatorSlashActionTools = coordinator.SlashActionTools
-var coordinatorActionError = coordinator.ActionError
 
 type coordinatorCatalogEntry = coordinator.CatalogEntry
 
@@ -914,7 +883,6 @@ func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Con
 }
 
 var appendCoordinatorEvent = coordinator.AppendEvent
-var coordinatorMonthlyBudget = coordinator.MonthlyBudget
 
 func (c *conversationTurnCoordinator) recordDeps() coordinator.RecordDeps {
 	return coordinator.RecordDeps{
@@ -938,18 +906,6 @@ func (s *Service) executeCoordinatorIssueArchive(ctx context.Context, action cha
 	return s.issueCommandDeps().ExecuteArchive(ctx, action)
 }
 
-func (s *Service) archiveCoordinatorWorkItems(ctx context.Context, scope hubscope.NativeScope, command tracker.Mutation, archive chat.IssueArchive) (json.RawMessage, error) {
-	return s.issueCommandDeps().Archive(ctx, scope, command, archive)
-}
-
-var validateCoordinatorArchiveIDs = coordinator.ValidateArchiveIDs
-
-const coordinatorArchiveMaxItems = coordinator.ArchiveMaxItems
-
-func (t *coordinatorToolset) loadSplitIssueSkill(raw json.RawMessage) (any, error) {
-	return coordinator.LoadSplitIssueSkill(raw)
-}
-
 func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
 	return t.issueProposalDeps().PreviewSplit(ctx, record, call)
 }
@@ -957,15 +913,6 @@ func (t *coordinatorToolset) proposeIssueSplit(ctx context.Context, record conve
 func (s *Service) executeCoordinatorIssueSplit(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
 	return s.issueCommandDeps().ExecuteSplit(ctx, action)
 }
-
-func (s *Service) executeCoordinatorSplitRecords(ctx context.Context, scope hubscope.NativeScope, options hubapi.NativeCommandOptions, command tracker.Mutation, split chat.IssueSplit) (json.RawMessage, error) {
-	return s.issueCommandDeps().Split(ctx, scope, options, command, split)
-}
-
-var coordinatorIssueSplitTool = coordinator.IssueSplitTool
-var validateCoordinatorIssueSplit = coordinator.ValidateIssueSplit
-
-const coordinatorSplitMaxChildren = coordinator.SplitMaxChildren
 
 func (t *coordinatorToolset) issueProposalDeps() coordinator.IssueProposalDeps {
 	return coordinator.IssueProposalDeps{ProposalDeps: t.proposalDeps(), Commands: t.coordinator.server.issueCommandDeps()}
@@ -1014,7 +961,6 @@ func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID 
 }
 
 var coordinatorHandles = coordinator.Handles
-var errCoordinatorRevision = coordinator.ErrRevision
 var errCoordinatorLinked = coordinator.ErrLinked
 
 func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
@@ -1025,8 +971,6 @@ func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend r
 }
 
 var coordinatorOutcome = coordinator.Outcome
-
-const coordinatorInstructions = coordinator.Instructions
 
 type coordinatorAttachment = coordinator.TextAttachment
 
@@ -1054,17 +998,9 @@ func (s *Service) readCoordinatorProposalAgent(ctx context.Context, action chat.
 	return agent, err
 }
 
-const coordinatorAgentName = coordinator.AgentName
-
-var coordinatorAgent = coordinator.Agent
-
-var coordinatorScreenReadNames = coordinator.ScreenReadNames
-
 var coordinatorScreenTools = coordinator.ScreenTools
 
 var coordinatorScreenRead = coordinator.ScreenRead
-
-var coordinatorReadPermission = coordinator.ReadPermission
 
 func (t *coordinatorToolset) screenRead(ctx context.Context, record conversationRecord, call runner.AgentToolCall) (any, error) {
 	return t.screenReadDeps().Read(ctx, record, call)
@@ -1094,15 +1030,9 @@ func (s *Service) coordinatorScope(ctx context.Context, project tracker.ProjectI
 	return coordinator.NativeScope(ctx, project, manage)
 }
 
-func (s *Service) validateCoordinatorSpriteChange(ctx context.Context, scope hubscope.NativeScope, settings spritePoolSettings) error {
-	return s.spriteCommandDeps().Validate(ctx, scope, settings)
-}
-
 func (s *Service) executeCoordinatorSpriteAction(ctx context.Context, action chat.Action) (chat.ActionExecution, error) {
 	return s.spriteCommandDeps().Execute(ctx, action)
 }
-
-var coordinatorSpriteTools = coordinator.SpriteTools
 
 var coordinatorSpriteTool = coordinator.IsSpriteTool
 
@@ -1234,8 +1164,6 @@ func (s *Service) coordinatorAllowedProjects(ctx context.Context, r tenantstore.
 func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversationRecord, readable []tracker.ProjectID, title, objective, projectID string) (any, error) {
 	return coordinator.ProposeIssue(ctx, record, readable, title, objective, projectID, t.publishIssueProposal)
 }
-
-const coordinatorToolResultBytes = coordinator.ToolResultBytes
 
 type coordinatorIssue = coordinator.IssueExplanation
 
@@ -1387,8 +1315,6 @@ func (s *Service) postConversationAction(c echo.Context) error {
 	return s.actionHTTPDeps().Post(c)
 }
 
-var coordinatorActionTools = coordinator.ActionTools
-
 func (s *Service) prepareCoordinatorAnswerComment(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, conversationID string, request tracker.Transition, now time.Time) (*coordinatorAnswerComment, error) {
 	comment, err := coordinator.PrepareAnswerComment(ctx, scope, item, conversationID, request, now, s.runDetailStore())
 	if err != nil {
@@ -1469,7 +1395,6 @@ func (s *Service) validateCoordinatorMoveAnswer(ctx context.Context, scope hubsc
 
 var coordinatorCatalogWrite = coordinator.CatalogWrite
 var coordinatorCatalogRequirement = coordinator.CatalogRequirement
-var coordinatorCatalogExcluded = coordinator.CatalogExcluded
 
 func (t *coordinatorToolset) workflowEvidence(ctx context.Context, record conversationRecord) map[string]any {
 	return coordinator.WorkflowEvidence(ctx, record, t.execute)

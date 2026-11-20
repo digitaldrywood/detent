@@ -103,7 +103,6 @@ type aiCreditTransaction = credits.Transaction
 type aiCreditView = credits.View
 type includedAICredits credits.Included
 type creditPageRequest credits.Page
-type preparedConversationUsage = credits.PreparedUsage
 
 type chatUsageSummary = usagereport.ChatSummary
 

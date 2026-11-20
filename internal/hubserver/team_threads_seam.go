@@ -50,16 +50,6 @@ func (s *Service) threadCaller(scope hubscope.NativeScope) threads.Caller {
 	})
 }
 
-func (s *Service) listThreadRecords(ctx context.Context, scope hubscope.NativeScope, in teamThreadInput) (teamThreadPage, error) {
-	page, err := s.threadsService().List(ctx, s.threadCaller(scope), in)
-	return page, hubapi.FromFeatureError(err)
-}
-
-func (s *Service) requestTeamUnread(ctx context.Context, scope hubscope.NativeScope, projects []string, refresh bool) (teamUnreadSummary, error) {
-	summary, err := s.threadsService().RequestUnread(ctx, s.threadCaller(scope), projects, refresh)
-	return summary, hubapi.FromFeatureError(err)
-}
-
 func (s *Service) maintainTeamUnread(ctx context.Context) error {
 	return s.threadsService().MaintainUnread(ctx)
 }
