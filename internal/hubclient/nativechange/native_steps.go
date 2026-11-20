@@ -31,8 +31,10 @@ func (e *nativeExecution) recordStep(ctx context.Context, receipt tracker.Native
 		return err
 	}
 	receipt.PolicyID = e.data.PolicyID
-	receipt.ReviewState = e.stepReviewState()
-	receipt.ReviewEpoch = e.stepReviewEpoch()
+	receipt.ReviewState = e.stepReviewStateFor(receipt.Step)
+	if receipt.Step != "plan" {
+		receipt.ReviewEpoch = e.stepReviewEpoch()
+	}
 	var err error
 	receipt, err = e.retainStep(ctx, receipt)
 	if err != nil {
@@ -63,15 +65,36 @@ func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepRe
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	binding.PolicyID, binding.ReviewState = e.data.PolicyID, e.stepReviewState()
-	binding.ReviewEpoch = e.stepReviewEpoch()
+	binding.PolicyID, binding.ReviewState = e.data.PolicyID, e.stepReviewStateFor(binding.Step)
+	if binding.Step != "plan" {
+		binding.ReviewEpoch = e.stepReviewEpoch()
+	}
 	for _, receipt := range e.data.Steps {
 		if receipt.Matches(binding) {
 			return e.restoreStep(ctx, receipt)
 		}
 	}
-	for i := len(e.claim.recovery.Attempts) - 1; i >= 0; i-- {
-		for _, receipt := range e.claim.recovery.Attempts[i].Steps {
+	attempts := e.claim.recovery.Attempts
+	if binding.Step == "plan" && e.phaseSource != nil {
+		owner := e.phaseSource
+		if !slices.ContainsFunc(attempts, func(attempt tracker.NativeAttempt) bool { return attempt.AttemptID == owner.AttemptID }) {
+			attempt, err := e.claim.source.NativeClient().NativeAttempt(ctx, e.claim.lease.WorkItemID, owner.AttemptID)
+			if err != nil {
+				return tracker.NativeStepReceipt{}, fmt.Errorf("read plan receipt attempt: %w", err)
+			}
+			if attempt.AttemptID != owner.AttemptID || attempt.LeaseID != owner.LeaseID ||
+				attempt.FencingToken != owner.FencingToken || attempt.PolicyID != owner.PolicyID {
+				return tracker.NativeStepReceipt{}, errors.New("plan receipt does not match its attempt")
+			}
+			attempts = append(slices.Clone(attempts), attempt)
+		}
+	}
+	for i := len(attempts) - 1; i >= 0; i-- {
+		attempt := attempts[i]
+		if binding.Step == "plan" && (e.phaseSource == nil || e.phaseSource.AttemptID != attempt.AttemptID) {
+			continue
+		}
+		for _, receipt := range attempt.Steps {
 			if receipt.Matches(binding) {
 				restored, err := e.restoreStep(ctx, receipt)
 				if err != nil {
@@ -86,6 +109,17 @@ func (e *nativeExecution) Step(ctx context.Context, binding tracker.NativeStepRe
 
 func (e *nativeExecution) stepReviewState() string {
 	return evidence.ReviewState(e.claim.recovery, e.stepReviews, e.stepDiscussion)
+}
+
+func (e *nativeExecution) stepReviewStateFor(step string) string {
+	if step == "plan" {
+		return planIssueDigest(e.Recovery())
+	}
+	return e.stepReviewState()
+}
+
+func planIssueDigest(recovery tracker.NativeRecovery) string {
+	return tracker.NativeStepReviewState(tracker.NativeRecovery{Issue: recovery.Issue})
 }
 
 func (e *nativeExecution) stepReviewEpoch() tracker.FencingToken {
@@ -117,21 +151,41 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		}
 	}
 	e.mu.Unlock()
+	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
+	recovery := e.Recovery()
+	var workflow []tracker.CollaborationEvent
+	if gates.PlanEnabled && (len(receipts) == 0 && !strings.EqualFold(recovery.Issue.State, "Todo") && recovery.Change == nil || len(receipts) != 0 && receipts[0].Phase == "plan_draft") {
+		workflow, err = client.RecentWorkflowTransitions(ctx, lease.WorkItemID, 3)
+		if err != nil {
+			return nil, fmt.Errorf("read planning workflow transitions: %w", err)
+		}
+	}
 	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
+		sameAttempt.Workflow = workflow
 		return &sameAttempt, nil
 	}
 	pinned := receipts[0]
 	var phases []tracker.NativePhaseReceipt
 	requirePhase := func(phase, input string) {
+		state := reviewState
+		if planPhase(phase) {
+			state = planIssueDigest(e.Recovery())
+		}
 		phases = append(phases, tracker.NativePhaseReceipt{
-			Phase: phase, InputDigest: phaseInputDigest(phase, pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, input),
+			Phase: phase, InputDigest: phaseInputDigest(phase, pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, state, input),
 		})
+	}
+	if gates.PlanEnabled && planPhase(pinned.Phase) {
+		if gates.PlanReview == gate.PlanReviewHuman {
+			requirePhase("plan_draft", "")
+		}
+		requirePhase("plan_review", "")
+		requirePhase("plan", "")
 	}
 	requirePhase("implement", "")
 	if command != "" {
 		requirePhase("project_gate", command)
 	}
-	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
 	version := ""
 	if current := e.claim.recovery.Change; current != nil && current.HeadSHA == pinned.HeadSHA {
 		version = current.VersionID
@@ -154,7 +208,12 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		return nil, errors.New("recorded phase source changed during continuation")
 	}
 	continuation.RepositoryURL = project.CloneURL
+	continuation.Workflow = workflow
 	return &continuation, nil
+}
+
+func planPhase(phase string) bool {
+	return phase == "plan" || phase == "plan_draft" || phase == "plan_review"
 }
 
 func phaseInputDigest(phase, head, tree, policyID, reviewState, input string) string {
@@ -177,6 +236,9 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	e.mu.Lock()
 	attemptID, reviewState := e.data.AttemptID, e.stepReviewState()
 	e.mu.Unlock()
+	if planPhase(phase) {
+		reviewState = planIssueDigest(e.Recovery())
+	}
 	digest := phaseInputDigest(phase, head, tree, lease.PolicyID, reviewState, input)
 	request := tracker.NativePhaseReceipt{
 		Mutation:  tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken},

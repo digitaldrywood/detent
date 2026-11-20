@@ -205,4 +205,5 @@ type Writer interface {
 	PutWorkspaceItem(context.Context, WorkspaceItem) error
 	CloseWorkspaceItem(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, time.Time) error
 	CreateProviderReservation(context.Context, ProviderReservation) error
+	DropProviderReservation(context.Context, tracker.LeaseID) error
 }

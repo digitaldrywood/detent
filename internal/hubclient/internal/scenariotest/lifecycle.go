@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
@@ -42,6 +43,7 @@ type Lifecycle interface {
 	runner.PreStartConversationExecution
 	runner.ProcessUsageExecution
 	runner.ProviderCapacityExecution
+	SetPhaseProvider(context.Context, providercapacity.Requirement, providercapacity.Requirement) error
 	runner.PublicationSourceExecution
 	runner.ReleaseDeliveryExecution
 	runner.RepositoryExecution

@@ -1551,7 +1551,7 @@ func TestPlanOnlyPromptOmitsCIImplementationHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(prompt, "automated plan review should be posted") || !strings.Contains(prompt, "include a `## Detent Plan Review` section") {
-		t.Fatal("native plan prompt did not return review evidence to the orchestrator")
+	if strings.Contains(prompt, "automated plan review should be posted") || !strings.Contains(prompt, "The runner sends the plan for independent review") {
+		t.Fatal("native plan prompt did not preserve independent review")
 	}
 }

@@ -45,17 +45,18 @@ const (
 	TokenCeilingSourceAbsolute         = "max_session_tokens"
 	TokenCeilingSourceContextWindow    = "max_session_context_multiplier"
 
-	RunModeImplement = "implement"
-	RunModePlan      = "plan"
-	RunModeMerge     = "merge"
-	RunModeRoutine   = "routine"
-	RunModeTriage    = "triage"
+	RunModeImplement = runworkspace.RunModeImplement
+	RunModePlan      = runworkspace.RunModePlan
+	RunModeMerge     = runworkspace.RunModeMerge
+	RunModeRoutine   = runworkspace.RunModeRoutine
+	RunModeTriage    = runworkspace.RunModeTriage
 
 	RunOutputMergeFastPathClean       = "merge_fast_path_clean"
 	RunOutputMergeFastPathCheckedHead = "merge_fast_path_checked_head"
 	RunOutputMergeFallbackDeferred    = "merge_fallback_deferred"
 	RunOutputMergeFallbackResolved    = "merge_fallback_resolved"
 	RunOutputMergeFallbackRework      = "merge_fallback_rework"
+	RunOutputPlanApprovalWait         = "plan_approval_wait"
 	RunOutputNativeLanded             = "native_landed"
 	RunOutputNativeLandingRefused     = "native_landing_refused"
 )
@@ -657,6 +658,7 @@ type RunRequest struct {
 	WorkAttemptID             int64
 	Generation                uint64
 	Mode                      string
+	PlanPhase                 bool
 	DispatchSourceState       string
 	DispatchTargetState       string
 	PriorAttempt              PriorAttempt

@@ -1432,13 +1432,17 @@ func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, 
 	if candidate == nil || candidate.Revision <= 0 || candidate.Requirement.Validate() != nil {
 		return providercapacity.Reservation{}, ProviderWait("provider_candidate_changed", "Work item needs a current local provider selection before it can be claimed")
 	}
-	reports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
+	return SelectTenantProviderRequirement(ctx, w, identity.RunnerID, candidate.Requirement, joining, now)
+}
+
+func SelectTenantProviderRequirement(ctx context.Context, w tenantstore.Writer, runnerID string, requirement providercapacity.Requirement, joining string, now time.Time) (providercapacity.Reservation, error) {
+	reports, err := w.RunnerProviderReports(ctx, runnerID)
 	if err != nil {
 		return providercapacity.Reservation{}, err
 	}
 	var selected *providercapacity.Report
 	for index := range reports {
-		if reports[index].Supports(candidate.Requirement) {
+		if reports[index].Supports(requirement) {
 			selected = &reports[index]
 			break
 		}
@@ -1446,7 +1450,7 @@ func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, 
 	if selected == nil {
 		return providercapacity.Reservation{}, ProviderWait("provider_incompatible", "Runner does not advertise the selected backend and model")
 	}
-	capacity, err := w.LockRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: identity.RunnerID, Provider: selected.Provider, Backend: selected.Backend, AccountAlias: selected.AccountAlias, SharedAccountAlias: selected.SharedAccountAlias}, now)
+	capacity, err := w.LockRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: runnerID, Provider: selected.Provider, Backend: selected.Backend, AccountAlias: selected.AccountAlias, SharedAccountAlias: selected.SharedAccountAlias}, now)
 	if err != nil {
 		return providercapacity.Reservation{}, err
 	}
@@ -1454,17 +1458,17 @@ func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, 
 		return providercapacity.Reservation{}, ProviderWait("provider_incompatible", "Runner no longer advertises the selected backend and model")
 	}
 	group := ""
-	if joining != "" && candidate.Requirement.Backend == "git" && candidate.Requirement.Role == "merge" {
-		group = joining + "/" + identity.RunnerID
+	if joining != "" && requirement.Backend == "git" && requirement.Role == "merge" {
+		group = joining + "/" + runnerID
 	}
-	used, err := w.ProviderReservationUsage(ctx, *selected, identity.RunnerID, group, now)
+	used, err := w.ProviderReservationUsage(ctx, *selected, runnerID, group, now)
 	if err != nil {
 		return providercapacity.Reservation{}, err
 	}
 	if capacity.MaxConcurrent > 0 && used >= capacity.MaxConcurrent {
 		return providercapacity.Reservation{}, ProviderWait("provider_capacity", "Shared provider concurrency is fully reserved")
 	}
-	return providercapacity.Reservation{Requirement: candidate.Requirement, Report: *selected, Reason: "Current provider account capacity is available"}, nil
+	return providercapacity.Reservation{Requirement: requirement, Report: *selected, Reason: "Current provider account capacity is available"}, nil
 }
 
 func nativeClaimProviderCandidate(request tracker.NativeClaim, item tracker.NativeWorkItemID) *tracker.NativeCapacityCandidate {

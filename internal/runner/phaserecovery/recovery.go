@@ -264,3 +264,38 @@ func Landing(recovery tracker.NativeRecovery) *tracker.NativeLandingReceipt {
 	}
 	return nil
 }
+
+func CompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
+	signal, reported := workpad.SignalFromComment(message, "", "")
+	if reported && signal != nil && signal.Invalid == nil && hostPublicationOnly(signal) {
+		signal.Status, signal.ReasonCode, signal.Blockers = workpad.StatusComplete, "", nil
+	}
+	return signal, reported
+}
+
+func DispositionFromMessage(message string) *tracker.NativeDisposition {
+	signal, reported := CompletionSignalFromMessage(message)
+	if !reported || signal == nil || signal.Invalid != nil {
+		return nil
+	}
+	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
+}
+
+func hostPublicationOnly(signal *workpad.Signal) bool {
+	if signal.Status != workpad.StatusBlocked || signal.HumanAction != "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(signal.ReasonCode)) {
+	case "publication_blocked", "awaiting_host_publish":
+		return len(signal.Blockers) == 0
+	case "host_publication_pending":
+		if len(signal.Blockers) == 0 {
+			return true
+		}
+		if len(signal.Blockers) == 1 {
+			blocker := signal.Blockers[0]
+			return blocker.Ref == "instance:tool" && blocker.Owner == workpad.BlockerOwnerInstance && blocker.Predicate == nil
+		}
+	}
+	return false
+}

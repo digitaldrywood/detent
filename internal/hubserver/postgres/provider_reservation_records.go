@@ -141,6 +141,11 @@ func (s *session) ProviderReservationUsage(ctx context.Context, report providerc
 	return used, mapError(ctx, err)
 }
 
+func (s *session) DropProviderReservation(ctx context.Context, lease tracker.LeaseID) error {
+	_, err := s.db.Exec(ctx, `DELETE FROM provider_reservations WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease)
+	return mapError(ctx, err)
+}
+
 func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.ProviderReservation) error {
 	if err := s.checkOrganization(row.OrganizationID); err != nil {
 		return err

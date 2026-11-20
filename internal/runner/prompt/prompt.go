@@ -795,7 +795,7 @@ func appendPlanOnlyBlock(prompt string, cfg gate.PlanConfig, native bool) string
 	cfg = gate.EffectivePlan(cfg)
 	approval := "Human plan approval uses label `" + cfg.ApprovalLabel + "`; automated plan review should be posted as a `## Detent Plan Review` issue comment."
 	if native {
-		approval = "Return the plan in your final result. For configured automated review, include a `## Detent Plan Review` section with `- state: approved`, or `- state: P1` and the unresolved findings. The orchestrator publishes the result, evaluates the configured review policy, and owns the implementation handoff. Do not post tracker comments or request human approval when automated review approves the plan."
+		approval = "Return the plan in your final result. The runner sends the plan for independent review under the configured policy. Do not approve the plan yourself, post tracker comments, or request human approval."
 	}
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Plan approval stop\n\n" +
 		"This dispatch is plan-only. Produce a structured implementation plan as a Markdown artifact for issue review. " +

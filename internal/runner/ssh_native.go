@@ -513,6 +513,10 @@ func (e *sshNativeExecution) PhaseReceipts(ctx context.Context, command string) 
 	return result, err
 }
 
+func (e *sshNativeExecution) SetPhaseProvider(ctx context.Context, expected, requirement providercapacity.Requirement) error {
+	return e.peer.Call(ctx, "execution.SetPhaseProvider", nil, expected, requirement)
+}
+
 func (e *sshNativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 	return e.peer.Call(ctx, "execution.VerifyPhaseAuthority", nil)
 }

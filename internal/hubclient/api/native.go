@@ -401,6 +401,12 @@ func (c *NativeClient) Renew(ctx context.Context, lease tracker.NativeLease, ttl
 	return c.renew(ctx, lease, ttl, 0)
 }
 
+func (c *NativeClient) SetLeaseProviderPhase(ctx context.Context, lease tracker.NativeLease, ttl int64, phase tracker.NativeProviderPhaseMutation) (tracker.NativeLease, error) {
+	var result tracker.NativeLease
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/leases/"+url.PathEscape(string(lease.ID))+"/renew", tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: ttl, ProviderPhase: &phase}, &result)
+	return result, err
+}
+
 func (c *NativeClient) RenewHeartbeat(ctx context.Context, lease tracker.NativeLease, ttl int64) (tracker.NativeLease, error) {
 	var result tracker.NativeLease
 	path := c.base() + "/leases/" + url.PathEscape(string(lease.ID)) + "/renew"

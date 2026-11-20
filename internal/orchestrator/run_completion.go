@@ -397,6 +397,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if nativeCompletion {
+		if event.Err == nil && event.Result.Output == runpkg.RunOutputPlanApprovalWait {
+			o.completePlanApprovalWait(ctx, state, event, running)
+			return
+		}
 		if o.completeNativeChangeRun(ctx, state, event, running, event.Result.FinalState) {
 			return
 		}
@@ -2113,37 +2117,17 @@ func (o *Orchestrator) completePlanRunning(
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return
 	}
-	targets := []string{cfg.Stop}
-	if o.nativeWorkflow() {
-		var err error
-		targets, err = o.nativePlanTarget(ctx, issue, event.Result.Output)
-		if err != nil {
-			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-			return
-		}
+	if err := o.updateIssueStateByID(ctx, state, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
 	}
-	for _, target := range targets {
-		metadata := workflowLaneMetadata{}
-		if o.nativeWorkflow() && normalizeState(target) == normalizeState(autoPromoteReworkState) {
-			evaluation := planReviewEvaluationFromComments([]connector.IssueComment{{Body: nativePlanReviewOutput(event.Result.Output)}})
-			metadata = workflowLaneMetadataWithActionSignature(metadata, workflowActionPlanReviewRework, evaluation.Signature)
-		}
-		if err := o.updateIssueStateByIDWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "plan_artifact_created", metadata); err != nil {
-			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-			return
-		}
-		issue.State = target
-		running.Issue = cloneIssue(issue)
-	}
+	issue.State = cfg.Stop
 	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
 
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
 	}
 	delete(state.planRework, issueID)
-	if o.nativeWorkflow() {
-		o.trackPlanReviewTransition(state, issueID, issue.State)
-	}
 	state.Completed[issueID] = Completed{
 		Issue:           issue,
 		SessionID:       running.SessionID,
