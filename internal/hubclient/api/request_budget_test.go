@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -146,6 +148,115 @@ func TestClientRequestBudgetContinuesAfterRepeatedRefusals(t *testing.T) {
 			t.Fatalf("elapsed=%s", elapsed)
 		}
 	})
+}
+
+func TestFencedPublicationRequestBudget(t *testing.T) {
+	for _, route := range []string{"phases", "progress"} {
+		for _, scenario := range []struct {
+			name       string
+			wantCalls  int
+			wantWrites int
+			wait       time.Duration
+		}{
+			{name: "accepted", wantCalls: 3, wantWrites: 1, wait: 2 * time.Minute},
+			{name: "cancelled", wantCalls: 1, wait: 10 * time.Second},
+			{name: "stale fence", wantCalls: 2, wait: time.Minute},
+			{name: "unkeyed", wantCalls: 1},
+		} {
+			t.Run(route+"/"+scenario.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					mutation := tracker.Mutation{IdempotencyKey: "attempt:publication", LeaseID: "lease", FencingToken: 7}
+					if scenario.name == "unkeyed" {
+						mutation.IdempotencyKey = ""
+					}
+					item := tracker.NativeWorkItemID("wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+					receipt := tracker.NativePhaseReceipt{Mutation: mutation, Phase: "implementation", AttemptID: "attempt"}
+					verdict := progresscheck.Publication{Mutation: mutation, AttemptID: "attempt", RoundInput: progresscheck.RoundInput{RoundID: "round"}}
+					var sent []byte
+					calls, writes := 0, 0
+					transport := executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+						calls++
+						if req.Method != http.MethodPost || req.URL.Path != "/api/v2/organizations/org_example/projects/prj_example/work-items/"+string(item)+"/"+route {
+							t.Fatalf("publication request = %s %s", req.Method, req.URL.Path)
+						}
+						body, err := io.ReadAll(req.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var actual tracker.Mutation
+						if err := json.Unmarshal(body, &actual); err != nil || actual != mutation {
+							t.Fatalf("publication mutation = %#v, error = %v", actual, err)
+						}
+						if sent != nil && !bytes.Equal(body, sent) {
+							t.Fatal("budget replay changed the publication body")
+						}
+						sent = body
+						response := httptest.NewRecorder()
+						switch {
+						case calls == 1 || calls == 2 && scenario.name == "accepted":
+							refuseBudget(response, "60")
+						case calls == 2 && scenario.name == "stale fence":
+							response.WriteHeader(http.StatusConflict)
+							response.WriteString(`{"code":"stale_fencing_token"}`)
+						default:
+							writes++
+							response.Write(body)
+						}
+						return response.Result(), nil
+					})
+					client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: transport}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					native, err := client.Native("org_example", "prj_example")
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx := t.Context()
+					if scenario.name == "cancelled" {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+						defer cancel()
+					}
+					start := time.Now()
+					if route == "phases" {
+						var recorded tracker.NativePhaseReceipt
+						recorded, err = native.PublishPhaseReceipt(ctx, item, receipt)
+						if err == nil && recorded != receipt {
+							t.Fatalf("recorded receipt = %#v, want %#v", recorded, receipt)
+						}
+					} else {
+						var recorded progresscheck.RoundVerdict
+						recorded, err = native.PublishRoundVerdict(ctx, item, verdict)
+						if err == nil && recorded.RoundID != verdict.RoundID {
+							t.Fatalf("recorded verdict round = %q, want %q", recorded.RoundID, verdict.RoundID)
+						}
+					}
+					switch scenario.name {
+					case "accepted":
+						if err != nil {
+							t.Fatalf("publication failed after %d requests: %v", calls, err)
+						}
+					case "cancelled":
+						if !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("cancelled publication error = %v", err)
+						}
+					case "stale fence":
+						if !ClaimLost(err) {
+							t.Fatalf("stale publication error = %v", err)
+						}
+					case "unkeyed":
+						if !isBudgetRefusal(err) {
+							t.Fatalf("unkeyed publication error = %v", err)
+						}
+					}
+					if calls != scenario.wantCalls || writes != scenario.wantWrites || time.Since(start) != scenario.wait {
+						t.Fatalf("requests = %d, writes = %d, elapsed = %s", calls, writes, time.Since(start))
+					}
+				})
+			})
+		}
+	}
 }
 
 func TestClientFailsFastOnOtherRefusals(t *testing.T) {

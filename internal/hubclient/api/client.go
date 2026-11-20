@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
@@ -231,13 +232,29 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	target, _, _ := strings.Cut(path, "?")
 	var replayMutation bool
+	var publication tracker.Mutation
 	switch request := input.(type) {
 	case runnersession.Mutation:
 		replayMutation = strings.HasSuffix(target, "/runner-sessions")
 	case tracker.NativeRunEvent:
 		replayMutation = request.IdempotencyKey != "" && strings.Contains(target, "/work-items/") && strings.HasSuffix(target, "/events")
+	case tracker.NativePhaseReceipt:
+		if strings.HasSuffix(target, "/phases") {
+			publication = request.Mutation
+		}
+	case progresscheck.Publication:
+		if strings.HasSuffix(target, "/progress") {
+			publication = request.Mutation
+		}
 	}
-	return c.withinRequestBudget(ctx, method, path, replayMutation && method == http.MethodPost, func() error {
+	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
+		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
+	return c.withinRequestBudget(ctx, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
+		if replayPublication {
+			if err := nativeEffectError(ctx); err != nil {
+				return err
+			}
+		}
 		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
 	})
 }
