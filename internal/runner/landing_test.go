@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -206,8 +207,8 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 			repository := "https://github.com/example/repo"
-			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
-			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			testenv.UseGitHubFixtureRemote(t, source, remote, repository)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
 			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
@@ -608,8 +609,8 @@ func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
 			repository := "https://github.com/example/repo"
-			runRunnerGit(t, source, "config", "url.file://"+remote+".insteadOf", repository+".git")
-			runRunnerGit(t, source, "remote", "add", "origin", repository+".git")
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			testenv.UseGitHubFixtureRemote(t, source, remote, repository)
 			runRunnerGit(t, source, "push", "-u", "origin", "main")
 			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 			if err := os.WriteFile(filepath.Join(source, "feature.txt"), []byte("reviewed source\n"), 0o600); err != nil {

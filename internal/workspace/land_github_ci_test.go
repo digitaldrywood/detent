@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -52,7 +53,7 @@ func TestLocalGitLandingCI(t *testing.T) {
 			t.Parallel()
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
-			useFixtureGitHubRemote(t, f.source, f.remote, repository)
+			testenv.UseGitHubFixtureRemote(t, f.source, f.remote, repository)
 			base := f.remoteMain(t)
 			if test.changedHead {
 				runGit(t, f.info.Path, "push", "origin", base+":refs/heads/"+f.info.Branch)

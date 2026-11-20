@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -26,7 +27,7 @@ func TestPublicationReconciliationBeforeForgeRead(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
-			useFixtureGitHubRemote(t, f.source, f.remote, repository)
+			testenv.UseGitHubFixtureRemote(t, f.source, f.remote, repository)
 			if test.remote == "intended" {
 				runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/"+f.info.Branch)
 			}
