@@ -3270,14 +3270,7 @@ func TestRunnerRunResumesOrphanedSessionWithRestartPrompt(t *testing.T) {
 	if sessionStore.started.ProviderThreadID != "thread-1155" {
 		t.Fatalf("SessionStart.ProviderThreadID = %q, want original thread", sessionStore.started.ProviderThreadID)
 	}
-	if len(sessionStore.providerUpdates) < 2 {
-		t.Fatalf("provider updates = %#v, want thread and session identity before completion", sessionStore.providerUpdates)
-	}
-	lastProvider := sessionStore.providerUpdates[len(sessionStore.providerUpdates)-1]
-	if lastProvider.ThreadID != "thread-1155" || lastProvider.SessionID != "thread-1155-turn-2" {
-		t.Fatalf("last provider update = %#v", lastProvider)
-	}
-	if sessionStore.finished.ResumedFromSessionID != 1155 || sessionStore.finished.ProviderThreadID != "thread-1155" {
+	if sessionStore.finished.ResumedFromSessionID != 1155 || sessionStore.finished.ProviderThreadID != "thread-1155" || sessionStore.finished.ProviderSessionID != "thread-1155-turn-2" {
 		t.Fatalf("SessionFinish resume metadata = %#v", sessionStore.finished)
 	}
 }

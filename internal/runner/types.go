@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
@@ -536,24 +537,8 @@ type AgentUpdate struct {
 	RSSCeilingBytes     uint64
 }
 
-type AgentTokenUsage struct {
-	InputTokens           int64
-	CachedInputTokens     int64
-	OutputTokens          int64
-	ReasoningOutputTokens int64
-	TotalTokens           int64
-	ThreadTotal           *AgentTokenCounts
-	Last                  *AgentTokenCounts
-	ModelContextWindow    *int64
-}
-
-type AgentTokenCounts struct {
-	InputTokens           int64
-	CachedInputTokens     int64
-	OutputTokens          int64
-	ReasoningOutputTokens int64
-	TotalTokens           int64
-}
+type AgentTokenUsage = runobserve.AgentTokenUsage
+type AgentTokenCounts = runobserve.AgentTokenCounts
 
 type SessionTokenCeilingError struct {
 	TotalTokens        int64

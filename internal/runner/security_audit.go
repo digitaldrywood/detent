@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -207,7 +208,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	var turnResult AgentTurnResult
 	var turns int64
 	var resume AgentResume
-	usage := newSessionTokenUsage(false)
+	usage := runobserve.NewSessionTokenUsage(false)
 	outputs := make([]securityaudit.ChunkOutput, 0, plan.Len())
 	for index := range plan.Len() {
 		if err = ctx.Err(); err != nil {
@@ -275,7 +276,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			}
 			previousIdentity := runResult.RuntimeIdentity
 			if update.Type == AgentUpdateTokenUsage {
-				update.Tokens = usage.normalize(update.Tokens)
+				update.Tokens = usage.Normalize(update.Tokens)
 			}
 			applyAgentUpdate(&runResult, update)
 			if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
