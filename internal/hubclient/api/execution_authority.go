@@ -7,7 +7,7 @@ import (
 )
 
 func WithMutationAuthority(ctx context.Context, scope string, lease tracker.NativeLease, cancellation func() error) context.Context {
-	return context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: scope, lease: lease, cancellation: cancellation})
+	return context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: scope, lease: lease, cancellation: cancellation, guard: ctx})
 }
 
 func MutationEffectError(ctx context.Context) error { return nativeEffectError(ctx) }
