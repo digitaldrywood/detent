@@ -234,11 +234,19 @@ func TestWaitOwnedDisambiguatesEPERMAfterLeaderExit(t *testing.T) {
 		live    bool
 	}{
 		{name: "empty group", command: "exit 17"},
-		{name: "live descendant", command: "sleep 30 & exit 17", live: true},
+		{name: "live descendant", command: "sh -c 'read release <&3' & exit 17", live: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := t.Context()
 			cmd := exec.CommandContext(ctx, "sh", "-c", test.command)
+			if test.live {
+				reader, release, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = errors.Join(reader.Close(), release.Close()) })
+				cmd.ExtraFiles = []*os.File{reader}
+			}
 			Configure(ctx, cmd)
 			var identity Identity
 			if err := startAcknowledged(cmd, func(observed Identity) error {

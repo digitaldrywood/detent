@@ -193,11 +193,13 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		)
 	}
 	processStartedAt := time.Now().UTC()
+	groupID := procgroup.GroupID(cmd)
 	if err := errors.Join(stdoutWriter.Close(), stderrWriter.Close()); err != nil {
-		terminateErr := procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+		terminateErr := procgroup.TerminateTree(cmd, groupID)
 		waitErr := cmd.Wait()
 		procgroup.RecordUsage(procgroup.UsageHandler(ctx), cmd.ProcessState, processStartedAt)
-		cleanupErr := procgroup.Cleanup(procgroup.GroupID(cmd))
+		terminateErr = procgroup.ReapedGroupSignalError(cmd.ProcessState, groupID, terminateErr)
+		cleanupErr := procgroup.ReapedGroupSignalError(cmd.ProcessState, groupID, procgroup.Cleanup(groupID))
 		return nil, errors.Join(
 			fmt.Errorf("close parent output writers: %w", err),
 			terminateErr,
@@ -211,7 +213,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 
 	transport := &localTransport{
 		cmd:            cmd,
-		processGroupID: procgroup.GroupID(cmd),
+		processGroupID: groupID,
 		startedAt:      processStartedAt,
 		usageHandler:   procgroup.UsageHandler(ctx),
 		stdin:          stdin,
@@ -397,6 +399,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 }
 
 func (t *localTransport) closeAfterTermination(cause, killErr, closeErr error) error {
+	killErr = procgroup.ReapedGroupSignalError(t.cmd.ProcessState, t.processGroupID, killErr)
 	waitErr := t.waitError()
 	process := t.StartupProcessEvidence()
 	var exitErr *exec.ExitError
@@ -551,7 +554,7 @@ func (t *localTransport) wait() {
 		t.exitStatus = t.cmd.ProcessState.String()
 	}
 	t.waitMu.Unlock()
-	cleanupErr := procgroup.Cleanup(t.processGroupID)
+	cleanupErr := procgroup.ReapedGroupSignalError(t.cmd.ProcessState, t.processGroupID, procgroup.Cleanup(t.processGroupID))
 	if cleanupErr != nil {
 		cleanupErr = errors.Join(runner.ErrWorkerProcessReap, cleanupErr)
 	}
@@ -577,7 +580,8 @@ func (t *localTransport) abortStart(cause error) error {
 	terminateErr := procgroup.TerminateTree(t.cmd, t.processGroupID)
 	waitErr := t.cmd.Wait()
 	procgroup.RecordUsage(t.usageHandler, t.cmd.ProcessState, t.startedAt)
-	cleanupErr := procgroup.Cleanup(t.processGroupID)
+	terminateErr = procgroup.ReapedGroupSignalError(t.cmd.ProcessState, t.processGroupID, terminateErr)
+	cleanupErr := procgroup.ReapedGroupSignalError(t.cmd.ProcessState, t.processGroupID, procgroup.Cleanup(t.processGroupID))
 	<-t.readDone
 	stderrErr := <-t.stderrDone
 	pipeCloseErr := errors.Join(t.stdout.Close(), t.stderr.Close())

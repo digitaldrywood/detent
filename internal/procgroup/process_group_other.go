@@ -71,3 +71,5 @@ func Terminate(_ context.Context, identity Identity, _ time.Duration) (Terminati
 func startAcknowledged(*exec.Cmd, func(Identity) error) error {
 	return errors.New("acknowledged process launch is unavailable on this platform")
 }
+
+func reapedProcessGroupEmpty(int) bool { return false }
