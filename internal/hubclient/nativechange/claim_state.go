@@ -12,7 +12,8 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := e.hasWorkers()
 	e.cancelMu.Lock()
-	controller := e.cancel != nil
+	controller := e.supervisor != nil
+	lost := e.supervisionLost || controller && e.supervisor.Err() != nil
 	select {
 	case <-e.reviewDone:
 		e.reviewDone = nil
@@ -20,6 +21,9 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	}
 	reviewing := e.reviewDone != nil
 	e.cancelMu.Unlock()
+	if lost {
+		return executioncontract.ExecutionState{Override: -1}, nil
+	}
 	e.diagnosticMu.Lock()
 	pending := e.diagnostic.OperationPending
 	e.diagnosticMu.Unlock()
@@ -36,7 +40,7 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	// turn-end heartbeat cannot expire a live publication or review.
 	outage := !e.completionOutageDeadline.IsZero()
 	liveReview := reviewing && e.settled && e.change != nil && e.change.VersionID != "" && e.data.Outcome == ""
-	if observation != nil && observation.Phase == "completed" && (controller || localWorker || liveReview) && !outage {
+	if (controller || liveReview) && !outage {
 		e.mu.Unlock()
 		return executioncontract.ExecutionState{Override: 1}, nil
 	}

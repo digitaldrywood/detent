@@ -801,10 +801,6 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 }
 
 func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
-	return s.nativeClaimActive(ctx, claim, true)
-}
-
-func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, observeRuntime bool) (bool, error) {
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := false
 	if execution := claim.execution; execution != nil {
@@ -829,17 +825,7 @@ func (s *Scheduler) nativeClaimActive(ctx context.Context, claim nativeClaim, ob
 		return false, nil
 	}
 	if localWorker && observation.WorkerLaunch != nil {
-		launch := observation.WorkerLaunch
-		alive, err := procgroup.Alive(procgroup.Identity{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart})
-		if err != nil {
-			return false, errors.Join(ErrUnavailable, err)
-		}
-		if alive && observeRuntime {
-			if err := claim.execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: s.now().UTC()}); err != nil {
-				return false, err
-			}
-		}
-		return alive, nil
+		return false, nil
 	}
 	return !observation.HeartbeatAt.IsZero() && s.now().Sub(observation.HeartbeatAt) < s.leaseTTL, nil
 }
