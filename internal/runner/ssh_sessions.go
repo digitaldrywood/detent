@@ -131,7 +131,7 @@ func (c *SSHCallbacks) Finish(ctx context.Context, at time.Time) error {
 			}
 		}
 		tokens := update.Tokens
-		if err := c.store.FinishSession(ctx, id, store.SessionFinish{CompletedAt: at, FinalState: FinalStateFailed, Turns: int64(update.TurnCount), InputTokens: tokens.InputTokens, CachedInputTokens: tokens.CachedInputTokens, OutputTokens: tokens.OutputTokens, ReasoningOutputTokens: tokens.ReasoningOutputTokens, TotalTokens: tokens.TotalTokens, ProviderThreadID: update.SessionID, RuntimeIdentity: update.RuntimeIdentity}); err != nil {
+		if err := c.store.FinishSession(ctx, id, store.SessionFinish{CompletedAt: at, FinalState: FinalStateFailed, Turns: int64(update.TurnCount), InputTokens: tokens.InputTokens, CachedInputTokens: tokens.CachedInputTokens, OutputTokens: tokens.OutputTokens, ReasoningOutputTokens: tokens.ReasoningOutputTokens, TotalTokens: tokens.TotalTokens, ProviderThreadID: update.ProviderThreadID, RuntimeIdentity: update.RuntimeIdentity}); err != nil {
 			errs = append(errs, err)
 		} else {
 			delete(c.active, id)
