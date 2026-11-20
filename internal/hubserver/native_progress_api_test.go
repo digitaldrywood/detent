@@ -226,10 +226,15 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err != nil || transitioned.Revision != current.Revision+1 {
 				t.Fatalf("dispatch transition: issue=%+v err=%v", transitioned, err)
 			}
-			request, owner, err := scheduler.RetryProgress(t.Context(), claim.Issue)
-			if err != nil {
-				t.Fatal(err)
+			params := url.Values{"policy": {f.policy}, "instance": {string(f.runner.binding.MachineID)}}
+			read := func() nativeProgressView {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/progress?"+params.Encode(), f.worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view nativeProgressView
+				decodeHubResponse(t, response, &view)
+				return view
 			}
+			request := read().Request
 			if !reflect.DeepEqual(beforeTransition, request) {
 				t.Fatalf("workflow transition changed progress evidence: before=%+v after=%+v", beforeTransition, request)
 			}
@@ -282,10 +287,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if overlap && (deferred == nil || len(usage) != 1 || usage[0].Input != 10 || usage[0].Output != 1) {
 				t.Fatalf("real check did not defer its usage: request=%v usage=%+v", deferred, usage)
 			}
-			fresh, _, err := scheduler.RetryProgress(t.Context(), claim.Issue)
-			if err != nil {
-				t.Fatal(err)
-			}
+			fresh := read().Request
 			observed := 0
 			if overlap {
 				original, ok := f.service.config.TenantRepository.(*postgres.Repository)
@@ -329,7 +331,13 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 					}
 				}
 			}
-			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
+			run := execution.(interface{ CompletionData() tracker.NativeRunData }).CompletionData()
+			publication := progresscheck.Publication{
+				Mutation:  tracker.Mutation{LeaseID: run.LeaseID, FencingToken: run.FencingToken},
+				RequestID: id, ExpectedRevision: f.reload(t).Revision, PolicyID: request.PolicyID, Instance: request.Instance, Decision: decision,
+			}
+			var record progresscheck.Record
+			err = client.Request(t.Context(), http.MethodPost, path+"/progress", publication, &record)
 			if err != nil || record.CommentID == "" {
 				freshID, idErr := fresh.ID()
 				t.Fatalf("own execution invalidated publication: statuses=%v attempts=%d->%d evidence_revision=%s->%s request_id=%s->%s id_error=%v observations=%d err=%v", publicationStatuses, len(request.Attempts), len(fresh.Attempts), request.EvidenceRevision, fresh.EvidenceRevision, id, freshID, idErr, observed, err)
@@ -337,13 +345,9 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if err := record.Validate(request); err != nil {
 				t.Fatalf("published decision failed validation: %v", err)
 			}
-			_, replayOwner, err := scheduler.RetryProgress(t.Context(), claim.Issue)
-			if err != nil {
-				t.Fatal(err)
-			}
-			retained, found, err := replayOwner.Load(t.Context(), request.ProjectID, request.IssueID, id)
-			if err != nil || !found || !reflect.DeepEqual(record.Decision, retained.Decision) {
-				t.Fatalf("publication replay lost citation: record=%+v found=%v error=%v", retained, found, err)
+			retained := read().Record
+			if retained == nil || retained.RequestID != id || !reflect.DeepEqual(record.Decision, retained.Decision) {
+				t.Fatalf("publication replay lost citation: got=%+v want=%+v", retained, record)
 			}
 			if err := retained.Validate(request); err != nil {
 				t.Fatalf("retained decision failed validation: %v", err)
