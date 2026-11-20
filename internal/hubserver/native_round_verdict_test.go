@@ -52,6 +52,7 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		gap          int
 		forged       bool
 		truncated    bool
+		gateOnly     string
 		learning     bool
 		circling     bool
 		signature    string
@@ -67,6 +68,8 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		{key: "first refusal returns", head: strings.Repeat("1", 40), action: "continue", command: new(1), circling: true, want: http.StatusOK},
 		{key: "truncated repeat is unknown", head: strings.Repeat("2", 40), action: "continue", command: new(1), truncated: true, want: http.StatusOK},
 		{key: "same refusal with diagnostic learning", head: strings.Repeat("3", 40), action: "continue", command: new(1), learning: true, want: http.StatusOK},
+		{key: "host proof without criterion assertion", head: strings.Repeat("4", 40), action: "continue", command: new(1), gateOnly: "TestOutput failed at 2026-11-19T04:15:00Z", learning: true, want: http.StatusOK},
+		{key: "same verified assertion with new timestamp", head: strings.Repeat("5", 40), action: "continue", command: new(1), gateOnly: "TestOutput failed at 2026-11-19T04:16:00Z", circling: true, want: http.StatusOK},
 		{key: "unsupported completion", head: strings.Repeat("b", 40), action: "done", want: http.StatusUnprocessableEntity},
 		{key: "verified advancement", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
 		{key: "diagnostic without criterion receipts", head: strings.Repeat("d", 40), action: "continue", want: http.StatusOK},
@@ -118,13 +121,16 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 			event.IdempotencyKey = "observe " + round.key
 			validation := &gate.CommandResult{ReceiptID: "receipt_" + strings.Repeat(round.head[:1], 32), Stage: gate.StageSourceFinalization, Command: "go test -run TestAcceptance ./example", HeadSHA: round.head, TreeSHA: tree, ExitCode: *round.command, DurationNS: 1}
 			validation.OutputTruncated = round.truncated
-			if round.learning {
+			if round.learning || round.gateOnly != "" {
 				validation.FinishedAt = clock.Now()
 				validation.StartedAt = validation.FinishedAt.Add(-time.Microsecond)
 				validation.DurationNS = int64(time.Microsecond)
 				validation.ReceiptID = ""
 				validation.ReceiptID = validation.PipelineTiming("finalization").ReceiptID
-				const diagnostic = "TestAcceptance failed"
+				diagnostic := "TestAcceptance failed"
+				if round.gateOnly != "" {
+					diagnostic = round.gateOnly
+				}
 				validation.Output = diagnostic
 				validation.Findings = []gate.Finding{{CheckCommand: validation.Command, CheckDiagnostic: diagnostic}}
 				validation.BaseReproduction = &failureattribution.Observation{Command: validation.Command, HeadSHA: strings.Repeat("9", 40), ExitCode: 1, Output: diagnostic, Complete: true}
@@ -136,6 +142,9 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 				input.FailureSignature = ""
 				input.Criteria[0] = gate.CriterionEvidence{Criterion: criterion, Kind: gate.EvidenceReceipt, Reference: validation.Command, Behavior: "The requested output matches", ReceiptIDs: []string{validation.ReceiptID}, HeadSHA: round.head, TreeSHA: tree}
 			}
+		}
+		if round.gateOnly != "" {
+			input.Criteria = nil
 		}
 		if round.action != "continue" {
 			input.NextPhase = ""
