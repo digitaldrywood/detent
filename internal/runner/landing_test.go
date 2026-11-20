@@ -131,6 +131,7 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 		{name: "approved external source", github: true, created: true, createErr: errors.New("stop at creation")},
 		{name: "unreviewed source", github: true, targetErr: ErrLandingNotReviewed},
 		{name: "unavailable project destination", github: true, targetErr: errors.New("landing requires a configured project repository")},
+		{name: "different project repository", github: true, targetErr: errors.New("reviewed GitHub repository differs from the configured project repository")},
 		{name: "current policy disables PR landing"},
 		{name: "hydration refusal", github: true, created: true, createErr: &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "external PR moved"}},
 		{name: "hydration quota retains reviewed identity and metrics", github: true, created: true, quota: true},
