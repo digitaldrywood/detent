@@ -130,7 +130,7 @@ func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (
 	})
 	if err := StartAuthorized(launch, cmd); err != nil {
 		if finish != nil {
-			err = finish(err, err)
+			err = finish(err, nil)
 		}
 		return nil, err
 	}
