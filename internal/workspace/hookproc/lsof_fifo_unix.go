@@ -22,7 +22,7 @@ func (l *Lifetime) darwinWriters(ctx context.Context, target int) ([]int, error)
 		selector, value = "-p", strconv.Itoa(self)+","+strconv.Itoa(target)
 	}
 	data, err := lsofOutput(ctx, "-O", "-nP", "-w", "-a", selector, value, "-d", "4,"+readerFD, "-F0pfaitn")
-	if err != nil && !(lsofNoMatches(err) && ctx.Err() == nil) {
+	if err != nil && (!lsofNoMatches(err) || ctx.Err() != nil) {
 		return nil, fmt.Errorf("list hook descriptors: %w", err)
 	}
 

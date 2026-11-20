@@ -61,8 +61,6 @@ func (r operatorBillingUsageReader) BillingAccount(ctx context.Context) (billing
 }
 
 func (r operatorBillingUsageReader) BillingPopulation(ctx context.Context, metric string, now time.Time, connected time.Duration) (int64, bool, error) {
-	if metric == "projects" {
-	}
 	if r.repository.known != nil && (metric == "active_members" || metric == "unremoved_runners" || metric == "projects" || metric == "retained_collaboration_events") {
 		return 0, *r.repository.known, nil
 	}

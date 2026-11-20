@@ -264,7 +264,7 @@ func TestWorkspaceContractFencesSessionsAndPersistsOccupancy(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	repository, pool = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
+	repository, _ = pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		if err := repository.ReadWorkspace(t.Context(), org, corestore.Serving, func(r postgres.WorkspaceReader) error {
 			expired, err := r.ExpiringWorkspaces(t.Context(), now.Add(time.Hour), 2)

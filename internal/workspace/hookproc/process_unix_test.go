@@ -617,7 +617,7 @@ func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 				active := true
 				termSent := false
 				scan := func(context.Context, string) ([]int, error) {
-					if active && !(tt.loseMarker && termSent) {
+					if active && (!tt.loseMarker || !termSent) {
 						return []int{12345}, nil
 					}
 					return nil, nil
@@ -626,7 +626,7 @@ func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 				identityReads := 0
 				environment := func(int) ([]string, error) {
 					env := []string{"DETENT_WORKSPACE=" + tt.workspace}
-					if tt.marker != "" && !(tt.loseMarker && termSent) {
+					if tt.marker != "" && (!tt.loseMarker || !termSent) {
 						env = append(env, HookOwnerKey+"="+tt.marker)
 					}
 					return env, nil

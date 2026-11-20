@@ -39,12 +39,12 @@ func TestChangeColumnsSelectIssueSideData(t *testing.T) {
 				old := f.Publish(t, "old", "")
 				current := f.Publish(t, "current", old.ID)
 				head, branch := current.HeadSHA, ""
-				switch {
-				case test.name == "current version":
+				switch test.name {
+				case "current version":
 					head = old.HeadSHA
-				case test.name == "version head":
+				case "version head":
 					head = "typed-head"
-				case test.name == "current landing":
+				case "current landing":
 					head, branch = "typed-merge", "typed-base"
 				}
 				f = changeColumnSideDataFixture(t, f, old, current, test.name, historical)

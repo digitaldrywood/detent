@@ -27,9 +27,10 @@ func TestNativeClaimPreviewPageBytes(t *testing.T) {
 	for index := range 6 {
 		issue := f.Create(t, fmt.Sprintf("Example candidate %d", index))
 		preamble := strings.Repeat("ordinary description ", 12000)
-		if index == 2 {
+		switch index {
+		case 2:
 			preamble = strings.Repeat("\"", 250<<10)
-		} else if index == 3 {
+		case 3:
 			preamble = strings.Repeat("<>&", 80000)
 		}
 		issue.Body = preamble + "\n\n```detent-agent\nschema: 1\nmodel: example-model\n```\n\n" + issue.Body
