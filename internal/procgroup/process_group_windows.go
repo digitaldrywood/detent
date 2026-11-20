@@ -51,7 +51,15 @@ func startAcknowledged(cmd *exec.Cmd, acknowledge func(Identity) error) error {
 
 func Wait(cmd *exec.Cmd) error {
 	groupID := GroupID(cmd)
-	return errors.Join(cmd.Wait(), Cleanup(groupID))
+	return errors.Join(waitWindowsJob(cmd, groupID))
+}
+
+func WaitOwned(_ context.Context, cmd *exec.Cmd, identity Identity) (error, error) {
+	return waitWindowsJob(cmd, identity.GroupID)
+}
+
+func waitWindowsJob(cmd *exec.Cmd, groupID int) (error, error) {
+	return cmd.Wait(), Cleanup(groupID)
 }
 
 func startWindows(cmd *exec.Cmd, assign func(windows.Handle, windows.Handle) error, resume func(int) error) error {

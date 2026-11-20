@@ -422,7 +422,7 @@ func WithAttemptWorkspace(ctx context.Context, attempt AttemptWorkspace) context
 	return procgroup.WithCommandOwner(ctx, ownAttemptCommand)
 }
 
-func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity) (func(error) error, error) {
+func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity) (func(error, error) error, error) {
 	if attempt := AttemptWorkspaceFromContext(ctx); attempt != (AttemptWorkspace{}) && attempt.Key() == "" {
 		return nil, errors.New("native command requires an exact attempt")
 	}
@@ -437,14 +437,14 @@ func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity
 	if process == nil {
 		return nil, errors.New("native command has no fenced session")
 	}
-	finish := func(err error) error {
+	finish := func(err, cleanupErr error) error {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
 		defer cancel()
 		code := 0
 		if err != nil {
 			code = -1
 		}
-		return errors.Join(err, process.Finished(cleanup, gate.CommandResult{ExitCode: code}, nil))
+		return errors.Join(err, cleanupErr, process.Finished(cleanup, gate.CommandResult{ExitCode: code}, cleanupErr))
 	}
 	return finish, process.Started(ctx, id)
 }
@@ -472,6 +472,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	var process ValidationProcess
 	var startedCommand bool
+	var groupCleanupErr error
 	defer func() {
 		if owner := issue.hookOwner; owner != nil {
 			status := gate.CommandResult{ExitCode: result.ExitCode, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, DurationNS: result.DurationNS}
@@ -488,9 +489,10 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
 		defer cancel()
-		var cleanupErr error
+		cleanupErr := groupCleanupErr
 		if startedCommand && (process != nil || toolcache.ManagedBuildFromContext(ctx) != "") {
-			_, cleanupErr = ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
+			_, err := ReapWorkerArtifactPathProcesses(cleanupCtx, info.Path, scratch, procgroup.DefaultTerminationGrace)
+			cleanupErr = errors.Join(cleanupErr, err)
 		}
 		if cleanupErr == nil {
 			cleanupErr = CleanupWorkerScratch(info.Path, scratch)
@@ -555,17 +557,26 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
 	launchCtx := ctx
+	var identity procgroup.Identity
 	if process != nil {
-		launchCtx = procgroup.WithStartAcknowledgement(ctx, func(identity procgroup.Identity) error {
+		launchCtx = procgroup.WithStartAcknowledgement(ctx, func(observed procgroup.Identity) error {
+			identity = observed
 			return process.Started(ctx, identity)
 		})
 	}
 	if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
+		if identity.PID != 0 {
+			groupCleanupErr = err
+		}
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true
 	result.Execution = "executed"
-	err = procgroup.Wait(cmd)
+	if process != nil && issue.hookOwner == nil {
+		err, groupCleanupErr = procgroup.WaitOwned(ctx, cmd, identity)
+	} else {
+		err = procgroup.Wait(cmd)
+	}
 	if issue.hookOwner != nil && errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
 		err = nil
 	}
