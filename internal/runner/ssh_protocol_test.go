@@ -446,6 +446,37 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 	}
 }
 
+func TestSSHDisconnectKeepsLatestSessionObservation(t *testing.T) {
+	sessions := &fakeSessionStore{sessionID: 41}
+	callbacks := (&Runner{store: sessions}).SSHRunCallbacks(RunRequest{})
+	args, err := json.Marshal(store.SessionStart{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callbacks.Handle(t.Context(), "store.StartSession", []json.RawMessage{args}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(200, 0).UTC()
+	for _, update := range []UsageUpdate{
+		{DetentSessionID: 41, SessionID: "current", LastEventAt: at, Tokens: TokenTotals{TotalTokens: 73}, TurnCount: 2},
+		{DetentSessionID: 41, SessionID: "stale", LastEventAt: at.Add(-time.Second), Tokens: TokenTotals{TotalTokens: 12}, TurnCount: 1},
+	} {
+		data, err := json.Marshal(update)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := callbacks.Handle(t.Context(), "usage", []json.RawMessage{data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := callbacks.Finish(t.Context(), at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if sessions.finishCalls != 1 || sessions.finished.ProviderThreadID != "current" || sessions.finished.TotalTokens != 73 || sessions.finished.Turns != 2 {
+		t.Fatalf("disconnect finalization = %+v", sessions.finished)
+	}
+}
+
 func TestSSHWorkerSessionFinalizationReachesOwner(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

@@ -105,7 +105,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 		if len(args) > 0 {
 			var update UsageUpdate
 			if json.Unmarshal(args[0], &update) == nil {
-				if _, ok := c.active[update.DetentSessionID]; ok {
+				if previous, ok := c.active[update.DetentSessionID]; ok && !update.LastEventAt.Before(previous.LastEventAt) {
 					c.active[update.DetentSessionID] = update
 				}
 			}
