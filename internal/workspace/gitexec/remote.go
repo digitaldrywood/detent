@@ -113,13 +113,28 @@ func PublicationRepository(path, remote string) string {
 	return absolute
 }
 
+func SamePublicationRepository(expected, actual string) bool {
+	if expected == "" || actual == "" {
+		return false
+	}
+	if expected == actual {
+		return true
+	}
+	const github = "https://github.com/"
+	expectedName, expectedGitHub := strings.CutPrefix(expected, github)
+	actualName, actualGitHub := strings.CutPrefix(actual, github)
+	owner, repository, ok := strings.Cut(expectedName, "/")
+	return expectedGitHub && actualGitHub && ok && owner != "" && repository != "" &&
+		!strings.Contains(repository, "/") && strings.EqualFold(expectedName, actualName)
+}
+
 func VerifyPublicationRemote(ctx context.Context, path, remote, repository string) error {
 	fetchURL, err := Run(ctx, path, "remote", "get-url", "--all", remote)
-	if err != nil || repository == "" || PublicationRepository(path, fetchURL) != repository {
+	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, fetchURL)) {
 		return errors.New("the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
 	}
 	pushURL, err := Run(ctx, path, "remote", "get-url", "--push", "--all", remote)
-	if err != nil || PublicationRepository(path, pushURL) != repository {
+	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, pushURL)) {
 		return errors.New("the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
 	}
 	return nil
