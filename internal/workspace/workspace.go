@@ -538,7 +538,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 		commits:            commits,
 		root:               root,
 		sourceRoot:         sourceRoot,
-		phaseRepository:    publicationRepository(sourceRoot, remote),
+		phaseRepository:    gitexec.PublicationRepository(sourceRoot, remote),
 		autoBranch:         opts.AutoBranch,
 		hooks:              hooks,
 		logger:             logger,
