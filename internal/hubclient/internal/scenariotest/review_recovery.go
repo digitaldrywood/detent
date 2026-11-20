@@ -38,6 +38,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+const reviewFixturePID = 4242
+
+func reapReviewFixtureProcess(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
+	if identity.PID != 0 && (identity.PID != reviewFixturePID || identity.GroupID != reviewFixturePID) {
+		return "", errors.New("unexpected process registered by the review fixture")
+	}
+	return procgroup.TerminationOutcomeAlreadyExited, nil
+}
+
 type recoveringReviewAgent struct {
 	committingAgent
 	failStage          string
@@ -91,7 +100,7 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		return runner.AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"}, nil
 	}
 	if stage == "security" {
-		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now()}}); err != nil {
+		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: reviewFixturePID, GroupID: reviewFixturePID, StartedAt: time.Now()}}); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		output := `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`
@@ -172,6 +181,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				{Name: "Done", Terminal: true},
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging"}},
 			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
+			fixtureConfigureScheduler(t, h, func(config *SchedulerConfig) { config.Machine.Capacity = 8 })
 			gateCommand := "true"
 			gateMarker := filepath.Join(t.TempDir(), "source-gate")
 			if test.hostHandoff || test.name == "healthy" {
@@ -485,7 +495,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			}
 			finalizationRoot, cancelFinalization := context.WithCancel(context.WithoutCancel(t.Context()))
 			t.Cleanup(cancelFinalization)
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, ReapWorkerProcess: reapReviewFixtureProcess, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
 				finalization, cancel := context.WithCancel(testenv.WaitContext(t, ctx))
 				done := make(chan struct{})
 				stop := context.AfterFunc(finalizationRoot, func() {

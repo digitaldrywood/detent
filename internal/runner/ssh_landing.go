@@ -145,7 +145,7 @@ func (c *SSHCallbacks) handleLandingBatch(ctx context.Context, method string, ar
 			if err != nil {
 				return err
 			}
-			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.BaseSHA != target.BaseSHA || current.HeadSHA != request.Options.HeadSHA || current.Repository != request.Options.Repository || current.Method != request.Options.Method || current.GitHubPullRequest || !request.Options.Native || current.SecurityAudit != request.Options.SecurityAuditRequired {
+			if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.BaseSHA != target.BaseSHA || current.HeadSHA != request.Options.HeadSHA || current.Repository != request.Options.Repository || current.PublicationRepository != target.PublicationRepository || current.PublicationRepository != request.Options.PublicationRepository || current.Method != request.Options.Method || current.GitHubPullRequest || !request.Options.Native || current.SecurityAudit != request.Options.SecurityAuditRequired {
 				return errors.New("SSH batch differs from the reviewed native version")
 			}
 			return nil

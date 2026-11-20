@@ -1908,20 +1908,21 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
-	if phaseSource != nil {
-		workspaceIssue.PhaseSource = phaseSource
-	} else {
+	workspaceIssue.PhaseSource = phaseSource
+	if phaseSource == nil {
 		restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
 	}
-	if sourceErr != nil {
-		if !checkpointRefCoversChangeSource(sourceErr, workspaceIssue.Checkpoint, nativeLanding, false) {
-			return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
-		}
+	if sourceErr != nil && !checkpointRefCoversChangeSource(sourceErr, workspaceIssue.Checkpoint, nativeLanding, false) {
+		return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
+	} else if sourceErr != nil {
 		r.logWorkerEvent(req.Issue, "worker_change_source_from_checkpoint_ref", "error", sourceErr)
 	}
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
 		initialTarget, initialErr := landing.LandingTarget(ctx)
+		if initialErr != nil && !errors.Is(initialErr, ErrLandingNotReviewed) {
+			return RunResult{}, fmt.Errorf("resolve landing target: %w", initialErr)
+		}
 		deferLandingStart := initialErr == nil && initialTarget.MergeResolution && !initialTarget.GitHubPullRequest
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !deferLandingStart {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {

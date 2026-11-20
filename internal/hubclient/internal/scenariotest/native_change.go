@@ -179,6 +179,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			var clockOffset atomic.Int64
 			clock := func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
 			h := newNativeChangeHubConfigured(t, review, states, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
+			if test.Publication != "" {
+				h.configureProjectCheckout(t, nativeChangeRepository)
+			}
 			var publicationCI *NativeClient
 			if test.Publication != "" {
 				previous := h.descriptor.ID
