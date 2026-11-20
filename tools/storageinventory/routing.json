@@ -5299,6 +5299,8 @@
           "session.HistoryEvents:query-receiver": 1,
           "session.HistoryEventsBefore:generated:RecordListHistoryEventBefore": 1,
           "session.HistoryEventsBefore:query-receiver": 1,
+          "session.HumanDiscussionSequence:QueryRow": 1,
+          "session.HumanDiscussionSequence:SQL": 1,
           "session.LandingReceipt:generated:RecordGetLandingReceipt": 1,
           "session.LandingReceipt:query-receiver": 1,
           "session.LatestChange:generated:RecordLatestChange": 1,
@@ -5407,7 +5409,8 @@
           "hub/change_versions",
           "hub/collaboration_events",
           "hub/issues",
-          "hub/native_attempts"
+          "hub/native_attempts",
+          "hub/native_comments"
         ]
       }
     },
@@ -12355,6 +12358,23 @@
         "tables": []
       }
     },
+    "internal/hubserver/postgres/migrations/20261120190358_planning_direction_seeks.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "core",
+        "event",
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/collaboration_events",
+          "hub/native_comments"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14465,8 +14485,7 @@
           "Queries.RecentNativePhaseReceipts:Query": 1,
           "insertNativePhaseReceipt:SQL": 1,
           "nativePhaseContinuation:SQL": 1,
-          "nativePhaseReceiptByKey:SQL": 1,
-          "recentNativePhaseReceipts:SQL": 1
+          "nativePhaseReceiptByKey:SQL": 1
         },
         "tables": []
       }

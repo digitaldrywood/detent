@@ -182,6 +182,10 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 				return err
 			}
 		}
+		result.HumanDiscussionSequence, err = r.HumanDiscussionSequence(ctx, scope.Project, row.NativeID)
+		if err != nil {
+			return err
+		}
 		comments = make([]corestore.Comment, 0, 33)
 		latestMachine := false
 		beforeSequence := int64(1<<63 - 1)

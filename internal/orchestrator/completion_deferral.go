@@ -270,7 +270,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	}
 	if event.Request.Mode == runpkg.RunModePlan && event.Err == nil {
 		event.Request.Mode, event.Result.Output = runpkg.RunModeImplement, ""
-		event.Err = errors.New("standalone plan must continue under the current planning policy")
+		event.Err = fmt.Errorf("%w: standalone plan must continue under the current planning policy", runpkg.ErrNativeRecoveryRequired)
 		event.Retryable = true
 	}
 	return event

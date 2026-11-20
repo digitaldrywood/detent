@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -28,14 +29,17 @@ type NativePhaseContinuation struct {
 }
 
 type NativePlanState struct {
-	Draft    string `json:"draft,omitempty"`
-	Answer   string `json:"answer,omitempty"`
-	AnswerID string `json:"answer_id,omitempty"`
-	Accepted bool   `json:"accepted,omitempty"`
+	InputDigest   string `json:"input_digest,omitempty"`
+	ReviewPending bool   `json:"review_pending,omitempty"`
+	Findings      string `json:"findings,omitempty"`
+	Draft         string `json:"draft,omitempty"`
+	Answer        string `json:"answer,omitempty"`
+	AnswerID      string `json:"answer_id,omitempty"`
+	Accepted      bool   `json:"accepted,omitempty"`
 }
 
 func (p *NativePlanState) NeedsProvider() bool {
-	return p != nil && !p.Accepted && (p.Draft == "" || p.Answer != "" && !strings.EqualFold(p.Answer, "approve plan"))
+	return p != nil && !p.Accepted && (p.ReviewPending || p.Draft == "" || p.Answer != "" && !strings.EqualFold(p.Answer, "approve plan"))
 }
 
 func IsPlanPhase(phase string) bool {
@@ -47,14 +51,9 @@ func PhaseInputDigest(phase, head, tree, policyID, reviewState, input string) st
 }
 
 func PlanIssueDigest(recovery NativeRecovery) string {
-	return NativeStepReviewState(NativeRecovery{Issue: recovery.Issue})
+	return PhaseInputDigest("direction", "", "", "", NativeStepReviewState(NativeRecovery{Issue: recovery.Issue}), strconv.FormatInt(recovery.HumanDiscussionSequence, 10))
 }
 
-func PlanPhaseDigest(phase NativePhaseReceipt, recovery NativeRecovery, plan NativeStepReceipt) string {
-	state, input := PlanIssueDigest(recovery), ""
-	if phase.Phase == "plan" {
-		state = NativeStepReviewState(NativeRecovery{Issue: recovery.Issue, Discussion: recovery.Discussion})
-		input = policy.Digest([]byte(plan.CompletionBody + "\x00" + plan.PlanApproval))
-	}
-	return PhaseInputDigest(phase.Phase, phase.HeadSHA, phase.TreeSHA, phase.PolicyID, state, input)
+func PlanPhaseDigest(phase NativePhaseReceipt, plan NativeStepReceipt) string {
+	return PhaseInputDigest(phase.Phase, phase.HeadSHA, phase.TreeSHA, phase.PolicyID, plan.ReviewState, policy.Digest([]byte(plan.CompletionBody))+plan.PlanApproval)
 }

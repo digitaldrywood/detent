@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
@@ -72,29 +73,20 @@ func (c *NativeClient) RecentWorkflowTransitions(ctx context.Context, id tracker
 	return transitions, err
 }
 
-func (c *NativeClient) PlanAnswer(ctx context.Context, id tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (tracker.CollaborationEvent, error) {
+func (c *NativeClient) planAnswer(ctx context.Context, id tracker.NativeWorkItemID, attemptID string) (tracker.CollaborationEvent, error) {
 	path, err := NativeItemPath(id)
 	if err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
-	var exit tracker.CollaborationEvent
+	var answer tracker.CollaborationEvent
 	err = c.eachWorkflowTransition(ctx, path, func(event tracker.CollaborationEvent) bool {
-		if event.Actor.Kind == "human" && event.Data.BlockerAttemptID == attempt.AttemptID && strings.EqualFold(event.Data.FromState, "Blocked") && !strings.EqualFold(event.Data.ToState, "Blocked") {
-			exit = event
+		if event.Actor.Kind == "human" && event.Data.BlockerAttemptID == attemptID && event.Data.ToState != "" && strings.EqualFold(event.Data.FromState, "Blocked") && !strings.EqualFold(event.Data.ToState, "Blocked") {
+			answer = event
 			return true
-		}
-		if !event.RecordedAt.After(attempt.UpdatedAt) {
-			return true
-		}
-		if event.Data.FromState != "" && event.Data.ToState != "" && !strings.EqualFold(event.Data.FromState, event.Data.ToState) {
-			exit = event
 		}
 		return false
 	})
-	if exit.Actor.Kind != "human" || !strings.EqualFold(exit.Data.FromState, "Blocked") || exit.Data.BlockerAttemptID != "" && exit.Data.BlockerAttemptID != attempt.AttemptID {
-		return tracker.CollaborationEvent{}, err
-	}
-	return exit, err
+	return answer, err
 }
 
 func (c *NativeClient) eachWorkflowTransition(ctx context.Context, path string, found func(tracker.CollaborationEvent) bool) error {
@@ -166,12 +158,13 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 		return &tracker.NativePlanState{}, nil
 	}
 
-	pinned := receipts[0]
-	if !tracker.IsPlanPhase(pinned.Phase) {
+	index := slices.IndexFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool { return tracker.IsPlanPhase(receipt.Phase) })
+	if index < 0 {
 		return nil, nil
 	}
+	pinned := receipts[index]
 	result := &tracker.NativePlanState{}
-	if pinned.PolicyID != policyID || pinned.Phase == "plan_review" {
+	if pinned.PolicyID != policyID {
 		return result, nil
 	}
 	var owner tracker.NativeAttempt
@@ -194,21 +187,25 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 	for _, step := range owner.Steps {
 		if step.Step != "plan" || step.Source.HeadSHA != pinned.HeadSHA || step.Source.WorkspaceDigest != pinned.TreeSHA ||
 			step.PolicyID != policyID || step.ReviewState != tracker.PlanIssueDigest(recovery) || step.CompletionBody == "" ||
-			tracker.PlanPhaseDigest(pinned, recovery, step) != pinned.InputDigest {
+			tracker.PlanPhaseDigest(pinned, step) != pinned.InputDigest {
 			continue
 		}
 		if pinned.Phase == "plan" {
 			if step.PlanApproval != "" {
-				result.Draft, result.Accepted = step.CompletionBody, true
+				result.Draft, result.InputDigest, result.Accepted = step.CompletionBody, pinned.InputDigest, true
 			}
 			return result, nil
 		}
 		result.Draft = step.CompletionBody
+		if pinned.Phase == "plan_review" {
+			result.ReviewPending, result.Findings = true, step.PlanApproval
+			return result, nil
+		}
 		signal, ok := workpad.SignalFromComment(owner.CompletionBody, "", "")
 		if owner.Status != "succeeded" || !ok || signal.Invalid != nil || signal.HumanAction != tracker.PlanApprovalQuestion {
 			return result, nil
 		}
-		answer, err := c.PlanAnswer(ctx, item, owner)
+		answer, err := c.planAnswer(ctx, item, owner.AttemptID)
 		if err != nil {
 			return nil, fmt.Errorf("read plan approval answer: %w", err)
 		}

@@ -368,7 +368,7 @@ func (s *Service) prepareOrTransitionNativeIssue(ctx context.Context, scope hubs
 			return nil, err
 		}
 		data := tracker.CollaborationData{Revision: issue.Revision, FromState: previousState, ToState: destination, Reason: request.Reason, ReasonDetail: reasonDetail, BlockerAttemptID: request.BlockerAttemptID}
-		if answerAttempt.BlockerAttemptID != "" {
+		if human {
 			data.BlockerAttemptID = answerAttempt.BlockerAttemptID
 		}
 		if human && !batchRouting && (stop != nil || strings.EqualFold(request.State, "Blocked")) {

@@ -198,6 +198,17 @@ func (s *session) itemEvent(ctx context.Context, project tracker.ProjectID, item
 	return row, err
 }
 
+func (s *session) HumanDiscussionSequence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (int64, error) {
+	var sequence int64
+	err := s.db.QueryRow(ctx, `SELECT GREATEST(
+        (SELECT sequence FROM native_comments WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3
+            AND actor_kind='human' AND provenance_provider IS DISTINCT FROM 'chat' ORDER BY sequence DESC LIMIT 1),
+        (SELECT sequence FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3
+            AND actor_kind='human' AND type='comment.edited' ORDER BY sequence DESC LIMIT 1),
+        0)`, s.organization, project, item).Scan(&sequence)
+	return sequence, mapError(ctx, err)
+}
+
 func (s *session) ProgressEvidenceSequence(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID) (int64, error) {
 	var sequence int64
 	err := s.db.QueryRow(ctx, `SELECT COALESCE((SELECT sequence FROM collaboration_events

@@ -221,7 +221,6 @@ const (
 	ReasonArtifactStatusMissing        Reason = "artifact_status_missing"
 	ReasonArtifactStatusWait           Reason = "artifact_status_wait"
 	ReasonArtifactStatusRework         Reason = "artifact_status_rework"
-	ReasonPlanDisabled                 Reason = "plan_disabled"
 )
 
 type Decision struct {
@@ -571,30 +570,6 @@ func requiredStatusCheckInstructions(checks []string) string {
 	return "Required checks: present, completed, successful on current PR head; missing/skipped/failed/cancelled/running blocks promotion. Native required checks and red CI still block promotion and merge. "
 }
 
-func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {
-	cfg = EffectivePlan(cfg)
-	if !cfg.Enabled {
-		return decision(ActionSkip, ReasonPlanDisabled)
-	}
-
-	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
-		out := decision(ActionRework, ReasonP1Findings)
-		out.Findings = cloneFindings(summary.P1Findings)
-		return out
-	}
-
-	humanReady := planHumanReviewEnabled(cfg) && hasApprovalLabel(labels, cfg.ApprovalLabel)
-	automatedReady := planAutomatedReviewEnabled(cfg) && automatedReviewSubmitted(summary.ReviewState)
-	if humanReady || automatedReady {
-		return decision(ActionPass, ReasonReady)
-	}
-
-	if planHumanReviewEnabled(cfg) {
-		return decision(ActionWait, ReasonHumanApprovalMissing)
-	}
-	return decision(ActionWait, ReasonAutomatedReviewMissing)
-}
-
 func Evaluate(cfg Config, labels []string, summary Summary, now time.Time, opts EvaluationOptions) Decision {
 	cfg = Effective(cfg)
 	switch cfg.Kind {
@@ -702,27 +677,6 @@ func evaluateArtifact(cfg ArtifactConfig, summary Summary) Decision {
 		return decision(ActionPass, ReasonReady)
 	}
 	return decision(ActionWait, ReasonArtifactStatusWait)
-}
-
-func hasApprovalLabel(labels []string, approvalLabel string) bool {
-	approvalLabel = normalizeLabel(approvalLabel)
-	if approvalLabel == "" {
-		approvalLabel = DefaultApprovalLabel
-	}
-	for _, label := range labels {
-		if normalizeLabel(label) == approvalLabel {
-			return true
-		}
-	}
-	return false
-}
-
-func planHumanReviewEnabled(cfg PlanConfig) bool {
-	return cfg.Review == PlanReviewHuman || cfg.Review == PlanReviewBoth
-}
-
-func planAutomatedReviewEnabled(cfg PlanConfig) bool {
-	return cfg.Review == PlanReviewAutomated || cfg.Review == PlanReviewBoth
 }
 
 func decision(action Action, reason Reason) Decision {
