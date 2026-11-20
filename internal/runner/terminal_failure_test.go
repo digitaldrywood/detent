@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -36,6 +37,8 @@ func TestNativeTerminalFailureSignatureEvidence(t *testing.T) {
 		{"issue configuration", &IssueConfigurationError{Field: "effort", Reason: "unsupported value"}, "issue_configuration", "agent override rejected: effort: unsupported value", ""},
 		{"workspace recovery", fmt.Errorf("%w: %w", ErrWorkspacePreparation, ErrNativeRecoveryRequired), "workspace_hook", "workspace preparation failed: native checkpoint requires recovery", ""},
 		{"source recovery", fmt.Errorf("%w: publication source changed before reconciliation", ErrNativeRecoveryRequired), "source_recovery", "native checkpoint requires recovery: publication source changed before reconciliation", ""},
+		{"provider idle timeout", &sessiontimeout.Error{Kind: sessiontimeout.Idle, Limit: 5 * time.Minute}, "session_idle_timeout", "session_idle_timeout after 5m0s", ""},
+		{"provider command deadline", &sessiontimeout.Error{Kind: sessiontimeout.CommandDeadline, Limit: time.Hour}, "command_deadline", "command_deadline after 1h0m0s", ""},
 		{"startup timeout", ErrMergeWorkerStartupTimeout, "backend_startup", "merge worker startup timed out", ""},
 		{"startup failure", backendcapacity.NewError(backendcapacity.Scope{}, backendcapacity.Details{Kind: backendcapacity.StartupFailureKind}, errors.New("start backend failed")), "backend_startup", "start backend failed", ""},
 		{"protocol", &testProviderResponseError{operation: "turn/start"}, "protocol", "provider request refused", ""},

@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -1436,6 +1437,11 @@ func (r *Runner) runAgentTurn(
 	if turnErr != nil {
 		result.FinalState = finalStateForTurnError(turnErr)
 	}
+	var timeout *sessiontimeout.Error
+	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
+		diagnostics.HostOperation("provider.session", r.now(), timeout, false)
+	}
+
 	result.TurnStarted = turnStarted
 	failure := nativeTerminalFailure(turnErr, time.Time{}, false)
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil

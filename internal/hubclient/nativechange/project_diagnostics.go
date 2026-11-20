@@ -2,6 +2,8 @@ package nativechange
 
 import (
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 func (e *nativeExecution) HostOperation(operation string, at time.Time, err error, pending bool) {
@@ -17,6 +19,16 @@ func (e *nativeExecution) HostOperation(operation string, at time.Time, err erro
 		e.diagnostic.LatestError = diagnosticError(err)
 		e.diagnostic.LatestErrorCode = diagnosticErrorCode(err)
 	}
+}
+
+func (e *nativeExecution) recordSessionTimeout(kind sessiontimeout.Kind, observedAt time.Time) {
+	e.diagnosticMu.Lock()
+	defer e.diagnosticMu.Unlock()
+	e.diagnostic.HostOperation = "provider.session"
+	e.diagnostic.OperationPending = false
+	e.diagnostic.OperationObservedAt = observedAt.UTC()
+	e.diagnostic.LatestError = "provider session exceeded its execution deadline"
+	e.diagnostic.LatestErrorCode = string(kind)
 }
 
 func (e *nativeExecution) diagnosticOperation(operation string) func(error) {

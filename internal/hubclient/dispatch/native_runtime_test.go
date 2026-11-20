@@ -150,8 +150,8 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					t.Fatal(err)
 				}
 				found := slices.ContainsFunc(view.Problems, func(p runnerauth.Problem) bool { return p.Code == "runtime_expired" })
-				if found != expired || (view.Health == "needs_attention") != expired {
-					t.Fatalf("runner health=%s problems=%+v want expired=%v", view.Health, view.Problems, expired)
+				if found || view.Health == "needs_attention" {
+					t.Fatalf("stale telemetry changed runner health=%s problems=%+v", view.Health, view.Problems)
 				}
 			}
 			for elapsed := 50 * time.Second; elapsed <= 3*ttl; elapsed += 50 * time.Second {

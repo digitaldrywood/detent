@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 const (
@@ -72,7 +74,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	first, _, _ := strings.Cut(f.Error, "\n")
 	f.Error = text.publicText(nativeFailureAssignment.ReplaceAllString(strings.TrimSpace(first), "[redacted]"))
 	switch f.ErrorClass {
-	case "tool_error", "provider_refusal", "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
+	case string(sessiontimeout.Idle), string(sessiontimeout.CommandDeadline), string(sessiontimeout.TurnDeadline), "tool_error", "provider_refusal", "backend_startup", "protocol", "workspace_hook", "issue_configuration", "source_recovery", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_released", "git_push", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
 	default:
 		if reason := WorkspaceResourceMessage(f.ErrorClass); reason != "" {
 			f.Error = reason
@@ -81,7 +83,7 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 		}
 	}
 	switch f.Stage {
-	case "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_release", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
+	case "provider_session", "pre_provider", "workspace_preparation", "acceptance_publication", "security_audit_publication", "event_publication", "finalization", "lease_release", "commit", "validation", "checkpoint_recovery", "publication", "review", "review_publication", "validator", "validator_publication", "security_audit", "landing":
 	default:
 		f.Stage = ""
 	}
