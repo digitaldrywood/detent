@@ -320,6 +320,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(hubapi.NativeBase+"/work-items/:item/runtime", s.getNativeRuntime, read)
 	e.GET(hubapi.NativeBase+"/work-items/:item/progress", s.getNativeProgress, read)
 	e.POST(hubapi.NativeBase+"/work-items/:item/progress", s.publishNativeProgress, worker)
+	e.GET(hubapi.NativeBase+"/work-items/:item/phases", s.getNativePhaseReceipts, read)
+	e.POST(hubapi.NativeBase+"/work-items/:item/phases", s.publishNativePhaseReceipt, worker)
 	e.GET(hubapi.NativeBase+"/work-items/:item/explanation", s.getNativeExplanation, read)
 	e.GET(hubapi.NativeBase+"/work-items/:item/source-recovery", s.getNativeSourceRecovery, read)
 	e.POST(hubapi.NativeBase+"/work-items/:item/source-recovery", s.transferNativeSource, write)
