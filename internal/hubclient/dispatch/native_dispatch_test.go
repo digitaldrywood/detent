@@ -137,6 +137,9 @@ func TestNativeAcceptedClaimDispatchRefusals(t *testing.T) {
 			}
 			item := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Accepted dispatch candidate", Body: issueContractTestSections, State: "Todo"})
 			issue := h.claim(t, string(item.WorkItemID))
+			if refusal == "work_attempt_start_failed" && h.scheduler.RunExecution(issue.ID) == nil {
+				t.Fatal("could not allocate a native execution before the startup refusal")
+			}
 			lease := h.scheduler.nativeClaims[issue.ID].lease
 			var releaseMu sync.Mutex
 			var releases []tracker.NativeLeaseMutation
