@@ -48,7 +48,7 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 		repository: state.Repository, conversationContinuation: state.ConversationContinuation,
 		preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
-		preparedFailure: state.Data.TerminalFailure,
+		preparedFailure: state.Data.TerminalFailure, preparedRoundVerdict: state.PreparedRoundVerdict,
 	}
 	if state.PreparedFailure != nil {
 		execution.preparedFailure = state.PreparedFailure

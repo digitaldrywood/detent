@@ -25,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/publication"
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -90,6 +91,7 @@ type nativeExecution struct {
 	preparedMessage          string
 	preparedDisposition      *tracker.NativeDisposition
 	preparedFailure          *tracker.NativeTerminalFailure
+	preparedRoundVerdict     *progresscheck.RoundInput
 	runtimeDirty             bool
 	runtimeSupported         *bool
 	runtimePublishedAt       time.Time
@@ -822,6 +824,11 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		return finishErr
 	}(); err != nil {
 		return err
+	}
+	if rejection == nil && releasedAttempt == nil {
+		if err := e.publishAcceptedNoChangeVerdict(ctx); err != nil {
+			return err
+		}
 	}
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
 	defer cancel()

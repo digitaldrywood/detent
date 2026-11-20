@@ -189,6 +189,39 @@ func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (*progresschec
 }
 
 func (e *nativeExecution) RecordRoundVerdict(ctx context.Context, input progresscheck.RoundInput) error {
+	if input.Action == progresscheck.RoundDone && input.Phase == "acceptance" {
+		if err := e.VerifyPhaseAuthority(ctx); err != nil {
+			return err
+		}
+		e.mu.Lock()
+		e.preparedRoundVerdict = &input
+		e.mu.Unlock()
+		return nil
+	}
+	return e.publishRoundVerdict(ctx, input)
+}
+
+func (e *nativeExecution) publishAcceptedNoChangeVerdict(ctx context.Context) error {
+	e.mu.Lock()
+	input, runtime, finalization := e.preparedRoundVerdict, e.data.Runtime, e.data.Finalization
+	accepted := e.data.Outcome == "succeeded" && input != nil && runtime != nil && runtime.Completion != nil && runtime.Completion.AcceptanceRecorded &&
+		finalization != nil && finalization.NoChange != nil && finalization.NoChange.VerifiedSHA == input.HeadSHA
+	e.mu.Unlock()
+	if !accepted {
+		return nil
+	}
+	if err := e.publishRoundVerdict(ctx, *input); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	if e.preparedRoundVerdict == input {
+		e.preparedRoundVerdict = nil
+	}
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *nativeExecution) publishRoundVerdict(ctx context.Context, input progresscheck.RoundInput) error {
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
 		return err
 	}

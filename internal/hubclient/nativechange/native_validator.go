@@ -362,6 +362,7 @@ func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected t
 	e.preparedOutcome, e.preparedMessage = "", ""
 	e.preparedPublisher.Store(false)
 	e.preparedDisposition = nil
+	e.preparedRoundVerdict = nil
 	e.data.Finalization = nil
 	return nil
 }

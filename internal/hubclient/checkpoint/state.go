@@ -1,6 +1,7 @@
 package checkpoint
 
 import (
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,4 +30,5 @@ type State struct {
 	PreparedFinalization     *tracker.NativeFinalization    `json:"prepared_finalization,omitempty"`
 	PreparedLanding          *runner.NativeLanding          `json:"prepared_landing,omitempty"`
 	PreparedFailure          *tracker.NativeTerminalFailure `json:"prepared_failure,omitempty"`
+	PreparedRoundVerdict     *progresscheck.RoundInput      `json:"prepared_round_verdict,omitempty"`
 }
