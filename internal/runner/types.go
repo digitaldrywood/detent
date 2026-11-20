@@ -690,6 +690,7 @@ type RunRequest struct {
 	reviewSource              func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error)
 	retainedReview            *retainedReviewWorkspace
 	phaseReceipts             bool
+	phaseContinuation         *tracker.NativePhaseContinuation
 }
 
 type NativeReviewContinuation struct {
@@ -751,6 +752,7 @@ type retainedReviewWorkspace struct {
 	info       workspace.Info
 	issue      workspace.Issue
 	validation *gate.CommandResult
+	message    string
 }
 
 type ValidatorRequest struct {
@@ -803,6 +805,7 @@ type SecurityAuditExecution struct {
 }
 
 type RunResult struct {
+	retainedReview             *retainedReviewWorkspace
 	BillingMode                string
 	ReportedCostMicros         *int64
 	CostSource                 string

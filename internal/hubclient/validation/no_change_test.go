@@ -18,3 +18,7 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 	scenariotest.RunNativeImplementationReviewIsRecordedSeparately(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
+
+func TestNativeReplacementResumesProjectGate(t *testing.T) {
+	scenariotest.RunNativeReplacementResumesProjectGate(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+}

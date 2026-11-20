@@ -1811,7 +1811,18 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	reviewRecovery, turnRecovery, repairResume := nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	publicationRecovery := req.publicationRecovery(mode)
-	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
+	var phaseSource *tracker.NativePhaseReceipt
+	if mode == RunModeImplement && req.phaseContinuation != nil && !req.operatorFreshRetry() && !publicationRecovery {
+		phaseSource = req.phaseContinuation.LastPushed
+		if phaseSource != nil {
+			reviewRecovery, turnRecovery, repairResume = nil, nil, false
+			if req.phaseContinuation.NextPhase != RunModeImplement {
+				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
+			}
+			req.ResumeState = store.AgentResumeState{}
+		}
+	}
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && phaseSource == nil {
 		if err := r.resumeRunCheckpoint(ctx, &req, agentRuntime); err != nil {
 			return RunResult{}, err
 		}
@@ -1868,7 +1879,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding
 	var sourceErr error
-	if !retainedLanding {
+	if !retainedLanding && phaseSource == nil {
 		sourceErr = recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
 	}
 	workspaceIssue.RequireCheckpoint = sourceErr != nil
@@ -1876,7 +1887,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
-	restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
+	if phaseSource != nil {
+		workspaceIssue.PhaseSource = phaseSource
+	} else {
+		restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
+	}
 	if sourceErr != nil {
 		if !checkpointRefCoversChangeSource(sourceErr, workspaceIssue.Checkpoint, nativeLanding, false) {
 			return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
@@ -2335,7 +2350,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		result := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
 		if turnRecovery != nil {
 			result.FinalMessage = turnRecovery.CompletionBody
-			if err := r.recordAgentStep(ctx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
+			if phaseSource != nil {
+				req.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
+				result.retainedReview = req.retainedReview
+				result.WorkspaceBranch = info.Branch
+			} else if err := r.recordAgentStep(ctx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
 				return result, err
 			}
 		}
@@ -2834,14 +2853,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
-		if req.finalizeNativeWork && cleanupErr == nil && result.FinalState == FinalStateCompleted {
+		if req.finalizeNativeWork && cleanupErr == nil && result.FinalState == FinalStateCompleted && !req.phaseReceipts {
 			if err := r.recordAgentStep(afterRunCtx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
 				turnErr = err
 				req.retainCheckpoint = true
 			}
 		}
 		if req.reviewSource != nil {
-			req.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue}
+			req.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
 		}
 		cleanupWorkspace := false
 		verdictAttempted := false

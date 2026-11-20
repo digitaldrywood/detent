@@ -389,11 +389,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
-	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && (normalizeRunMode(req.Mode) == RunModeImplement || req.RetainItemWorkspace) {
-		req.phaseReceipts, err = phase.PhaseReceipts(guarded)
+	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
+	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
+	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (normalizeRunMode(req.Mode) == RunModeImplement || req.RetainItemWorkspace) {
+		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
+		req.phaseReceipts = req.phaseContinuation != nil
 	}
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {
@@ -460,6 +463,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
 	}
+	req.retainedReview = result.retainedReview
 	var implementationReviewErr *NativeImplementationReviewError
 	if errors.As(runErr, &implementationReviewErr) || errors.Is(runErr, ErrNativeRecoveryRequired) {
 		outcome = "interrupted"
@@ -542,6 +546,16 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 					runErr = errors.Join(runErr, err)
 				}
 			}
+		}
+	}
+	if retained := result.retainedReview; retained != nil && guarded.Err() == nil && executionCancellation(req) == nil {
+		if change, ok := req.Execution.(ChangeExecution); ok {
+			result.NativeChange = change.NativeChange()
+		}
+		_, err := r.judgeRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr)
+		if err != nil {
+			runErr = errors.Join(runErr, err)
+			outcome = "interrupted"
 		}
 	}
 	_, prepared := req.Execution.(CompletionExecution)
@@ -796,7 +810,12 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
-		finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
+		if req.phaseReceipts && req.retainedReview != nil {
+			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
+		}
+		if finalizationErr == nil {
+			finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
+		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if recorder, ok := req.Execution.(SourceValidationExecution); ok {

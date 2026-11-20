@@ -3,6 +3,7 @@ package nativechange
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -88,8 +89,41 @@ func (e *nativeExecution) stepReviewEpoch() tracker.FencingToken {
 	return evidence.ReviewEpoch(e.claim.recovery, e.data.Steps)
 }
 
-func (e *nativeExecution) PhaseReceipts(ctx context.Context) (bool, error) {
-	return e.claim.source.NativeClient().PhaseReceiptRoute(ctx, e.claim.lease.WorkItemID)
+func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*tracker.NativePhaseContinuation, error) {
+	client, lease := e.claim.source.NativeClient(), e.claim.lease
+	receipts, err := client.ItemPhaseReceipts(ctx, lease.WorkItemID)
+	var refusal *APIError
+	if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	attempt, reviewState := e.data.AttemptID, e.stepReviewState()
+	e.mu.Unlock()
+	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
+		return &tracker.NativePhaseContinuation{}, nil
+	}
+	pinned := receipts[0]
+	phases := []tracker.NativePhaseReceipt{
+		{Phase: "implement", InputDigest: phaseInputDigest("implement", pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, "")},
+	}
+	if command != "" {
+		phases = append(phases, tracker.NativePhaseReceipt{Phase: "project_gate", InputDigest: phaseInputDigest("project_gate", pinned.HeadSHA, pinned.TreeSHA, lease.PolicyID, reviewState, command)})
+	}
+	continuation, err := client.ItemPhaseContinuation(ctx, lease.WorkItemID, lease.PolicyID, phases)
+	if err != nil {
+		return nil, err
+	}
+	if continuation.LastPushed == nil || *continuation.LastPushed != pinned {
+		return nil, errors.New("recorded phase source changed during continuation")
+	}
+	return &continuation, nil
+}
+
+func phaseInputDigest(phase, head, tree, policyID, reviewState, input string) string {
+	return policy.Digest([]byte(strings.Join([]string{phase, head, tree, policyID, reviewState, input}, "\x00")))
 }
 
 func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
@@ -106,9 +140,9 @@ func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
 	lease := e.claim.lease
 	e.mu.Lock()
-	attemptID := e.data.AttemptID
+	attemptID, reviewState := e.data.AttemptID, e.stepReviewState()
 	e.mu.Unlock()
-	digest := policy.Digest([]byte(strings.Join([]string{phase, head, tree, lease.PolicyID, input}, "\x00")))
+	digest := phaseInputDigest(phase, head, tree, lease.PolicyID, reviewState, input)
 	request := tracker.NativePhaseReceipt{
 		Mutation:  tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken},
 		AttemptID: attemptID, Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID, InputDigest: digest,
