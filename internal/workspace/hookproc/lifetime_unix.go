@@ -27,17 +27,7 @@ func NewLifetime() (*Lifetime, error) {
 	if err = unix.Mkfifo(l.path(), 0600); err == nil {
 		l.reader, err = os.OpenFile(l.path(), os.O_RDONLY|unix.O_NONBLOCK, 0)
 	}
-	if err == nil {
-		l.writer, err = os.OpenFile(l.path(), os.O_WRONLY|unix.O_NONBLOCK, 0)
-	}
-	if err == nil {
-		err = l.writer.Chmod(0400)
-	}
 	if err != nil {
-		err = errors.Join(err, l.CloseWriter())
-		if l.reader != nil {
-			err = errors.Join(err, l.reader.Close())
-		}
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
 	return l, nil

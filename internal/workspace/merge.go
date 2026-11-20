@@ -522,7 +522,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	if paged {
 		cmd.Stdout, cmd.Stderr = &source, &diagnostics
 	}
-	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
+	issue.hookOwner.ConfigureCommand(cmd)
 	launchCtx := ctx
 	var identity procgroup.Identity
 	if process != nil {
