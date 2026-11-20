@@ -17,6 +17,7 @@ import (
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
 const recoveryEvidenceLimit = 20
@@ -157,21 +158,7 @@ func (l *LocalGit) VerifyReviewTree(ctx context.Context, info Info, issue Issue)
 	if err != nil {
 		return err
 	}
-	changes, err := runGitAt(ctx, normalized.Path, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all")
-	if err != nil {
-		return err
-	}
-	if changes != "" {
-		var paths []string
-		for entry := range strings.SplitSeq(changes, "\x00") {
-			if len(entry) > 3 {
-				paths = append(paths, entry[3:])
-			}
-		}
-		slices.Sort(paths)
-		return fmt.Errorf("review workspace has local changes: %q", paths)
-	}
-	return nil
+	return validationcmd.VerifyCleanReview(ctx, normalized.Path)
 }
 
 func (l *LocalGit) Head(ctx context.Context, info Info, issue Issue) (string, error) {

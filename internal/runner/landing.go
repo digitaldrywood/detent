@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -475,7 +476,7 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
 	landing, ok := req.Execution.(LandingExecution)
 	workflow, _, _, _ := r.runtimeSnapshot()
-	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !nativeLandingRework(req.Execution.Recovery()) {
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || normalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runRole(req.Mode, req.Issue) != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
 		return nil, nil
 	}
 	tools := []AgentTool{

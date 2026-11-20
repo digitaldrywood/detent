@@ -24,7 +24,8 @@ type CheckpointWorktree interface {
 func (l *LocalGit) RestoreCheckpointForFinalization(ctx context.Context, original Info, issue Issue, checkpoint CheckpointRef) (Info, Issue, error) {
 	issue.Identifier += "-finalization-" + checkpoint.CommitSHA
 	issue.BranchName = ""
-	issue.Source = nil
+	issue.Source, issue.PhaseSource = nil, nil
+	issue.finalizationBranch = original.PublishBranch()
 	issue.Checkpoint, issue.RequireCheckpoint = &checkpoint, true
 	info, err := l.Create(ctx, issue)
 	if err != nil {

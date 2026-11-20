@@ -139,7 +139,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		if err != nil {
 			t.Fatal(err)
 		}
-		assertSetupRefusalReceipt(t, recovery.Attempts, false)
+		assertSetupRefusalReceipt(t, recovery.Attempts)
 		if failure := recovery.Attempts[len(recovery.Attempts)-1].TerminalFailure; failure == nil || !strings.Contains(failure.Error, expectedRecoverySite) {
 			t.Fatalf("source refusal came from another recovery stage: %+v", failure)
 		}

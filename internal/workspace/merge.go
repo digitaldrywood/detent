@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
 var ErrMergeResolutionInvalid = errors.New("merge resolution is invalid")
@@ -237,32 +237,6 @@ func remoteDefaultBranchHead(ctx context.Context, workspacePath string, remote s
 		return "", "", fmt.Errorf("remote %s default branch %s is missing", remote, branch)
 	}
 	return branch, head, nil
-}
-
-// remoteGitArgs prefixes a git command that reads the repository remote with
-// the GitHub CLI credential helper the runner checkout clones with, so a
-// runner service without a global git credential can still reach the remote.
-func remoteGitArgs(args ...string) []string {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return args
-	}
-	return append([]string{"-c", "credential.https://github.com.helper=!gh auth git-credential"}, args...)
-}
-
-func remoteBranchHead(ctx context.Context, workspacePath string, remote string, branch string) (string, bool, error) {
-	ref := "refs/heads/" + branch
-	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", remote, ref)...)
-	if err != nil {
-		return "", false, err
-	}
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[1] != ref {
-			continue
-		}
-		return fields[0], true, nil
-	}
-	return "", false, nil
 }
 
 func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
@@ -528,24 +502,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}()
 	commandInfo := info
 	if issue.IsolateReviewCommands {
-		commandInfo.Path = filepath.Join(scratch, "source")
-		if _, err := runGitAt(ctx, info.Path, "clone", "--shared", "--no-checkout", "--", info.Path, commandInfo.Path); err != nil {
-			return result, fmt.Errorf("prepare validation source: %w", err)
-		}
-		if _, err := runGitAt(ctx, commandInfo.Path, "remote", "remove", "origin"); err != nil {
-			return result, fmt.Errorf("remove validation source remote: %w", err)
-		}
-		refs, err := runGitAt(ctx, info.Path, "for-each-ref", "--format=update %(refname) %(objectname)", "refs/remotes/")
+		commandInfo.Path, err = validationcmd.PrepareIsolatedSource(ctx, info.Path, scratch, issue.PullRequestHeadSHA)
 		if err != nil {
-			return result, fmt.Errorf("read validation base refs: %w", err)
-		}
-		if refs != "" {
-			if _, err := runGitAtWithInput(ctx, commandInfo.Path, nil, true, refs, "update-ref", "--stdin"); err != nil {
-				return result, fmt.Errorf("copy validation base refs: %w", err)
-			}
-		}
-		if _, err := runGitAt(ctx, commandInfo.Path, "checkout", "--detach", issue.PullRequestHeadSHA); err != nil {
-			return result, fmt.Errorf("checkout validation source: %w", err)
+			return result, err
 		}
 	}
 	if owner != nil {
@@ -630,12 +589,11 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		return result, ctx.Err()
 	}
 	if issue.IsolateReviewCommands {
-		head, headErr := runGitAt(ctx, commandInfo.Path, "rev-parse", "HEAD")
-		status, statusErr := runGitAt(ctx, commandInfo.Path, "status", "--porcelain", "--untracked-files=no")
-		if inspectionErr := errors.Join(headErr, statusErr); inspectionErr != nil {
-			return result, fmt.Errorf("inspect validation source: %w", inspectionErr)
+		unchanged, err := validationcmd.IsolatedSourceUnchanged(ctx, commandInfo.Path, issue.PullRequestHeadSHA)
+		if err != nil {
+			return result, err
 		}
-		if strings.TrimSpace(head) != issue.PullRequestHeadSHA || status != "" {
+		if !unchanged {
 			result.ExitCode = 1
 			result.Output += "\nValidation command modified the reviewed source."
 			return result, nil

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -47,7 +48,7 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got := nativeRestorableCheckpoint(tracker.NativeRecovery{Attempts: test.attempts, SourceVersionID: test.transfer}, test.current)
+			got := phaserecovery.Checkpoint(tracker.NativeRecovery{Attempts: test.attempts, SourceVersionID: test.transfer}, test.current)
 			if (got != nil) != test.want {
 				t.Fatalf("restorable = %#v, want %t", got, test.want)
 			}
@@ -487,7 +488,7 @@ func TestCheckpointRefCoversChangeSource(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			if got := checkpointRefCoversChangeSource(test.err, nativeRestorableCheckpoint(test.recovery, nil), test.landing, test.fresh); got != test.want {
+			if got := checkpointRefCoversChangeSource(test.err, phaserecovery.Checkpoint(test.recovery, nil), test.landing, test.fresh); got != test.want {
 				t.Fatalf("covers = %t, want %t", got, test.want)
 			}
 		})

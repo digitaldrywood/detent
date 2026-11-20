@@ -103,8 +103,11 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 		external, detached    bool
 		unsafe                bool
 		wantError             string
+		verify                func(*testing.T)
 	}{
 		{name: "hydrate external reviewed head", external: true},
+		{name: "reopen retained item worktree for landing", verify: verifyRetainedItemLanding},
+		{name: "reopen the recorded phase despite a newer remote head", verify: verifyPinnedItemPhase},
 		{name: "hydrate operator head without external PR"},
 		{name: "reuse worker published head", change: "worker"},
 		{name: "preserve dirty Code workspace", external: true, change: "dirty"},
@@ -129,6 +132,10 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			if test.verify != nil {
+				test.verify(t)
+				return
+			}
 			fixture := newLandingFixture(t)
 			branch := "detent/external-source"
 			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+branch, fixture.head+":refs/pull/7/head")
@@ -887,8 +894,8 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	}
 }
 
-func TestLocalGitLandingReopensRetainedItemWorktree(t *testing.T) {
-	t.Parallel()
+func verifyRetainedItemLanding(t *testing.T) {
+	t.Helper()
 	f := newLandingFixture(t)
 	runGit(t, f.source, "remote", "set-url", "origin", "https://example.test/owner/repository.git")
 	issue := f.issue
@@ -904,8 +911,8 @@ func TestLocalGitLandingReopensRetainedItemWorktree(t *testing.T) {
 	}
 }
 
-func TestLocalGitReopensPinnedPhase(t *testing.T) {
-	t.Parallel()
+func verifyPinnedItemPhase(t *testing.T) {
+	t.Helper()
 	f := newLandingFixture(t)
 	branch := f.info.PublishBranch()
 	runGit(t, f.info.Path, "push", "origin", "HEAD:refs/heads/"+branch)

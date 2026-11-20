@@ -3,20 +3,14 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/workspace/reviewoutput"
 
-	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -70,212 +64,25 @@ func (l *LocalGit) RunReviewCommand(ctx context.Context, info Info, issue Issue,
 	if err != nil {
 		return gate.CommandResult{}, err
 	}
-	head, err := l.Head(ctx, normalized, issue)
-	if err != nil {
-		return gate.CommandResult{}, err
-	}
-	if strings.TrimSpace(head) != issue.PullRequestHeadSHA {
-		return gate.CommandResult{}, errors.New("review command head differs from the reviewed version")
-	}
-	if err := l.VerifyReviewTree(ctx, normalized, issue); err != nil {
-		return gate.CommandResult{}, err
-	}
-	tree, err := runGitAt(ctx, normalized.Path, "rev-parse", "HEAD^{tree}")
-	if err != nil {
-		return gate.CommandResult{}, err
-	}
-	result, err = l.runValidationCommand(ctx, normalized, issue, command)
-	result.HeadSHA = strings.TrimSpace(head)
-	result.TreeSHA = strings.TrimSpace(tree)
-	result.ReceiptID = result.PipelineTiming("").ReceiptID
-	const maxOutputBytes = 64 * 1024
-	output, truncated := runtimeoutput.Diagnostic(result.Output, maxOutputBytes)
-	result.Output = output
-	result.OutputTruncated = result.OutputTruncated || truncated
-	if err != nil {
-		return result, err
-	}
-	current, err := l.Head(ctx, normalized, issue)
-	if err != nil {
-		return result, err
-	}
-	if strings.TrimSpace(current) != result.HeadSHA {
-		return result, errors.New("review command changed the reviewed head")
-	}
-	return result, l.VerifyReviewTree(ctx, normalized, issue)
+	return validationcmd.RunReview(ctx, normalized.Path, issue.PullRequestHeadSHA, command, func(ctx context.Context, command string) (gate.CommandResult, error) {
+		return l.runValidationCommand(ctx, normalized, issue, command)
+	})
 }
 
-func (l *LocalGit) RunBaseCommand(ctx context.Context, info Info, issue Issue, base, command string) (_ gate.CommandResult, err error) {
-	if !changerequest.ValidHash(base, 40) && !changerequest.ValidHash(base, 64) {
-		return gate.CommandResult{}, errors.New("base reproduction requires an exact commit")
-	}
-	scratch, err := PrepareWorkerScratch(ctx, info.Path)
-	if err != nil {
-		return gate.CommandResult{}, err
-	}
-	removeScratch := true
-	defer func() {
-		if removeScratch {
-			if cleanupErr := os.RemoveAll(scratch); cleanupErr != nil {
-				err = errors.Join(err, fmt.Errorf("remove base reproduction scratch: %w", cleanupErr))
-			}
-		}
-	}()
-	path := filepath.Join(scratch, "base")
-	if _, err := runGitAt(ctx, info.Path, "clone", "--shared", "--no-checkout", "--no-hardlinks", "--", info.Path, path); err != nil {
-		return gate.CommandResult{}, fmt.Errorf("clone base reproduction source: %w", err)
-	}
-	if _, err := runGitAt(ctx, path, "checkout", "--detach", base); err != nil {
-		return gate.CommandResult{}, fmt.Errorf("checkout reproduction base: %w", err)
-	}
-	baseInfo := info
-	baseInfo.Path = path
-	baseIssue := issue
-	baseIssue.PullRequestHeadSHA = base
-	result, err := l.runValidationCommand(ctx, baseInfo, baseIssue, command)
-	removeScratch = err == nil
-	result.HeadSHA = base
-	if err == nil {
-		current, headErr := runGitAt(ctx, path, "rev-parse", "HEAD")
-		status, treeErr := runGitAt(ctx, path, "status", "--porcelain")
-		if headErr != nil || treeErr != nil || strings.TrimSpace(current) != base || strings.TrimSpace(status) != "" {
-			err = errors.New("base reproduction changed source")
-		}
-	}
-	output, truncated := runtimeoutput.Diagnostic(result.Output, 64*1024)
-	result.Output, result.OutputTruncated = output, truncated
-	return result, err
+func (l *LocalGit) RunBaseCommand(ctx context.Context, info Info, issue Issue, base, command string) (gate.CommandResult, error) {
+	return validationcmd.RunBase(ctx, info.Path, base, func() (string, error) {
+		return PrepareWorkerScratch(ctx, info.Path)
+	}, func(path string) (gate.CommandResult, error) {
+		info.Path, issue.PullRequestHeadSHA = path, base
+		return l.runValidationCommand(ctx, info, issue, command)
+	})
 }
 
 func AttributeCommandFailure(result *gate.CommandResult, base string, reproduction gate.CommandResult, err error) {
-	if result.ExitCode == 0 {
-		return
-	}
-	observation := gate.CommandObservation(reproduction)
-	observation.Complete = observation.Complete && err == nil
-	result.BaseReproduction = nil
-	if reproduction.Command != "" {
-		result.BaseReproduction = &observation
-	}
-	gate.NormalizeCommandAttribution(base, result.HeadSHA, result)
+	validationcmd.AttributeCommandFailure(result, base, reproduction, err)
 }
 
 const ReviewSourcePageBytes = reviewoutput.SourcePageBytes
 
 type ReviewOutputRange = reviewoutput.Range
 type reviewOutputCapture = reviewoutput.Capture
-
-func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, authorize func(context.Context) error) (branch, head, tree string, err error) {
-	info, err = l.normalizeInfo(info, issue)
-	if err != nil {
-		return "", "", "", err
-	}
-	branch = info.PublishBranch()
-	if branch == "" {
-		return "", "", "", errors.New("phase publication requires an item branch")
-	}
-	if _, err := runGitAt(ctx, info.Path, "check-ref-format", "refs/heads/"+branch); err != nil {
-		return "", "", "", fmt.Errorf("validate phase publication branch: %w", err)
-	}
-	if err := l.VerifyReviewTree(ctx, info, issue); err != nil {
-		return "", "", "", err
-	}
-	head, tree, err = l.ItemPhaseHead(ctx, info, issue)
-	if err != nil {
-		return "", "", "", err
-	}
-	if err := authorize(ctx); err != nil {
-		return "", "", "", err
-	}
-	if _, pushErr := runGitAt(ctx, info.Path, "push", "--no-follow-tags", defaultGitRemote, head+":refs/heads/"+branch); pushErr != nil {
-		current, exists, readErr := remoteBranchHead(ctx, info.Path, defaultGitRemote, branch)
-		if readErr != nil || !exists || current != head {
-			return "", "", "", errors.Join(classifyLandingPush(pushErr, branch), readErr)
-		}
-	}
-	return branch, head, tree, nil
-}
-
-func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) error {
-	info, err := l.normalizeInfo(info, issue)
-	if err != nil {
-		return err
-	}
-	head, tree, err := l.ItemPhaseHead(ctx, info, issue)
-	if err != nil || head == previous.HeadSHA {
-		return err
-	}
-	if err := l.fetchItemPhase(ctx, info, issue, previous); err != nil {
-		return err
-	}
-	if _, err := runGitAt(ctx, info.Path, "merge-base", "--is-ancestor", previous.HeadSHA, head); err == nil {
-		return nil
-	} else {
-		var commandErr *CommandError
-		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
-			return err
-		}
-	}
-	remote, exists, err := remoteBranchHead(ctx, info.Path, defaultGitRemote, previous.Branch)
-	if err != nil {
-		return err
-	}
-	if !exists || remote != previous.HeadSHA {
-		return refuse(LandRefusalHeadMoved, "the item branch advanced beyond its recorded phase")
-	}
-	if err := authorize(ctx); err != nil {
-		return err
-	}
-	if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "merge", "--no-ff", "-s", "ours", "-m", "fix: retain phase history for "+issue.Identifier, previous.HeadSHA); err != nil {
-		return err
-	}
-	_, observedTree, err := l.ItemPhaseHead(ctx, info, issue)
-	if err == nil && observedTree != tree {
-		return errors.New("preserving the item branch changed the completed source tree")
-	}
-	return err
-}
-
-func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (string, string, error) {
-	info, err := l.normalizeInfo(info, issue)
-	if err != nil {
-		return "", "", err
-	}
-	head, err := l.Head(ctx, info, issue)
-	if err != nil {
-		return "", "", err
-	}
-	tree, err := runGitAt(ctx, info.Path, "rev-parse", head+"^{tree}")
-	if err != nil {
-		return "", "", fmt.Errorf("read phase tree: %w", err)
-	}
-	return head, strings.TrimSpace(tree), nil
-}
-
-func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, receipt tracker.NativePhaseReceipt) error {
-	if !validLandingHead(receipt.HeadSHA) || !validLandingHead(receipt.TreeSHA) || receipt.Branch == "" || receipt.Branch != info.PublishBranch() {
-		return errors.New("recorded phase does not name the item branch and immutable source")
-	}
-	repository := RepositoryURL(ctx, l.sourceRoot)
-	expected := strings.TrimSpace(issue.PullRequestRepository)
-	if repository == "" || expected != "" && repository != expected {
-		return errors.New("recorded phase source is outside the configured repository")
-	}
-	release, err := l.acquireSourceOperation(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	if _, err := l.runGit(ctx, "fetch", "--no-tags", defaultGitRemote, receipt.HeadSHA); err != nil {
-		return fmt.Errorf("fetch recorded phase commit: %w", err)
-	}
-	head, err := l.runGit(ctx, "rev-parse", "FETCH_HEAD^{commit}")
-	if err != nil || strings.TrimSpace(head) != receipt.HeadSHA {
-		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
-	}
-	tree, err := l.runGit(ctx, "rev-parse", receipt.HeadSHA+"^{tree}")
-	if err != nil || strings.TrimSpace(tree) != receipt.TreeSHA {
-		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
-	}
-	return nil
-}

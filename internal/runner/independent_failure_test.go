@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -96,7 +97,7 @@ func TestIndependentFailureReviewResume(t *testing.T) {
 				current.Version.HeadSHA = strings.Repeat("d", 40)
 				local.HeadSHA = current.Version.HeadSHA
 			}
-			if nativeReviewResumeMatches(recovery, local, current) != test.want {
+			if phaserecovery.ReviewMatches(recovery, local, current) != test.want {
 				t.Fatalf("source binding reused changed source=%v", test.changedSource)
 			}
 			if !test.changedSource && tracker.NativeStepReviewState(recovery) != originalState {

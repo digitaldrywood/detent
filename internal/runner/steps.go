@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -76,75 +77,11 @@ func loadStep(ctx context.Context, execution Execution, binding tracker.NativeSt
 }
 
 func nativeTurnResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
-	repairResume := nativeIndependentGateResume(recovery)
-	if nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
-		return nil
-	}
-	if detail := recovery.ChangeDetail; detail != nil {
-		if detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" {
-			return nil
-		}
-		for _, review := range detail.Reviews {
-			if review.VersionID == detail.Change.CurrentVersion && (review.Decision == "changes_requested" || review.SecurityAudit != nil && review.SecurityAudit.Verdict != "pass") {
-				return nil
-			}
-		}
-	}
-	state := tracker.NativeStepReviewState(recovery)
-	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
-		attempt := &recovery.Attempts[i]
-		if attempt.Status == "succeeded" && !repairResume {
-			return nil
-		}
-		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 && !repairResume {
-			return nil
-		}
-		for _, receipt := range attempt.Steps {
-			if receipt.Step != "agent_turn" {
-				continue
-			}
-			if receipt.PolicyID != recovery.Lease.PolicyID || receipt.ReviewState != state || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) && !repairResume {
-				return nil
-			}
-			disposition := NativeDispositionFromMessage(receipt.CompletionBody)
-			if disposition == nil || disposition.Status != "complete" || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
-				return nil
-			}
-			copy := *attempt
-			copy.CompletionBody = receipt.CompletionBody
-			copy.Checkpoint = &receipt.Source
-			return &copy
-		}
-	}
-	return nil
+	return phaserecovery.TurnAttempt(recovery, nativeIndependentGateResume(recovery), phaserecovery.LandingNeedsRework(recovery) || NativeReviewConversationRefusal(recovery) != "", completedSourceDisposition)
 }
 
 func nativePhaseTurnResumeAttempt(recovery tracker.NativeRecovery, phase tracker.NativePhaseReceipt) *tracker.NativeAttempt {
-	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
-		attempt := recovery.Attempts[i]
-		if attempt.AttemptID != phase.AttemptID {
-			continue
-		}
-		for _, receipt := range attempt.Steps {
-			if receipt.Step != "agent_turn" || receipt.PolicyID != recovery.Lease.PolicyID || receipt.Source.HeadSHA != phase.HeadSHA ||
-				receipt.ReviewState != tracker.NativeStepReviewState(recovery) || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) {
-				continue
-			}
-			disposition := NativeDispositionFromMessage(receipt.CompletionBody)
-			if disposition == nil || disposition.Status != "complete" || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
-				return nil
-			}
-			attempt.CompletionBody = receipt.CompletionBody
-			attempt.Checkpoint = &receipt.Source
-			return &attempt
-		}
-	}
-	return nil
-}
-
-func nativeTurnResumeMatches(attempt *tracker.NativeAttempt, local *workspace.RecoveryState) bool {
-	return attempt != nil && attempt.Checkpoint != nil && local != nil && attempt.Checkpoint.HeadSHA != "" &&
-		attempt.Checkpoint.HeadSHA == local.HeadSHA && attempt.Checkpoint.WorkspaceDigest != "" && attempt.Checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
+	return phaserecovery.PhaseTurnAttempt(recovery, phase, completedSourceDisposition)
 }
 
 func (r *Runner) recordAgentStep(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, message string) error {

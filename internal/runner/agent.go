@@ -31,6 +31,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -1692,7 +1694,7 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 		}
 	}
 	refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
-	issue.Checkpoint = nativeRestorableCheckpoint(recovery, issue.Source)
+	issue.Checkpoint = phaserecovery.Checkpoint(recovery, issue.Source)
 	if issue.Checkpoint == nil && issue.Source == nil && issue.AttemptWorkspace.Key() != "" &&
 		previous != nil && previous.MachineID != "" && previous.MachineID == recovery.Lease.MachineID &&
 		previous.Checkpoint != nil && previous.Checkpoint.Storage == "local_only" && previous.Checkpoint.WorktreeState == "unpushed" &&
@@ -1716,7 +1718,7 @@ func nativeRunRecovery(req RunRequest, mode string, gateCommand string) (*tracke
 	var reviewRecovery *tracker.NativeAttempt
 	repairResume := false
 	var turnRecovery *tracker.NativeAttempt
-	if req.Execution != nil && mode == RunModeImplement && !req.rerouteImplementation() {
+	if req.Execution != nil && mode == RunModeImplement {
 		recovery := req.Execution.Recovery()
 		reviewRecovery = nativeReviewResumeAttempt(recovery, gateCommand)
 		repairResume = reviewRecovery != nil && recovery.ChangeDetail != nil && len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
@@ -1888,7 +1890,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	workspaceIssue.FreshCheckout = false
-	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
+	landingRework := req.Execution != nil && mode == RunModeImplement && phaserecovery.LandingNeedsRework(req.Execution.Recovery())
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding
@@ -2259,7 +2261,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	resumeState := store.AgentResumeState{}
-	if turnRecovery != nil && !nativeTurnResumeMatches(turnRecovery, recoveryState) {
+	if turnRecovery != nil && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
 		turnRecovery = nil
 	}
 	if mode != RunModeRoutine && reviewRecovery == nil && turnRecovery == nil {
@@ -2272,7 +2274,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
 		}
-		if !nativeReviewResumeMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
+		if !phaserecovery.ReviewMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
 		}
 	}
@@ -2667,9 +2669,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var priorSource *agentTurnExecution
 	sourceCostOffsetUSD := 0.0
-	var timeouts int
-	filedTimeouts := make(map[sessiontimeout.Kind]bool)
-	var priorDeadlines []string
+	var deadlines progresscheck.RoundDeadlines
 
 	for {
 		r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
@@ -2686,58 +2686,33 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		timedOut := errors.As(execution.err, &providerTimeout)
 		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded)
 		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
-			assessment, verdictErr := r.judgeRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", strings.Join(priorDeadlines, "\n"), execution.result, execution.err)
+			assessment, verdictErr := r.judgeRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err)
 			if verdictErr != nil {
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, verdictErr)
 			}
 			diagnosis := providerRoundOutcome(execution.err, assessment)
-			if timedOut && slices.Contains(priorDeadlines, diagnosis) {
-				if !filedTimeouts[providerTimeout.Kind] {
-					if authorityErr := req.Execution.Validate(ctx); authorityErr != nil {
-						afterRunPending = false
-						return execution.result, errors.Join(execution.err, authorityErr)
+			assessment, err := deadlines.Continue(ctx, sessionCtx, providerTimeout, diagnosis, assessment, req.Execution.Validate,
+				func(ctx context.Context, timeout *sessiontimeout.Error) error {
+					ctx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
+					defer cancel()
+					return fileRepeatedTimeout(ctx, req, "implement", backendConfig.Kind, timeout)
+				}, func(attempt int) time.Duration {
+					ceiling := durationFromMillis(workflow.Config.Agent.MaxRetryBackoffMS)
+					if ceiling <= 0 {
+						ceiling = defaultSupervisorMaxRetryBackoff
 					}
-					incidentCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
-					incidentErr := fileRepeatedTimeout(incidentCtx, req, "implement", backendConfig.Kind, providerTimeout)
-					cancel()
-					if incidentErr != nil {
-						afterRunPending = false
-						return execution.result, errors.Join(execution.err, incidentErr)
-					}
-					filedTimeouts[providerTimeout.Kind] = true
-				}
-				assessment = "The repeated timeout is recorded as a runner incident. Choose a different bounded check that can establish the next acceptance criterion. Preserve the existing source edits."
-			}
-
-			resume := AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
-			if timedOut {
-				timeouts++
-				resume = AgentResume{}
-				req.RetryMode = RetryModeFresh
-				ceiling := durationFromMillis(workflow.Config.Agent.MaxRetryBackoffMS)
-				if ceiling <= 0 {
-					ceiling = defaultSupervisorMaxRetryBackoff
-				}
-				delay := JitteredFailureRetryDelay(failureRetryDelay(timeouts, defaultSupervisorFailureRetryBaseDelay, ceiling))
-				timer := time.NewTimer(delay)
-				select {
-				case <-sessionCtx.Done():
-					timer.Stop()
-					afterRunPending = false
-					return execution.result, errors.Join(execution.err, context.Cause(sessionCtx))
-				case <-timer.C:
-				}
-			}
-			if err := req.Execution.Validate(ctx); err != nil {
+					return JitteredFailureRetryDelay(failureRetryDelay(attempt, defaultSupervisorFailureRetryBaseDelay, ceiling))
+				})
+			if err != nil {
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, err)
 			}
-			priorDeadlines = append(priorDeadlines, diagnosis)
-			if len(priorDeadlines) > 6 {
-				priorDeadlines = priorDeadlines[1:]
+			turnRequest.Resume = AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
+			if timedOut {
+				turnRequest.Resume = AgentResume{}
+				req.RetryMode = RetryModeFresh
 			}
-			turnRequest.Resume = resume
 			turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + assessment
 			req.sessionTurnOffset = 0
 			req.sessionTokenOffset = execution.result.Tokens.TotalTokens
@@ -3057,7 +3032,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					assessment, err := r.decideRound(afterRunCtx, req, runWorkspace, info, workspaceIssue, "implement", feedback, result, nil, true)
 					turnErr = err
 					if err == nil {
-						assessment.applyHumanAction(&result)
+						applyRoundHumanAction(&result, assessment)
 					}
 					if err == nil && (assessment.NextPhase == "implement" || !req.phaseReceipts && feedback != "") {
 						expected := tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: change.HeadSHA}
@@ -3083,7 +3058,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			assessment, verdictErr := r.decideRound(afterRunCtx, req, runWorkspace, info, workspaceIssue, "implement", "", result, turnErr, false)
 			turnErr = errors.Join(turnErr, verdictErr)
 			if turnErr == nil {
-				assessment.applyHumanAction(&result)
+				applyRoundHumanAction(&result, assessment)
 			}
 		}
 		r.finishExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, cleanupWorkspace)
