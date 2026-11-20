@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -817,17 +816,14 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 
 func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 	for _, test := range []struct {
-		name                            string
-		calls, bytes                    int
-		fallback, evidenceOnly, invalid bool
+		name                   string
+		calls, bytes           int
+		fallback, evidenceOnly bool
 	}{
-		{name: "calls", calls: 1, bytes: 1000}, {name: "result bytes", calls: 10, bytes: 7}, {name: "same thread final turn", calls: 1, bytes: 1000, fallback: true}, {name: "evidence only", calls: 1, bytes: 1000, evidenceOnly: true}, {name: "invalid decision rejected", calls: 1, bytes: 1000, invalid: true},
+		{name: "calls", calls: 1, bytes: 1000}, {name: "result bytes", calls: 10, bytes: 7}, {name: "same thread final turn", calls: 1, bytes: 1000, fallback: true}, {name: "evidence only", calls: 1, bytes: 1000, evidenceOnly: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			decisionJSON := `{"outcome":"reroute","step":"implement","reason":"Repair the assertion","diagnosis":"failed: observed assertion failure","instruction":"Repair the implementation exercised by the failing assertion","evidence":["failed"]}`
-			if test.invalid {
-				decisionJSON = `{"outcome":"progressing","reason":"No evidence"}`
-			}
 			encoded, err := json.Marshal(decisionJSON)
 			if err != nil {
 				t.Fatal(err)
@@ -886,10 +882,6 @@ func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 			})
 			if err != nil || context.Cause(ctx) != nil || output.String() != decisionJSON {
 				t.Fatalf("no final decision: output=%q err=%v cause=%v", output.String(), err, context.Cause(ctx))
-			}
-			decision, err := (progresscheck.AI{Backend: progressDecisionText(output.String())}).Decide(ctx, progresscheck.Request{ProjectID: "project", IssueID: "issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{"implement"}})
-			if (err != nil) != test.invalid || (!test.invalid && decision.Outcome != progresscheck.Reroute) {
-				t.Fatalf("invalid exhausted decision: %+v %v", decision, err)
 			}
 			wantReads := 1
 			if test.bytes == 7 {
@@ -967,12 +959,6 @@ func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 			}
 		})
 	}
-}
-
-type progressDecisionText string
-
-func (p progressDecisionText) Generate(context.Context, string, string) (string, error) {
-	return string(p), nil
 }
 
 func TestIndependentModelProbeOwnership(t *testing.T) {

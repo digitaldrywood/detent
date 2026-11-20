@@ -2036,14 +2036,6 @@ func (l *LocalSQLite) Normalize() {
 	l.ProjectID = strings.TrimSpace(l.ProjectID)
 }
 
-func (l LocalSQLite) Validate(prefix string) []string {
-	l.Normalize()
-	if l.Path == "" {
-		return []string{prefix + ".path is required for local_sqlite"}
-	}
-	return nil
-}
-
 func validRepositoryName(value string) bool {
 	owner, repo, ok := strings.Cut(strings.TrimSpace(value), "/")
 	return ok && strings.TrimSpace(owner) != "" && strings.TrimSpace(repo) != "" && !strings.Contains(repo, "/")
