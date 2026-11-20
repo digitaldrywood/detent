@@ -114,7 +114,7 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 			return leasestore.Attempt{}, false, err
 		}
 	} else {
-		params := pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}
+		params := pgquery.AdvanceLeaseAttemptParams{OrganizationID: f.session.organization, ID: e.ID, LeaseID: l.LeaseID, FencingToken: l.FencingToken, RunID: e.RunID, NextSequence: e.Sequence, Status: e.Status, DispatchGeneration: e.DispatchGeneration, PayloadObjectKey: e.PayloadObjectKey, CheckpointObjectKey: e.CheckpointObjectKey, CheckpointPreservesSource: attemptCheckpointBool(e.CheckpointPreservesSource), ArtifactsObjectKey: e.ArtifactsObjectKey, RuntimeHeartbeatAt: e.RuntimeHeartbeatAt, WorkerCleanupRequired: attemptCheckpointBool(e.WorkerCleanupRequired), LocalAttemptID: e.LocalAttemptID, UsageCorrection: e.UsageCorrection, Termination: e.Termination, WorkspaceRetired: e.WorkspaceRetired, RuntimeOrdered: e.RuntimeOrdered, Now: &f.now, FailureRecorded: failure.recorded, FailureExample: failure.example, FailureClass: failure.class, FailureLandingObservedAt: failure.landingObservedAt}
 		params.WorkerPid, params.WorkerPgid, params.WorkerStartedAt, params.WorkerStartKey = attemptworkersql.Columns(e.Worker)
 		newAttemptIdentityColumns(e.Identity).advance(&params)
 		if _, err := pgquery.New(runEventAdvanceQueue{runEventQueue{f.pending}}).AdvanceLeaseAttempt(ctx, params); err != nil {
@@ -129,6 +129,9 @@ func (f *runnerEventSession) RecordAttemptEvent(ctx context.Context, e leasestor
 	old.RuntimeHeartbeatAt = e.RuntimeHeartbeatAt
 	old.RuntimeSummarySequence = pgtype.Int8{Int64: e.Sequence, Valid: true}
 	old.WorkerCleanupRequired = attemptCheckpointBool(e.WorkerCleanupRequired)
+	if (e.Termination || e.WorkspaceRetired) && old.CleanupAcknowledgedAt == nil {
+		old.CleanupAcknowledgedAt = &f.now
+	}
 	switch {
 	case e.UsageCorrection && old.FailureSequence.Valid && old.FailureSequence.Int64 == old.Sequence:
 		old.FailureSequence = pgtype.Int8{Int64: e.Sequence, Valid: true}

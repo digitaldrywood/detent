@@ -813,10 +813,21 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	}
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
+	closeBeforeFinish := e.landed && !finished && outcome == "succeeded"
 	interrupted := e.data.Outcome == "interrupted"
 	expectedState := e.Recovery().Issue.State
 	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
 	e.mu.Unlock()
+	closeWorkers := func() error {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
+		defer cancel()
+		return e.CloseWorkers(cleanup)
+	}
+	if closeBeforeFinish {
+		if err := closeWorkers(); err != nil {
+			return err
+		}
+	}
 	var finishErr error
 	var rejection *nativeCompletionRejection
 	var releasedAttempt *tracker.NativeAttempt
@@ -881,10 +892,10 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 			return err
 		}
 	}
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
-	defer cancel()
-	if err := e.CloseWorkers(cleanup); err != nil {
-		return err
+	if !closeBeforeFinish {
+		if err := closeWorkers(); err != nil {
+			return err
+		}
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
