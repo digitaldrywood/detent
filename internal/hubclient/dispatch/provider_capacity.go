@@ -91,6 +91,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 						if err != nil {
 							return leases, err
 						}
+						plan.ResolveLegacyReview(request.Plan, recovery.Issue.Labels)
 						if plan.NeedsProvider() {
 							resolve = request.PlanProviderRequirement
 						}

@@ -1748,6 +1748,9 @@ func (d Deps) HydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeS
 	if plan.Descriptor.ID != request.PolicyID {
 		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Claim configuration does not match the current project policy")
 	}
+	if request.LegacyPlanStop != "" && (!plan.Descriptor.Gates.PlanEnabled || plan.Descriptor.Gates.PlanStopDigest != policy.Digest([]byte(request.LegacyPlanStop))) {
+		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Planning stop does not match the approved policy")
+	}
 	if plan.Policy.GitHubPullRequest == nil || *plan.Policy.GitHubPullRequest != plan.Descriptor.Gates.GitHubPullRequest {
 		return hubrecords.NativeClaimPlan{}, errNativeClaimPlanRefused
 	}
@@ -1973,7 +1976,7 @@ func NativeTenantCandidateQuery(scope hubscope.NativeScope, request tracker.Nati
 		workItemIDs = append(workItemIDs, candidate.WorkItemID)
 	}
 	return claimstore.CandidateQuery{
-		ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: item, WorkItemIDs: workItemIDs,
+		ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: item, WorkItemIDs: workItemIDs, LegacyPlanStop: request.LegacyPlanStop,
 		States: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees,
 		IncludeLabels: request.LabelInclude, ExcludeLabels: request.LabelExclude,
 		WorkspaceLane:   slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),

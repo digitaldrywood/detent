@@ -6,10 +6,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
-	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -33,24 +31,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func nativeChangeSchema() fs.FS {
-	return os.DirFS("../../hubserver/postgres")
-}
-
 var nativeChangeTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
-	schema := nativeChangeSchema()
-	roles, err := fs.ReadFile(schema, "roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+	if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 		return err
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, "SET ROLE detent_migration_v2"); err != nil {
 		return err
 	}
-	migrations, err := fs.Sub(schema, "migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		return err
 	}
@@ -69,11 +58,7 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	if _, err := db.ExecContext(ctx, `SET synchronous_commit = off`); err != nil {
 		return err
 	}
-	roles, err := os.ReadFile("../../hubserver/postgres/roles.sql")
-	if err != nil {
-		return err
-	}
-	if _, err := db.ExecContext(ctx, string(roles)); err != nil {
+	if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 		return err
 	}
 	if _, err := db.ExecContext(ctx, `CREATE ROLE hubclient_test LOGIN; GRANT detent_runtime_v2 TO hubclient_test`); err != nil {
@@ -82,7 +67,11 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
 		return err
 	}
-	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(os.DirFS("../../hubserver/postgres/migrations")), goose.WithGoMigrations(postgres.ConversationMigrations(os.DirFS("../../hubserver/postgres/migrations"))...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+	migrations, err := postgres.MigrationFiles()
+	if err != nil {
+		return err
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations), goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 	if err != nil {
 		return err
 	}
@@ -144,7 +133,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		provider = nativeChangeIdentityProvider{HostedProvider: provider}
 		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: "org_11111111111111111111111111111111", WorkOSOrganizationID: "provider_example", PublicURL: "https://hub.example.test", Provider: provider, Plans: ScenarioPlans()}
 	}
-	migrations, err := fs.Sub(nativeChangeSchema(), "migrations")
+	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		t.Fatal(err)
 	}

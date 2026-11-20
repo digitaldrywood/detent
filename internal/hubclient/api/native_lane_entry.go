@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -140,7 +141,7 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 				return &tracker.NativePlanState{}, nil
 			}
 			if source.Identity != nil && source.Identity.Role == "plan" && source.Status == "succeeded" {
-				return &tracker.NativePlanState{}, nil
+				return c.legacyPlan(ctx, recovery, source)
 			}
 			if source.Checkpoint.PreservesSource() {
 				return nil, nil
@@ -213,4 +214,55 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 		return result, nil
 	}
 	return result, nil
+}
+
+func (c *NativeClient) legacyPlan(ctx context.Context, recovery tracker.NativeRecovery, source *tracker.NativeAttempt) (*tracker.NativePlanState, error) {
+	var plan *tracker.NativePlanState
+	var sequence int64
+	seek := func(comments []tracker.NativeComment) {
+		for _, comment := range comments {
+			if comment.Actor.Kind != "runner" || comment.Provenance != nil || comment.EditedBy != nil || comment.Deleted ||
+				!strings.HasPrefix(comment.Body, "## Detent Plan\n") {
+				continue
+			}
+			_, body, ok := strings.Cut(comment.Body, "\n### Artifact\n\n")
+			const markerPrefix = "\n\n<!-- detent-plan-completion:"
+			markerStart := strings.LastIndex(body, markerPrefix)
+			if !ok || markerStart < 0 || !strings.HasSuffix(body, " -->") || comment.CreatedAt.Before(source.StartedAt) {
+				continue
+			}
+			digest := strings.TrimSuffix(body[markerStart+len(markerPrefix):], " -->")
+			if _, err := hex.DecodeString(digest); len(digest) != 64 || err != nil {
+				continue
+			}
+			if plan == nil || comment.Sequence > sequence {
+				sequence, plan = comment.Sequence, tracker.NativeLegacyPlanOutput(body[:markerStart], comment.ID)
+			}
+		}
+	}
+	seek(recovery.Discussion)
+	if plan == nil && recovery.Read != nil && slices.Contains(recovery.Read.Omitted, "discussion") {
+		cursor := ""
+		for {
+			page, err := c.Comments(ctx, recovery.Issue.WorkItemID, cursor)
+			if err != nil {
+				return nil, err
+			}
+			seek(page.Items)
+			if page.NextCursor == "" {
+				break
+			}
+			if page.NextCursor == cursor {
+				return nil, errors.New("hub repeated legacy plan comment cursor")
+			}
+			cursor = page.NextCursor
+		}
+	}
+	if plan != nil {
+		return plan, nil
+	}
+	if source.CompletionBody != "" {
+		return tracker.NativeLegacyPlanOutput(source.CompletionBody, source.AttemptID), nil
+	}
+	return &tracker.NativePlanState{}, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -928,6 +929,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				return resolve(ctx, issue, reports, o.dispatchMode(ctx, state, issue))
 			}
 			if request.Policy.Gates.PlanEnabled {
+				request.Plan = gate.EffectivePlan(o.cfg.Plan)
 				request.PlanProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
 					if o.dispatchMode(ctx, state, issue) == runpkg.RunModeMerge {
 						return resolve(ctx, issue, reports, runpkg.RunModeMerge)
