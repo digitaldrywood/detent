@@ -766,6 +766,7 @@ type retainedReviewWorkspace struct {
 type ValidatorRequest struct {
 	retainedReview       *retainedReviewWorkspace
 	usageExecution       Execution
+	observationPeer      *SSHPeer
 	complete             func(context.Context, gate.ValidatorResult, *sessionmodel.Finalization) (gate.ValidatorResult, error)
 	source               ChangeSourceExecution
 	workspacePrepared    bool
