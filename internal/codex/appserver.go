@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 const (
@@ -38,7 +39,7 @@ const (
 	defaultClientVersion = "0.1.0"
 
 	defaultReadTimeout = time.Minute
-	defaultTurnTimeout = time.Hour
+	defaultTurnTimeout = sessiontimeout.DefaultTurn
 
 	maxToolFailureDiagnosticBytes = 2048
 )
@@ -46,7 +47,7 @@ const (
 var (
 	ErrResponseError            = errors.New("codex response error")
 	ErrInvalidResponse          = errors.New("invalid codex response")
-	ErrStreamStalled            = errors.New("codex stream stalled")
+	ErrStreamStalled            = sessiontimeout.ErrIdle
 	ErrTurnFailed               = errors.New("codex turn failed")
 	ErrTransportClose           = errors.New("close codex app-server transport")
 	ErrSubscriptionAuthRequired = errors.New("codex ChatGPT subscription authentication is required")
@@ -476,6 +477,11 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
 	}
+	lifetime := sessiontimeout.Start(ctx, req.StallTimeout, req.turnTimeout(s.turnTimeout), s.timeoutContext)
+	ctx = lifetime.Context()
+	defer lifetime.Close()
+	defer func() { err = lifetime.Result(err) }()
+
 	prompt, cleanupPrompt, err := prepareTurnPrompt(req.Prompt, req.TempDir)
 	if err != nil {
 		now := s.now()
@@ -528,6 +534,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			return RunTurnResult{}, err
 		}
 	}
+	lifetime.Activity()
 	authenticationMode := ""
 	if req.RequireSubscriptionAuth {
 		account, err := s.account(ctx, transport)
@@ -553,6 +560,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			return RunTurnResult{}, err
 		}
 	}
+	lifetime.Activity()
 	model := runtimeIdentity.Model()
 	if model == "" && strings.TrimSpace(req.Model) == "" {
 		model, err = s.resolveDefaultModel(ctx, transport, req.Workspace, onUpdate)
@@ -578,9 +586,10 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	}
 
 	turnTransport := transport
+	var tools *toolTransport
 	if req.ToolHandler != nil {
-		tools := newToolTransport(ctx, transport, req.ToolHandler, s.logger)
-		defer func() { err = tools.finish(err) }()
+		tools = newToolTransport(ctx, transport, req.ToolHandler, s.logger)
+		defer func() { err = tools.finish(lifetime.Result(err)) }()
 		turnTransport = tools
 	}
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
@@ -594,6 +603,10 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			return RunTurnResult{}, err
 		}
 		turnID := turn.ID
+		lifetime.Activity()
+		if tools != nil {
+			tools.observeTurn(threadID, turnID, lifetime)
+		}
 
 		result = RunTurnResult{
 			ThreadID:           threadID,
@@ -625,17 +638,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			}
 		}
 
-		turnTimeout := req.turnTimeout(s.turnTimeout)
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := deadline.Sub(s.now())
-			if remaining <= 0 {
-				return RunTurnResult{}, context.DeadlineExceeded
-			}
-			if turnTimeout <= 0 || remaining < turnTimeout {
-				turnTimeout = remaining
-			}
-		}
-		if err := s.streamTurn(ctx, turnTransport, threadID, turnID, turnTimeout, req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
+		if err := s.streamTurn(lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate); err != nil {
 			return RunTurnResult{}, err
 		}
 
@@ -1358,18 +1361,20 @@ func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
 }
 
 func (s *AppServer) streamTurn(
-	ctx context.Context,
+	lifetime *sessiontimeout.Session,
 	transport Transport,
 	threadID string,
 	turnID string,
-	turnTimeout time.Duration,
-	stallTimeout time.Duration,
 	toolHandler DynamicToolHandler,
 	elicitationState *mcpElicitationState,
 	onUpdate UpdateHandler,
 ) error {
+	ctx := lifetime.Context()
 	for {
-		msg, err := receiveTurnMessage(ctx, transport, turnTimeout, stallTimeout, s.timeoutContext)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		msg, err := transport.Receive(ctx)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
 		}
@@ -1397,6 +1402,9 @@ func (s *AppServer) streamTurn(
 			continue
 		}
 		update.AuxiliaryTurn = !turnUpdateMatches(update, threadID, turnID)
+		if update.ThreadID == threadID && update.TurnID == turnID {
+			observeTurnActivity(lifetime, update)
+		}
 		if err := emitUpdate(update, onUpdate); err != nil {
 			return err
 		}
@@ -1414,6 +1422,31 @@ func (s *AppServer) streamTurn(
 	}
 }
 
+func observeTurnActivity(lifetime *sessiontimeout.Session, update Update) {
+	if update.ItemID == "" {
+		return
+	}
+	scope := update.ThreadID + "/" + update.TurnID + "/" + update.ItemID
+	switch update.Type {
+	case UpdateToolStarted:
+		if update.Tool == "commandExecution" && update.Status == "inProgress" {
+			lifetime.StartCommand(scope)
+			return
+		}
+		lifetime.Event("item/start/" + scope)
+	case UpdateToolCompleted:
+		if update.Tool == "commandExecution" {
+			lifetime.EndCommand(scope)
+			return
+		}
+		lifetime.Event("item/end/" + scope)
+	case UpdateAgentMessageDelta, UpdateToolOutput:
+		if update.Delta != "" {
+			lifetime.Event(update.Method + "/" + scope + "/" + update.Delta)
+		}
+	}
+}
+
 func turnUpdateMatches(update Update, threadID string, turnID string) bool {
 	if updateThreadID := strings.TrimSpace(update.ThreadID); updateThreadID != "" && updateThreadID != strings.TrimSpace(threadID) {
 		return false
@@ -1422,28 +1455,6 @@ func turnUpdateMatches(update Update, threadID string, turnID string) bool {
 		return false
 	}
 	return true
-}
-
-func receiveTurnMessage(
-	ctx context.Context,
-	transport Transport,
-	turnTimeout time.Duration,
-	stallTimeout time.Duration,
-	timeoutContext timeoutContextFactory,
-) (Message, error) {
-	if stallTimeout <= 0 || turnTimeout > 0 && turnTimeout < stallTimeout {
-		return receiveWithTimeout(ctx, transport, turnTimeout, timeoutContext)
-	}
-
-	stallErr := fmt.Errorf("%w after %s", ErrStreamStalled, stallTimeout)
-	receiveCtx, cancel := timeoutContext(contextOrBackground(ctx), stallTimeout, stallErr)
-	defer cancel()
-
-	msg, err := transport.Receive(receiveCtx)
-	if err != nil && errors.Is(context.Cause(receiveCtx), ErrStreamStalled) {
-		return Message{}, context.Cause(receiveCtx)
-	}
-	return msg, err
 }
 
 func sendRequest(ctx context.Context, transport Transport, id int, method string, params any) error {
@@ -2726,17 +2737,6 @@ func (p *creditsSnapshotPayload) credits() *CreditsSnapshot {
 		Unlimited:  p.Unlimited,
 		Balance:    p.Balance,
 	}
-}
-
-func receiveWithTimeout(ctx context.Context, transport Transport, timeout time.Duration, timeoutContext timeoutContextFactory) (Message, error) {
-	ctx = contextOrBackground(ctx)
-	if timeout <= 0 {
-		return transport.Receive(ctx)
-	}
-
-	receiveCtx, cancel := timeoutContext(ctx, timeout, nil)
-	defer cancel()
-	return transport.Receive(receiveCtx)
 }
 
 func setOptional(params map[string]any, key string, value any) {

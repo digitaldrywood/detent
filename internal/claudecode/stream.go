@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -25,6 +26,7 @@ type claudeEvent struct {
 	APIKeySource string         `json:"apiKeySource"`
 	AuthSource   string         `json:"authSource"`
 	Type         string         `json:"type"`
+	ID           string         `json:"uuid"`
 	Subtype      string         `json:"subtype"`
 	SessionID    string         `json:"session_id"`
 	Model        string         `json:"model"`
@@ -134,6 +136,48 @@ func scanClaudeStream(ctx context.Context, r io.Reader, maxTokenSize int) <-chan
 		}
 	}()
 	return out
+}
+
+func (s *turnState) observeActivity(lifetime *sessiontimeout.Session, event claudeEvent) {
+	if event.SessionID == "" {
+		return
+	}
+	scope := event.SessionID + "/"
+	switch event.Type {
+	case "init", "system":
+		if event.Type == "init" || event.Subtype == "init" {
+			lifetime.Event(scope + "init")
+		}
+	case "assistant", "user":
+		if event.Message == nil {
+			return
+		}
+		for _, block := range event.Message.Content {
+			switch {
+			case block.Type == "tool_use" && block.ID != "":
+				if claudeBlockCommand(block) != "" {
+					lifetime.StartCommand(scope + block.ID)
+				} else {
+					lifetime.Event(scope + "tool/" + block.ID)
+				}
+			case block.Type == "tool_result" && block.ToolUseID != "":
+				lifetime.EndCommand(scope + block.ToolUseID)
+			case event.Type == "assistant" && block.Type == "text" && block.Text != "" && event.Message.ID != "":
+				lifetime.Event(scope + "text/" + event.Message.ID)
+			}
+		}
+	case "stream_event":
+		if partial := event.StreamEvent; partial != nil {
+			switch {
+			case event.ID != "":
+				lifetime.Event(scope + "stream/" + event.ID)
+			case partial.Delta != nil && partial.Delta.Text != "" && s.partialItemID != "":
+				lifetime.Event(scope + "stream/" + s.partialItemID + "/" + partial.Delta.Text)
+			}
+		}
+	case "result":
+		lifetime.Event(scope + "result/" + event.ID)
+	}
 }
 
 func (s *turnState) apply(event claudeEvent, includePartialMessages bool, onUpdate runner.AgentUpdateHandler) error {
