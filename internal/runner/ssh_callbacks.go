@@ -202,7 +202,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					Message  string
 					Eligible bool
 				}{message, eligible}, err
-			case "PhaseReceipts", "VerifyPhaseAuthority", "RecordPhaseReceipt", "StartPhased", "SetPhaseProvider", "LatestRoundVerdict", "RecordRoundVerdict":
+			case "PhaseReceipts", "VerifyPhaseAuthority", "RecordPhaseReceipt", "StartPhased", "SetPhaseProvider", "LatestRoundVerdict", "RecordRoundVerdict", "FreezeExecutionChecklist", "RecordLoopIntervention":
 				if _, ok := request.Execution.(PhaseReceiptExecution); !ok && name == "PhaseReceipts" {
 					return (*tracker.NativePhaseContinuation)(nil), nil
 				}

@@ -233,6 +233,43 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	return e.executionError(ctx, err)
 }
 
+func (e *nativeExecution) FreezeExecutionChecklist(ctx context.Context, list tracker.ExecutionChecklist) error {
+	lease := e.claim.lease
+	e.mu.Lock()
+	attempt := e.data.AttemptID
+	e.mu.Unlock()
+	input := progresscheck.Publication{
+		Mutation:  tracker.Mutation{IdempotencyKey: attempt + ":checklist:" + list.Revision, LeaseID: lease.ID, FencingToken: lease.FencingToken},
+		AttemptID: attempt, PolicyID: lease.PolicyID, Checklist: &list,
+	}
+	client := e.claim.source.NativeClient()
+	recorded, err := client.PublishExecutionChecklist(ctx, lease.WorkItemID, input)
+	if nativeTransportUnavailable(err) && ctx.Err() == nil {
+		recorded, err = client.PublishExecutionChecklist(ctx, lease.WorkItemID, input)
+	}
+	if err == nil && (recorded.AttemptID != attempt || recorded.PolicyID != lease.PolicyID || recorded.Revision != list.Revision) {
+		return errors.New("Hub checklist differs from the frozen execution criteria")
+	}
+	return e.executionError(ctx, err)
+}
+
+func (e *nativeExecution) RecordLoopIntervention(ctx context.Context, event tracker.ExecutionLoopIntervention) error {
+	lease := e.claim.lease
+	e.mu.Lock()
+	attempt := e.data.AttemptID
+	e.mu.Unlock()
+	input := progresscheck.Publication{
+		Mutation:  tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken},
+		AttemptID: attempt, PolicyID: lease.PolicyID, LoopIntervention: &event,
+	}
+	client := e.claim.source.NativeClient()
+	err := client.PublishLoopIntervention(ctx, lease.WorkItemID, input)
+	if nativeTransportUnavailable(err) && ctx.Err() == nil {
+		err = client.PublishLoopIntervention(ctx, lease.WorkItemID, input)
+	}
+	return e.executionError(ctx, err)
+}
+
 func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (*progresscheck.RoundVerdict, error) {
 	return e.claim.source.NativeClient().LatestRoundVerdict(ctx, e.claim.lease.WorkItemID)
 }

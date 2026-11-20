@@ -30,20 +30,22 @@ type RoundInput struct {
 
 type RoundVerdict struct {
 	RoundInput
-	LeaseID           tracker.LeaseID      `json:"lease_id"`
-	FencingToken      tracker.FencingToken `json:"fencing_token,string"`
-	AttemptID         string               `json:"attempt_id"`
-	PolicyID          string               `json:"policy_id"`
-	PreviousRoundID   string               `json:"previous_round_id,omitempty"`
-	CriteriaRevision  string               `json:"criteria_revision"`
-	FailedCriteria    []string             `json:"failed_criteria,omitempty"`
-	VerifiedCriteria  []string             `json:"verified_criteria,omitempty"`
-	Regressed         bool                 `json:"regressed"`
-	Advanced          bool                 `json:"advanced"`
-	ObservedAt        time.Time            `json:"observed_at,omitzero"`
-	RecentFailures    []string             `json:"recent_failures,omitempty"`
-	CirclingCandidate bool                 `json:"circling_candidate,omitempty"`
-	DiagnosticReceipt string               `json:"diagnostic_receipt_id,omitempty"`
-	RecentDiagnostics []string             `json:"recent_diagnostics,omitempty"`
-	Disposition       string               `json:"disposition,omitempty"`
+	ChecklistRevision string                         `json:"checklist_revision,omitempty"`
+	ChecklistChanges  []tracker.ExecutionCheckUpdate `json:"checklist_changes,omitempty"`
+	LeaseID           tracker.LeaseID                `json:"lease_id"`
+	FencingToken      tracker.FencingToken           `json:"fencing_token,string"`
+	AttemptID         string                         `json:"attempt_id"`
+	PolicyID          string                         `json:"policy_id"`
+	PreviousRoundID   string                         `json:"previous_round_id,omitempty"`
+	CriteriaRevision  string                         `json:"criteria_revision"`
+	FailedCriteria    []string                       `json:"failed_criteria,omitempty"`
+	VerifiedCriteria  []string                       `json:"verified_criteria,omitempty"`
+	Regressed         bool                           `json:"regressed"`
+	Advanced          bool                           `json:"advanced"`
+	ObservedAt        time.Time                      `json:"observed_at,omitzero"`
+	RecentFailures    []string                       `json:"recent_failures,omitempty"`
+	CirclingCandidate bool                           `json:"circling_candidate,omitempty"`
+	DiagnosticReceipt string                         `json:"diagnostic_receipt_id,omitempty"`
+	RecentDiagnostics []string                       `json:"recent_diagnostics,omitempty"`
+	Disposition       string                         `json:"disposition,omitempty"`
 }
