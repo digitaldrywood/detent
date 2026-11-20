@@ -86,7 +86,7 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 			serveErr = nil
 		}
 		if shutdownErr != nil {
-			shutdownErr = errors.Join(runner.ErrWorkerProcessReap, shutdownErr)
+			shutdownErr = errors.Join(shutdownErr, runner.ErrProviderSessionUnretired)
 		}
 		turnErr = errors.Join(turnErr, closeErr, shutdownErr, serveErr)
 	}()

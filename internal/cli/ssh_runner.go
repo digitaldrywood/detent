@@ -160,6 +160,9 @@ func (r *sshRunner) Run(ctx context.Context, request runnerpkg.RunRequest) (resu
 		defer stop()
 		ctx = guarded
 		defer func() {
+			if runnerpkg.UnretiredProviderSession(runErr) {
+				return
+			}
 			var reviewErr *runnerpkg.NativeImplementationReviewError
 			reviewFailed := errors.As(runErr, &reviewErr)
 			outcome := "succeeded"

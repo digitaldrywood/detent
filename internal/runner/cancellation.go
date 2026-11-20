@@ -85,7 +85,8 @@ func preserveCancellation(ctx context.Context, err error, source string) error {
 
 func UnretiredProviderSession(err error) bool {
 	var timeout *sessiontimeout.Error
-	return errors.Is(err, ErrWorkerProcessReap) && errors.As(err, &timeout)
+	return errors.Is(err, ErrProviderSessionUnretired) ||
+		(errors.Is(err, ErrWorkerProcessReap) && errors.As(err, &timeout))
 }
 
 func StopProviderSupervision(execution Execution, err error) bool {

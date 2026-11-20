@@ -1402,7 +1402,7 @@ func (r *Runner) runAgentTurn(
 	)
 	scratchCleanupErr := cleanupWorkerScratchAfterProcessReap(cleanupScratch, workerReapErr)
 	if cause := context.Cause(ctx); cooperativeStopError(cause) || durationLimitError(cause) {
-		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
+		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), turnErr, cause)
 	}
 	var memoryErr *SessionMemoryCeilingError
 	if errors.As(turnErr, &memoryErr) {
@@ -4366,7 +4366,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		)
 	}
 	if cause := context.Cause(sessionCtx); cooperativeStopError(cause) || durationLimitError(cause) {
-		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), cause)
+		turnErr = errors.Join(firstCancellationCause(turnErr, cause, "runner.session"), turnErr, cause)
 	}
 	turnErr = sessionBrake.wrapTurnLimit(ctx, turnErr)
 	turnErr = sessionBrake.wrapDuration(ctx, turnErr, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
