@@ -788,13 +788,21 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					}
 					version := detail.Versions[len(detail.Versions)-1]
 					if implementingBefore != nil {
-						for i, after := range gitrepo.ImplementingState(t, provider.workspace) {
+						implementingPath := provider.workspace
+						if _, err := os.Stat(filepath.Join(implementingPath, "untracked.txt")); errors.Is(err, os.ErrNotExist) {
+							preserved, err := filepath.Glob(filepath.Join(filepath.Dir(implementingPath), ".detent", "quarantine", filepath.Base(implementingPath)+"-*"))
+							if err != nil || len(preserved) != 1 {
+								t.Fatalf("deferred completion did not retain the dirty implementing worktree: paths=%v error=%v", preserved, err)
+							}
+							implementingPath = preserved[0]
+						}
+						for i, after := range gitrepo.ImplementingState(t, implementingPath) {
 							if after != implementingBefore[i] {
 								t.Fatalf("deferred completion changed implementing source: before=%q after=%q", implementingBefore[i], after)
 							}
 						}
 						for _, path := range []*string{provider.sourceWorkspace.Load(), provider.validatorWorkspace.Load()} {
-							if path == nil || *path == provider.workspace || strings.TrimSpace(gitrepo.GitOutput(t, *path, "rev-parse", "HEAD")) != version.HeadSHA || gitrepo.GitOutput(t, *path, "status", "--porcelain") != "" {
+							if path == nil || *path == implementingPath || strings.TrimSpace(gitrepo.GitOutput(t, *path, "rev-parse", "HEAD")) != version.HeadSHA || gitrepo.GitOutput(t, *path, "status", "--porcelain") != "" {
 								t.Fatal("deferred completion did not review clean retained B separately from implementing A")
 							}
 						}
@@ -810,8 +818,8 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					}
 					if test.hostHandoff || test.name == "healthy" {
 						output, err := os.ReadFile(gateMarker)
-						if err != nil || string(output) != "gategategate" {
-							t.Fatalf("expected only finalization, source review and validator commands: output=%q error=%v", output, err)
+						if err != nil || string(output) != "gate" {
+							t.Fatalf("expected independent reviews to reuse the successful finalization command: output=%q error=%v", output, err)
 						}
 					}
 					sessions := map[int64]bool{}
