@@ -260,11 +260,12 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
         if not (runner.get("used") or runner.get("leases")):
             stack.route([], admin, org)
     evidence = capture(project, case.name, key, source)
+    evidence["policy"] = policy
     if operator and not moved:
         raise stack.Failure("required isolated target advance did not occur")
     if service:
         evidence["service"] = service
-        stack.write(stack.ROOT / (case.name + ".evidence.json"), evidence)
+    stack.write(stack.ROOT / (case.name + ".evidence.json"), evidence)
     compare(project, policy, evidence, stack.read(case / "expected.json"), definition, advanced)
     return item, evidence
 

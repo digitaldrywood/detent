@@ -1,5 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -13,12 +14,13 @@ def expect(label, expected, actual):
 
 
 def instant(value):
-    return datetime.fromisoformat(value)
+    return datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
 
 
 def time_key(value):
-    whole, _, fraction = value.removesuffix("Z").partition(".")
-    return whole, fraction.ljust(9, "0")
+    timestamp = instant(value).astimezone(timezone.utc)
+    fraction = re.search(r"\.(\d+)(?:Z|[+-]\d\d:\d\d)$", value)
+    return timestamp.replace(microsecond=0), (fraction[1] if fraction else "").ljust(9, "0")
 
 
 def check_history(evidence):
@@ -50,6 +52,8 @@ def check_workspace(project, evidence, attempt, expected, service):
     provider_groups = set()
     with (stack.LOGS / "runner.log").open() as log:
         for line in log:
+            if not any(message in line for message in ("after_create", "execution worker selected", "worker_process_reap_decision")):
+                continue
             if not any(value in line for value in (reference, marker, item["work_item_id"])):
                 continue
             row = json.loads(line) if line.startswith("{") else dict(
@@ -199,22 +203,30 @@ def check_landing(project, policy, evidence, attempt, expected, versions, review
         expect(f"landed {name} omits {needle!r}", True, needle not in project.git("show", f"{after}:{name}"))
 
 
-def phase_events(attempt, reviews, command):
+def phase_events(attempt, receipt_phases, reviews, command):
     runtime = attempt["runtime"]
     events = set()
 
     def add(when, label):
         events.add((time_key(when), label))
 
+    implemented = [phase for phase in receipt_phases if phase["phase"] == "implement"]
+    commands = [span for span in runtime.get("pipeline", [])
+                if span.get("stage") == "finalization" and span.get("command") == command
+                and span.get("execution") == "executed" and span.get("exit_code") is not None]
     for phase in runtime.get("phases", []):
-        named = {"planning": "plan", "implementation": "implement", "rework": "implement"}
-        if phase["name"] in named:
-            add(phase["started_at"], named[phase["name"]])
-    for span in runtime.get("pipeline", []):
-        if (span.get("stage") == "finalization" and span.get("command") == command
-                and span.get("execution") == "executed" and span.get("exit_code") is not None):
-            expect("gate source and tree identity", True, bool(span.get("head_sha") and span.get("tree_sha")))
-            add(span["finished_at"], "gate:fail" if span["exit_code"] else "gate:pass")
+        if phase["name"] == "planning":
+            add(phase["started_at"], "plan")
+        if not implemented and phase["name"] in {"implementation", "rework"}:
+            add(phase["started_at"], "implement")
+    for phase in implemented:
+        source = (phase["head_sha"], phase["tree_sha"])
+        matching = [span["started_at"] for span in commands if source == (span.get("head_sha"), span.get("tree_sha"))]
+        expect("implemented tree has a command gate attempt", True, bool(matching))
+        add(min(matching, key=time_key), "implement")
+    for span in commands:
+        expect("gate source and tree identity", True, bool(span.get("head_sha") and span.get("tree_sha")))
+        add(span["finished_at"], "gate:fail" if span["exit_code"] else "gate:pass")
     for review in reviews:
         if review.get("implementation_review") and review["decision"] in {"approved", "changes_requested"}:
             add(review["created_at"], f"review:{review['decision']}")
@@ -279,7 +291,7 @@ def compare(project, policy, evidence, expected, definition, advanced):
     if advanced:
         check_conflict(project, evidence, labels, versions, reviews, landing, gates, command, advanced)
     else:
-        phases = phase_events(attempt, reviews, command)
+        phases = phase_events(attempt, evidence["phases"], reviews, command)
         if definition.get("retained_service"):
             phases = ["hook:accepted", *phases, "hook:retired"]
         if actions == ["no_progress"]:
