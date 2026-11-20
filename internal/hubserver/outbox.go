@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -84,14 +83,6 @@ func (s *Service) AppendWorkEvent(ctx context.Context, change WorkEventChange) (
 	return OutboxItem{}, ErrOutboxDisabled
 }
 
-func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply func(*sql.Tx, string) error) (result OutboxItem, resultErr error) {
-	return OutboxItem{}, ErrOutboxDisabled
-}
-
 func (s *Service) ProcessOutbox(ctx context.Context) (bool, error) {
 	return s.processGitHubOutboundRecord(ctx)
-}
-
-func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found bool, resultErr error) {
-	return OutboxItem{}, false, ErrOutboxDisabled
 }

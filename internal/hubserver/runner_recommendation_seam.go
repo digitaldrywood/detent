@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -63,10 +62,6 @@ func (s *Service) registerRunnerAdviceRoutes(e *echo.Echo) {
 }
 
 type runnerHostHour = runneradvice.HostHour
-
-func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
-	return runneradvice.PrepareHostMetrics(raw)
-}
 
 func (s *Service) readRunnerHostHistory(ctx context.Context, organization tracker.OrganizationID, runner string, from, to time.Time) ([]runnerHostHour, error) {
 	history, err := s.runnerAdviceService().HostHistory(ctx, organization, runner, from, to)

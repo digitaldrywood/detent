@@ -5,12 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/labstack/echo/v4"
-
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -79,18 +76,4 @@ func TestPostgresIssueNotificationPreferenceReadWrite(t *testing.T) {
 	if deactivated.Active || deactivated.NotifyIssues {
 		t.Fatalf("deactivated member state=%+v", deactivated)
 	}
-}
-
-func configurePostgresTestRoutes(t *testing.T, service *Service, repository *postgres.Repository) {
-	t.Helper()
-	database := service.database
-	previousRepository := database.postgres
-	database.postgres = repository
-	previousEcho := service.echo
-	service.echo = echo.New()
-	service.registerRoutes(service.echo)
-	t.Cleanup(func() {
-		service.echo = previousEcho
-		database.postgres = previousRepository
-	})
 }

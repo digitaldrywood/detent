@@ -9,9 +9,7 @@ import (
 type healthSubject = healthsignals.Subject
 type healthEvidence = healthsignals.Evidence
 type healthScheduledValidation = healthsignals.ScheduledValidation
-type healthSlackFailure = healthsignals.SlackFailure
 type healthFinding = healthsignals.Finding
-type healthFindingIssue = healthsignals.FindingIssue
 type healthRunner = healthsignals.Runner
 type healthProject = healthsignals.Project
 type healthWait = healthsignals.Wait
@@ -71,9 +69,6 @@ func healthBaselineGaps(p healthRateProject, b healthRateBaseline) []healthBasel
 }
 func evaluateHealthRates(now time.Time, p []healthRateProject) []healthFinding {
 	return healthsignals.EvaluateRates(now, p)
-}
-func healthRecoveryReason(text string) string {
-	return healthsignals.New(healthsignals.Deps{NormalizeFailureSignature: normalizeFailureSignature}).RecoveryReason(text)
 }
 func healthResidenceTimeline(t analyticsResidenceTimeline) healthsignals.ResidenceTimeline {
 	out := healthsignals.ResidenceTimeline{Issue: healthsignals.ResidenceIssue{ID: t.Issue.Id, Partial: t.Issue.Partial}, State: t.State, Entered: t.Entered, Done: t.Done}
