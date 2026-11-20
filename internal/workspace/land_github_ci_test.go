@@ -52,8 +52,7 @@ func TestLocalGitLandingCI(t *testing.T) {
 			t.Parallel()
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
-			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")
-			runGit(t, f.source, "remote", "set-url", "origin", repository+".git")
+			useFixtureGitHubRemote(t, f.source, f.remote, repository)
 			base := f.remoteMain(t)
 			if test.changedHead {
 				runGit(t, f.info.Path, "push", "origin", base+":refs/heads/"+f.info.Branch)

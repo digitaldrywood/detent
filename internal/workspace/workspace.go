@@ -308,6 +308,7 @@ type LocalGit struct {
 	uses               *workspaceUses
 	root               string
 	sourceRoot         string
+	phaseRepository    string
 	autoBranch         bool
 	hooks              Hooks
 	logger             *slog.Logger
@@ -461,6 +462,9 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 		uses = previous.uses
 		if next, ok := backend.(*LocalGit); ok {
 			next.createMu = previous.createMu
+			if next.sourceRoot == previous.sourceRoot {
+				next.phaseRepository = previous.phaseRepository
+			}
 			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
 				next.cleanupInventory = previous.cleanupInventory
 			}
@@ -526,14 +530,15 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 	if opts.ProcessSource != nil {
 		scan = workspaceProcessScanner(opts.ProcessSource)
 	}
+	remote, _ := runGitAt(ctx, sourceRoot, "config", "--get-all", "remote."+defaultGitRemote+".url")
 	return &LocalGit{
-
 		uses:               &workspaceUses{},
 		cleanupInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
 		commits:            commits,
 		root:               root,
 		sourceRoot:         sourceRoot,
+		phaseRepository:    publicationRepository(sourceRoot, remote),
 		autoBranch:         opts.AutoBranch,
 		hooks:              hooks,
 		logger:             logger,

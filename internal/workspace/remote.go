@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"net/url"
+	"path/filepath"
 	"strings"
 )
 
@@ -63,4 +64,47 @@ func httpsRepository(host, path string) string {
 		return ""
 	}
 	return "https://" + host + "/" + path
+}
+
+func publicationRepository(path, remote string) string {
+	remote = strings.TrimSuffix(remote, "\n")
+	if remote == "" || strings.TrimSpace(remote) != remote || strings.ContainsAny(remote, "\r\n") {
+		return ""
+	}
+	if repository := HTTPSRemoteURL(remote); repository != "" {
+		if parsed, err := url.Parse(remote); err == nil && parsed.Scheme != "https" && parsed.Port() != "" && parsed.Port() != "22" {
+			return ""
+		}
+		return repository
+	}
+	if strings.HasPrefix(remote, "file://") {
+		parsed, err := url.Parse(remote)
+		if err != nil || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return ""
+		}
+		remote = filepath.FromSlash(parsed.Path)
+	}
+	if !filepath.IsAbs(remote) {
+		if strings.ContainsAny(remote, ":@") {
+			return ""
+		}
+		remote = path + string(filepath.Separator) + remote
+	}
+	absolute, err := filepath.EvalSymlinks(remote)
+	if err != nil {
+		return ""
+	}
+	return absolute
+}
+
+func verifyPublicationRemote(ctx context.Context, path, remote, repository string) error {
+	fetchURL, err := runGitAt(ctx, path, "remote", "get-url", "--all", remote)
+	if err != nil || repository == "" || publicationRepository(path, fetchURL) != repository {
+		return refuse(LandRefusalProtected, "the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
+	}
+	pushURL, err := runGitAt(ctx, path, "remote", "get-url", "--push", "--all", remote)
+	if err != nil || publicationRepository(path, pushURL) != repository {
+		return refuse(LandRefusalProtected, "the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
+	}
+	return nil
 }

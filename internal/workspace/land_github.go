@@ -139,7 +139,7 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 	if remote == "" {
 		remote = defaultGitRemote
 	}
-	if err := verifyGitHubPublicationRemote(ctx, normalized.Path, remote, opts.Repository); err != nil {
+	if err := verifyPublicationRemote(ctx, normalized.Path, remote, opts.Repository); err != nil {
 		return GitHubPublication{}, err
 	}
 	base := strings.TrimSpace(opts.TargetBranch)
@@ -208,18 +208,6 @@ func (l *LocalGit) verifyGitHubPublicationSource(ctx context.Context, info Info,
 	return nil
 }
 
-func verifyGitHubPublicationRemote(ctx context.Context, path, remote, repository string) error {
-	urls, err := runGitAt(ctx, path, "config", "--get-all", "remote."+remote+".url")
-	if err != nil || HTTPSRemoteURL(urls) != repository {
-		return refuse(LandRefusalProtected, "the selected publication remote does not identify the current version repository; restore the configured project remote before retrying")
-	}
-	pushURLs, err := runGitAt(ctx, path, "config", "--get-all", "remote."+remote+".pushurl")
-	if err == nil && HTTPSRemoteURL(pushURLs) != repository {
-		return refuse(LandRefusalProtected, "the publication push remote differs from the current version repository; restore its configured push destination before retrying")
-	}
-	return nil
-}
-
 func githubPublicationMatches(pull githubLandingPull, repository, branch, head, base string) bool {
 	return pull.Number > 0 && pull.Head.SHA == head && pull.Head.Ref == branch && pull.Head.Repo.FullName == repository && pull.Base.Ref == base && pull.Base.Repo.FullName == repository
 }
@@ -247,7 +235,7 @@ func reconcilePublicationRefusal(ctx context.Context, path, remote, branch, base
 	if authorityErr := opts.Authorize(ctx); authorityErr != nil {
 		return authorityErr
 	}
-	if remoteErr := verifyGitHubPublicationRemote(ctx, path, remote, opts.Repository); remoteErr != nil {
+	if remoteErr := verifyPublicationRemote(ctx, path, remote, opts.Repository); remoteErr != nil {
 		return remoteErr
 	}
 	if _, _, readErr := githubPublicationBranchHead(ctx, path, remote, branch); readErr != nil {
@@ -269,7 +257,7 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		}
 		return l.verifyGitHubPublicationSource(ctx, info, issue, opts)
 	}
-	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+	if err := verifyPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
 		return githubLandingPull{}, false, false, err
 	}
 	previous, exists, err := githubPublicationBranchHead(ctx, info.Path, remote, branch)
@@ -738,7 +726,7 @@ func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions,
 	if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil, opts); err != nil {
 		return merged, err
 	}
-	if err := verifyGitHubPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+	if err := verifyPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
 		return merged, err
 	}
 	commit := head

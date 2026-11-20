@@ -47,8 +47,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			cleanupFailure := test.cleanupFailure
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
-			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")
-			runGit(t, f.source, "remote", "set-url", "origin", repository+".git")
+			useFixtureGitHubRemote(t, f.source, f.remote, repository)
 			f.advanceMain(t, "feature.txt", "parallel conflict\n")
 			base := f.remoteMain(t)
 			pulls := make(map[int]githubLandingPull)
@@ -517,8 +516,7 @@ func TestLocalGitLandChangeViaGitHubAlreadyMerged(t *testing.T) {
 			fixture := newLandingFixture(t)
 			base := fixture.remoteMain(t)
 			repository := "https://github.com/example/repo"
-			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
-			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
+			useFixtureGitHubRemote(t, fixture.source, fixture.remote, repository)
 			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+fixture.info.Branch)
 			tree := strings.TrimSpace(runGit(t, fixture.source, "rev-parse", fixture.head+"^{tree}"))
 			merge := strings.TrimSpace(runGit(t, fixture.source, "commit-tree", tree, "-p", base, "-m", "Actual squashed landing"))
@@ -606,4 +604,17 @@ func TestLocalGitLandChangeViaGitHubAlreadyMerged(t *testing.T) {
 			}
 		})
 	}
+}
+
+func useFixtureGitHubRemote(t *testing.T, checkout, fixture, repository string) {
+	t.Helper()
+	script := `case "$3" in
+		git-upload-pack\ *) exec git upload-pack "$1";;
+		git-receive-pack\ *) exec git receive-pack "$1";;
+		*) exit 1;;
+	esac`
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	runGit(t, checkout, "config", "core.sshCommand", "sh -c "+quote(script)+" -- "+quote(fixture))
+	runGit(t, checkout, "config", "ssh.variant", "simple")
+	runGit(t, checkout, "remote", "set-url", "origin", "git@github.com:"+strings.TrimPrefix(repository, "https://github.com/")+".git")
 }
