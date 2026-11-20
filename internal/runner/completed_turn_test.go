@@ -772,8 +772,14 @@ func TestNativeImplementTurnDeadlineContinuesUnderSameLease(t *testing.T) {
 
 type spooledRoundExecution struct {
 	finalizingTestExecution
-	segments      []string
-	finalizations int
+	segments         []string
+	finalizations    int
+	availability     time.Time
+	artifactDeadline time.Time
+}
+
+func (e *spooledRoundExecution) AvailabilityDeadline() time.Time {
+	return e.availability
 }
 
 func (e *spooledRoundExecution) SpoolArtifactLog(_ context.Context, text string) error {
@@ -786,6 +792,7 @@ func (e *spooledRoundExecution) FinalizeArtifactsWithSpoolCount(ctx context.Cont
 		return errors.New("artifact finalization lost a round")
 	}
 	e.finalizations++
+	e.artifactDeadline, _ = ctx.Deadline()
 	return e.FinalizeArtifacts(ctx, directory)
 }
 
@@ -847,6 +854,28 @@ func TestArtifactsSealAfterCorrectiveRound(t *testing.T) {
 	}
 	if execution.finalizations != 1 || strings.Join(execution.segments, ",") != "initial work,corrective work" {
 		t.Fatalf("artifact finalizations=%d segments=%v", execution.finalizations, execution.segments)
+	}
+}
+
+func TestArtifactsSealAfterAvailabilityCancellation(t *testing.T) {
+	info := workspace.Info{Path: t.TempDir()}
+	source := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head"}}}}}
+	execution := &spooledRoundExecution{availability: time.Now()}
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: source, AgentBackend: &fakeCodexClient{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	request := RunRequest{Execution: execution, artifactSpool: &sourceArtifactSpool{chunks: 1}}
+	execution.segments = []string{"work before availability deadline"}
+	err = r.afterExecution(ctx, request, source, info, workspace.Issue{}, AgentResume{}, true)
+	var artifactsErr interface{ Unwrap() []error }
+	if err != context.Canceled && (!errors.As(err, &artifactsErr) || len(artifactsErr.Unwrap()) != 1 || !errors.Is(err, context.Canceled)) {
+		t.Fatalf("availability completion error = %v", err)
+	}
+	if execution.finalizations != 1 || request.artifactSpool.directory != "" || !execution.artifactDeadline.After(execution.availability) {
+		t.Fatalf("artifact finalizations=%d pending=%q deadline=%v", execution.finalizations, request.artifactSpool.directory, execution.artifactDeadline)
 	}
 }
 
