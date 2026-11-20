@@ -657,7 +657,10 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {
 	cleanup, err := r.prepareExecutionCompletion(ctx, req, backend, info, issue, resume, turnStarted)
-	return errors.Join(err, r.finishExecution(ctx, req, backend, info, issue, cleanup))
+	if finishErr := r.finishExecution(ctx, req, backend, info, issue, cleanup); finishErr != nil {
+		return errors.Join(err, finishErr)
+	}
+	return err
 }
 
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
