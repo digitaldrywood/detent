@@ -588,8 +588,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 											"exec " + shellQuote(realGit) + " \"$@\"\n"
 										if test.baseMovesDuringRead {
 											script = "#!/bin/sh\n" +
-												"if [ \"$1\" = \"-C\" ] && [ \"$3\" = \"ls-remote\" ]; then\n" +
-												shellQuote(realGit) + " -C " + shellQuote(fixture.remote) + " update-ref refs/heads/main " + shellQuote(fixture.head) + "\nfi\n" +
+												"for arg in \"$@\"; do if [ \"$arg\" = ls-remote ]; then\n" +
+												shellQuote(realGit) + " -C " + shellQuote(fixture.remote) + " update-ref refs/heads/main " + shellQuote(fixture.head) + "\nfi; done\n" +
 												"exec " + shellQuote(realGit) + " \"$@\"\n"
 										}
 										if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); err != nil {
