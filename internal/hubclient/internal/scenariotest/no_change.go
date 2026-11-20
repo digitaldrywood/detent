@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -326,8 +327,17 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			if !verified.NoChangeAccepted(gateCfg) {
 				t.Fatalf("completion lost accepted gate receipts: %+v", verified)
 			}
+			item := tracker.NativeWorkItemID(issue.ID)
+			verdict, err := h.native.LatestRoundVerdict(t.Context(), item)
+			if err != nil || verdict != nil {
+				t.Fatalf("no-change verdict was published before authoritative acceptance: %+v, %v", verdict, err)
+			}
 			if test.restart {
 				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+				at := time.Now().UTC()
+				if err := owner.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: at, Completion: &tracker.NativeCompletionObservation{AcceptanceRecorded: true, ObservedAt: at}}); err != nil {
 					t.Fatal(err)
 				}
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
@@ -339,9 +349,13 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 				if state := h.state(t, issue.ID); state != "Done" || provider.calls != 3+boolCount(test.audit) {
 					t.Fatalf("restored completion did not finish without another worker turn: state=%s calls=%d", state, provider.calls)
 				}
-				return
+			} else {
+				runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, prepared: &result, gate: gateCfg, completed: make(chan nativeCompletionRun, 1)}, runner.RunRequest{Execution: owner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement}, "Done")
 			}
-			runNativeCompletionBackend(t, h, &nativeCompletionRunner{Runner: agent, prepared: &result, gate: gateCfg, completed: make(chan nativeCompletionRun, 1)}, runner.RunRequest{Execution: owner, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement}, "Done")
+			verdict, err = h.native.LatestRoundVerdict(t.Context(), item)
+			if err != nil || verdict == nil || verdict.Action != progresscheck.RoundDone || verdict.Disposition != progresscheck.NoChangeDisposition || verdict.HeadSHA != base || verdict.AttemptID != owner.CompletionData().AttemptID || verdict.LeaseID != owner.Recovery().Lease.ID {
+				t.Fatalf("no-change completion has no verified verdict for the original claim: %+v, %v", verdict, err)
+			}
 		})
 	}
 }

@@ -36,7 +36,7 @@ func (e *nativeExecution) completionSnapshot() checkpoint.State {
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition:  e.preparedDisposition,
 		PreparedFinalization: e.preparedFinalization(), PreparedFailure: e.preparedFailure,
-		PreparedLanding: landing,
+		PreparedLanding: landing, PreparedRoundVerdict: e.preparedRoundVerdict,
 	}
 }
 func (e *nativeExecution) CompletionState() json.RawMessage {
