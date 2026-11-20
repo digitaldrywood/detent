@@ -847,6 +847,7 @@ func (s *Service) changeReview() *changeapi.Review {
 		ChangeOperationRecordReceipt:        s.changeOperationRecordReceipt,
 		ReadChangeRecord:                    s.readChangeRecord,
 		ReadChangeVersionRecord:             s.readChangeVersionRecord,
+		SelectedCandidateChangeSummary:      s.changeRecordReader().SelectedCandidateChangeSummary,
 		ReadWorkItemRecord:                  s.readWorkItemRecord,
 		HydrateWorkItemRecord:               s.hydrateWorkItemRecord,
 		LockChangeRecordOperation:           s.lockChangeRecordOperation,
