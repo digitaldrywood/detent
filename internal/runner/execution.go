@@ -861,7 +861,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
-							} else if req.reviewSource != nil && !agentResumeEmpty(resume) && sourceBudgetRemaining(ctx) > 0 {
+							} else if req.reviewSource != nil && (!agentResumeEmpty(resume) || issue.PhaseSource != nil && req.retainedReview != nil) && sourceBudgetRemaining(ctx) > 0 {
 								return false, &sourceGateRepair{err: failedStep("validation", err), output: receipt.Output}
 							}
 						} else {

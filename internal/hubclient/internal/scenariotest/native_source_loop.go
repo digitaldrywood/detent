@@ -390,9 +390,11 @@ func sourceLoopGitOutput(t *testing.T, dir string, args ...string) string {
 
 type phaseRecoveryAgent struct {
 	committingAgent
-	head      string
-	gateRuns  string
-	workspace string
+	head       string
+	gateRuns   string
+	workspace  string
+	repair     bool
+	writeTurns int
 }
 
 func (a *phaseRecoveryAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, _ []runner.AgentTool, _ runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -401,19 +403,46 @@ func (a *phaseRecoveryAgent) RunTurnWithTools(ctx context.Context, request runne
 
 func (a *phaseRecoveryAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if strings.HasPrefix(request.Prompt, "Judge the completed Detent round") {
-		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"merge","reason":"The recorded project gate and acceptance passed."}`})
+		next := "merge"
+		if strings.Contains(request.Prompt, "required next phase: implement") {
+			next = "implement"
+		}
+		message := fmt.Sprintf(`{"action":"continue","next_phase":%q,"reason":"The recorded gate result determines the next phase."}`, next)
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: message})
 	}
-	if !request.ReadOnly || request.Resume != (runner.AgentResume{}) {
-		return runner.AgentTurnResult{}, errors.New("replacement restarted a completed implementation phase")
+	if request.Resume != (runner.AgentResume{}) {
+		return runner.AgentTurnResult{}, errors.New("replacement reused the retired implementation session")
 	}
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = request.Workspace
 	head, err := cmd.Output()
-	if err != nil || strings.TrimSpace(string(head)) != a.head {
-		return runner.AgentTurnResult{}, errors.Join(err, errors.New("replacement reviewed a different commit"))
+	if err != nil {
+		return runner.AgentTurnResult{}, err
+	}
+	if !request.ReadOnly {
+		if !a.repair || a.writeTurns != 0 || strings.TrimSpace(string(head)) != a.head || !strings.Contains(request.Prompt, "gate repair required") {
+			return runner.AgentTurnResult{}, errors.New("replacement restarted a completed implementation phase")
+		}
+		if err := os.WriteFile(filepath.Join(request.Workspace, "REPAIR.md"), []byte("repaired\n"), 0o600); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		stage := exec.CommandContext(ctx, "git", "add", "REPAIR.md")
+		stage.Dir = request.Workspace
+		if err := stage.Run(); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		a.writeTurns++
+		return a.committingAgent.RunTurn(ctx, request, update)
+	}
+	if (strings.TrimSpace(string(head)) == a.head) == a.repair {
+		return runner.AgentTurnResult{}, errors.New("replacement reviewed a different commit")
+	}
+	wantRuns := "gate\n"
+	if a.repair {
+		wantRuns += "gate\n"
 	}
 	runs, err := os.ReadFile(a.gateRuns)
-	if err != nil || string(runs) != "gate\n" {
+	if err != nil || string(runs) != wantRuns {
 		return runner.AgentTurnResult{}, errors.Join(err, errors.New("replacement did not start at the project gate"))
 	}
 	a.workspace = request.Workspace
@@ -422,6 +451,22 @@ func (a *phaseRecoveryAgent) RunTurn(ctx context.Context, request runner.AgentTu
 
 func RunNativeReplacementResumesProjectGate(t *testing.T, factories Constructors) {
 	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		repair bool
+	}{
+		{name: "gate passes"},
+		{name: "gate needs repair", repair: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			runNativeReplacementProjectGate(t, factories, test.repair)
+		})
+	}
+}
+
+func runNativeReplacementProjectGate(t *testing.T, factories Constructors, repair bool) {
+	t.Helper()
 	h := newPlannerHub(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}},
@@ -502,18 +547,21 @@ func RunNativeReplacementResumesProjectGate(t *testing.T, factories Constructors
 	}
 	gateRuns := filepath.Join(t.TempDir(), "gate-runs")
 	command := "test -f CHANGE.md && printf '%s\\n' gate >> '" + strings.ReplaceAll(gateRuns, "'", "'\\''") + "'"
+	if repair {
+		command += " && { test -f REPAIR.md || { printf '%s\\n' 'gate repair required'; exit 1; }; }"
+	}
 	continuation, err := execution.PhaseReceipts(t.Context(), command)
 	if err != nil || continuation == nil || continuation.NextPhase != "project_gate" || continuation.LastPushed == nil || continuation.LastPushed.HeadSHA != head {
 		t.Fatalf("replacement lost the phase pointer: %+v %v", continuation, err)
 	}
-	provider := &phaseRecoveryAgent{head: head, gateRuns: gateRuns, committingAgent: committingAgent{validator: "pass"}}
+	provider := &phaseRecoveryAgent{head: head, gateRuns: gateRuns, repair: repair, committingAgent: committingAgent{validator: "pass", complete: true}}
 	workflow := config.Workflow{Config: config.Config{Gate: gate.Config{Run: command, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}
 	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: workflow, Workspace: backend, AgentBackend: provider})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
-	if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed || result.NativeChange.HeadSHA != head || provider.workspace == "" || provider.workspace == info.Path {
+	if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed || (result.NativeChange.HeadSHA == head) == repair || provider.workspace == "" || provider.workspace == info.Path {
 		t.Fatalf("replacement failed to resume at the gate: %+v %v", result.NativeChange, err)
 	}
 	receipts, err := h.native.ItemPhaseReceipts(t.Context(), tracker.NativeWorkItemID(issue.ID))
@@ -529,7 +577,11 @@ func RunNativeReplacementResumesProjectGate(t *testing.T, factories Constructors
 			projectGate++
 		}
 	}
-	if implementation != 1 || projectGate != 1 {
-		t.Fatalf("replacement repeated a completed phase: implementation=%d project_gate=%d", implementation, projectGate)
+	wantImplementation := 1
+	if repair {
+		wantImplementation++
+	}
+	if implementation != wantImplementation || projectGate != 1 || provider.writeTurns != wantImplementation-1 {
+		t.Fatalf("replacement repeated a completed phase: implementation=%d project_gate=%d writable_turns=%d", implementation, projectGate, provider.writeTurns)
 	}
 }
