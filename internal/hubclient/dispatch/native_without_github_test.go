@@ -131,7 +131,7 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 						t.Errorf("agent gh config holds a credential: %v", err)
 					}
 				}
-				if !strings.Contains(request.Prompt, "## Native completion contract") {
+				if !request.TextOnly && !strings.Contains(request.Prompt, "## Native completion contract") {
 					t.Error("native turn prompt has no native completion contract")
 				}
 			}

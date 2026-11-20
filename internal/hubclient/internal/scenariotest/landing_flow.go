@@ -161,7 +161,11 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		}
 		fixtureConfigureScheduler(t, h, func(*SchedulerConfig) {})
 		provider.available.Store(true)
-		backend, err = workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "replacement-workspaces"), SourceRoot: source, AutoBranch: true})
+		replacementSource := filepath.Join(nativeChangeTempDir(t), "replacement-source")
+		nativeChangeGit(t, source, "clone", "--", remote, replacementSource)
+		nativeChangeGit(t, replacementSource, "remote", "set-url", "origin", nativeChangeRepository)
+		nativeChangeGit(t, replacementSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+		backend, err = workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "replacement-workspaces"), SourceRoot: replacementSource, AutoBranch: true})
 		if err != nil {
 			t.Fatal(err)
 		}

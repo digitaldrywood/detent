@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariotest/gitrepo"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -55,6 +56,9 @@ type recoveringReviewAgent struct {
 }
 
 func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if handled, err := testsupport.ReplyToRoundVerdict(request, update); handled {
+		return runner.AgentTurnResult{}, err
+	}
 	stage := ""
 	switch {
 	case strings.Contains(request.Prompt, "independent Detent implementation reviewer"):

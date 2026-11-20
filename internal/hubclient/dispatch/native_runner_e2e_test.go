@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -244,6 +245,9 @@ type nativeE2EAgentBackend struct {
 }
 
 func (c *nativeE2EAgentBackend) RunTurn(_ context.Context, req runpkg.AgentTurnRequest, onUpdate runpkg.AgentUpdateHandler) (runpkg.AgentTurnResult, error) {
+	if handled, err := testsupport.ReplyToRoundVerdict(req, onUpdate); handled {
+		return runpkg.AgentTurnResult{}, err
+	}
 	if strings.TrimSpace(req.Workspace) == "" {
 		return runpkg.AgentTurnResult{}, errors.New("workspace is required")
 	}
