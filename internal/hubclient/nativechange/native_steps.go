@@ -2,9 +2,14 @@ package nativechange
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strconv"
+	"strings"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/evidence"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -81,4 +86,45 @@ func (e *nativeExecution) stepReviewState() string {
 
 func (e *nativeExecution) stepReviewEpoch() tracker.FencingToken {
 	return evidence.ReviewEpoch(e.claim.recovery, e.data.Steps)
+}
+
+func (e *nativeExecution) PhaseReceipts(ctx context.Context) (bool, error) {
+	return e.claim.source.NativeClient().PhaseReceiptRoute(ctx, e.claim.lease.WorkItemID)
+}
+
+func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	if err := api.MutationEffectError(ctx); err != nil {
+		return err
+	}
+	if err := e.Validate(ctx); err != nil {
+		return err
+	}
+	_, err := e.claim.source.NativeClient().ValidateLease(ctx, e.claim.lease)
+	return e.executionError(ctx, err)
+}
+
+func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
+	lease := e.claim.lease
+	e.mu.Lock()
+	attemptID := e.data.AttemptID
+	e.mu.Unlock()
+	digest := policy.Digest([]byte(strings.Join([]string{phase, head, tree, lease.PolicyID, input}, "\x00")))
+	mutation := tracker.Mutation{IdempotencyKey: attemptID + ":phase:" + digest, LeaseID: lease.ID, FencingToken: lease.FencingToken}
+	payload := map[string]any{
+		"idempotency_key": mutation.IdempotencyKey, "lease_id": mutation.LeaseID, "fencing_token": strconv.FormatInt(int64(mutation.FencingToken), 10),
+		"attempt_id": attemptID, "phase": phase, "branch": branch, "head_sha": head, "tree_sha": tree,
+		"policy_id": lease.PolicyID, "input_digest": digest,
+	}
+	client := e.claim.source.NativeClient()
+	if err := e.VerifyPhaseAuthority(ctx); err != nil {
+		return err
+	}
+	err := client.PublishPhaseReceipt(ctx, lease.WorkItemID, payload)
+	if nativeTransportUnavailable(err) && ctx.Err() == nil {
+		if authorityErr := e.VerifyPhaseAuthority(ctx); authorityErr != nil {
+			return errors.Join(err, authorityErr)
+		}
+		err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, payload)
+	}
+	return e.executionError(ctx, err)
 }

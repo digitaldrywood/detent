@@ -197,6 +197,11 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					Message  string
 					Eligible bool
 				}{message, eligible}, err
+			case "PhaseReceipts", "VerifyPhaseAuthority", "RecordPhaseReceipt":
+				if _, ok := request.Execution.(PhaseReceiptExecution); !ok && name == "PhaseReceipts" {
+					return false, nil
+				}
+				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "SourceReview", "PrepareSourceIteration", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}

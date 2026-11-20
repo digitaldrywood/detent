@@ -3,9 +3,12 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type sourceTurnBudgetKey struct{}
@@ -62,3 +65,39 @@ type sourceGateRepair struct {
 
 func (e *sourceGateRepair) Error() string { return e.err.Error() }
 func (e *sourceGateRepair) Unwrap() error { return e.err }
+
+type PhaseReceiptExecution interface {
+	PhaseReceipts(context.Context) (bool, error)
+	VerifyPhaseAuthority(context.Context) error
+	RecordPhaseReceipt(context.Context, string, string, string, string, string) error
+}
+
+func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
+	if !req.phaseReceipts {
+		return nil
+	}
+	publisher, ok := backend.(interface {
+		PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
+	})
+	if !ok {
+		return failedStep("publication", errors.New("workspace cannot publish an item phase"))
+	}
+	execution := req.Execution.(PhaseReceiptExecution)
+	branch, head, tree, err := publisher.PushItemPhase(ctx, info, issue, execution.VerifyPhaseAuthority)
+	if err != nil {
+		return failedStep("publication", err)
+	}
+	return failedStep("publication", execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input))
+}
+
+func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {
+	if req.retainedReview == nil {
+		return nil
+	}
+	source := req.retainedReview
+	identity := ""
+	if version != nil {
+		identity = version.ID
+	}
+	return publishItemPhase(ctx, req, source.backend, source.info, source.issue, phase, identity)
+}

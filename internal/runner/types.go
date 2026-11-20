@@ -689,6 +689,7 @@ type RunRequest struct {
 	validationEvidenceSource  AttemptDiffSource
 	reviewSource              func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error)
 	retainedReview            *retainedReviewWorkspace
+	phaseReceipts             bool
 }
 
 type NativeReviewContinuation struct {

@@ -105,6 +105,19 @@ func (c *NativeClient) capabilities(ctx context.Context) (nativeCapabilities, er
 	return c.client.cachedCapabilities(ctx)
 }
 
+func (c *NativeClient) PhaseReceiptRoute(ctx context.Context, item tracker.NativeWorkItemID) (bool, error) {
+	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", nil, nil)
+	var refusal *APIError
+	if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "" {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (c *NativeClient) PublishPhaseReceipt(ctx context.Context, item tracker.NativeWorkItemID, input map[string]any) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases", input, nil)
+}
+
 // HubFeature reports whether the hub advertises a feature on its capability
 // document.
 func (c *NativeClient) HubFeature(ctx context.Context, feature string) (bool, error) {

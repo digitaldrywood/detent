@@ -389,6 +389,12 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 	}
 	guarded = r.installDependencyReasonGenerator(guarded, req)
+	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && (normalizeRunMode(req.Mode) == RunModeImplement || req.RetainItemWorkspace) {
+		req.phaseReceipts, err = phase.PhaseReceipts(guarded)
+		if err != nil {
+			return RunResult{}, failedStep("publication", err)
+		}
+	}
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {
 		workflow, _, _, _ := r.runtimeSnapshot()
@@ -790,6 +796,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
+		finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
+	}
+	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if recorder, ok := req.Execution.(SourceValidationExecution); ok {
 			workflow, _, _, _ := r.runtimeSnapshot()
 			effectiveGate := gate.Effective(workflow.Config.Gate)
@@ -841,6 +850,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							err = recordStep(ctx, req.Execution, binding)
 							if err == nil {
 								err = recorder.RecordSourceValidation(ctx, receipt)
+							}
+							if err == nil {
+								err = publishItemPhase(ctx, req, backend, info, issue, "project_gate", command)
 							}
 							if err == nil && req.retainedReview != nil {
 								req.retainedReview.validation = &receipt
@@ -1277,6 +1289,12 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if approved, err := r.auditNativeChange(ctx, req); err != nil || !approved {
 		return err
 	}
+	workflow, runtime, _, _ := r.runtimeSnapshot()
+	if gate.Effective(workflow.Config.Gate).SecurityAudit.Enabled {
+		if err := publishReviewedPhase(ctx, req, "security_audit", nil); err != nil {
+			return err
+		}
+	}
 	if approved, err := r.reviewNativeChange(ctx, req); err != nil || !approved {
 		if err != nil {
 			return &NativeImplementationReviewError{Err: err}
@@ -1287,7 +1305,6 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if !ok {
 		return nil
 	}
-	workflow, runtime, _, _ := r.runtimeSnapshot()
 	cfg := gate.Effective(workflow.Config.Gate).Validator
 	if !cfg.Enabled {
 		return nil
@@ -1347,6 +1364,9 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	}
 	if err := execution.RecordValidator(ctx, result); err != nil {
 		return failedStep("validator_publication", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, err))
+	}
+	if result.Verdict == gate.ValidatorVerdictPass {
+		return publishReviewedPhase(ctx, req, "acceptance", input.Version)
 	}
 	return nil
 }
@@ -1413,7 +1433,11 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if err := execution.RecordReview(ctx, result); err != nil {
 		return false, failedStep("review_publication", err)
 	}
-	return result.Verdict == gate.ValidatorVerdictPass, nil
+	if result.Verdict != gate.ValidatorVerdictPass {
+		return false, nil
+	}
+	err = publishReviewedPhase(ctx, req, "implementation_review", input.Version)
+	return err == nil, err
 }
 
 func (r *Runner) recordPipeline(req RunRequest, timing gate.PipelineTiming) {
