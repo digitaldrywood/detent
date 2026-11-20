@@ -74,6 +74,7 @@ var (
 	ErrModelPermitUnavailable          = errors.New("provider model permit unavailable")
 	ErrAgentTurnCleanup                = errors.New("agent turn cleanup failed")
 	ErrWorkerProcessReap               = runworkspace.ErrWorkerProcessReap
+	ErrProviderSessionUnretired        = fmt.Errorf("provider session still retiring: %w", ErrWorkerProcessReap)
 	ErrWorkspacePreparation            = errors.New("workspace preparation failed")
 	ErrWorkspaceBranchHeld             = errors.New("workspace branch held by worktree")
 	ErrAgentResumeUnsupported          = errors.New("agent backend does not support resume verification")

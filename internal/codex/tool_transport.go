@@ -155,7 +155,7 @@ func (t *toolTransport) finish(err error) error {
 	select {
 	case <-t.done:
 	case <-timer.C:
-		return errors.Join(err, runner.ErrWorkerProcessReap)
+		return errors.Join(err, runner.ErrProviderSessionUnretired)
 	}
 	if unresolved && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrStreamStalled)) {
 		var startup *StartupError

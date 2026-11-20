@@ -121,6 +121,21 @@ func TestRecordSourceValidationInitialRuntimeUsesValidationPhase(t *testing.T) {
 
 func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name            string
+		providerFailure bool
+	}{
+		{name: "worker close deadline"},
+		{name: "unretired tool after protocol failure", providerFailure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure)
+		})
+	}
+}
+
+func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure bool) {
+	t.Helper()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Retire the old worker")
 	h.claim(t, issue.ID)
@@ -139,6 +154,7 @@ func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanup, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- e.CloseWorkers(cleanup) }()
 	defer func() {
@@ -148,7 +164,17 @@ func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 		}
 	}()
 	<-entered
-	cancel()
+	if providerFailure {
+		cause := errors.Join(errors.New("provider protocol failed"), runner.ErrProviderSessionUnretired)
+		if !runner.StopProviderSupervision(e, cause) {
+			t.Fatal("unretired tool did not stop supervision")
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("unretired tool allowed claim completion: %v", err)
+		}
+	} else {
+		cancel()
+	}
 	watch, stopWatch := context.WithTimeout(t.Context(), 5*time.Second)
 	defer stopWatch()
 	select {

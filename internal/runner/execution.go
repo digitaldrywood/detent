@@ -453,7 +453,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	} else {
 		result, runErr = r.run(guarded, req)
 	}
-	if UnretiredProviderSession(runErr) {
+	if StopProviderSupervision(req.Execution, runErr) {
 		return result, runErr
 	}
 	runErr = r.attributeFailure(guarded, req, runErr, result.TurnStartRefused)
