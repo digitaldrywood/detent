@@ -35,23 +35,24 @@ type loopToolItem struct {
 }
 
 type turnToolLoop struct {
-	observer         progresscheck.ToolLoop
-	thread, turn     string
-	workspace        string
-	logger           *slog.Logger
-	source           func(context.Context, string) string
-	probeContext     context.Context
-	sequence         uint64
-	decisionID       string
-	observedDecision uint64
-	active           map[string]uint64
-	completed        []string
-	parallel         bool
-	uncertain        bool
-	pendingSteer     progresscheck.ToolLoopEvidence
-	steerSequence    uint64
-	record           func(tracker.ExecutionLoopIntervention)
-	interrupted      progresscheck.ToolLoopEvidence
+	observer       progresscheck.ToolLoop
+	thread, turn   string
+	workspace      string
+	logger         *slog.Logger
+	source         func(context.Context, string) string
+	probeContext   context.Context
+	sequence       uint64
+	decisions      []string
+	lastStarted    uint64
+	decisionCalls  int
+	decisionResult string
+	active         map[string]struct{}
+	completed      []string
+	uncertain      bool
+	pendingSteer   progresscheck.ToolLoopEvidence
+	steerSequence  uint64
+	record         func(tracker.ExecutionLoopIntervention)
+	interrupted    progresscheck.ToolLoopEvidence
 }
 
 func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message Message) error {
@@ -61,7 +62,7 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 				TurnID string `json:"turnId"`
 			}
 			if json.Unmarshal(message.Result, &response) == nil && response.TurnID == l.turn {
-				l.observer.Acknowledge(l.pendingSteer.Fingerprint, l.sequence)
+				l.observer.Acknowledge(l.pendingSteer.Fingerprint, l.lastStarted)
 				l.report(ctx, l.pendingSteer, l.steerSequence)
 			}
 		}
@@ -88,16 +89,22 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 		return nil
 	}
 	if item.Type == "reasoning" && message.Method == "item/started" {
-		if len(l.active) == 0 && item.ID != l.decisionID {
-			l.decisionID = item.ID
-			l.sequence++
+		if len(l.active) != 0 || slices.Contains(l.decisions, item.ID) {
+			return nil
 		}
+		if err := l.finishDecision(ctx, transport); err != nil || l.interrupted.Action != "" {
+			return err
+		}
+		l.rememberID(&l.decisions, item.ID)
+		l.sequence++
+		l.decisionCalls = 0
+		l.decisionResult = ""
 		return nil
 	}
 	if !toolItemType(item.Type) || item.Source == "userShell" || slices.Contains(l.completed, item.ID) {
 		return nil
 	}
-	decision, started := l.active[item.ID]
+	_, started := l.active[item.ID]
 	if message.Method == "item/started" {
 		if started {
 			return nil
@@ -106,42 +113,45 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 			l.uncertain = true
 			return nil
 		}
-		l.parallel = l.parallel || len(l.active) != 0
 		if l.active == nil {
-			l.active = make(map[string]uint64)
+			l.active = make(map[string]struct{})
 		}
-		l.active[item.ID] = l.sequence
+		l.active[item.ID] = struct{}{}
+		l.decisionCalls++
+		l.lastStarted = l.sequence
 		return nil
 	}
-	if len(l.completed) == progresscheck.ToolLoopWindow {
-		copy(l.completed, l.completed[1:])
-		l.completed = l.completed[:progresscheck.ToolLoopWindow-1]
-	}
-	l.completed = append(l.completed, item.ID)
+	l.rememberID(&l.completed, item.ID)
 	if !started {
-		l.observer.Observe(l.sequence, "")
-		l.observedDecision = l.sequence
-		l.parallel = len(l.active) != 0
+		l.decisionCalls++
+		l.decisionResult = ""
 		return nil
 	}
 	delete(l.active, item.ID)
-	if len(l.active) != 0 {
+	if l.sequence == 0 || l.decisionCalls != 1 {
 		return nil
 	}
-	parallel := l.parallel
-	l.parallel = false
-	if decision == 0 || decision != l.sequence || decision == l.observedDecision {
-		return nil
+	if experiment, ok := item.experiment(l.workspace); ok {
+		probeCtx, cancel := context.WithTimeout(l.probeContext, time.Second)
+		experiment.Source = l.source(probeCtx, l.workspace)
+		cancel()
+		l.decisionResult = experiment.Fingerprint()
 	}
-	l.observedDecision = decision
-	var fingerprint string
-	if !parallel {
-		if experiment, ok := item.experiment(l.workspace); ok {
-			probeCtx, cancel := context.WithTimeout(l.probeContext, time.Second)
-			experiment.Source = l.source(probeCtx, l.workspace)
-			cancel()
-			fingerprint = experiment.Fingerprint()
-		}
+	return nil
+}
+
+func (l *turnToolLoop) rememberID(ids *[]string, id string) {
+	if len(*ids) == progresscheck.ToolLoopWindow {
+		copy(*ids, (*ids)[1:])
+		*ids = (*ids)[:progresscheck.ToolLoopWindow-1]
+	}
+	*ids = append(*ids, id)
+}
+
+func (l *turnToolLoop) finishDecision(ctx context.Context, transport Transport) error {
+	fingerprint := l.decisionResult
+	if l.decisionCalls != 1 {
+		fingerprint = ""
 	}
 	evidence := l.observer.Observe(l.sequence, fingerprint)
 	switch evidence.Action {

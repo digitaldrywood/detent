@@ -57,7 +57,7 @@ func roundRetryDelay(maxBackoffMS int) func(int) time.Duration {
 func (r *Runner) roundRetry(ctx context.Context, req RunRequest, phase string, timeout *sessiontimeout.Error, deadlines *progresscheck.RoundDeadlines, retryDelay func(int) time.Duration) func(error) error {
 	return func(err error) error {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_round_judge_instance_failure", "phase", phase, "provider_timeout", timeout, "error", err)
-		if errors.Is(err, progresscheck.ErrRoundVerdictRejected) || StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
+		if StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
 			return err
 		}
 		return deadlines.Wait(ctx, retryDelay)

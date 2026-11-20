@@ -1,8 +1,11 @@
 package codex
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
@@ -64,4 +67,48 @@ func TestReconcileScopedTerminalAfterTenCalls(t *testing.T) {
 			}
 		})
 	}
+}
+
+type terminalTransportPair struct {
+	transports []Transport
+}
+
+func (p *terminalTransportPair) NewTransport(context.Context) (Transport, error) {
+	if len(p.transports) == 0 {
+		return nil, errors.New("unexpected additional provider transport")
+	}
+	transport := p.transports[0]
+	p.transports = p.transports[1:]
+	return transport, nil
+}
+
+func TestRunTurnPreservesCompletionConfirmedAtProviderDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		first := newBlockingAppServerTransport([]Message{
+			responseMessage(t, initializeRequestID, `{}`),
+			responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread"}}`),
+			responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn"}}`),
+			notificationMessage(t, "item/completed", `{"threadId":"thread","turnId":"turn","item":{"id":"final","type":"agentMessage","phase":"final_answer","text":"Done"}}`),
+			responseMessage(t, threadReadRequestID, `{"thread":{"id":"thread","turns":[{"id":"turn","status":"inProgress"}]}}`),
+		})
+		reconcile := &fakeAppServerTransport{received: []Message{
+			responseMessage(t, initializeRequestID, `{}`),
+			responseMessage(t, threadReadRequestID, `{"thread":{"id":"thread","turns":[{"id":"turn","status":"completed"}]}}`),
+		}}
+		factory := &terminalTransportPair{transports: []Transport{first, reconcile}}
+		server, err := NewAppServer(factory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completions := 0
+		result, err := server.RunTurn(t.Context(), RunTurnRequest{Model: "example-model", DetectToolLoops: true, TurnTimeout: time.Second}, func(update Update) error {
+			if update.Type == UpdateTurnCompleted {
+				completions++
+			}
+			return nil
+		})
+		if err != nil || result.ThreadID != "thread" || result.TurnID != "turn" || completions != 1 || len(factory.transports) != 0 {
+			t.Fatalf("result=%+v error=%v completions=%d unused transports=%d", result, err, completions, len(factory.transports))
+		}
+	})
 }
