@@ -2,16 +2,15 @@ package orchestrator
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -392,14 +391,7 @@ func (o *Orchestrator) retryMachineFailure(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) machineRetryDelay(attempt int) time.Duration {
-	delay := o.retryDelay(attempt, false)
-	if delay > 0 {
-		offset, err := rand.Int(rand.Reader, big.NewInt(int64(delay/8)+1))
-		if err == nil {
-			delay -= time.Duration(offset.Int64())
-		}
-	}
-	return delay
+	return runner.JitteredFailureRetryDelay(o.retryDelay(attempt, false))
 }
 
 func (o *Orchestrator) restoreMachineRetry(ctx context.Context, state *State, issue connector.Issue) {

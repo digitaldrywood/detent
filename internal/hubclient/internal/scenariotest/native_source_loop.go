@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -28,6 +30,13 @@ type sourceRepairAgent struct {
 	workspaceHooks *sourceLoopWorkspace
 	gateRepair     bool
 	roundVerdicts  int
+	deadlineRound  string
+	deadlineRounds int
+	timedOut       int
+	timedOutPath   string
+	oldWriter      procgroup.Identity
+	oldWait        chan error
+	oldInput       io.WriteCloser
 }
 
 type sourceLoopWorkspace struct {
@@ -79,7 +88,8 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		} else if strings.Contains(request.Prompt, "required action is done") {
 			action, next = "done", ""
 		}
-		body := fmt.Sprintf(`{"action":%q,"next_phase":%q,"reason":"Fixture evaluated the passing and failing checks."}`, action, next)
+		reason := fmt.Sprintf("Fixture evaluated the passing and failing checks in round %d.", a.roundVerdicts)
+		body := fmt.Sprintf(`{"action":%q,"next_phase":%q,"reason":%q}`, action, next, reason)
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
 	}
 	a.requests = append(a.requests, request)
@@ -87,6 +97,74 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		return runner.AgentTurnResult{}, errors.New("source workspace hooks ran outside the enclosing execution lifecycle")
 	}
 	review := strings.Contains(request.Prompt, "Detent validator-agent") || strings.Contains(request.Prompt, "independent Detent implementation reviewer")
+	if !review && a.deadlineRound != "" && a.writableCalls == 0 {
+		if a.oldWait != nil {
+			if alive, err := procgroup.Alive(a.oldWriter); alive || err != nil {
+				return runner.AgentTurnResult{}, fmt.Errorf("replacement started while the prior writer could still run: alive=%t error=%v", alive, err)
+			}
+			<-a.oldWait
+			a.oldWait = nil
+			if err := a.oldInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+				return runner.AgentTurnResult{}, err
+			}
+		}
+		resume := runner.AgentResume{}
+		if a.timedOut > 0 && a.deadlineRound == "review" {
+			resume = runner.AgentResume{ThreadID: "thread-native", SessionID: "session-busy"}
+		}
+		if a.timedOut > 0 {
+			data, err := os.ReadFile(filepath.Join(request.Workspace, "UNFINISHED.md"))
+			if err != nil || string(data) != "retained edits\n" || request.Workspace != a.timedOutPath || request.Resume != resume || a.roundVerdicts != a.timedOut {
+				return runner.AgentTurnResult{}, fmt.Errorf("deadline continuation lost source, session or verdict: resume=%+v want=%+v verdicts=%d error=%v", request.Resume, resume, a.roundVerdicts, err)
+			}
+		}
+		if a.timedOut < a.deadlineRounds {
+			a.timedOut++
+			a.timedOutPath = request.Workspace
+			if err := os.WriteFile(filepath.Join(request.Workspace, "UNFINISHED.md"), []byte("retained edits\n"), 0o600); err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			if a.deadlineRound == "idle" {
+				child := exec.CommandContext(context.WithoutCancel(ctx), "cat")
+				input, err := child.StdinPipe()
+				if err != nil {
+					return runner.AgentTurnResult{}, err
+				}
+				procgroup.Configure(ctx, child)
+				if err := procgroup.Start(child); err != nil {
+					input.Close()
+					return runner.AgentTurnResult{}, err
+				}
+				a.oldInput = input
+				wait := make(chan error, 1)
+				a.oldWait = wait
+				go func() { wait <- procgroup.Wait(child) }()
+				a.oldWriter, err = procgroup.Inspect(child)
+				if err != nil {
+					return runner.AgentTurnResult{}, err
+				}
+				if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: a.oldWriter}); err != nil {
+					return runner.AgentTurnResult{}, err
+				}
+			}
+			if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "deadline-turn", ProviderSessionID: "session-busy"}); err != nil {
+				return runner.AgentTurnResult{}, err
+			}
+			result := runner.AgentTurnResult{ThreadID: "thread-native", TurnID: "deadline-turn", SessionID: "session-busy"}
+			if a.deadlineRound == "review" {
+				if err := update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: result.TurnID, Delta: "Working."}); err != nil {
+					return runner.AgentTurnResult{}, err
+				}
+				return result, runner.ErrTurnDurationExceeded
+			}
+			return result, &sessiontimeout.Error{Kind: sessiontimeout.Idle, Limit: 5 * time.Minute}
+		}
+		stage := exec.CommandContext(ctx, "git", "add", "UNFINISHED.md")
+		stage.Dir = request.Workspace
+		if output, err := stage.CombinedOutput(); err != nil {
+			return runner.AgentTurnResult{}, fmt.Errorf("stage the reviewed edits: %w: %s", err, output)
+		}
+	}
 	if review && (!request.ReadOnly || request.Workspace != a.workspace) {
 		return runner.AgentTurnResult{}, errors.New("independent reviewer did not receive the retained source with read-only access")
 	}
@@ -130,25 +208,29 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	t.Parallel()
 	for _, test := range []struct {
-		name         string
-		sourceReview bool
-		audit        bool
-		auditRework  bool
-		ssh          bool
-		limit        int
-		verdict      string
-		gateRepair   bool
-		loseReceipt  bool
-		land         bool
-		wantVersions int
-		wantCalls    int
-		wantReviewed bool
+		name           string
+		sourceReview   bool
+		audit          bool
+		auditRework    bool
+		ssh            bool
+		limit          int
+		verdict        string
+		gateRepair     bool
+		loseReceipt    bool
+		land           bool
+		deadlineRound  string
+		deadlineRounds int
+		wantVersions   int
+		wantCalls      int
+		wantReviewed   bool
 	}{
 		{name: "audit repair before acceptance", audit: true, auditRework: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "old audit approval cannot approve repaired head", audit: true, limit: 6, verdict: "rework", wantVersions: 2, wantCalls: 6, wantReviewed: true},
 		{name: "accepted source lands and records completion", land: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "gate repair", gateRepair: true, limit: 4, verdict: "pass", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
+		{name: "quiet session restart", deadlineRound: "idle", deadlineRounds: 2, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
+		{name: "busy round review", deadlineRound: "review", deadlineRounds: 1, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
 		{name: "shared budget exhausted", limit: 2, verdict: "rework", wantVersions: 1, wantCalls: 2},
@@ -190,7 +272,15 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			}
 			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
 			sessions := api.NewRunnerSessions(h.native)
-			provider := &sourceRepairAgent{gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{deadlineRound: test.deadlineRound, deadlineRounds: test.deadlineRounds, gateRepair: test.gateRepair, workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			t.Cleanup(func() {
+				if provider.oldWait != nil {
+					if err := provider.oldInput.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+						t.Error(err)
+					}
+					<-provider.oldWait
+				}
+			})
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
@@ -199,7 +289,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if test.gateRepair {
 				command += " && { test -f REPAIR.md || { printf '%s\\n' 'repair required'; exit 1; }; }"
 			}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit}, Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: test.limit, MaxRetryBackoffMS: 1}, Gate: gate.Config{Run: command, SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: next.Gates.AutomatedReview, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: loopWorkspace, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -241,16 +331,16 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				}
 			}
 			for index, request := range provider.requests {
-				if request.MaxTurns != test.limit-index {
+				if test.deadlineRound == "" && request.MaxTurns != test.limit-index {
 					t.Fatalf("phase %d reset shared budget: limit=%d want=%d", index, request.MaxTurns, test.limit-index)
 				}
 			}
 			if phasesSupported && test.loseReceipt && h.failChanges.phaseReceiptDrops.Load() != 1 {
 				t.Error("runner never reconciled the lost response after recording a pushed phase")
 			}
-			if phasesSupported && (test.gateRepair || test.loseReceipt) {
-				if provider.roundVerdicts != 2 {
-					t.Errorf("runner asked for %d verdicts, want one for each of the two rounds", provider.roundVerdicts)
+			if phasesSupported && (test.gateRepair || test.loseReceipt || test.deadlineRound != "") {
+				if want := max(2, test.deadlineRounds+1); provider.roundVerdicts != want {
+					t.Errorf("runner asked for %d verdicts, want %d", provider.roundVerdicts, want)
 				}
 				receipt, err := h.native.LatestRoundVerdict(t.Context(), tracker.NativeWorkItemID(issue.ID))
 				if err != nil {
@@ -331,7 +421,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				if test.sourceReview {
 					wantReviews = 3
 				}
-				if test.gateRepair || test.land {
+				if test.gateRepair || test.land || test.deadlineRound != "" {
 					wantReviews = 1
 				}
 				if len(detail.Reviews) != wantReviews {

@@ -2664,6 +2664,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var priorSource *agentTurnExecution
 	sourceCostOffsetUSD := 0.0
+	var timeouts int
+	var priorDeadlines []string
+
 	for {
 		r.startCheckpointRefs(ctx, req.checkpointRefs, req, runWorkspace)
 		execution := runWithCheckpoint(turnRequest, req, runtimeIdentity, sourceCostOffsetUSD)
@@ -2674,6 +2677,56 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if priorSource != nil {
 			execution = mergeAgentTurnExecutions(*priorSource, execution)
+		}
+		var providerTimeout *sessiontimeout.Error
+		timedOut := errors.As(execution.err, &providerTimeout)
+		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded)
+		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
+			assessment, verdictErr := r.judgeRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", strings.Join(priorDeadlines, "\n"), execution.result, execution.err)
+			if verdictErr != nil {
+				afterRunPending = false
+				return execution.result, errors.Join(execution.err, verdictErr)
+			}
+			resume := AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
+			if timedOut {
+				timeouts++
+				resume = AgentResume{}
+				req.RetryMode = RetryModeFresh
+				ceiling := durationFromMillis(workflow.Config.Agent.MaxRetryBackoffMS)
+				if ceiling <= 0 {
+					ceiling = defaultSupervisorMaxRetryBackoff
+				}
+				delay := JitteredFailureRetryDelay(failureRetryDelay(timeouts, defaultSupervisorFailureRetryBaseDelay, ceiling))
+				timer := time.NewTimer(delay)
+				select {
+				case <-sessionCtx.Done():
+					timer.Stop()
+					afterRunPending = false
+					return execution.result, errors.Join(execution.err, context.Cause(sessionCtx))
+				case <-timer.C:
+				}
+			}
+			if err := req.Execution.Validate(ctx); err != nil {
+				afterRunPending = false
+				return execution.result, errors.Join(execution.err, err)
+			}
+			priorDeadlines = append(priorDeadlines, providerRoundOutcome(execution.err, assessment))
+			if len(priorDeadlines) > 6 {
+				priorDeadlines = priorDeadlines[1:]
+			}
+			turnRequest.Resume = resume
+			turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + assessment
+			req.sessionTurnOffset = 0
+			req.sessionTokenOffset = execution.result.Tokens.TotalTokens
+			if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok {
+				budget.remaining = workflow.Config.Agent.MaxTurns
+				if budget.remaining <= 0 {
+					budget.remaining = config.Default().Agent.MaxTurns
+				}
+			}
+			priorSource = &execution
+			sourceCostOffsetUSD = r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
+			continue
 		}
 		if !usingOrphanPrompt {
 			r.rememberPrompt(promptKey, prompt, execution)
