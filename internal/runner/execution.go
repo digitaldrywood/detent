@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
-	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -74,31 +74,10 @@ type NativeValidation struct {
 // It is evidence for the independent validator, not an acceptance verdict.
 type NativeSecurityAuditEvidence = prompt.NativeSecurityAuditEvidence
 
-type NativeReviewDiscussion prompt.NativeReviewDiscussion
+type NativeReviewDiscussion = prompt.NativeReviewDiscussion
 
 func NativeReviewDiscussionForVersion(issue []tracker.NativeComment, change []tracker.ChangeDiscussion, version string) NativeReviewDiscussion {
-	discussion := NativeReviewDiscussion{Issue: issue}
-	for _, comment := range change {
-		if comment.VersionID == "" || comment.VersionID == version {
-			discussion.Change = append(discussion.Change, comment)
-		}
-	}
-	return discussion
-}
-
-func (d NativeReviewDiscussion) HumanFeedbackSince(reviewed time.Time) bool {
-	human := func(actor tracker.Actor) bool { return actor.Kind == "human" && actor.PrincipalID != "" }
-	for _, comment := range d.Issue {
-		if human(comment.Actor) && !comment.CreatedAt.Before(reviewed) || comment.EditedBy != nil && human(*comment.EditedBy) && !comment.UpdatedAt.Before(reviewed) {
-			return true
-		}
-	}
-	for _, comment := range d.Change {
-		if human(comment.Actor) && !comment.CreatedAt.Before(reviewed) {
-			return true
-		}
-	}
-	return false
+	return prompt.NativeReviewDiscussionForVersion(issue, change, version)
 }
 
 type NativeValidatorExecution interface {
@@ -558,7 +537,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		}
 		assessment, err := r.decideRound(guarded, req, retained.backend, retained.info, retained.issue, "project_gate", "", result, runErr, false)
 		if err == nil && runErr == nil && assessment.HumanAction != "" {
-			assessment.applyHumanAction(&result)
+			applyRoundHumanAction(&result, assessment)
 			if prepared, ok := req.Execution.(CompletionExecution); ok {
 				err = prepared.PrepareFinish(finishCtx, outcome, result.FinalMessage, nil)
 			}
@@ -690,6 +669,9 @@ func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend wo
 }
 
 func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
+	if finalize && req.phaseReceipts && req.checkpointRefs == nil {
+		req.checkpointRefs = newCheckpointRefs(backend, req.Execution, info, issue, nil)
+	}
 	req.checkpointRefs.halt()
 	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
@@ -985,45 +967,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	return true, nil
 }
 
-func nativeLandingRework(recovery tracker.NativeRecovery) bool {
-	landing := nativeRecoveryLanding(recovery)
-	return landing != nil && !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "")
-}
-
-// NativeReviewConversationRefusal returns the refusal detail when GitHub
-// refused to land the recovered Change version because review conversations
-// are unresolved and the item has not left that refusal through Merging since.
 func NativeReviewConversationRefusal(recovery tracker.NativeRecovery) string {
-	landing := nativeRecoveryLanding(recovery)
-	if recovery.Change == nil || landing == nil || landing.Landed || landing.RefusalKind != workspace.LandRefusalProtected {
-		return ""
-	}
-	for i := len(recovery.History) - 1; i >= 0; i-- {
-		event := recovery.History[i]
-		if event.Type != "workflow.transitioned" || !strings.EqualFold(strings.TrimSpace(event.Data.FromState), "Merging") {
-			continue
-		}
-		if workspace.ReviewConversationsRefusal(event.Data.ReasonDetail) {
-			return strings.TrimSpace(event.Data.ReasonDetail)
-		}
-		return ""
-	}
-	return ""
-}
-
-func nativeRecoveryLanding(recovery tracker.NativeRecovery) *tracker.NativeLandingReceipt {
-	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
-		runtime := recovery.Attempts[i].Runtime
-		if runtime == nil || runtime.Landing == nil {
-			continue
-		}
-		landing := runtime.Landing
-		if recovery.Change != nil && (landing.ChangeID != recovery.Change.ChangeID || landing.VersionID != recovery.Change.VersionID || landing.HeadSHA != recovery.Change.HeadSHA) {
-			return nil
-		}
-		return landing
-	}
-	return nil
+	return phaserecovery.NativeReviewConversationRefusal(recovery)
 }
 
 func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
@@ -1497,100 +1442,11 @@ func (e *NativeImplementationReviewError) Unwrap() error            { return e.E
 func (*NativeImplementationReviewError) BackendErrorStatus() string { return "interrupted" }
 
 func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) *tracker.NativeAttempt {
-	detail := recovery.ChangeDetail
-	repairResume := detail != nil && tracker.RepairDependenciesReady(recovery.Issue, changerequest.IndependentRepairDependencies(*detail))
-	if detail == nil || recovery.Change == nil || detail.Change.ID != recovery.Change.ChangeID || detail.Change.CurrentVersion != recovery.Change.VersionID || detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" && !repairResume || nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
-		return nil
-	}
-	if landing := nativeRecoveryLanding(recovery); landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework() {
-		return nil
-	}
-	var current *tracker.ChangeVersion
-	for i := range detail.Versions {
-		if detail.Versions[i].ID == detail.Change.CurrentVersion {
-			current = &detail.Versions[i]
-			break
+	return phaserecovery.ReviewAttempt(recovery, command, func() bool {
+		if phaserecovery.LandingNeedsRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
+			return true
 		}
-	}
-	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired && !repairResume || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
-		return nil
-	}
-	if command != "" && (current.Validation == nil || current.Validation.Command != command || current.Validation.ExitCode != 0 || current.Validation.HeadSHA != current.HeadSHA || current.Validation.TreeSHA == "") {
-		return nil
-	}
-	var sourceReview, acceptanceReview *gate.ValidatorResult
-	newerHumanFeedback := NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, current.ID).HumanFeedbackSince(current.CreatedAt)
-	sourceReviewIndex, acceptanceReviewIndex := -1, -1
-	for i := len(detail.Reviews) - 1; i >= 0; i-- {
-		review := detail.Reviews[i]
-		if review.VersionID != current.ID {
-			continue
-		}
-		if acceptanceReview == nil && review.Validator != nil {
-			acceptanceReview, acceptanceReviewIndex = review.Validator, i
-		}
-		if sourceReview == nil && review.ImplementationReview != nil {
-			sourceReview, sourceReviewIndex = review.ImplementationReview, i
-			newerHumanFeedback = NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, current.ID).HumanFeedbackSince(review.CreatedAt)
-		}
-		if sourceReview != nil && acceptanceReview != nil {
-			break
-		}
-	}
-	if repairResume && newerHumanFeedback {
-		return nil
-	}
-	if !repairResume && (sourceReview != nil && sourceReview.Verdict != gate.ValidatorVerdictPass && sourceReview.Verdict != gate.ValidatorVerdictWait || acceptanceReview != nil && acceptanceReview.Verdict != gate.ValidatorVerdictPass && acceptanceReview.Verdict != gate.ValidatorVerdictWait) {
-		return nil
-	}
-	if !repairResume && sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReview != nil && acceptanceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReviewIndex > sourceReviewIndex && !newerHumanFeedback {
-		return nil
-	}
-	var source *tracker.NativeAttempt
-	finalizationObserved, finalizationPending := false, false
-	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
-		attempt := &recovery.Attempts[i]
-		if finalization := attempt.Finalization; !finalizationObserved && finalization != nil && attempt.PolicyID == current.PolicyID && finalization.ChangeID == current.ChangeID && finalization.VersionID == current.ID && finalization.HeadSHA == current.HeadSHA {
-			finalizationObserved = true
-			finalizationPending = finalization.Changed && !finalization.Reviewed && finalization.Error == "" && finalization.VersionError == "" && (attempt.Status == "interrupted" || attempt.Status == "failed" || attempt.Status == "cancelled")
-		}
-		if attempt.Checkpoint != nil && (attempt.Checkpoint.UncertainForgeEffect() || attempt.Checkpoint.HeadSHA != "" && attempt.Checkpoint.HeadSHA != current.HeadSHA || attempt.Checkpoint.WorktreeState == "dirty") {
-			return nil
-		}
-		disposition := attempt.Disposition
-		if disposition != nil && (disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "") {
-			return nil
-		}
-		if attempt.AttemptID == current.AttemptID && attempt.RunID == current.RunID {
-			source = attempt
-			break
-		}
-	}
-	if source == nil || source.PolicyID != current.PolicyID || source.Disposition == nil || source.CompletionBody == "" || source.Status != "succeeded" && source.Status != "failed" && source.Status != "interrupted" && source.Status != "cancelled" {
-		return nil
-	}
-	parsed := NativeDispositionFromMessage(source.CompletionBody)
-	if parsed == nil || parsed.Status != workpad.StatusComplete || parsed.Blockers || parsed.HumanAction || parsed.ReasonCode != "" {
-		return nil
-	}
-	if !repairResume && !current.Policy.Gates.Validator && sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && !finalizationPending && !newerHumanFeedback {
-		return nil
-	}
-	return source
-}
-
-func nativeReviewResumeMatches(recovery tracker.NativeRecovery, local *workspace.RecoveryState, current *workspace.ChangeSource) bool {
-	if current == nil || local == nil || recovery.Change == nil || recovery.ChangeDetail == nil || local.HeadSHA != current.Version.HeadSHA || len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 {
-		return false
-	}
-	version := current.Version
-	if *recovery.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) || version.Source == nil || version.Policy.ID != version.PolicyID {
-		return false
-	}
-	for _, published := range recovery.ChangeDetail.Versions {
-		if published.ID == version.ID {
-			return published.HeadSHA == version.HeadSHA && published.BaseSHA == version.BaseSHA && published.Repository == version.Repository && published.AttemptID == version.AttemptID && published.RunID == version.RunID && published.PolicyID == version.PolicyID && version.Source.Validate(version.BaseSHA, version.HeadSHA, current.Bundle) == nil
-		}
-	}
-	return false
+		landing := phaserecovery.Landing(recovery)
+		return landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework()
+	}, completedSourceDisposition)
 }

@@ -17,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -63,34 +62,18 @@ func (r *sshRunner) runLocalWorker(ctx context.Context, request runnerpkg.RunReq
 	return r.runLocalWorkerLaunch(ctx, request, nil)
 }
 
-func prepareAcknowledgedWorker(parentCtx, launchCtx context.Context, peer *runnerpkg.SSHPeer, request *runnerpkg.RunRequest, boot *sshBootstrap, closeWorker func() error) (bool, error) {
+func prepareAcknowledgedWorker(parentCtx, launchCtx context.Context, request *runnerpkg.RunRequest, boot *sshBootstrap, closeWorker func() error) (bool, error) {
 	prepare := request.PrepareRun
 	request.PrepareRun = nil
-	progressRan := false
 	initialWorkspace := request.AttemptWorkspace
-	ctx := runnerpkg.WithWorkerProgressCheck(parentCtx, func(checkCtx context.Context, evidence progresscheck.Request) (progresscheck.Decision, error) {
-		if progressRan || !boot.Run.AttemptWorker || launchCtx.Err() != nil {
-			return progresscheck.Decision{}, runnerpkg.ErrExecutionAuthorityUnavailable
-		}
-		progressRan = true
-		probe := *boot
-		probe.Progress = &evidence
-		var decision progresscheck.Decision
-		requestCtx, cancel := context.WithCancelCause(checkCtx)
-		defer cancel(nil)
-		stop := context.AfterFunc(launchCtx, func() { cancel(context.Cause(launchCtx)) })
-		err := peer.Call(requestCtx, "run.progress", &decision, probe)
-		stop()
-		return decision, errors.Join(err, closeWorker())
-	})
-	if err := prepare(ctx, request); err != nil {
+	if err := prepare(parentCtx, request); err != nil {
 		return false, err
 	}
 	current, ok := request.Execution.(runnerpkg.AttemptWorkerExecution)
 	if !ok {
 		return false, runnerpkg.ErrExecutionAuthorityUnavailable
 	}
-	if progressRan || current.AttemptWorkspace() != initialWorkspace {
+	if current.AttemptWorkspace() != initialWorkspace {
 		return true, closeWorker()
 	}
 	if err := launchCtx.Err(); err != nil {
@@ -387,7 +370,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			workerClosed = err == nil
 			return err
 		}
-		relaunch, err := prepareAcknowledgedWorker(parentCtx, ctx, peer, &request, &boot, closePreparationWorker)
+		relaunch, err := prepareAcknowledgedWorker(parentCtx, ctx, &request, &boot, closePreparationWorker)
 		if err != nil {
 			responseReceived = true
 			return result, err

@@ -39,34 +39,6 @@ type checkpointRefs struct {
 	stop  func()
 }
 
-// nativeRestorableCheckpoint returns the newest git checkpoint unless a later
-// attempt published a Change version that supersedes it.
-func nativeRestorableCheckpoint(recovery tracker.NativeRecovery, current *workspace.ChangeSource) *workspace.CheckpointRef {
-	if recovery.SourceVersionID != "" {
-		return nil
-	}
-	previous := recovery.SourceAttempt()
-	if previous == nil || !previous.Checkpoint.GitRef() || previous.Checkpoint.UncertainForgeEffect() {
-		return nil
-	}
-	if current != nil && current.Version.AttemptID != "" && current.Version.AttemptID != previous.AttemptID {
-		source, version := -1, -1
-		for i, attempt := range recovery.Attempts {
-			switch attempt.AttemptID {
-			case previous.AttemptID:
-				source = i
-			case current.Version.AttemptID:
-				version = i
-			}
-		}
-		if version > source {
-			return nil
-		}
-	}
-	checkpoint := previous.Checkpoint
-	return &workspace.CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, BaseSHA: checkpoint.BaseSHA, TreeSHA: checkpoint.TreeSHA}
-}
-
 // checkpointRefCoversChangeSource lets a non-landing run restore the newest
 // git checkpoint when the Hub cannot return the Change source, instead of
 // refusing work that the project repository still holds.

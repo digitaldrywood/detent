@@ -235,3 +235,11 @@ func infrastructureFailureDecision(err error) *tracker.FailureAttribution {
 	}
 	return nil
 }
+
+type progressTextBackend struct {
+	generate DependencyReasonGenerator
+}
+
+func (b progressTextBackend) Generate(ctx context.Context, instructions, input string) (string, error) {
+	return b.generate(ctx, instructions+"\n\nEvidence:\n"+input)
+}

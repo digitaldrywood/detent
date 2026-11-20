@@ -8,12 +8,9 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/runner"
-	"github.com/digitaldrywood/detent/internal/runner/runnertest"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
@@ -123,62 +120,6 @@ func TestRunTeardownStopsDetachedHook(t *testing.T) {
 			}
 			if daemon.Alive(t) {
 				t.Fatal("detached service still holds its lock after teardown")
-			}
-		})
-	}
-}
-
-type progressHookWorkspace struct {
-	*workspace.Filesystem
-	headErr   error
-	onRelease func()
-}
-
-func (w progressHookWorkspace) Use(ctx context.Context, issue workspace.Issue) (func(), error) {
-	release, err := w.Filesystem.Use(ctx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return func() { w.onRelease(); release() }, nil
-}
-
-func (w progressHookWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
-	return "head", w.headErr
-}
-
-func (progressHookWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
-	return nil
-}
-
-func TestProgressHookStopsBeforeCheckoutRelease(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		headErr error
-	}{
-		{"completed work", nil}, {"preparation failed", errors.New("fixture head unavailable")},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			service := detachedHook(t)
-			useDaemonCandidates(t, service)
-			fs, err := workspace.NewFilesystem(workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: service.Command}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			released := false
-			backend := progressHookWorkspace{fs, test.headErr, func() {
-				if service.Alive(t) {
-					t.Error("checkout released with live hook service")
-				}
-				released = true
-			}}
-			source := runnertest.RecoveredSource{Source: workspace.ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Source: &tracker.ChangeSource{}}}}}
-			_, finish, err := runworkspace.PrepareProgress(t.Context(), backend, workspace.Issue{ID: "example", Identifier: "EXAMPLE-1"}, source, progresscheck.Request{SourceSHA: "head"})
-			if finish != nil {
-				service.Request(t)
-				finish(&err)
-			}
-			if !errors.Is(err, test.headErr) || !released {
-				t.Fatalf("checkout released = %t, error = %v", released, err)
 			}
 		})
 	}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -27,12 +25,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type progressPublicationContextKey struct{}
@@ -84,125 +80,6 @@ type progressPublicationTransport func(*http.Request) (*http.Response, error)
 
 func (f progressPublicationTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
-}
-
-type progressPublicationAgent struct {
-	runner.AgentBackend
-	attempt  string
-	recordID string
-	retrieve bool
-}
-
-func (progressPublicationAgent) SupportsReadOnlyInvestigation() bool { return true }
-
-func (a progressPublicationAgent) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-	if !strings.Contains(request.Prompt, "TestExample: expected repaired value, got old value") || !request.ReadOnly || request.TextOnly || !request.IsolatedTools {
-		return runner.AgentTurnResult{}, errors.New("progress turn did not receive retained failure output and read-only investigation access")
-	}
-	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
-		return runner.AgentTurnResult{}, err
-	}
-	data, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: a.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the failed source", Evidence: []string{a.attempt}})
-	if err != nil {
-		return runner.AgentTurnResult{}, err
-	}
-	return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "decision", Delta: string(data)})
-}
-
-func (a progressPublicationAgent) RunTurnWithTools(ctx context.Context, request runner.AgentTurnRequest, tools []runner.AgentTool, handle runner.AgentToolHandler, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
-	if a.retrieve {
-		bounded := request.ToolBudget.Handler(tools, handle)
-		cursor := ""
-		found := false
-		var evidence progresscheck.Request
-		input := strings.SplitN(request.Prompt, "Evidence:\n", 2)
-		if len(input) != 2 {
-			return runner.AgentTurnResult{}, errors.New("missing request evidence")
-		}
-		if err := json.NewDecoder(strings.NewReader(input[1])).Decode(&evidence); err != nil {
-			return runner.AgentTurnResult{}, err
-		}
-		for range progresscheck.MaxToolCalls - 3 {
-			args, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: evidence.ProjectID, Reference: evidence.IssueID, View: "recovery", Cursor: cursor})
-			if err != nil {
-				return runner.AgentTurnResult{}, err
-			}
-			result, err := bounded(ctx, runner.AgentToolCall{Name: operatortool.WorkItem, Arguments: args})
-			if err != nil {
-				return runner.AgentTurnResult{}, err
-			}
-			var page operatortool.WorkReadResult[tracker.NativeRecoveryPage]
-			if err := json.Unmarshal([]byte(result.Content), &page); err != nil {
-				return runner.AgentTurnResult{}, err
-			}
-			found = page.Data.RecordID == a.recordID
-			cursor = page.Data.NextCursor
-			if found || cursor == "" {
-				break
-			}
-		}
-		if !found {
-			return runner.AgentTurnResult{}, errors.New("citation was not returned by recovery reads")
-		}
-	}
-	return a.RunTurn(ctx, request, update)
-}
-
-type progressPublicationWorkspace struct {
-	workspace.Backend
-	path string
-}
-
-func (w progressPublicationWorkspace) Head(_ context.Context, _ workspace.Info, issue workspace.Issue) (string, error) {
-	return issue.PullRequestHeadSHA, nil
-}
-func (w progressPublicationWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
-	return nil
-}
-func (w progressPublicationWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
-	return workspace.Info{Path: w.path}, nil
-}
-
-func (w progressPublicationWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
-	return workspace.Info{Path: w.path}, nil
-}
-
-func checkProgressWithAttemptWorker(t *testing.T, worker *runner.Runner, request runner.RunRequest, evidence progresscheck.Request, now time.Time) (progresscheck.Decision, error) {
-	t.Helper()
-	owner, ok := request.Execution.(runner.AttemptWorkerExecution)
-	if !ok {
-		t.Fatal("progress fixture is missing the native attempt owner")
-	}
-	now = now.UTC().Truncate(time.Microsecond)
-	identity := tracker.NativeAttemptWorker{PID: 101, PGID: 101, StartedAt: now, StartKey: "progress-fixture-worker"}
-	launch := &tracker.NativeWorkerLaunch{
-		PID: int(identity.PID), GroupID: int(identity.PGID), ProcessStart: now, SelectedAt: now,
-		ExecutionVersion: "test", ControlVersion: "test", Protocol: runner.SSHProtocolVersion,
-		ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), PolicyID: evidence.PolicyID,
-	}
-	primary, err := owner.RegisterAttemptWorker(t.Context(), identity, tracker.NativeRuntimeObservation{WorkerLaunch: launch, Phase: "implementation", HeartbeatAt: now})
-	if err != nil || !primary {
-		t.Fatalf("register progress attempt worker: primary=%t error=%v", primary, err)
-	}
-	t.Cleanup(func() { owner.AttemptWorkerExited(identity) })
-	request.AttemptWorkspace = owner.AttemptWorkspace()
-
-	controlConn, workerConn := net.Pipe()
-	control := runner.NewSSHPeer(t.Context(), controlConn, controlConn, runner.NewSSHCallbackHandler(request, nil, nil, nil))
-	peer := runner.NewSSHPeer(t.Context(), workerConn, workerConn, nil)
-	defer func() {
-		if err := errors.Join(controlConn.Close(), workerConn.Close()); err != nil {
-			t.Error(err)
-		}
-		<-control.Context().Done()
-		<-peer.Context().Done()
-	}()
-
-	wire := runner.NewSSHRunRequest(request)
-	ctx := runner.WithWorkerProgressCheck(t.Context(), func(ctx context.Context, request progresscheck.Request) (progresscheck.Decision, error) {
-		return worker.CheckProgress(ctx, wire.Bind(ctx, peer), request)
-	})
-	return worker.CheckProgress(ctx, request, evidence)
 }
 
 func TestNativeProgressExecutionPublication(t *testing.T) {
@@ -363,13 +240,23 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			if len(request.Attempts) != min(test.attempts-test.staleRunning, progresscheck.MaxAttempts) {
 				t.Fatalf("evidence omitted terminal attempts: got %d", len(request.Attempts))
 			}
-			worker, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: progressPublicationWorkspace{path: t.TempDir()}, AgentBackend: progressPublicationAgent{attempt: citation, recordID: recordID, retrieve: retrieve}})
-			if err != nil {
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "code-model"}); err != nil {
 				t.Fatal(err)
 			}
-			decision, err := checkProgressWithAttemptWorker(t, worker, runner.RunRequest{Issue: claim.Issue, Mode: runner.RunModeImplement, Execution: execution}, request, f.service.config.Clock())
-			if err != nil {
+			if err := execution.(runner.UsageExecution).RecordUsage(t.Context(), tracker.NativeUsage{Provider: "codex", Model: "code-model", Input: 10, Output: 1, Currency: "USD"}); err != nil && !(overlap && errors.Is(err, context.DeadlineExceeded)) {
 				t.Fatal(err)
+			}
+			decision := progresscheck.Decision{
+				Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the failed source.",
+				Diagnosis:   citation + ": the validation evidence records a failed assertion.",
+				Instruction: "Repair the source and run the failing check.", Evidence: []string{citation},
+			}
+			if retrieve {
+				ref := progresscheck.EvidenceReference{ID: citation}
+				if test.name == "retrieved command receipt" {
+					ref.AttemptID = recordID
+				}
+				decision.RetrievedEvidence = []progresscheck.EvidenceReference{ref}
 			}
 			flusher := execution.(interface{ FlushRuntime(context.Context) error })
 			flushErr := flusher.FlushRuntime(t.Context())
@@ -390,13 +277,6 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 					if comment.ID == citation {
 						t.Fatal("retrieved comment was already in request")
 					}
-				}
-				expected := progresscheck.EvidenceReference{ID: citation}
-				if test.name == "retrieved command receipt" {
-					expected.AttemptID = recordID
-				}
-				if !reflect.DeepEqual(decision.RetrievedEvidence, []progresscheck.EvidenceReference{expected}) {
-					t.Fatalf("retrieved citation missing: %+v", decision)
 				}
 			}
 			if overlap && (deferred == nil || len(usage) != 1 || usage[0].Input != 10 || usage[0].Output != 1) {

@@ -2,11 +2,9 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"strings"
 
-	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -44,22 +42,7 @@ func nativeSourceRework(change *NativeChange, message string) string {
 	if change.NoChange != nil {
 		version = change.NoChange.VersionID()
 	}
-	var findings []string
-	for _, result := range []*gate.ValidatorResult{change.ImplementationReview, change.Validator} {
-		if result != nil && result.Verdict == gate.ValidatorVerdictRework && result.VersionID == version && result.HeadSHA == change.HeadSHA {
-			body, err := json.Marshal(result)
-			if err == nil {
-				findings = append(findings, string(body))
-			}
-		}
-	}
-	if audit := change.SecurityAudit; audit != nil && audit.Verdict == "rework" && audit.VersionID == version && audit.Run.HeadSHA == change.HeadSHA {
-		body, err := json.Marshal(audit)
-		if err == nil {
-			findings = append(findings, string(body))
-		}
-	}
-	return strings.Join(findings, "\n\n")
+	return phaserecovery.ReworkFindings(version, change.HeadSHA, change.SecurityAudit, change.ImplementationReview, change.Validator)
 }
 
 type sourceGateRepair struct {
@@ -70,46 +53,14 @@ type sourceGateRepair struct {
 func (e *sourceGateRepair) Error() string { return e.err.Error() }
 func (e *sourceGateRepair) Unwrap() error { return e.err }
 
-type PhaseReceiptExecution interface {
-	PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error)
-	VerifyPhaseAuthority(context.Context) error
-	RecordPhaseReceipt(context.Context, string, string, string, string, string) error
-}
-
-type itemPhaseWorkspace interface {
-	PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
-	ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
-	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error
-}
+type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
+type itemPhaseWorkspace = runworkspace.PhasePublisher
 
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
 	if !req.phaseReceipts {
 		return nil
 	}
-	publisher, ok := backend.(itemPhaseWorkspace)
-	if !ok {
-		return failedStep("publication", errors.New("workspace cannot publish an item phase"))
-	}
-	if carry := req.phaseContinuation; carry != nil {
-		for _, receipt := range carry.Receipts {
-			if receipt.Phase != phase {
-				continue
-			}
-			head, tree, err := publisher.ItemPhaseHead(ctx, info, issue)
-			if err != nil {
-				return failedStep("publication", err)
-			}
-			if receipt.HeadSHA == head && receipt.TreeSHA == tree {
-				return nil
-			}
-		}
-	}
-	execution := req.Execution.(PhaseReceiptExecution)
-	branch, head, tree, err := publisher.PushItemPhase(ctx, info, issue, execution.VerifyPhaseAuthority)
-	if err != nil {
-		return failedStep("publication", err)
-	}
-	return failedStep("publication", execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input))
+	return failedStep("publication", runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input))
 }
 
 func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {

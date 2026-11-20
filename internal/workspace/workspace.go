@@ -31,6 +31,8 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
 )
 
 const (
@@ -252,6 +254,7 @@ type Issue struct {
 	RetainedCheckpoint      *CheckpointRef
 	RequireCheckpoint       bool
 	RetainedLanding         bool
+	finalizationBranch      string
 	PhaseSource             *tracker.NativePhaseReceipt
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
@@ -802,12 +805,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 	info.Created = created
 	if receipt := issue.PhaseSource; receipt != nil {
-		head, tree, err := l.ItemPhaseHead(ctx, info, issue)
-		if err != nil {
+		if err := phasegit.VerifyCheckout(ctx, info.Path, *receipt); err != nil {
 			return Info{}, err
-		}
-		if head != receipt.HeadSHA || tree != receipt.TreeSHA {
-			return Info{}, errors.New("replacement worktree differs from the recorded phase source")
 		}
 	}
 	if created {
@@ -1190,6 +1189,9 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 }
 
 func (l *LocalGit) publicationBranch(issue Issue, key string) string {
+	if issue.finalizationBranch != "" {
+		return issue.finalizationBranch
+	}
 	scope, _ := splitCheckoutIssueKey(key)
 	if scope == "" || !l.autoBranch || (issue.Landing != nil && !issue.RetainedLanding) || issue.WorkspaceSession || issue.ReviewVersionID != "" {
 		return ""
@@ -1523,7 +1525,7 @@ func (l *LocalGit) newBranchBaseRef(ctx context.Context) (string, error) {
 }
 
 func (l *LocalGit) gitRemotes(ctx context.Context) (string, error) {
-	return runGitAtWithEnvCapture(ctx, l.sourceRoot, nil, true, "remote")
+	return gitexec.WithEnvCapture(ctx, l.sourceRoot, nil, true, "remote")
 }
 
 func stringListContains(list string, want string) bool {
@@ -2573,7 +2575,7 @@ func gitCommonDirWithinRoot(ctx context.Context, dir string) (string, error) {
 }
 
 func gitCommonDirWithEnv(ctx context.Context, dir string, env []string) (string, error) {
-	output, err := runGitAtWithEnvCapture(ctx, dir, env, true, "rev-parse", "--git-common-dir")
+	output, err := gitexec.WithEnvCapture(ctx, dir, env, true, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}

@@ -38,7 +38,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -86,7 +85,7 @@ func TestLocalWorkerProcess(t *testing.T) {
 			}
 			defer close(finished)
 			var boot sshBootstrap
-			if (method != "run" && method != "run.progress") || len(args) != 1 {
+			if method != "run" || len(args) != 1 {
 				return nil, errors.New("invalid worker bootstrap")
 			}
 			if err := json.Unmarshal(args[0], &boot); err != nil {
@@ -103,12 +102,6 @@ func TestLocalWorkerProcess(t *testing.T) {
 			var release string
 			if err := peer.Call(ctx, "progress", &release); err != nil {
 				return nil, err
-			}
-			if method == "run.progress" {
-				if boot.Progress == nil || request.AttemptWorkspace.Key() == "" {
-					return nil, errors.New("progress request lacks attempt scope or evidence")
-				}
-				return progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "fixture progress"}, nil
 			}
 			if completion, ok := request.Execution.(runnerpkg.CompletionExecution); ok {
 				if err := completion.PrepareFinish(ctx, "succeeded", "Worker finished", nil); err != nil {
@@ -945,11 +938,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			if workers := inventory(); len(workers) != 1 {
 				return errors.New("preparation ran before the attempt worker was recorded")
 			}
-			decision, err := run.CheckProgress(prepareCtx, *request, progresscheck.Request{IssueID: issue.ID})
-			if err != nil || decision.Reason != "fixture progress" {
-				return fmt.Errorf("progress decision: %+v: %w", decision, err)
-			}
-			request.PriorAttempt.Source = "progress receipt"
+			request.PriorAttempt.Source = "prepared request"
 			return nil
 		}
 		supervisor, err := runnerpkg.NewSupervisor(run, runnerpkg.SupervisorConfig{})
@@ -963,14 +952,10 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			}
 			return
 		}
-		if !prepared || completion.Err != nil || completion.Request.PriorAttempt.Source != "progress receipt" ||
-			completion.Result.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 2 ||
-			len(events) != 2 {
+		if !prepared || completion.Err != nil || completion.Request.PriorAttempt.Source != "prepared request" ||
+			completion.Result.FinalState != runnerpkg.FinalStateCompleted || len(sent) != 1 ||
+			len(events) != 1 {
 			t.Fatalf("acknowledged preparation: prepared=%t error=%v final state=%q effects=%d launch writes=%d", prepared, completion.Err, completion.Result.FinalState, len(sent), len(events))
-		}
-		first, second := events[0], events[1]
-		if first.Data.FencingToken != second.Data.FencingToken || second.Type != "run.observed" {
-			t.Fatalf("same-fence progress changed ownership: first=%+v second=%+v", first, second)
 		}
 		return
 	}

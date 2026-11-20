@@ -226,8 +226,13 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	confirmIssueContract(t, h.admin, issue.ID)
 	source := nativeChangeSourceRepo(t)
+	remote := source
+	if failure == "cleanup" {
+		remote = filepath.Join(t.TempDir(), "remote.git")
+		nativeChangeGit(t, source, "clone", "--bare", "--", source, remote)
+	}
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
-	nativeChangeGit(t, source, "config", "url."+source+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 	hooks := workspace.Hooks{}
 	if failure == "workspace" {
 		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
@@ -370,16 +375,12 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if err != nil {
 		t.Fatal(err)
 	}
-	var checkingProgress atomic.Bool
 	finished := make(chan nativePlanFinish, 4)
-	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1), checkingProgress: &checkingProgress}
+	transport := &nativePlanTransport{next: h.failChanges, native: h.native, finished: finished, terminated: make(chan tracker.NativeRunData, 1), blocked: make(chan struct{}, 1)}
 	transport.failWorkflow.Store(abandon)
 	fixtureClient(h.native.Transport()).requests.Store(transport)
 	if failure == "recovery" && !manualCheckpoint && !cleanCheckpoint {
 		fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-			if checkingProgress.Load() {
-				return transport.RoundTrip(request)
-			}
 			if planningRecovery && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
 				claim, claimed := h.scheduler.ExecutionClaim(issue.ID)
@@ -408,7 +409,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		orchCfg.PollInterval = time.Hour
 	}
 	observed := make(chan nativePlanRunObservation, 8)
-	var runBackend runner.Backend = &nativePlanObservedRunner{Runner: agent, observed: observed, checkingProgress: &checkingProgress}
+	var runBackend runner.Backend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	if failure == "recovery" {
 		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
 	}
@@ -417,11 +418,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	dependencies := orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	released := make(chan error, 1)
-	progressScheduler := &nativePlanProgressScheduler{Scheduler: h.scheduler, checkingProgress: &checkingProgress}
+	releaseScheduler := &nativePlanReleaseScheduler{Scheduler: h.scheduler}
 	if failure == "workspace" {
-		progressScheduler.released = released
+		releaseScheduler.released = released
 	}
-	dependencies.Scheduling = progressScheduler
+	dependencies.Scheduling = releaseScheduler
 	orch, err := orchestrator.New(orchCfg, dependencies)
 	if err != nil {
 		t.Fatal(err)
@@ -600,8 +601,8 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if planningRecovery && !cleanCheckpoint {
 			wantCalls = 2
 		}
-		if current.Issue.State != "Human Review" || provider.calls.Load() != wantCalls || len(changes) != 1 || changes[0].CurrentVersion == "" {
-			t.Fatalf("historical judgment prevented delivery or lost source: state=%s attempts=%d calls=%d changes=%d error=%v", current.Issue.State, len(current.Attempts), provider.calls.Load(), len(changes), err)
+		if current.Issue.State != "Human Review" || provider.calls.Load() != wantCalls || provider.verdictCalls.Load() != 1 || len(changes) != 1 || changes[0].CurrentVersion == "" {
+			t.Fatalf("historical judgment prevented delivery or lost source: state=%s attempts=%d work_turns=%d verdict_turns=%d changes=%d error=%v", current.Issue.State, len(current.Attempts), provider.calls.Load(), provider.verdictCalls.Load(), len(changes), err)
 		}
 		if cleanCheckpoint {
 			if len(preservedChanges) != 1 {
@@ -635,7 +636,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err != nil || current.Issue.State != "Todo" || (len(current.Attempts) != len(preservedRecovery.Attempts)+1 || !reflect.DeepEqual(current.Attempts[:len(current.Attempts)-1], preservedRecovery.Attempts)) || !reflect.DeepEqual(current.Change, preservedRecovery.Change) || !reflect.DeepEqual(current.ChangeDetail, preservedRecovery.ChangeDetail) || provider.calls.Load() != 0 || !reflect.DeepEqual(changes, preservedChanges) {
 			t.Errorf("planning refusal changed preserved evidence: state=%s receipt_unchanged=%v change_unchanged=%v calls=%d changes=%d error=%v", current.Issue.State, reflect.DeepEqual(current.Attempts, preservedRecovery.Attempts), reflect.DeepEqual(current.Change, preservedRecovery.Change), provider.calls.Load(), len(changes), err)
 		}
-		assertSetupRefusalReceipt(t, current.Attempts, provider.progressCalls.Load() > 0)
+		assertSetupRefusalReceipt(t, current.Attempts)
 		if (resumeCase == "identity" || resumeCase == "policy") && provider.resumeVerified.Load() != 1 {
 			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
 		}
@@ -649,8 +650,12 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 
 	if failure == "provider" || failure == "refused" {
-		if len(changes) != 0 || provider.calls.Load() != 1 {
-			t.Fatalf("failed native run created a Change or repeated coding: changes=%v calls=%d", changes, provider.calls.Load())
+		wantVerdicts := int64(0)
+		if failure == "provider" {
+			wantVerdicts = 1
+		}
+		if len(changes) != 0 || provider.calls.Load() != 1 || provider.verdictCalls.Load() != wantVerdicts {
+			t.Fatalf("failed native run created a Change or repeated coding: changes=%v work_turns=%d verdict_turns=%d", changes, provider.calls.Load(), provider.verdictCalls.Load())
 		}
 		if failure != "refused" {
 			if _, err := os.Stat(filepath.Join(provider.workspace, "CHANGE.md")); err != nil {
@@ -715,7 +720,24 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		return
 	}
 	if len(changes) != 1 || changes[0].CurrentVersion == "" {
-		t.Fatalf("implementation did not publish Change Request: %+v", changes)
+		recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(recovery.Attempts) == 0 {
+			t.Fatalf("implementation did not publish a Change or attempt receipt: changes=%+v error=%v", changes, err)
+		}
+		last := recovery.Attempts[len(recovery.Attempts)-1]
+		t.Fatalf("implementation did not publish Change Request: changes=%+v outcome=%s checkpoint=%+v finalization=%+v terminal=%+v", changes, last.Status, last.Checkpoint, last.Finalization, last.TerminalFailure)
+	}
+	if failure == "cleanup" {
+		receipts, err := h.admin.ItemPhaseReceipts(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(receipts) == 0 || provider.calls.Load() != 1 {
+			t.Fatalf("finished work was not pushed under the original run: work_turns=%d receipts=%v error=%v", provider.calls.Load(), receipts, err)
+		}
+		receipt := receipts[0]
+		if strings.Contains(receipt.Branch, "-finalization-") {
+			t.Fatalf("finished work was pushed to a finalization branch: %s", receipt.Branch)
+		}
+		nativeChangeGit(t, remote, "merge-base", "--is-ancestor", receipt.HeadSHA, "refs/heads/"+receipt.Branch)
+		nativeChangeGit(t, remote, "cat-file", "-e", receipt.HeadSHA+":CHANGE.md")
 	}
 	comments, err := h.connector.FetchIssueComments(t.Context(), issue)
 	if err != nil {
@@ -749,7 +771,7 @@ func hubserverPlanStates() []tracker.NativeState {
 type nativePlanningAgent struct {
 	failure        string
 	calls          atomic.Int64
-	progressCalls  atomic.Int64
+	verdictCalls   atomic.Int64
 	workspace      string
 	resumeVerified atomic.Int64
 }
@@ -770,27 +792,13 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 		}
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"outcome":%q,"reason":"fake failure decision"}`, outcome)})
 	}
-	if req.TextOnly && strings.Contains(req.Prompt, progresscheck.Instructions) {
-		a.progressCalls.Add(1)
-		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
-			return runner.AgentTurnResult{}, err
+
+	if strings.HasPrefix(req.Prompt, "Judge the completed Detent round") {
+		if !req.TextOnly || !req.ReadOnly || req.Resume != (runner.AgentResume{}) || req.Workspace == a.workspace {
+			return runner.AgentTurnResult{}, errors.New("round verdict was not isolated from the work turn")
 		}
-		_, encoded, found := strings.Cut(req.Prompt, "\n\nEvidence:\n")
-		if !found {
-			return runner.AgentTurnResult{}, errors.New("progress evidence is missing")
-		}
-		var evidence progresscheck.Request
-		if err := json.Unmarshal([]byte(encoded), &evidence); err != nil {
-			return runner.AgentTurnResult{}, err
-		}
-		if len(evidence.Attempts) == 0 {
-			return runner.AgentTurnResult{}, errors.New("progress attempt is missing")
-		}
-		decision, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Continue the selected recovery step", Evidence: []string{evidence.Attempts[len(evidence.Attempts)-1].ID}})
-		if err != nil {
-			return runner.AgentTurnResult{}, err
-		}
-		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ItemID: "decision", Delta: string(decision)})
+		a.verdictCalls.Add(1)
+		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"implement","reason":"The host recorded the current source and outcome."}`})
 	}
 
 	a.calls.Add(1)
@@ -809,7 +817,7 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 			return runner.AgentTurnResult{}, err
 		}
 	}
-	result, err := (&committingAgent{staged: !plan}).RunTurn(ctx, req, update)
+	result, err := (&committingAgent{staged: !plan, complete: a.failure == "cleanup"}).RunTurn(ctx, req, update)
 	if a.failure == "provider" {
 		return result, errors.Join(err, &codex.ResponseError{Request: "turn/start", Code: -32602, Message: "input_too_large", Body: `{"error":{"code":-32602,"message":"private-prompt","data":{"code":"input_too_large","max_chars":1048576,"actual_chars":2927066,"prompt":"private-prompt","token":"private-secret","path":"/private/source","other":"private-rpc-data"}}}`})
 	}
@@ -829,13 +837,12 @@ type nativePlanRunObservation struct {
 	err          error
 }
 
-type nativePlanProgressScheduler struct {
+type nativePlanReleaseScheduler struct {
 	*Scheduler
-	checkingProgress *atomic.Bool
-	released         chan<- error
+	released chan<- error
 }
 
-func (s *nativePlanProgressScheduler) ReleaseClaim(ctx context.Context, id, reason string) error {
+func (s *nativePlanReleaseScheduler) ReleaseClaim(ctx context.Context, id, reason string) error {
 	err := s.Scheduler.ReleaseClaim(ctx, id, reason)
 	if s.released != nil {
 		select {
@@ -848,14 +855,7 @@ func (s *nativePlanProgressScheduler) ReleaseClaim(ctx context.Context, id, reas
 
 type nativePlanObservedRunner struct {
 	*runner.Runner
-	observed         chan<- nativePlanRunObservation
-	checkingProgress *atomic.Bool
-}
-
-func (r *nativePlanObservedRunner) CheckProgress(ctx context.Context, request runner.RunRequest, evidence progresscheck.Request) (progresscheck.Decision, error) {
-	r.checkingProgress.Store(true)
-	defer r.checkingProgress.Store(false)
-	return r.Runner.CheckProgress(ctx, request, evidence)
+	observed chan<- nativePlanRunObservation
 }
 
 func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
@@ -875,13 +875,12 @@ func (r *nativePlanObservedRunner) Run(ctx context.Context, request runner.RunRe
 }
 
 type nativePlanTransport struct {
-	next             http.RoundTripper
-	native           *NativeClient
-	checkingProgress *atomic.Bool
-	finished         chan<- nativePlanFinish
-	terminated       chan tracker.NativeRunData
-	blocked          chan struct{}
-	failWorkflow     atomic.Bool
+	next         http.RoundTripper
+	native       *NativeClient
+	finished     chan<- nativePlanFinish
+	terminated   chan tracker.NativeRunData
+	blocked      chan struct{}
+	failWorkflow atomic.Bool
 }
 
 func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -905,9 +904,6 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := json.NewDecoder(body).Decode(&event); err != nil {
 		return response, err
 	}
-	if t.checkingProgress != nil && t.checkingProgress.Load() {
-		return response, nil
-	}
 	if event.Type != "run.finished" {
 		return response, nil
 	}
@@ -924,17 +920,13 @@ func (t *nativePlanTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return response, nil
 }
 
-func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt, progressPaid bool) {
+func assertSetupRefusalReceipt(t *testing.T, attempts []tracker.NativeAttempt) {
 	t.Helper()
 	if len(attempts) == 0 {
 		t.Fatal("setup refusal receipt absent")
 	}
 	a := attempts[len(attempts)-1]
-	stage := "pre_provider"
-	if progressPaid {
-		stage = "workspace_preparation"
-	}
-	if (a.Identity != nil) != progressPaid || progressPaid && (len(a.Usage) != 1 || a.Usage[0].Input != 10 || a.Usage[0].Output != 1) || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != stage || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
+	if a.Identity != nil || len(a.Usage) != 0 || a.Status != "interrupted" || a.Checkpoint != nil || a.TerminalFailure == nil || a.TerminalFailure.Stage != "pre_provider" || a.TerminalFailure.Attribution != "instance" || a.TerminalFailure.ErrorClass != "source_recovery" || !strings.Contains(a.TerminalFailure.Error, "native checkpoint requires recovery:") {
 		t.Fatalf("setup refusal replaced source or lost diagnostic: %+v failure=%+v", a, a.TerminalFailure)
 	}
 }
