@@ -1419,7 +1419,7 @@ func (r *Runner) runAgentTurn(
 	if len(interventions) != 0 {
 		retry := r.roundRetry(ctx, runRequest, "implement", nil, &progresscheck.RoundDeadlines{}, roundRetryDelay(agentConfig.MaxRetryBackoffMS))
 		retryPublication := func(err error) error {
-			if errors.Is(err, progresscheck.ErrRoundVerdictRejected) {
+			if errors.Is(err, progresscheck.ErrRoundVerdictRejected) || errors.Is(err, progresscheck.ErrChecklistSuperseded) {
 				return err
 			}
 			return retry(err)

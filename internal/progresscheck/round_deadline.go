@@ -110,7 +110,7 @@ func RunRound(ctx context.Context, retry func(error) error, verify func(context.
 		if err == nil {
 			return assessment, nil
 		}
-		if retry == nil {
+		if retry == nil || errors.Is(err, ErrChecklistSuperseded) {
 			return RoundAssessment{}, err
 		}
 		if stop := retry(err); stop != nil {
