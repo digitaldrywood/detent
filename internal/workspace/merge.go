@@ -535,6 +535,15 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		if _, err := runGitAt(ctx, commandInfo.Path, "remote", "remove", "origin"); err != nil {
 			return result, fmt.Errorf("remove validation source remote: %w", err)
 		}
+		refs, err := runGitAt(ctx, info.Path, "for-each-ref", "--format=update %(refname) %(objectname)", "refs/remotes/")
+		if err != nil {
+			return result, fmt.Errorf("read validation base refs: %w", err)
+		}
+		if refs != "" {
+			if _, err := runGitAtWithInput(ctx, commandInfo.Path, nil, true, refs, "update-ref", "--stdin"); err != nil {
+				return result, fmt.Errorf("copy validation base refs: %w", err)
+			}
+		}
 		if _, err := runGitAt(ctx, commandInfo.Path, "checkout", "--detach", issue.PullRequestHeadSHA); err != nil {
 			return result, fmt.Errorf("checkout validation source: %w", err)
 		}
@@ -555,6 +564,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
 		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
+	}
+	if issue.IsolateReviewCommands {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GIT_ALLOW_PROTOCOL": ""}})
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	if !paged {

@@ -347,6 +347,25 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			})
 		}
 	}
+	t.Run("isolated gate resolves the configured base", func(t *testing.T) {
+		base := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^"))
+		runGit(t, info.Path, "update-ref", "refs/remotes/origin/develop", base)
+		request := issue
+		request.IsolateReviewCommands = true
+		receipt, err := backend.RunReviewCommand(t.Context(), info, request, "git merge-base origin/develop HEAD")
+		if err != nil || receipt.ExitCode != 0 || strings.TrimSpace(receipt.Output) != base {
+			t.Fatalf("isolated gate could not resolve origin/develop at %s: %+v %v", base, receipt, err)
+		}
+		receipt, err = backend.RunReviewCommand(t.Context(), info, request, "git remote")
+		if err != nil || receipt.ExitCode != 0 || strings.TrimSpace(receipt.Output) != "" {
+			t.Fatalf("scratch has a configured remote: %+v %v", receipt, err)
+		}
+		receipt, err = backend.RunReviewCommand(t.Context(), info, request, fmt.Sprintf("git push %q HEAD:refs/heads/isolated-validation-escape", info.Path))
+		if err != nil || receipt.ExitCode == 0 || strings.TrimSpace(runGit(t, info.Path, "for-each-ref", "refs/heads/isolated-validation-escape")) != "" {
+			t.Fatalf("scratch was able to push to retained source: %+v %v", receipt, err)
+		}
+	})
+
 	t.Run("isolated review command writes", func(t *testing.T) {
 		request := issue
 		request.IsolateReviewCommands = true
