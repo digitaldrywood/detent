@@ -457,15 +457,30 @@ func TestSSHDisconnectKeepsLatestSessionObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Unix(200, 0).UTC()
-	for _, update := range []UsageUpdate{
-		{DetentSessionID: 41, SessionID: "current", LastEventAt: at, Tokens: TokenTotals{TotalTokens: 73}, TurnCount: 2},
-		{DetentSessionID: 41, SessionID: "stale", LastEventAt: at.Add(-time.Second), Tokens: TokenTotals{TotalTokens: 12}, TurnCount: 1},
-	} {
+	request := RunRequest{Admission: &AdmissionRequest{}, OnUsageUpdate: func(update UsageUpdate) error {
+		if update.SessionID == update.ProviderThreadID {
+			t.Fatalf("usage failed to distinguish session and thread: %+v", update)
+		}
 		data, err := json.Marshal(update)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		if _, err := callbacks.Handle(t.Context(), "usage", []json.RawMessage{data}); err != nil {
+		_, err = callbacks.Handle(t.Context(), "usage", []json.RawMessage{data})
+		return err
+	}}
+	r := &Runner{}
+	for _, observation := range []struct {
+		thread string
+		at     time.Time
+		tokens int64
+	}{
+		{"current", at, 73},
+		{"stale", at.Add(-time.Second), 12},
+	} {
+		progress := &agentRunProgress{turnIDs: make(map[string]struct{}), turnOffset: 1}
+		progress.apply(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: observation.thread, TurnID: "turn-2"}, observation.at)
+		if err := r.publishRunUpdate(t.Context(), request, workspace.Info{}, workspace.Issue{}, progress,
+			RunResult{Tokens: TokenTotals{TotalTokens: observation.tokens}}, observation.at, observation.at, 41, false); err != nil {
 			t.Fatal(err)
 		}
 	}

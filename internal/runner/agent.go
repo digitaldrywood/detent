@@ -5567,6 +5567,7 @@ func NewTokenUsageNormalizer(resumed bool) func(AgentTokenUsage) AgentTokenUsage
 }
 
 type agentRunProgress struct {
+	providerThreadID          string
 	sessionID                 string
 	processIdentity           string
 	workerProcess             procgroup.Identity
@@ -5632,6 +5633,9 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		p.rssCeilingBytes = update.RSSCeilingBytes
 		p.rssObservedAt = eventAt.UTC()
 		return
+	}
+	if !update.AuxiliaryTurn && update.ThreadID != "" {
+		p.providerThreadID = update.ThreadID
 	}
 	if update.TurnID != "" && !update.AuxiliaryTurn {
 		p.turnIDs[update.TurnID] = struct{}{}
@@ -6448,6 +6452,7 @@ func (r *Runner) publishRunUpdate(
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
 		DetentSessionID:       detentSessionID,
+		ProviderThreadID:      progress.providerThreadID,
 		SessionID:             progress.sessionID,
 		ProcessIdentity:       progress.processIdentity,
 		WorkerProcess:         progress.workerProcess,
