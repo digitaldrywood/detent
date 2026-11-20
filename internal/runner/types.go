@@ -686,7 +686,8 @@ type RunRequest struct {
 	executionCancellation     func() error
 	attemptDiffSource         AttemptDiffSource
 	validationEvidenceSource  AttemptDiffSource
-	reviewSource              func(context.Context, *RunResult) (string, error)
+	reviewSource              func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error)
+	retainedReview            *retainedReviewWorkspace
 }
 
 type NativeReviewContinuation struct {
@@ -743,7 +744,15 @@ const (
 	RetryModeResume RetryMode = "resume"
 )
 
+type retainedReviewWorkspace struct {
+	backend    workspace.Backend
+	info       workspace.Info
+	issue      workspace.Issue
+	validation *gate.CommandResult
+}
+
 type ValidatorRequest struct {
+	retainedReview       *retainedReviewWorkspace
 	usageExecution       Execution
 	complete             func(context.Context, gate.ValidatorResult, *sessionmodel.Finalization) (gate.ValidatorResult, error)
 	source               ChangeSourceExecution

@@ -54,3 +54,11 @@ func nativeSourceRework(change *NativeChange, message string) string {
 	}
 	return strings.Join(findings, "\n\n")
 }
+
+type sourceGateRepair struct {
+	err    error
+	output string
+}
+
+func (e *sourceGateRepair) Error() string { return e.err.Error() }
+func (e *sourceGateRepair) Unwrap() error { return e.err }

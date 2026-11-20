@@ -244,6 +244,7 @@ type Issue struct {
 	CleanupInUse               bool
 	cleanupPublishedReviewHead string
 
+	IsolateReviewCommands   bool
 	ReviewVersionID         string
 	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource

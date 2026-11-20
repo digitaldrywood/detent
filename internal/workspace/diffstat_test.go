@@ -347,6 +347,19 @@ func TestLocalGitVerifyReviewTreeAfterSeeding(t *testing.T) {
 			})
 		}
 	}
+	t.Run("isolated review command writes", func(t *testing.T) {
+		request := issue
+		request.IsolateReviewCommands = true
+		if receipt, err := backend.RunReviewCommand(t.Context(), info, request, "echo generated > generated.txt"); err != nil || receipt.ExitCode != 0 {
+			t.Fatalf("generated output should stay in scratch: %+v %v", receipt, err)
+		}
+		if receipt, err := backend.RunReviewCommand(t.Context(), info, request, "echo changed > .gitignore"); err != nil || receipt.ExitCode == 0 {
+			t.Fatalf("tracked source mutation should fail the check: %+v %v", receipt, err)
+		}
+		if err := backend.VerifyReviewTree(t.Context(), info, request); err != nil {
+			t.Fatalf("review command contaminated retained source: %v", err)
+		}
+	})
 	for i, test := range []struct {
 		name   string
 		paths  []string

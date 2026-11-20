@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -525,6 +526,19 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 			resultErr = errors.Join(resultErr, process.Finished(cleanupCtx, result, cleanupErr))
 		}
 	}()
+	commandInfo := info
+	if issue.IsolateReviewCommands {
+		commandInfo.Path = filepath.Join(scratch, "source")
+		if _, err := runGitAt(ctx, info.Path, "clone", "--shared", "--no-checkout", "--", info.Path, commandInfo.Path); err != nil {
+			return result, fmt.Errorf("prepare validation source: %w", err)
+		}
+		if _, err := runGitAt(ctx, commandInfo.Path, "remote", "remove", "origin"); err != nil {
+			return result, fmt.Errorf("remove validation source remote: %w", err)
+		}
+		if _, err := runGitAt(ctx, commandInfo.Path, "checkout", "--detach", issue.PullRequestHeadSHA); err != nil {
+			return result, fmt.Errorf("checkout validation source: %w", err)
+		}
+	}
 	if owner != nil {
 		process, err = owner(ctx, info, issue, scratch)
 		if err != nil {
@@ -535,8 +549,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		return result, errors.New("native validation has no fenced session")
 	}
 	cmd := commandshell.Command(ctx, command, l.hooks.Shell)
-	cmd.Dir = info.Path
-	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
+	cmd.Dir = commandInfo.Path
+	cmd.Env = hookEnv(commandInfo, issue, l.hooks.StripGitHubTokens)
 	l.applyValidationGoBudget(ctx, cmd)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
@@ -544,7 +558,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	if !paged {
-		if session := l.startGoTestReceipts(ctx, cmd, info.Path, scratch); session != nil {
+		if session := l.startGoTestReceipts(ctx, cmd, commandInfo.Path, scratch); session != nil {
 			defer func() { l.finishGoTestReceipts(ctx, session, &result) }()
 		}
 	}
@@ -602,6 +616,18 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	result.Evidence.Checks = gate.CheckObservations(result.Output)
 	if ctx.Err() != nil {
 		return result, ctx.Err()
+	}
+	if issue.IsolateReviewCommands {
+		head, headErr := runGitAt(ctx, commandInfo.Path, "rev-parse", "HEAD")
+		status, statusErr := runGitAt(ctx, commandInfo.Path, "status", "--porcelain", "--untracked-files=no")
+		if inspectionErr := errors.Join(headErr, statusErr); inspectionErr != nil {
+			return result, fmt.Errorf("inspect validation source: %w", inspectionErr)
+		}
+		if strings.TrimSpace(head) != issue.PullRequestHeadSHA || status != "" {
+			result.ExitCode = 1
+			result.Output += "\nValidation command modified the reviewed source."
+			return result, nil
+		}
 	}
 	if err != nil {
 		var exited *exec.ExitError
