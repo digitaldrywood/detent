@@ -159,6 +159,24 @@ func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 	e.workerMu.Lock()
 	workers := append([]func(context.Context) error(nil), e.workers...)
 	e.workerMu.Unlock()
+	if len(workers) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, terminalWorkerCloseTimeout)
+	defer cancel()
+	recorded := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(recorded)
+		e.cancelMu.Lock()
+		e.supervisionLost = true
+		e.cancelMu.Unlock()
+		e.cancelExecution(errors.Join(runner.ErrWorkerProcessReap, context.Cause(ctx)))
+	})
+	defer func() {
+		if !stop() {
+			<-recorded
+		}
+	}()
 	var pending []func(context.Context) error
 	var failures []error
 	for _, closeWorker := range workers {
