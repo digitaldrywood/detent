@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +104,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if err != nil {
 		return execution, err
 	}
-	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
 	if err != nil {
 		return execution, err
 	}
@@ -154,7 +155,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		serviceapi.AddressEnvironment:          "",
 		serviceapi.TokenEnvironment:            "",
 		serviceapi.DispositionTokenEnvironment: "",
-	}, workspace.Info{Path: auditWorkspace}, workspaceIssue(r.projectID, req.Issue)))
+	}, workspace.Info{Path: auditWorkspace}, runworkspace.Issue(r.projectID, req.Issue)))
 	processRequest, cleanupPreflight, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{
 		Workspace:   auditWorkspace,
 		Environment: baseEnvironment,

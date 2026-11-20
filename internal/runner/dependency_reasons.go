@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,8 +130,8 @@ func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRe
 		ctx = workspace.WithAttemptWorkspace(ctx, attempt)
 		ctx = workspace.WithValidationProcessOwner(ctx, owner)
 		workflow, runtime, _, _ := r.runtimeSnapshot()
-		role := runtime.effectiveRunRole(runRole(req.Mode, req.Issue))
-		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+		role := runtime.effectiveRunRole(runworkspace.RunRole(req.Mode, req.Issue))
+		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 		if err != nil {
 			return "", err
 		}

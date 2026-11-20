@@ -298,12 +298,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
-		timing.step("review_plan_issues")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.reviewPlanIssues(ctx, state, fetched.status, now),
-		)
 		timing.step("promote_human_review")
 		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, mergeIssueSlices(fetched.status, fetched.candidates), now)
 		fetched = filterReconciledTickIssues(
@@ -698,16 +692,6 @@ func (o *Orchestrator) fetchTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
-	timing.step("hydrate_plan_comments")
-	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
-		if ctx.Err() != nil {
-			return tickFetchedIssues{}, false
-		}
-		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
-		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
-		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
-		return tickFetchedIssues{}, false
-	}
 	clearRefreshError(state)
 	return fetched, true
 }
@@ -764,16 +748,6 @@ func (o *Orchestrator) fetchCombinedTickIssues(
 	o.recordTrackerReadSuccess(state, telemetry.RefreshSourceStatuses, now)
 	fetched.status = cloneIssues(result.Statuses)
 	fetched.statusOK = true
-	timing.step("hydrate_plan_comments")
-	if err := o.hydratePlanIssueComments(ctx, &fetched); err != nil {
-		if ctx.Err() != nil {
-			return tickFetchedIssues{}, false
-		}
-		recordRefreshSourceFailure(state, telemetry.RefreshSourceStatuses, err, now)
-		o.observeTrackerReadFailure(state, telemetry.RefreshSourceStatuses, err, now)
-		markRefreshError(state, "fetch plan issue comments failed: "+err.Error(), now)
-		return tickFetchedIssues{}, false
-	}
 	clearRefreshError(state)
 	return fetched, true
 }
@@ -937,8 +911,8 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		}
 
 		if resolver := o.providerCapacity; resolver != nil {
-			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-				requirement, err := resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: o.dispatchMode(ctx, state, issue), SelectorContext: o.selectorContext(), ProviderReports: reports})
+			resolve := func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report, mode string) (providercapacity.Requirement, error) {
+				requirement, err := resolver.DispatchCapacity(ctx, runpkg.RunRequest{Issue: issue, Mode: mode, SelectorContext: o.selectorContext(), ProviderReports: reports})
 				predicate := "provider_requirement_resolved"
 				if err != nil {
 					predicate = "provider_requirement_refused"
@@ -949,6 +923,17 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				}
 				o.recordLocalAdmission(ctx, state, issue, time.Now(), err == nil, dispatchSkipBlocked, predicate, observed)
 				return requirement, err
+			}
+			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+				return resolve(ctx, issue, reports, o.dispatchMode(ctx, state, issue))
+			}
+			if request.Policy.Gates.PlanEnabled {
+				request.PlanProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
+					if o.dispatchMode(ctx, state, issue) == runpkg.RunModeMerge {
+						return resolve(ctx, issue, reports, runpkg.RunModeMerge)
+					}
+					return resolve(ctx, issue, reports, runpkg.RunModePlan)
+				}
 			}
 		}
 		return o.scheduling.FetchCandidateIssues(ctx, request)

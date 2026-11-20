@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"slices"
 	"strings"
 
@@ -16,8 +17,8 @@ type ProviderCapacityResolver interface {
 
 func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providercapacity.Requirement, error) {
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runRole(req.Mode, req.Issue)
-	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+	role := runworkspace.RunRole(req.Mode, req.Issue)
+	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return providercapacity.Requirement{}, err
 	}
@@ -97,7 +98,7 @@ func capacitySelectionBackend(req RunRequest, backend AgentBackend) AgentBackend
 		return backend
 	}
 	reservation := execution.ProviderCapacity()
-	if reservation == nil {
+	if reservation == nil || reservation.Role != runworkspace.RunRole(req.Mode, req.Issue) {
 		return backend
 	}
 	provider, ok := backend.(AgentModelCatalogProvider)

@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/runtimeevidence"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
@@ -34,6 +35,8 @@ import (
 )
 
 type nativeExecution struct {
+	phaseSource       *tracker.NativePhaseReceipt
+	phaseReservation  atomic.Pointer[providercapacity.Reservation]
 	completionOwner   atomic.Bool
 	preparedPublisher atomic.Bool
 	recovery          atomic.Pointer[tracker.NativeRecovery]
@@ -108,7 +111,6 @@ type nativeExecution struct {
 	recoveredSource *tracker.NativeChangeReference
 	mergeResolution bool
 	releaseDelivery *tracker.ReleaseDeliveryStatus
-	phaseSource     *tracker.NativePhaseReceipt
 
 	workerLaunchMu      sync.Mutex
 	worker              *tracker.NativeAttemptWorker
@@ -369,7 +371,20 @@ func (e *nativeExecution) validationError(ctx context.Context, err error) error 
 	return nil
 }
 
-func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) (startErr error) {
+func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
+	return e.start(ctx, identity, false)
+}
+
+func (e *nativeExecution) StartPhased(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
+	return e.start(ctx, identity, true)
+}
+
+func (e *nativeExecution) start(ctx context.Context, identity tracker.NativeExecutionIdentity, phased bool) (startErr error) {
+	if !phased {
+		if err := e.validateProviderStart(identity); err != nil {
+			return err
+		}
+	}
 	defer func() {
 		if startErr == nil {
 			e.mu.Lock()
@@ -383,24 +398,17 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	}()
 	e.mu.Lock()
 	if e.workerBootstrapping {
+		e.data.Identity = &identity
+		e.role = identity.Role
+		e.workerBootstrapping = false
+		if e.data.Runtime != nil && e.data.Runtime.WorkerLaunch != nil {
+			runtime, launch := *e.data.Runtime, *e.data.Runtime.WorkerLaunch
+			launch.Bootstrap = false
+			runtime.WorkerLaunch = &launch
+			e.data.Runtime = &runtime
+		}
 		e.mu.Unlock()
-		if err := e.validateProviderStart(identity); err != nil {
-			return err
-		}
-		e.mu.Lock()
-		if e.workerBootstrapping {
-			e.data.Identity = &identity
-			e.role = identity.Role
-			e.workerBootstrapping = false
-			if e.data.Runtime != nil && e.data.Runtime.WorkerLaunch != nil {
-				runtime, launch := *e.data.Runtime, *e.data.Runtime.WorkerLaunch
-				launch.Bootstrap = false
-				runtime.WorkerLaunch = &launch
-				e.data.Runtime = &runtime
-			}
-			e.mu.Unlock()
-			return nil
-		}
+		return nil
 	}
 	if e.data.Identity != nil && e.data.Sequence > 0 {
 		if e.reconnecting {
@@ -438,9 +446,6 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	if err := e.validateProviderStart(identity); err != nil {
-		return err
-	}
 	issue, err := e.claim.source.NativeClient().Issue(ctx, e.claim.lease.WorkItemID)
 	if err != nil {
 		return err
@@ -455,6 +460,14 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	}
 	e.data.Identity = &identity
 	e.role = identity.Role
+	if reservation := e.ProviderCapacity(); phased && reservation != nil && reservation.Role == runner.RolePlan {
+		observation := tracker.NativeRuntimeObservation{HeartbeatAt: e.scheduler.now().UTC()}
+		if e.data.Runtime != nil {
+			observation = *e.data.Runtime
+		}
+		observation.Phase = "planning"
+		e.data.Runtime = &observation
+	}
 	recovery := e.Recovery()
 	recovery.Issue.State = issue.State
 	e.recovery.Store(&recovery)

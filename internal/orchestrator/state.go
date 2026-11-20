@@ -138,7 +138,6 @@ type State struct {
 	laneEntries              map[string]time.Time
 	laneProvenance           map[string]provenance.Attribution
 	dispatchModes            map[string]string
-	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 	tickTransitions          *issueStateSnapshotTransitions
@@ -438,7 +437,6 @@ func newState(cfg Config) State {
 		CleanupFailures:          map[string]string{},
 		laneEntries:              map[string]time.Time{},
 		laneProvenance:           map[string]provenance.Attribution{},
-		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
 }
@@ -554,7 +552,6 @@ func (s State) clone() State {
 		laneEntries:              maps.Clone(s.laneEntries),
 		laneProvenance:           maps.Clone(s.laneProvenance),
 		dispatchModes:            maps.Clone(s.dispatchModes),
-		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
 	}
@@ -606,7 +603,6 @@ func (s State) clone() State {
 	}
 	maps.Copy(cloned.DiffStats, s.DiffStats)
 	maps.Copy(cloned.ReapedWorkspaces, s.ReapedWorkspaces)
-	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
 }

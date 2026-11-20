@@ -3,6 +3,7 @@ package nochange
 import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -17,7 +18,7 @@ type State struct {
 }
 
 func Prepare(diff tracker.AttemptDiffRequest, detail tracker.ChangeDetail, state State) *runner.NativeChange {
-	signal, _ := runner.NativeCompletionSignalFromMessage(state.Message)
+	signal, _ := phaserecovery.CompletionSignalFromMessage(state.Message)
 	reported, evidence, ok := workpad.NoChangeCompletion(signal)
 	if !ok || len(diff.Files) != 0 || diff.BaseSHA == "" || state.Worktree != "clean" || state.UncertainEffect {
 		return nil

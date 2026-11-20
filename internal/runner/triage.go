@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"strings"
 	"time"
@@ -33,8 +34,8 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	// Triage always starts fresh, but still uses the native provider reservation.
 	req.RetryMode = ""
 	req.ResumeState = store.AgentResumeState{}
-	role := runRole(RunModeImplement, req.Issue)
-	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), role)
+	role := runworkspace.RunRole(RunModeImplement, req.Issue)
+	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return result, err
 	}
@@ -58,7 +59,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 	environment := r.withGoBudget(ctx, path, workerEnvironment(map[string]string{
 		"GH_TOKEN": "", "GITHUB_TOKEN": "",
 		serviceapi.AddressEnvironment: "", serviceapi.TokenEnvironment: "", serviceapi.DispositionTokenEnvironment: "",
-	}, workspace.Info{Path: path}, workspaceIssue(r.projectID, req.Issue)))
+	}, workspace.Info{Path: path}, runworkspace.Issue(r.projectID, req.Issue)))
 	process, cleanup, err := prepareAgentProcessRequest(ctx, AgentProcessRequest{Workspace: path, Environment: environment}, workerGitHubPolicy{})
 	if err != nil {
 		return result, err

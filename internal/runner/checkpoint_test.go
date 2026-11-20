@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"os"
@@ -689,7 +690,7 @@ func TestAgentTurnDeliverableNativeTracker(t *testing.T) {
 				Tracker:     config.Tracker{Kind: tt.kind, Repository: "acme/orders"},
 				Deliverable: config.Deliverable{Kind: config.DeliverablePullRequest},
 			}
-			kind, repository := agentTurnDeliverable(cfg, connector.Issue{}, tt.mode)
+			kind, repository := runworkspace.AgentTurnDeliverable(cfg, connector.Issue{}, tt.mode)
 			if kind != tt.wantKind || repository != tt.wantRepository {
 				t.Fatalf("deliverable = %q %q, want %q %q", kind, repository, tt.wantKind, tt.wantRepository)
 			}

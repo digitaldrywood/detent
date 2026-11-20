@@ -24,3 +24,6 @@ func TestRunnerDisposition(t *testing.T) {
 		{Name: "blocked SSH Rework retains staged source", FinalMessage: scenariotest.InstanceMessage, WantDisposition: scenariotest.InstanceDisposition(), WantReworkCandidate: true, Rework: true, SSH: true, Staged: true},
 	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
 }
+func TestPlanAdmissionContention(t *testing.T) {
+	scenariotest.RunPlanAdmissionContention(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+}

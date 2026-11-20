@@ -48,7 +48,24 @@ func ValidateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reade
 		return err
 	}
 	reservation := stored.Reservation
-	if data.Identity == nil || reservation.Requirement != (providercapacity.Requirement{Role: data.Identity.Role, Backend: data.Identity.Backend, Model: data.Identity.Model}) {
+	if data.Identity == nil {
+		return ProviderWait("provider_incompatible", "Execution identity must match the reserved role, backend and model")
+	}
+	requirement := providercapacity.Requirement{Role: data.Identity.Role, Backend: data.Identity.Backend, Model: data.Identity.Model}
+	if reservation.Role == "plan" && data.Runtime != nil && data.Runtime.Phase == "planning" && (requirement.Role == "code" || requirement.Role == "rework") {
+		pinned, err := reader.LeasePolicy(ctx, data.LeaseID)
+		if err != nil {
+			return err
+		}
+		policies, err := reader.PolicyCompatibility(ctx, pinned.ProjectID, []string{pinned.PolicyID})
+		if err != nil {
+			return err
+		}
+		if policies[pinned.PolicyID].Gates.PlanEnabled {
+			requirement = reservation.Requirement
+		}
+	}
+	if reservation.Requirement != requirement {
 		return ProviderWait("provider_incompatible", "Execution identity must match the reserved role, backend and model")
 	}
 	reports, err := reader.RunnerProviderReports(ctx, runnerID)

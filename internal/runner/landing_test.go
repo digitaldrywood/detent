@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"net/http"
@@ -223,7 +224,7 @@ func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue := connector.Issue{ID: "native", Identifier: "native#170"}
-			code, err := backend.Create(t.Context(), workspaceIssue("project", issue))
+			code, err := backend.Create(t.Context(), runworkspace.Issue("project", issue))
 			if err != nil {
 				t.Fatal(err)
 			}

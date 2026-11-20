@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"strings"
 	"time"
 
@@ -66,6 +67,35 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	if errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
 		return handoff(event.Err)
+	}
+	report, reported := phaserecovery.CompletionSignalFromMessage(event.Result.FinalMessage)
+	if event.Err == nil && event.Result.Output == runpkg.RunOutputPlanApprovalWait {
+		if !reported || report.Invalid != nil || report.Status != workpad.StatusBlocked || report.HumanAction == "" {
+			o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), "plan approval requires a typed question")
+			return true
+		}
+		states, err := reader.WorkflowStates(ctx)
+		if err == nil {
+			_, ok := connector.CompletionLane(states, issue.State, blockedStatusState, true)
+			if !ok || dispatchableState(states, blockedStatusState) {
+				err = errors.New("workflow has no human action destination for plan approval")
+			} else if normalizeState(issue.State) != normalizeState(blockedStatusState) {
+				err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, "human_action", workflowLaneMetadata{ReasonDetail: event.Result.FinalMessage})
+			}
+		}
+		if err != nil {
+			return handoff(err)
+		}
+		running.Issue.State, running.Issue.WorkpadSignal = blockedStatusState, report
+		o.observeNativeCompletion(ctx, event, false)
+		if err := o.abandonClaim(ctx, issueID); err != nil {
+			return handoff(err)
+		}
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan approval requested")
+		delete(state.Claimed, issueID)
+		delete(state.Retry, issueID)
+		o.recordCompletionUsage(ctx, state, event, running.Issue)
+		return true
 	}
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	humanReview := cfg.humanReviewEnabled() || autoPromoteOptoutLabel(issue, cfg)
@@ -194,7 +224,6 @@ func (o *Orchestrator) completeNativeChangeRun(
 			retryMessage += "\n\n" + change.SecurityAudit.Run.Summary
 		}
 	}
-	report, reported := runpkg.NativeCompletionSignalFromMessage(event.Result.FinalMessage)
 	if reported && report != nil && report.Invalid == nil && strings.TrimSpace(report.HumanAction) != "" {
 		issue.WorkpadSignal = report
 	}

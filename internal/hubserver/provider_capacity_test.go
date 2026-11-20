@@ -1250,3 +1250,73 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 	decodeHubResponse(t, response, &updated)
 	return updated
 }
+
+func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
+	first := newNativeFixture(t, service, "", "planning")
+	second := newNativeFixture(t, service, first.project.OrganizationID+"_second", "planning")
+	pinned := hubTestPolicy()
+	pinned.Gates.PlanEnabled = true
+	pinned.Gates.PlanReview = "automated"
+	pinned = pinned.WithID()
+	plan := providercapacity.Requirement{Role: "plan", Backend: "planner", Model: "test-model"}
+	code := providercapacity.Requirement{Role: "code", Backend: "codex", Model: "test-model"}
+	type owner struct {
+		runner runnerFixture
+		lease  tracker.NativeLease
+	}
+	claim := func(f nativeFixture, requirement providercapacity.Requirement, session string) owner {
+		t.Helper()
+		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+		r.enroll(t)
+		r.reportCapacity(t)
+		report := capacityReport(now)
+		planner := report
+		planner.Backend, planner.AccountAlias, planner.SharedAccountAlias = "planner", "planning", "planning"
+		publishCapacity(t, f, r, report, planner)
+		issue := f.create(t, session)
+		request := providerClaim(r, issue, session)
+		request.PolicyID = pinned.ID
+		request.ProviderCandidates[0].Requirement = requirement
+		response := performHubAPIRequest(t, service, http.MethodPost, f.base+"/claims", r.redemption.Credential, request)
+		requireNativeStatus(t, response, http.StatusOK)
+		var lease tracker.NativeLease
+		decodeHubResponse(t, response, &lease)
+		if lease.ProviderReservation == nil || lease.ProviderReservation.Requirement != requirement {
+			t.Fatalf("wrong starting permit: %+v", lease.ProviderReservation)
+		}
+		event := nativeStartedEvent(lease)
+		event.Data.Identity = &tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
+		return owner{runner: r, lease: lease}
+	}
+	for _, f := range []nativeFixture{first, second} {
+		approveHubTestPolicy(t, service, f.base+"/policy", pinned)
+	}
+	local := claim(first, plan, "local-plan")
+	other := claim(second, code, "other-code")
+	swap := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, from, to providercapacity.Requirement) *httptest.ResponseRecorder {
+		t.Helper()
+		return performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", requester.redemption.Credential,
+			tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90,
+				ProviderPhase: &tracker.NativeProviderPhaseMutation{Expected: from, Requirement: to, Sequence: 1}})
+	}
+	if refused := swap(second, other.lease, local.runner, code, plan); refused.Code < 400 {
+		t.Fatal("runner from another tenant changed the permit")
+	}
+	response := swap(first, local.lease, local.runner, plan, code)
+	requireNativeStatus(t, response, http.StatusOK)
+	var renewed tracker.NativeLease
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != local.lease.ID || renewed.FencingToken != local.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
+		t.Fatalf("swap changed the fence or selected the wrong account: %+v", renewed)
+	}
+	response = swap(second, other.lease, other.runner, plan, code)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != other.lease.ID || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
+		t.Fatalf("another tenant's permit changed: %+v", renewed)
+	}
+}

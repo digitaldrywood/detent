@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"net"
@@ -294,7 +295,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			workspaceIssue := workspaceIssue("native", issue)
+			workspaceIssue := runworkspace.Issue("native", issue)
 			previousAttempt := "attempt_previous"
 			if test.gitRef && (test.changedHead || test.dirty) {
 				previousAttempt = "attempt_11111111111111111111111111111111"
@@ -681,7 +682,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if test.rework {
 				issue.State = "Rework"
 			}
-			info, err := gitWorkspace.Create(ctx, workspaceIssue("native", issue))
+			info, err := gitWorkspace.Create(ctx, runworkspace.Issue("native", issue))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -709,7 +710,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				runRunnerGit(t, source, "commit", "-m", "conflicting base")
 				runRunnerGit(t, source, "push", "origin", "main")
 			}
-			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			local, err := gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -723,7 +724,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				publishedHead = local.HeadSHA
 				runRunnerGit(t, info.Path, "push", "origin", info.Branch)
 				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "unpushed checkpoint")
-				local, err = gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+				local, err = gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -737,7 +738,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 						t.Fatal("inherited rebase did not pause")
 					}
 				}
-				pausedIssue := workspaceIssue("native", issue)
+				pausedIssue := runworkspace.Issue("native", issue)
 				pausedIssue.NativeRework = true
 				prepared, err := gitWorkspace.PrepareRework(ctx, info, pausedIssue, workspace.MergePrepareOptions{}, func(ctx context.Context) error { return ctx.Err() })
 				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
@@ -808,7 +809,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			beforeRun, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			beforeRun, err := gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -892,7 +893,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 						t.Fatalf("published branch changed: %v", got)
 					}
 				}
-				observed, readErr := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+				observed, readErr := gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 				if readErr != nil || observed.HeadSHA != wantHead || len(observed.TrackedPaths) != 0 || len(observed.UntrackedPaths) != 0 || execution.checkpoint == nil || execution.checkpoint.HeadSHA != wantHead {
 					t.Fatalf("fresh checkout retained stale source: %+v checkpoint=%+v error=%v", observed, execution.checkpoint, readErr)
 				}
@@ -954,7 +955,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 				}
 				checkpointState := local
 				if test.rework {
-					checkpointState, err = gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+					checkpointState, err = gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 					if err != nil || !backend.prepared || checkpointState.HeadSHA == local.HeadSHA || checkpointState.WorkspaceFingerprint == local.WorkspaceFingerprint || len(checkpointState.TrackedPaths) == 0 {
 						t.Fatalf("real preparation did not pause conflict: %+v, %v", checkpointState, err)
 					}
@@ -1028,7 +1029,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			if readErr != nil || string(got) != string(contents) || backend.afterRun {
 				t.Fatalf("continuation workspace changed: %q error=%v cleaned=%v", got, readErr, backend.afterRun)
 			}
-			observed, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue("native", issue))
+			observed, err := gitWorkspace.RecoveryState(ctx, info, runworkspace.Issue("native", issue))
 			if err != nil || observed.HeadSHA != local.HeadSHA || observed.WorkspaceFingerprint != local.WorkspaceFingerprint {
 				t.Fatalf("workspace authority changed: %+v error=%v", observed, err)
 			}

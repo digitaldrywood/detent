@@ -20,7 +20,6 @@ import (
 const defaultWorkflowMetricsProjectID = "default"
 
 const (
-	workflowActionPlanReviewRework        = "plan_review_rework"
 	workflowActionReworkBreakerAutoUnpark = "rework_breaker_auto_unpark"
 	blockedCauseStatusUnrecorded          = "unrecorded"
 )

@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,7 +156,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				t.Fatal(err)
 			}
 			issue := connector.Issue{ID: "native", Identifier: "example-project#1", State: "Merging"}
-			work := workspaceIssue("project", issue)
+			work := runworkspace.Issue("project", issue)
 			info, err := backend.Create(t.Context(), work)
 			if err != nil {
 				t.Fatal(err)

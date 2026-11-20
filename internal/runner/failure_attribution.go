@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"os/exec"
 	"strings"
@@ -112,8 +113,8 @@ func (r *Runner) attributeFailure(ctx context.Context, req RunRequest, err error
 	evidence := r.collectFailureEvidence(ctx, req, err).Public()
 	decision := tracker.FailureAttribution{Evidence: evidence, Outcome: "unknown", Reason: "failure decision backend unavailable"}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runRole(req.Mode, req.Issue)
-	selection, backend, config, selectErr := runtime.selectRequestBackend(req, selectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))
+	role := runworkspace.RunRole(req.Mode, req.Issue)
+	selection, backend, config, selectErr := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), runtime.effectiveRunRole(role))
 	target, known := req.workspaceTarget(ctx, r.projectID)
 	if selectErr == nil && known {
 		ctx = workspace.WithAttemptWorkspace(ctx, target.AttemptWorkspace)

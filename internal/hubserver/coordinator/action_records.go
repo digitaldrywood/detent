@@ -39,8 +39,9 @@ type AnswerComment struct {
 }
 
 type MoveAnswerAttempt struct {
-	checked   bool
-	attemptID string
+	checked          bool
+	attemptID        string
+	BlockerAttemptID string
 }
 
 func BindConnection(ctx context.Context, key string, attach func(context.Context) error) (context.Context, error) {
@@ -86,7 +87,7 @@ func (d ActionContextDeps) Context(ctx context.Context, record conversations.Con
 }
 
 func (s MoveAnswerDeps) Check(ctx context.Context, scope hubscope.NativeScope, issue tracker.NativeIssue, target, answer string) (MoveAnswerAttempt, error) {
-	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) || strings.TrimSpace(answer) != "" {
+	if !strings.EqualFold(issue.State, "Blocked") || strings.EqualFold(target, issue.State) {
 		return MoveAnswerAttempt{}, nil
 	}
 	var attemptID string
@@ -113,10 +114,14 @@ func (s MoveAnswerDeps) Check(ctx context.Context, scope hubscope.NativeScope, i
 		}
 		humanAction = attempt.Disposition != nil && attempt.Disposition.Status == "blocked" && attempt.Disposition.HumanAction
 	}
-	if humanAction {
+	if humanAction && strings.TrimSpace(answer) == "" {
 		return MoveAnswerAttempt{}, &operatortool.RequestError{Code: "invalid_request", Message: "Provide the human's answer to the recorded human_action question in reason_detail before moving this item out of Blocked"}
 	}
-	return MoveAnswerAttempt{checked: true, attemptID: attemptID}, nil
+	result := MoveAnswerAttempt{checked: true, attemptID: attemptID}
+	if humanAction {
+		result.BlockerAttemptID = attemptID
+	}
+	return result, nil
 }
 
 func (s ActionHTTPDeps) Post(c echo.Context) error {
