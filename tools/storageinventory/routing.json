@@ -5984,6 +5984,8 @@
           "session.HeartbeatMachine:SQL": 1,
           "session.LatestAttempt:generated:GetLatestIssueAttempt": 1,
           "session.LatestAttempt:query-receiver": 1,
+          "session.LatestRoundVerdictID:generated:LatestRoundVerdictID": 1,
+          "session.LatestRoundVerdictID:query-receiver": 1,
           "session.Lease:generated:GetLease": 1,
           "session.Lease:query-receiver": 1,
           "session.LeaseBySession:QueryRow": 1,
@@ -6009,8 +6011,8 @@
           "session.LockUnreleasedIssueLease:query-receiver": 1,
           "session.Machine:QueryRow": 1,
           "session.Machine:SQL": 1,
-          "session.RecordTerminalProgressVerdict:generated:RecordTerminalProgressVerdict": 1,
-          "session.RecordTerminalProgressVerdict:query-receiver": 1,
+          "session.RecordProgressVerdict:generated:RecordProgressVerdict": 1,
+          "session.RecordProgressVerdict:query-receiver": 1,
           "session.RegisterMachine:generated:RegisterLeaseMachine": 1,
           "session.RegisterMachine:query-receiver": 1,
           "session.RegisterOwnedMachine:generated:RegisterOwnedMachine": 1,
@@ -12314,6 +12316,21 @@
         ]
       }
     },
+    "internal/hubserver/postgres/migrations/20261120022652_native_phase_receipts.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1
+        },
+        "tables": [
+          "hub/issues",
+          "hub/native_attempts"
+        ]
+      }
+    },
     "internal/hubserver/postgres/monthly_costs.go": {
       "disposition": "target-adapter",
       "families": [
@@ -14159,6 +14176,7 @@
           "Queries.InsertAttemptReceipt:Exec": 1,
           "Queries.InsertLease:QueryRow": 1,
           "Queries.InsertLeaseAttempt:QueryRow": 1,
+          "Queries.LatestRoundVerdictID:QueryRow": 1,
           "Queries.LeaseMutationFacts:QueryRow": 1,
           "Queries.LeaseMutationReservation:Query": 1,
           "Queries.LeaseMutationRunner:QueryRow": 1,
@@ -14178,7 +14196,7 @@
           "Queries.PageIssueAttempts:Query": 1,
           "Queries.PageIssueAttemptsOldest:Query": 1,
           "Queries.PageIssueCheckpointAttempts:Query": 1,
-          "Queries.RecordTerminalProgressVerdict:Exec": 1,
+          "Queries.RecordProgressVerdict:Exec": 1,
           "Queries.RegisterLeaseMachine:Exec": 1,
           "Queries.RegisterOwnedMachine:Exec": 1,
           "Queries.SetAttemptFailure:Exec": 1,
@@ -14200,6 +14218,7 @@
           "insertAttemptReceipt:SQL": 1,
           "insertLease:SQL": 1,
           "insertLeaseAttempt:SQL": 1,
+          "latestRoundVerdictID:SQL": 1,
           "leaseMutationFacts:SQL": 1,
           "leaseMutationReservation:SQL": 1,
           "leaseMutationRunner:SQL": 1,
@@ -14219,7 +14238,7 @@
           "pageIssueAttempts:SQL": 1,
           "pageIssueAttemptsOldest:SQL": 1,
           "pageIssueCheckpointAttempts:SQL": 1,
-          "recordTerminalProgressVerdict:SQL": 1,
+          "recordProgressVerdict:SQL": 1,
           "registerLeaseMachine:SQL": 1,
           "registerOwnedMachine:SQL": 1,
           "setAttemptFailure:SQL": 1,
@@ -14405,6 +14424,25 @@
           "operatorReceiptCustody:SQL": 1,
           "reserveOperatorReceipt:SQL": 1,
           "retainOperatorReceiptReplay:SQL": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/pgquery/phase_receipts.sql.go": {
+      "disposition": "target-adapter",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "Queries.InsertNativePhaseReceipt:QueryRow": 1,
+          "Queries.NativePhaseContinuation:Query": 1,
+          "Queries.NativePhaseReceiptByKey:QueryRow": 1,
+          "Queries.RecentNativePhaseReceipts:Query": 1,
+          "insertNativePhaseReceipt:SQL": 1,
+          "nativePhaseContinuation:SQL": 1,
+          "nativePhaseReceiptByKey:SQL": 1,
+          "recentNativePhaseReceipts:SQL": 1
         },
         "tables": []
       }
@@ -15526,6 +15564,28 @@
           "hub/organizations",
           "hub/projects"
         ]
+      }
+    },
+    "internal/hubserver/postgres/phase_receipts.go": {
+      "atomic_groups": [
+        "postgres-callback"
+      ],
+      "disposition": "target-adapter",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "generated-package:github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery": 1,
+          "session.PhaseContinuation:generated:NativePhaseContinuation": 1,
+          "session.PhaseContinuation:query-receiver": 1,
+          "session.RecentPhaseReceipts:generated:RecentNativePhaseReceipts": 1,
+          "session.RecentPhaseReceipts:query-receiver": 1,
+          "session.RecordPhaseReceipt:generated:InsertNativePhaseReceipt": 1,
+          "session.RecordPhaseReceipt:generated:NativePhaseReceiptByKey": 1,
+          "session.RecordPhaseReceipt:query-receiver": 2
+        },
+        "tables": []
       }
     },
     "internal/hubserver/postgres/policy_records.go": {
@@ -16906,6 +16966,7 @@
           "query:InsertAttemptReceipt:exec": 1,
           "query:InsertLease:one": 1,
           "query:InsertLeaseAttempt:one": 1,
+          "query:LatestRoundVerdictID:one": 1,
           "query:LeaseMutationFacts:one": 1,
           "query:LeaseMutationReservation:many": 1,
           "query:LeaseMutationRunner:one": 1,
@@ -16925,7 +16986,7 @@
           "query:PageIssueAttempts:many": 1,
           "query:PageIssueAttemptsOldest:many": 1,
           "query:PageIssueCheckpointAttempts:many": 1,
-          "query:RecordTerminalProgressVerdict:execrows": 1,
+          "query:RecordProgressVerdict:execrows": 1,
           "query:RegisterLeaseMachine:exec": 1,
           "query:RegisterOwnedMachine:execrows": 1,
           "query:SetAttemptFailure:execrows": 1,
@@ -17091,6 +17152,22 @@
           "query:OperatorReceiptCustody:one": 1,
           "query:ReserveOperatorReceipt:execrows": 1,
           "query:RetainOperatorReceiptReplay:execrows": 1
+        },
+        "tables": []
+      }
+    },
+    "internal/hubserver/postgres/queries/phase_receipts.sql": {
+      "disposition": "target-schema",
+      "families": [
+        "lease"
+      ],
+      "inventory": {
+        "operations": {
+          "SQL": 1,
+          "query:InsertNativePhaseReceipt:one": 1,
+          "query:NativePhaseContinuation:many": 1,
+          "query:NativePhaseReceiptByKey:one": 1,
+          "query:RecentNativePhaseReceipts:many": 1
         },
         "tables": []
       }
@@ -22358,7 +22435,7 @@
       "family": "billing"
     },
     "public/hosted_release_preferences": {
-      "contract": "Preserve each hosted member’s latest observed release version and build time.",
+      "contract": "Preserve each hosted member\u2019s latest observed release version and build time.",
       "disposition": "target-only",
       "family": "delivery"
     },

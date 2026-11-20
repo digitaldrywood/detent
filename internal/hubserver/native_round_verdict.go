@@ -360,25 +360,21 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 	if !exactCommand || command.ReceiptID == "" {
 		return record, nil
 	}
-	var previous progresscheck.RoundVerdict
-	if facts.previous.CommandKey != "" {
-		previous, err = o.load(ctx, facts.previous)
-		if err != nil {
-			return record, err
-		}
+	previous, err := o.criterionHistory(ctx, facts.previous, input.PolicyID, record.CriteriaRevision, criteria)
+	if err != nil {
+		return record, err
 	}
-	comparable := previous.CriteriaRevision == record.CriteriaRevision && previous.PolicyID == input.PolicyID
 	for _, entry := range input.Criteria {
 		if entry.RestatesImplementation || !slices.Contains(criteria, entry.Criterion) || len(entry.ReceiptIDs) != 1 || entry.ReceiptIDs[0] != command.ReceiptID {
 			continue
 		}
-		previouslyVerified := comparable && slices.Contains(previous.VerifiedCriteria, entry.Criterion)
+		previouslyVerified := previous[entry.Criterion]
 		if command.ExitCode == 0 && entry.Kind == gate.EvidenceReceipt && entry.HeadSHA == input.HeadSHA &&
 			entry.TreeSHA == input.TreeSHA && strings.TrimSpace(entry.Behavior) != "" && strings.TrimSpace(entry.Reference) != "" {
 			if !slices.Contains(record.VerifiedCriteria, entry.Criterion) {
 				record.VerifiedCriteria = append(record.VerifiedCriteria, entry.Criterion)
 			}
-			record.Advanced = record.Advanced || comparable && slices.Contains(previous.FailedCriteria, entry.Criterion)
+			record.Advanced = record.Advanced || !previouslyVerified
 		}
 		if command.ExitCode != 0 && entry.Kind == gate.EvidenceNotVerified {
 			if !slices.Contains(record.FailedCriteria, entry.Criterion) {
@@ -388,6 +384,42 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		}
 	}
 	return record, nil
+}
+
+func (o nativeRoundOwner) criterionHistory(ctx context.Context, row eventstore.Receipt, policyID, criteriaRevision string, criteria []string) (map[string]bool, error) {
+	const maxRounds = 32
+	previous := make(map[string]bool, len(criteria))
+	for i := 0; i < maxRounds && row.CommandKey != ""; i++ {
+		record, err := o.load(ctx, row)
+		if err != nil {
+			return nil, err
+		}
+		if record.PolicyID != policyID || record.CriteriaRevision != criteriaRevision {
+			break
+		}
+		for _, criterion := range criteria {
+			if _, found := previous[criterion]; found {
+				continue
+			}
+			if slices.Contains(record.FailedCriteria, criterion) {
+				previous[criterion] = false
+			} else if slices.Contains(record.VerifiedCriteria, criterion) {
+				previous[criterion] = true
+			}
+		}
+		if len(previous) == len(criteria) || record.PreviousRoundID == "" || i+1 == maxRounds {
+			break
+		}
+		err = o.service.config.TenantRepository.ReadTenant(ctx, o.scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			var err error
+			row, err = o.receipt(ctx, r, record.PreviousRoundID)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return previous, nil
 }
 
 func (o nativeRoundOwner) completion(ctx context.Context, input progresscheck.Publication, facts nativeRoundFacts, issue tracker.NativeIssue, attempt tracker.NativeAttempt, content *eventstore.Content) (string, error) {

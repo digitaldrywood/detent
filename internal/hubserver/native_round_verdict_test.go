@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -40,24 +41,53 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 
 	previous := first.RoundID
 	for _, round := range []struct {
-		key       string
-		head      string
-		action    string
-		command   *int
-		forged    bool
-		advanced  bool
-		regressed bool
-		want      int
+		key          string
+		head         string
+		action       string
+		command      *int
+		verified     bool
+		staleSource  bool
+		editCriteria bool
+		gap          int
+		forged       bool
+		advanced     bool
+		regressed    bool
+		want         int
 	}{
 		{key: "forged criterion", head: strings.Repeat("b", 40), action: "continue", forged: true, want: http.StatusOK},
-		{key: "initial", head: strings.Repeat("a", 40), action: "continue", command: new(1), want: http.StatusOK},
+		{key: "first verified criterion", head: strings.Repeat("f", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
+		{key: "initial", head: strings.Repeat("a", 40), action: "continue", command: new(1), regressed: true, want: http.StatusOK},
 		{key: "different commit same refusal", head: strings.Repeat("b", 40), action: "continue", command: new(1), want: http.StatusOK},
 		{key: "unsupported completion", head: strings.Repeat("b", 40), action: "done", want: http.StatusUnprocessableEntity},
-		{key: "verified advancement", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, want: http.StatusOK},
+		{key: "verified advancement", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
+		{key: "diagnostic without criterion receipts", head: strings.Repeat("d", 40), action: "continue", want: http.StatusOK},
 		{key: "verified regression", head: strings.Repeat("e", 40), action: "continue", command: new(1), regressed: true, want: http.StatusOK},
+		{key: "repaired criterion", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
+		{key: "unchanged verified criterion", head: strings.Repeat("d", 40), action: "continue", command: new(0), verified: true, want: http.StatusOK},
+		{key: "old receipt on changed source", head: strings.Repeat("e", 40), action: "continue", staleSource: true, want: http.StatusOK},
+		{key: "bounded history", head: strings.Repeat("e", 40), action: "continue", command: new(1), gap: 32, want: http.StatusOK},
+		{key: "repair before criteria edit", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
+		{key: "changed acceptance criteria", head: strings.Repeat("e", 40), action: "continue", command: new(1), editCriteria: true, want: http.StatusOK},
+		{key: "verify revised criteria", head: strings.Repeat("d", 40), action: "continue", command: new(0), advanced: true, verified: true, want: http.StatusOK},
 		{key: "real question", head: strings.Repeat("e", 40), action: "human_action", want: http.StatusOK},
 		{key: "machine park", head: strings.Repeat("e", 40), action: "park", want: http.StatusUnprocessableEntity},
 	} {
+		for i := range round.gap {
+			diagnostic := first
+			diagnostic.RoundID = fmt.Sprintf("%s diagnostic %d", round.key, i)
+			diagnostic.IdempotencyKey = diagnostic.RoundID
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", worker.redemption.Credential, diagnostic)
+			requireNativeStatus(t, response, http.StatusOK)
+			previous = diagnostic.RoundID
+		}
+		if round.editCriteria {
+			current := readWorkItem(t, f, issue.WorkItemID, "")
+			body := strings.Replace(current.Body, criterion, criterion+"\n- Preserve the existing behavior.", 1)
+			if body == current.Body {
+				t.Fatal("acceptance criterion was not present in the issue body")
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path, testHubAdminToken, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "change criteria"}, ExpectedRevision: current.Revision, Body: &body}), http.StatusOK)
+		}
 		input.RoundID, input.IdempotencyKey = round.key, round.key
 		input.Phase, input.HeadSHA, input.TreeSHA = "project_gate", round.head, tree
 		input.Action, input.NextPhase, input.HumanAction = round.action, "implement", ""
@@ -65,6 +95,10 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 		input.Criteria = []gate.CriterionEvidence{{Criterion: criterion, Kind: gate.EvidenceNotVerified, Reference: "TestAcceptance failed"}}
 		if round.forged {
 			input.Criteria[0] = gate.CriterionEvidence{Criterion: criterion, Kind: gate.EvidenceReceipt, Reference: "TestAcceptance", Behavior: "The requested output matches", ReceiptIDs: []string{"fabricated"}, HeadSHA: round.head, TreeSHA: tree}
+		}
+		if round.staleSource {
+			validation := event.Data.Runtime.Validation
+			input.Criteria[0] = gate.CriterionEvidence{Criterion: criterion, Kind: gate.EvidenceReceipt, Reference: validation.Command, Behavior: "The requested output matches", ReceiptIDs: []string{validation.ReceiptID}, HeadSHA: validation.HeadSHA, TreeSHA: validation.TreeSHA}
 		}
 		if round.command != nil {
 			event.Type = "run.observed"
@@ -93,8 +127,8 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 			if receipt.RoundID != round.key || receipt.PreviousRoundID != previous || receipt.Advanced != round.advanced ||
 				receipt.Regressed != round.regressed || receipt.NextPhase != input.NextPhase ||
 				receipt.HumanAction != input.HumanAction || receipt.FencingToken != lease.FencingToken ||
-				(len(receipt.VerifiedCriteria) != 0) != round.advanced {
-				t.Fatalf("round %q returned %+v", round.key, receipt)
+				(len(receipt.VerifiedCriteria) != 0) != round.verified {
+				t.Errorf("round %q returned %+v", round.key, receipt)
 			}
 			previous = receipt.RoundID
 		}
@@ -138,8 +172,24 @@ func TestNativeRoundVerdictComparesEvidenceAndCannotOverrideRefusal(t *testing.T
 	requireNativeStatus(t, response, http.StatusOK)
 	var carried progresscheck.RoundVerdict
 	decodeHubResponse(t, response, &carried)
-	if carried.PreviousRoundID != previous {
+	if carried.PreviousRoundID != previous || len(carried.VerifiedCriteria) != 0 || carried.Advanced || carried.Regressed {
 		t.Fatalf("replacement verdict lost previous round: %+v", carried)
+	}
+
+	nextEvent.Type = "run.observed"
+	nextEvent.Data.Sequence++
+	nextEvent.IdempotencyKey = "replacement failed criterion"
+	nextEvent.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: clock.Now(), Validation: &gate.CommandResult{ReceiptID: "receipt_" + strings.Repeat("e", 32), Stage: gate.StageSourceFinalization, Command: "go test -run TestAcceptance ./example", HeadSHA: strings.Repeat("e", 40), TreeSHA: tree, ExitCode: 1, DurationNS: 1}}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", replacement.redemption.Credential, nextEvent), http.StatusOK)
+	replacementRound.RoundID, replacementRound.IdempotencyKey = "replacement regression", "replacement regression"
+	replacementRound.HeadSHA, replacementRound.TreeSHA = strings.Repeat("e", 40), tree
+	replacementRound.Criteria = []gate.CriterionEvidence{{Criterion: criterion, Kind: gate.EvidenceNotVerified, Reference: "TestAcceptance failed", ReceiptIDs: []string{nextEvent.Data.Runtime.Validation.ReceiptID}}}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", replacement.redemption.Credential, replacementRound)
+	requireNativeStatus(t, response, http.StatusOK)
+	var regression progresscheck.RoundVerdict
+	decodeHubResponse(t, response, &regression)
+	if !regression.Regressed || regression.Advanced || len(regression.VerifiedCriteria) != 0 || len(regression.FailedCriteria) != 1 {
+		t.Errorf("replacement lost comparison history or reused evidence: %+v", regression)
 	}
 
 	other := newNativeFixture(t, f.service, "org_first_second", "Other round project")
