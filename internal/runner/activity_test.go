@@ -1,12 +1,15 @@
 package runner
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -127,6 +130,26 @@ func TestPublishAgentActivityContent(t *testing.T) {
 			if got.DetentSessionID != 1156 || got.ProviderSessionID != tt.update.ThreadID || got.Type != tt.update.Type || got.Tool != tt.update.Tool || got.Content != tt.wantContent || got.At != at {
 				t.Fatalf("activity update = %#v, want content %q", got, tt.wantContent)
 			}
+		})
+	}
+}
+
+func TestDistinctRepeatedOutputRemainsActive(t *testing.T) {
+	for _, kind := range []AgentUpdateType{AgentUpdateMessageDelta, AgentUpdateToolOutput} {
+		t.Run(string(kind), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				session := sessiontimeout.Start(t.Context(), 5*time.Minute, time.Hour, nil)
+				defer session.Close()
+				update := AgentUpdate{Type: kind, ThreadID: "thread", TurnID: "turn", ItemID: "item", Delta: "working "}
+				ObserveProviderActivity(session, update, false)
+				<-time.After(4 * time.Minute)
+				fresh := ObserveProviderActivity(session, update, false)
+				<-time.After(2 * time.Minute)
+				synctest.Wait()
+				if !fresh || session.Context().Err() != nil {
+					t.Fatalf("fresh=%v cause=%v", fresh, context.Cause(session.Context()))
+				}
+			})
 		})
 	}
 }

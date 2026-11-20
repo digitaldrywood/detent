@@ -6495,7 +6495,7 @@ func ObserveProviderActivity(lifetime *sessiontimeout.Session, update AgentUpdat
 		fallthrough
 	case AgentUpdateMessageDelta:
 		if update.Delta != "" {
-			return lifetime.Event(string(update.Type) + "/" + scope + "/" + update.Delta)
+			return lifetime.Activity()
 		}
 	case AgentUpdateToolCompleted:
 		if update.ItemID != "" {

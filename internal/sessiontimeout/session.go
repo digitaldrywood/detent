@@ -51,16 +51,18 @@ func (e *Error) Unwrap() error {
 type sessionKey struct{}
 
 type Session struct {
-	ctx      context.Context
-	cancel   context.CancelCauseFunc
-	stop     context.CancelFunc
-	idle     time.Duration
-	limit    time.Duration
-	mu       sync.Mutex
-	timer    *time.Timer
-	expires  time.Time
-	seen     map[[sha256.Size]byte]struct{}
-	commands map[string]struct{}
+	ctx       context.Context
+	cancel    context.CancelCauseFunc
+	stop      context.CancelFunc
+	idle      time.Duration
+	limit     time.Duration
+	mu        sync.Mutex
+	timer     *time.Timer
+	expires   time.Time
+	seen      map[[sha256.Size]byte]struct{}
+	seenOrder [][sha256.Size]byte
+	oldest    int
+	commands  map[string]struct{}
 }
 
 func Start(parent context.Context, idle, limit time.Duration, timeout func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)) *Session {
@@ -115,10 +117,10 @@ func (s *Session) Result(err error) error {
 	return errors.Join(cause, err)
 }
 
-func (s *Session) Activity() {
+func (s *Session) Activity() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.activity()
+	return s.activity()
 }
 
 func (s *Session) Event(identity string) bool {
@@ -156,7 +158,10 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 func (s *Session) StartCommand(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, finished := s.seen[sha256.Sum256([]byte("command/end/"+id))]; finished || !s.newEvent("command/start/"+id) {
+	if _, running := s.commands[id]; running || s.ctx.Err() != nil {
+		return false
+	}
+	if _, finished := s.seen[sha256.Sum256([]byte("command/end/"+id))]; finished {
 		return false
 	}
 	if s.commands == nil {
@@ -185,7 +190,7 @@ func (s *Session) EndCommand(id string) bool {
 }
 
 func (s *Session) newEvent(identity string) bool {
-	if identity == "" || s.ctx.Err() != nil || len(s.seen) >= maxEvents {
+	if identity == "" || s.ctx.Err() != nil {
 		return false
 	}
 	if s.seen == nil {
@@ -195,13 +200,23 @@ func (s *Session) newEvent(identity string) bool {
 	if _, exists := s.seen[key]; exists {
 		return false
 	}
+	if len(s.seenOrder) == maxEvents {
+		delete(s.seen, s.seenOrder[s.oldest])
+		s.seenOrder[s.oldest] = key
+		s.oldest = (s.oldest + 1) % maxEvents
+	} else {
+		s.seenOrder = append(s.seenOrder, key)
+	}
 	s.seen[key] = struct{}{}
 	return true
 }
 
-func (s *Session) activity() {
-	if s.ctx.Err() != nil || s.idle <= 0 || len(s.commands) > 0 {
-		return
+func (s *Session) activity() bool {
+	if s.ctx.Err() != nil {
+		return false
+	}
+	if s.idle <= 0 || len(s.commands) > 0 {
+		return true
 	}
 	s.expires = time.Now().Add(s.idle)
 	if s.timer == nil {
@@ -209,6 +224,7 @@ func (s *Session) activity() {
 	} else {
 		s.timer.Reset(s.idle)
 	}
+	return true
 }
 
 func (s *Session) expireIdle() {
