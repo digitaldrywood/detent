@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -329,7 +330,7 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			}
 			f.service.config.TenantRepository = owner
 			t.Cleanup(func() { f.service.config.TenantRepository = repository })
-			summary := testHostSummary(f.service.config.Clock())
+			summary := hubtest.HostSummary(f.service.config.Clock())
 			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"display_name": "Example runner", "capacity": test.capacity, "version": "test", "change_cursor": "", "host_metrics": []hostmetrics.Summary{summary}})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
