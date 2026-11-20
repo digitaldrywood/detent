@@ -590,6 +590,28 @@ func TestParseLsofCwdProcessIDs(t *testing.T) {
 	}
 }
 
+func TestParseLsofFIFOWriterIDs(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		pid  string
+		want []int
+	}{
+		{name: "valid writer", pid: "101", want: []int{101}},
+		{name: "out of range writer", pid: strings.Repeat("9", 32)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			output := strings.Join([]string{
+				"p100", "f7\x00ar\x00i42\x00n/tmp/example-fifo\x00tFIFO",
+				"p" + test.pid, "f4\x00aw\x00i42\x00n/tmp/example-fifo\x00tFIFO",
+			}, "\x00\n")
+			got, err := parseLsofFIFOWriterIDs(output, 100, "7")
+			if err != nil || !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("writer IDs = %v, error = %v, want %v", got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestHookSignalsRequireIdentityAndWorkspace(t *testing.T) {
 	const root = "/workspaces/example"
 	for _, tt := range []struct {

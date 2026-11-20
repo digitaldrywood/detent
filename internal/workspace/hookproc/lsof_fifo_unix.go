@@ -26,14 +26,21 @@ func (l *Lifetime) darwinWriters(ctx context.Context, target int) ([]int, error)
 		return nil, fmt.Errorf("list hook descriptors: %w", err)
 	}
 
+	return parseLsofFIFOWriterIDs(string(data), self, readerFD)
+}
+
+func parseLsofFIFOWriterIDs(output string, self int, readerFD string) ([]int, error) {
 	type fifo struct{ inode, name string }
 	var marker fifo
 	writers := make(map[int]fifo)
 	var pid int
-	for record := range strings.SplitSeq(string(data), "\x00\n") {
+	for record := range strings.SplitSeq(output, "\x00\n") {
 		first, rest, _ := strings.Cut(record, "\x00")
 		if value, ok := strings.CutPrefix(first, "p"); ok {
-			pid, _ = strconv.Atoi(value)
+			pid = 0
+			if parsed, err := strconv.Atoi(value); err == nil {
+				pid = parsed
+			}
 			continue
 		}
 		var file fifo
