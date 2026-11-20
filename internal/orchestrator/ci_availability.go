@@ -178,9 +178,6 @@ func ciUnavailableWaitingRun(running Running, state *State) bool {
 	if mergeWorkerIssue(running.Issue) {
 		return true
 	}
-	if strings.TrimSpace(running.Mode) == runpkg.RunModePlan {
-		return false
-	}
 	return running.WorkProductPushed || runningWorkAttemptPhase(running, state) == "waiting_ci"
 }
 

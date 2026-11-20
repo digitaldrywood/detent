@@ -2431,9 +2431,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	if planPhase {
 		plan, wait, err := r.runPlanPhase(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
-		if req.LegacyPlan != nil && err == nil {
-			defer func() { returnValue.AdoptedLegacyPlan = true }()
-		}
 		if err == nil && wait == "" && sourceBudgetRemaining(ctx) == 0 {
 			err = ErrSessionTurnLimitExceeded
 		}

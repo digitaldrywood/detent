@@ -58,13 +58,11 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		failure          string
 		planRecoveryRole string
 		resumeCase       string
-		legacy           string
+		legacy           bool
 	}{
 		{name: "automatic plan and code share a claim", planReview: gate.PlanReviewAutomated},
 		{name: "planning disabled"},
-		{name: "legacy approved plan review resumes the exact draft", planReview: gate.PlanReviewHuman, legacy: "approved"},
-		{name: "legacy awaiting plan review resumes the exact draft", planReview: gate.PlanReviewHuman, legacy: "awaiting"},
-		{name: "legacy unpublished deferred draft binds a replacement lease", planReview: gate.PlanReviewHuman, legacy: "deferred"},
+		{name: "legacy plan review starts a fresh plan despite an old approval", planReview: gate.PlanReviewAutomated, legacy: true},
 		{name: "human plan approval resumes at code", planReview: gate.PlanReviewHuman},
 		{name: "both plan reviews retain the human gate", planReview: gate.PlanReviewBoth},
 		{name: "human plan approval survives unrelated transitions", planReview: gate.PlanReviewHuman, answerHistory: true},
@@ -91,7 +89,7 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, loseLease bool, failure, planRecoveryRole, resumeCase, legacy string, factories Constructors) {
+func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, loseLease bool, failure, planRecoveryRole, resumeCase string, legacy bool, factories Constructors) {
 	t.Helper()
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
@@ -101,10 +99,9 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		refusalMode, dispatchState = runner.RunModeImplement, "In Progress"
 	}
 	states := hubserverPlanStates()
-	humanPlan := (planReview == gate.PlanReviewHuman || planReview == gate.PlanReviewBoth) && legacy != "approved"
+	humanPlan := planReview == gate.PlanReviewHuman || planReview == gate.PlanReviewBoth
 	const legacyStop, legacyDraft = "Plan Review", "Implement README changes and verify them.\n\nPreserve  the two spaces."
-	publishedLegacy := legacy != "" && legacy != "deferred"
-	if publishedLegacy {
+	if legacy {
 		states[0].Transitions = append(states[0].Transitions, legacyStop)
 		states = append(states, tracker.NativeState{Name: legacyStop, Transitions: []string{"In Progress"}})
 	}
@@ -114,7 +111,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
 	}
 	h := newPlannerHub(t, "Human Review", states, factories)
-	checkProvider := planReview == gate.PlanReviewAutomated && !loseLease
+	checkProvider := planReview == gate.PlanReviewAutomated && !loseLease && !legacy
 	if checkProvider {
 		fixture, _ := schedulerFixtures.Load(h.scheduler)
 		cfg := fixture.(*schedulerFixture).config
@@ -131,7 +128,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	h.descriptor.Gates.HumanReview = true
 	h.descriptor.Gates.PlanEnabled = planReview != "" || planningRecovery
 	h.descriptor.Gates.PlanReview = planReview
-	if publishedLegacy {
+	if legacy {
 		h.descriptor.Gates.PlanStopDigest = policy.Digest([]byte(legacyStop))
 	}
 	if planReview == "" {
@@ -156,16 +153,14 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		t.Fatal(err)
 	}
 	confirmIssueContract(t, h.admin, issue.ID)
-	if publishedLegacy {
+	if legacy {
 		item := tracker.NativeWorkItemID(issue.ID)
-		if legacy == "approved" {
-			current, err := h.admin.Issue(t.Context(), item)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Labels: new([]string{gate.DefaultPlanApprovalLabel})}); err != nil {
-				t.Fatal(err)
-			}
+		current, err := h.admin.Issue(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Labels: new([]string{gate.DefaultPlanApprovalLabel})}); err != nil {
+			t.Fatal(err)
 		}
 		h.claim(t, issue.ID)
 		old := h.scheduler.RunExecution(issue.ID)
@@ -178,7 +173,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if _, err := h.native.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: mutation, Body: artifact}); err != nil {
 			t.Fatal(err)
 		}
-		current, err := h.native.Issue(t.Context(), item)
+		current, err = h.native.Issue(t.Context(), item)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -334,12 +329,10 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	}
 	plan := gate.PlanConfig{Enabled: h.descriptor.Gates.PlanEnabled, Review: h.descriptor.Gates.PlanReview}
 	provider := &nativePlanningAgent{failure: failure, humanReview: planReview == gate.PlanReviewBoth}
-	if publishedLegacy {
+	if legacy {
 		plan.Stop = legacyStop
 	}
-	if legacy != "" {
-		provider.legacyDraft = legacyDraft
-	}
+
 	workflowConfig := config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}
 	if failure == "provider" || failure == "refused" {
 		workflowConfig.Agents.Routes = []config.AgentRoute{{Name: "default", Backend: config.DefaultAgentBackendID, Model: "example-model", Default: true}}
@@ -403,9 +396,6 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	}
 	observed := make(chan nativePlanRunObservation, 8)
 	var runBackend runner.Backend = &nativePlanObservedRunner{Runner: agent, observed: observed}
-	if legacy == "deferred" {
-		runBackend = &deferredPlanScenarioRunner{Backend: runBackend, draft: legacyDraft}
-	}
 	if failure == "recovery" {
 		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
 	}
@@ -499,9 +489,6 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	}
 	if humanPlan {
 		wantPlans := int64(1)
-		if legacy != "" {
-			wantPlans = 0
-		}
 		select {
 		case got := <-finished:
 			if got.err != nil || got.state != "Blocked" {
@@ -555,7 +542,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 			t.Fatal(err)
 		}
 		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor.ID, receipts)
-		if err != nil || resolved == nil || resolved.Answer != "Approve plan" || legacy != "" && resolved.Draft != legacyDraft {
+		if err != nil || resolved == nil || resolved.Answer != "Approve plan" {
 			t.Fatalf("recorded answer did not resolve: %+v, %v", resolved, err)
 		}
 		restart()
@@ -751,7 +738,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		item := tracker.NativeWorkItemID(issue.ID)
 		records, err := h.admin.Attempts(t.Context(), item, "")
 		wantAttempts := 1
-		if publishedLegacy {
+		if legacy {
 			wantAttempts++
 		}
 		if humanPlan {
@@ -785,26 +772,24 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 			}
 		}
 		wantPlans := int64(0)
-		if plan.Enabled && legacy == "" {
+		if plan.Enabled {
 			wantPlans = 1
 		}
 		if provider.plans.Load() != wantPlans || provider.implementations.Load() != 1 {
 			t.Fatalf("planning turns=%d, implementation turns=%d", provider.plans.Load(), provider.implementations.Load())
 		}
-		if plan.Enabled && legacy == "" && (provider.planWorkspace == provider.workspace) != (wantAttempts == 1) {
-			t.Fatalf("wrong worktree reuse over %d attempts: plan=%q code=%q", wantAttempts, provider.planWorkspace, provider.workspace)
-		}
 		wantWorktrees := wantAttempts
-		if legacy != "" {
-			if publishedLegacy {
-				wantWorktrees--
-			}
+		if legacy {
+			wantWorktrees--
 			accepted, err := h.admin.NativeAttempt(t.Context(), item, attempt.AttemptID)
 			if err != nil || !slices.ContainsFunc(accepted.Steps, func(step tracker.NativeStepReceipt) bool {
-				return step.Step == "plan" && step.CompletionBody == legacyDraft && step.PlanApproval != ""
+				return step.Step == "plan" && step.CompletionBody != legacyDraft && step.PlanApproval == "automated:APPROVED"
 			}) {
-				t.Fatalf("current attempt lacks the approved legacy draft: %+v, %v", accepted.Steps, err)
+				t.Fatalf("fresh claim did not record an independently approved new plan: %+v, %v", accepted.Steps, err)
 			}
+		}
+		if plan.Enabled && (provider.planWorkspace == provider.workspace) != (wantWorktrees == 1) {
+			t.Fatalf("wrong worktree reuse: plan=%q code=%q", provider.planWorkspace, provider.workspace)
 		}
 		worktrees, err := os.ReadFile(hookLog)
 		if err != nil || len(strings.Fields(string(worktrees))) != wantWorktrees {
@@ -829,7 +814,6 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 }
 
 type nativePlanningAgent struct {
-	legacyDraft     string
 	checkProvider   func(context.Context, string) error
 	failure         string
 	humanReview     bool
@@ -902,9 +886,6 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 		}
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: "APPROVED"})
 	}
-	if a.legacyDraft != "" && !strings.Contains(req.Prompt, a.legacyDraft) {
-		return runner.AgentTurnResult{}, errors.New("implementation prompt omitted the exact legacy draft")
-	}
 	if a.plans.Load() > 0 && !strings.Contains(req.Prompt, "Implement README changes and verify them.") {
 		return runner.AgentTurnResult{}, errors.New("approved plan missing from the implementation prompt")
 	}
@@ -943,20 +924,6 @@ func (s *nativePlanReleaseScheduler) ReleaseClaim(ctx context.Context, id, reaso
 		}
 	}
 	return err
-}
-
-type deferredPlanScenarioRunner struct {
-	runner.Backend
-	draft string
-}
-
-func (r *deferredPlanScenarioRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
-	request.LegacyPlan = tracker.NativeLegacyPlanOutput(r.draft, "deferred")
-	result, err := r.Backend.Run(ctx, request)
-	if err == nil && !result.AdoptedLegacyPlan {
-		return result, errors.New("replacement attempt did not adopt the deferred plan")
-	}
-	return result, err
 }
 
 type nativePlanObservedRunner struct {

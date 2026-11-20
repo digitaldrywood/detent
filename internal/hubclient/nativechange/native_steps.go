@@ -117,16 +117,6 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	if err != nil {
 		return nil, fmt.Errorf("read phase publication repository: %w", err)
 	}
-	e.mu.Lock()
-	attempt := e.data.AttemptID
-	sameAttempt := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
-	if len(receipts) > 0 {
-		if landing := e.pendingLandingResolution(); landing != nil && e.role == runner.RoleMerge &&
-			receipts[0].AttemptID == attempt && receipts[0].HeadSHA == landing.HeadSHA && receipts[0].PolicyID == lease.PolicyID {
-			sameAttempt.LastPushed = &receipts[0]
-		}
-	}
-	e.mu.Unlock()
 	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
 	continuation := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
 	if gates.PlanEnabled {
@@ -135,8 +125,7 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 			return nil, err
 		}
 	}
-	if len(receipts) == 0 || sameAttempt.LastPushed != nil {
-		continuation.LastPushed = sameAttempt.LastPushed
+	if len(receipts) == 0 {
 		return &continuation, nil
 	}
 	pinned := receipts[0]
@@ -146,7 +135,14 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		e.phasePlanDigest = continuation.Plan.InputDigest
 	}
 	reviewState := e.stepReviewState() + e.phasePlanDigest
+	landing := e.pendingLandingResolution()
+	resumeLanding := landing != nil && e.role == runner.RoleMerge && pinned.AttemptID == e.data.AttemptID &&
+		pinned.HeadSHA == landing.HeadSHA && pinned.PolicyID == lease.PolicyID
 	e.mu.Unlock()
+	if resumeLanding {
+		continuation.LastPushed = &pinned
+		return &continuation, nil
+	}
 	if continuation.Plan != nil && !continuation.Plan.Accepted {
 		continuation.LastPushed, continuation.NextPhase = &pinned, "plan"
 		return &continuation, nil

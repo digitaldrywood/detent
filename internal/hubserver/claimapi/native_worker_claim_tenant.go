@@ -1748,7 +1748,7 @@ func (d Deps) HydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeS
 	if plan.Descriptor.ID != request.PolicyID {
 		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Claim configuration does not match the current project policy")
 	}
-	if request.LegacyPlanStop != "" && (!plan.Descriptor.Gates.PlanEnabled || plan.Descriptor.Gates.PlanStopDigest != policy.Digest([]byte(request.LegacyPlanStop))) {
+	if request.LegacyPlanStop != "" && plan.Descriptor.Gates.PlanStopDigest != policy.Digest([]byte(request.LegacyPlanStop)) {
 		return hubrecords.NativeClaimPlan{}, hubapi.PolicyMismatch("Planning stop does not match the approved policy")
 	}
 	if plan.Policy.GitHubPullRequest == nil || *plan.Policy.GitHubPullRequest != plan.Descriptor.Gates.GitHubPullRequest {

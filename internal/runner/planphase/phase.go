@@ -78,9 +78,7 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 		return req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, "")
 	}
 	phase, approval := "plan_draft", ""
-	if state.LegacyApproval != "" {
-		phase, approval = "plan", state.LegacyApproval
-	} else if !state.NeedsProvider() && state.Answer != "" {
+	if !state.NeedsProvider() && state.Answer != "" {
 		phase, approval = "plan", "human:"+state.AnswerID+":"+state.Answer
 	}
 	if state.NeedsProvider() {
