@@ -1,7 +1,9 @@
 package progresscheck
 
 import (
+	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -32,14 +34,21 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 	for _, criterion := range contract.AcceptanceCriteria(body) {
 		add(tracker.CheckAcceptance, criterion, "", tracker.CheckNeedsReview)
 	}
+	var gateReferences []string
 	for _, criterion := range config.VerificationCriteria(body) {
-		if gateConfig.Run != "" && referencesCheck(criterion, gateConfig.Run) {
+		if gateConfig.Run != "" && referencesOnlyCheck(criterion, gateConfig.Run) {
+			gateReferences = append(gateReferences, criterion)
 			continue
 		}
 		add(tracker.CheckVerification, criterion, "", tracker.CheckNeedsReview)
 	}
 	if gateConfig.Run != "" {
-		add(tracker.CheckProjectGate, "Project command gate", policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
+		if len(gateReferences) == 0 {
+			gateReferences = append(gateReferences, "Project command gate")
+		}
+		for _, reference := range gateReferences {
+			add(tracker.CheckProjectGate, reference, policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
+		}
 	}
 	for _, check := range gateConfig.RequiredStatusChecks {
 		add(tracker.CheckStatusGate, check, policy.Digest([]byte(check)), tracker.CheckUnverified)
@@ -60,15 +69,105 @@ func ChecklistRevision(body, policyID string) string {
 	return policy.Digest([]byte(policyID + "\x00" + body))
 }
 
-func referencesCheck(criterion, command string) bool {
+func referencesOnlyCheck(criterion, command string) bool {
 	if strings.TrimSpace(criterion) == command {
 		return true
 	}
 	fields := strings.Split(criterion, "`")
-	for i := 1; i+1 < len(fields); i += 2 {
-		if fields[i] == command {
-			return true
+	return len(fields) == 3 && fields[1] == command
+}
+
+func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, command *gate.CommandResult, steps []tracker.NativeStepReceipt) []tracker.ExecutionCheckUpdate {
+	if command == nil || command.ReceiptID == "" || command.TreeSHA == "" || command.TreeSHA != verdict.TreeSHA || command.HeadSHA != verdict.HeadSHA {
+		return nil
+	}
+	var validator, audit *tracker.NativeStepReceipt
+	for i := range steps {
+		step := &steps[i]
+		if step.PolicyID != verdict.PolicyID || step.Change.HeadSHA != verdict.HeadSHA || step.Source.HeadSHA != verdict.HeadSHA {
+			continue
+		}
+		switch {
+		case step.Step == "validator" && step.Validator != nil && step.Validator.Submitted:
+			validator = step
+		case step.Step == "security_audit" && step.SecurityAudit != nil:
+			audit = step
 		}
 	}
-	return false
+	var changes []tracker.ExecutionCheckUpdate
+	for _, check := range checks {
+		var status tracker.ExecutionCheckStatus
+		var receipt string
+		switch check.Kind {
+		case tracker.CheckProjectGate:
+			if check.CheckDigest == policy.Digest([]byte(command.Command)) {
+				receipt = command.ReceiptID
+				status = tracker.CheckPassed
+				if command.ExitCode != 0 {
+					status = tracker.CheckFailed
+				}
+			}
+		case tracker.CheckIndependentReview:
+			if validator != nil {
+				receipt = checklistStepDigest(validator)
+				status = tracker.CheckFailed
+				if validator.Validator.Verdict == gate.ValidatorVerdictPass {
+					status = tracker.CheckPassed
+				}
+			}
+		case tracker.CheckSecurityAudit:
+			if audit != nil {
+				receipt = checklistStepDigest(audit)
+				status = tracker.CheckFailed
+				if audit.SecurityAudit.Verdict == "pass" {
+					status = tracker.CheckPassed
+				}
+			}
+		case tracker.CheckAcceptance:
+			if validator != nil {
+				status, receipt = acceptedCriterion(check.Text, validator.Validator, command)
+			}
+		}
+		if status == "" || receipt == "" {
+			continue
+		}
+		if check.Tree == command.TreeSHA && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
+			status = tracker.CheckFlaky
+		}
+		if check.Status != status || check.Tree != command.TreeSHA {
+			changes = append(changes, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Tree: command.TreeSHA, Receipt: receipt})
+		}
+	}
+	return changes
+}
+
+func acceptedCriterion(text string, result *gate.ValidatorResult, projectGate *gate.CommandResult) (tracker.ExecutionCheckStatus, string) {
+	for _, criterion := range result.CriteriaEvidence {
+		if criterion.Criterion != text || criterion.RestatesImplementation || criterion.HeadSHA != projectGate.HeadSHA || criterion.TreeSHA != projectGate.TreeSHA || strings.TrimSpace(criterion.Behavior) == "" {
+			continue
+		}
+		if criterion.Kind != gate.EvidenceReceipt && criterion.Kind != gate.EvidenceNotVerified {
+			continue
+		}
+		for _, command := range result.Commands {
+			if command.Command == projectGate.Command || command.HeadSHA != projectGate.HeadSHA || command.TreeSHA != projectGate.TreeSHA || command.ReceiptID == "" || !slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
+				continue
+			}
+			if command.ExitCode == 0 && criterion.Kind == gate.EvidenceReceipt && result.Verdict == gate.ValidatorVerdictPass {
+				return tracker.CheckPassed, command.ReceiptID
+			}
+			if command.ExitCode != 0 && criterion.Kind == gate.EvidenceNotVerified {
+				return tracker.CheckFailed, command.ReceiptID
+			}
+		}
+	}
+	return "", ""
+}
+
+func checklistStepDigest(step *tracker.NativeStepReceipt) string {
+	raw, err := json.Marshal(step)
+	if err != nil {
+		return ""
+	}
+	return policy.Digest(raw)
 }

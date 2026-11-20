@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -56,7 +57,7 @@ func roundRetryDelay(maxBackoffMS int) func(int) time.Duration {
 func (r *Runner) roundRetry(ctx context.Context, req RunRequest, phase string, timeout *sessiontimeout.Error, deadlines *progresscheck.RoundDeadlines, retryDelay func(int) time.Duration) func(error) error {
 	return func(err error) error {
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_round_judge_instance_failure", "phase", phase, "provider_timeout", timeout, "error", err)
-		if StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
+		if errors.Is(err, progresscheck.ErrRoundVerdictRejected) || StopProviderSupervision(req.Execution, err) || cooperativeStopError(err) || errors.Is(err, ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrWorkerProcessReap) {
 			return err
 		}
 		return deadlines.Wait(ctx, retryDelay)
@@ -87,6 +88,18 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	previous, err := execution.LatestRoundVerdict(ctx)
 	if err != nil {
 		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read prior round verdict: %w", err)
+	}
+	var checklist *tracker.ExecutionChecklist
+	if owner, ok := req.Execution.(interface {
+		ExecutionChecklist(context.Context) (*tracker.ExecutionChecklist, error)
+	}); ok && req.checklistRevision != "" {
+		checklist, err = owner.ExecutionChecklist(ctx)
+		if err != nil {
+			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read frozen checklist: %w", err)
+		}
+		if checklist == nil || checklist.Revision != req.checklistRevision {
+			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, progresscheck.ErrRoundVerdictRejected
+		}
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	fallback := progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: "implement"}
@@ -171,7 +184,7 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	return progresscheck.AssessRound(verdictCtx, progresscheck.RoundEvidence{
 		Phase: phase, Head: head, Tree: tree, Signature: signature,
 		Issue: req.Issue.Description, Findings: findings, Feedback: feedback, Completion: completion,
-		Criteria: criteria, Previous: previous, ProviderBoundary: providerBoundary, ProviderError: runErr,
+		Criteria: criteria, Previous: previous, Checklist: checklist, ProviderBoundary: providerBoundary, ProviderError: runErr,
 	}, fallback, canReimplement, canAskHuman, generate)
 }
 

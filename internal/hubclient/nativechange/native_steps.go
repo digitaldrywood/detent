@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
@@ -233,6 +235,13 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	return e.executionError(ctx, err)
 }
 
+func (e *nativeExecution) ExecutionChecklist(ctx context.Context) (*tracker.ExecutionChecklist, error) {
+	e.mu.Lock()
+	attempt := e.data.AttemptID
+	e.mu.Unlock()
+	return e.claim.source.NativeClient().ExecutionChecklist(ctx, e.claim.lease.WorkItemID, attempt)
+}
+
 func (e *nativeExecution) FreezeExecutionChecklist(ctx context.Context, list tracker.ExecutionChecklist) error {
 	lease := e.claim.lease
 	e.mu.Lock()
@@ -259,7 +268,7 @@ func (e *nativeExecution) RecordLoopIntervention(ctx context.Context, event trac
 	attempt := e.data.AttemptID
 	e.mu.Unlock()
 	input := progresscheck.Publication{
-		Mutation:  tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken},
+		Mutation:  tracker.Mutation{IdempotencyKey: attempt + ":loop:" + policy.Digest([]byte(event.Revision+"\x00"+event.ThreadID+"\x00"+event.TurnID+"\x00"+event.Action+"\x00"+strconv.FormatUint(event.Sequence, 10))), LeaseID: lease.ID, FencingToken: lease.FencingToken},
 		AttemptID: attempt, PolicyID: lease.PolicyID, LoopIntervention: &event,
 	}
 	client := e.claim.source.NativeClient()
@@ -267,7 +276,16 @@ func (e *nativeExecution) RecordLoopIntervention(ctx context.Context, event trac
 	if nativeTransportUnavailable(err) && ctx.Err() == nil {
 		err = client.PublishLoopIntervention(ctx, lease.WorkItemID, input)
 	}
-	return e.executionError(ctx, err)
+	err = e.executionError(ctx, err)
+	var refusal *APIError
+	if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && errors.As(err, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+		switch refusal.Status {
+		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		default:
+			return errors.Join(progresscheck.ErrRoundVerdictRejected, err)
+		}
+	}
+	return err
 }
 
 func (e *nativeExecution) LatestRoundVerdict(ctx context.Context) (*progresscheck.RoundVerdict, error) {

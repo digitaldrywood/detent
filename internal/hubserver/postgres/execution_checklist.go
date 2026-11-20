@@ -108,7 +108,9 @@ SELECT organization_id, project_id, attempt_id, revision, ordinal, $6, status, t
 func (s *session) RecordLoopIntervention(ctx context.Context, project tracker.ProjectID, attempt string, event tracker.ExecutionLoopIntervention) error {
 	const statement = `INSERT INTO native_execution_loop_interventions
 (organization_id, project_id, attempt_id, revision, thread_id, turn_id, action, fingerprint, period, repeats, sequence, observed_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT DO NOTHING`
+SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+WHERE $4 = (SELECT revision FROM native_execution_checklists WHERE organization_id=$1 AND project_id=$2 AND attempt_id=$3 ORDER BY frozen_at DESC, revision DESC LIMIT 1)
+ON CONFLICT DO NOTHING`
 	result, err := s.db.Exec(ctx, statement, s.organization, project, attempt, event.Revision, event.ThreadID, event.TurnID, event.Action, event.Fingerprint, event.Period, event.Repeats, event.Sequence, event.ObservedAt)
 	if err != nil || result.RowsAffected() != 0 {
 		return err
@@ -117,7 +119,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT DO NOTHIN
 	err = s.db.QueryRow(ctx, `SELECT (fingerprint, period, repeats) = ($8, $9, $10) FROM native_execution_loop_interventions
 WHERE organization_id = $1 AND project_id = $2 AND attempt_id = $3 AND revision = $4 AND thread_id = $5 AND turn_id = $6 AND action = $7 AND sequence = $11`,
 		s.organization, project, attempt, event.Revision, event.ThreadID, event.TurnID, event.Action, event.Fingerprint, event.Period, event.Repeats, event.Sequence).Scan(&same)
-	if err == nil && !same {
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && !same {
 		return corestore.ErrRevisionConflict
 	}
 	return err
