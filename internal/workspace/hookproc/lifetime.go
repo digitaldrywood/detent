@@ -18,17 +18,7 @@ type Lifetime struct {
 	unidentifiedWriter bool
 	witnesses          map[int]string
 	reader             *os.File
-	writer             *os.File
 	dir                string
-}
-
-func (l *Lifetime) CloseWriter() error {
-	if l.writer == nil {
-		return nil
-	}
-	err := l.writer.Close()
-	l.writer = nil
-	return err
 }
 
 func (l *Lifetime) Close() error {
@@ -43,7 +33,7 @@ func (l *Lifetime) Close() error {
 	if err := os.Remove(l.dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return errors.Join(l.CloseWriter(), l.reader.Close())
+	return l.reader.Close()
 }
 
 func (l *Lifetime) path() string { return filepath.Join(l.dir, "lifetime") }

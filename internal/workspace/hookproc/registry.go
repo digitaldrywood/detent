@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"sync"
@@ -201,9 +201,6 @@ func (o *Owner) CommandFinished(ctx context.Context, commandErr error) error {
 	o.lock <- struct{}{}
 	defer func() { <-o.lock }()
 	o.running = false
-	if err := o.descriptor.CloseWriter(); err != nil {
-		return err
-	}
 	if commandErr != nil {
 		_, err := o.stopLocked(context.WithoutCancel(ctx))
 		return err
@@ -296,11 +293,13 @@ func (u *Registry) CheckRemoval(ctx context.Context, path string) error {
 
 func (o *Owner) Token() string { return o.token }
 
-func (o *Owner) ExtraFiles(files []*os.File) []*os.File {
+func (o *Owner) ConfigureCommand(cmd *exec.Cmd) {
 	if o == nil {
-		return files
+		return
 	}
-	return append(files, nil, o.descriptor.writer)
+	const script = `exec 4>"$1" && /bin/chmod 400 "$1" || exit 1; shift; exec "$@"`
+	cmd.Args = append([]string{"sh", "-c", script, "sh", o.descriptor.path(), cmd.Path}, cmd.Args[1:]...)
+	cmd.Path = "/bin/sh"
 }
 
 func (o *Owner) OnExit(finish func(context.Context) error) { o.finish = finish }
