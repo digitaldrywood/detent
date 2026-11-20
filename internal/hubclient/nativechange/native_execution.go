@@ -37,6 +37,7 @@ type nativeExecution struct {
 	phaseSource       *tracker.NativePhaseReceipt
 	phasePlanDigest   string
 	phaseReservation  atomic.Pointer[providercapacity.Reservation]
+	checklistFrozen   atomic.Bool
 	completionOwner   atomic.Bool
 	preparedPublisher atomic.Bool
 	recovery          atomic.Pointer[tracker.NativeRecovery]

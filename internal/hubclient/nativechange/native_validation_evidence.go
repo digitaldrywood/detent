@@ -30,5 +30,11 @@ func (e *nativeExecution) RecordSourceValidation(ctx context.Context, result gat
 	}
 	e.RecordPipelineTiming(result.PipelineTiming("finalization"))
 	e.validation = &result
-	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Validation: &result})
+	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Validation: &result}); err != nil {
+		return err
+	}
+	if e.checklistFrozen.Load() && result.ReceiptID != "" {
+		return e.FlushRuntime(ctx)
+	}
+	return nil
 }
