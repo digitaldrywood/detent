@@ -663,6 +663,7 @@ type RunRequest struct {
 	OnUsageUpdate             UsageUpdateHandler         `json:"-"`
 	OnActivityUpdate          AgentActivityUpdateHandler `json:"-"`
 	observationPeer           *SSHPeer
+	turnUsageUpdate           func(UsageUpdate, time.Time) error
 	artifactLogChunks         *int
 	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
 	ProgressProbe             SessionProgressProbe          `json:"-"`
@@ -1032,26 +1033,7 @@ type BudgetRefusal struct {
 	RefusedAt        time.Time
 }
 
-type DiffStats struct {
-	FilesChanged                   int
-	AddedLines                     int
-	RemovedLines                   int
-	UnpushedCommits                int
-	UnpushedCommitRefs             []string
-	TrackedPaths                   []string
-	UntrackedPaths                 []string
-	CommitsNotInPullRequest        []string
-	PullRequestComparisonAvailable bool
-	RecoveryStateExpected          bool
-	RecoveryStateAvailable         bool
-	CommitsAhead                   int
-	RemoteBranchExists             bool
-	DeliveryStateChecked           bool
-	TreeSHA                        string
-	HeadSHA                        string
-	Fingerprint                    string
-	Status                         string
-}
+type DiffStats = runobserve.DiffStats
 
 type TokenTotals struct {
 	InputTokens           int64
