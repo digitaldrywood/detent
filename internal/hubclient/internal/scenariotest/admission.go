@@ -51,6 +51,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 		second          bool
 		external        bool
 		instance        bool
+		retryInPlace    bool
 		retainedWriter  bool
 	}{
 
@@ -61,12 +62,13 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 		{name: "completed dependency releases saved source after restart", transfer: "ready"},
 		{name: "removed native edge releases saved source after restart", transfer: "removed"},
 		{name: "reported prerequisite registers dependency hold"},
-		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
-		{name: "typed instance reason recovers after ended claim", instance: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
+		{name: "instance failure retries on another runner without a dependency", instance: true, retryInPlace: true},
+		{name: "typed instance reason retries after a later ended claim", instance: true, retryInPlace: true, reasonCode: "instance_limitation", laterLease: "released", dirty: true},
+		{name: "bare human action on instance failure stays dispatchable", instance: true, retryInPlace: true, reasonCode: "instance_limitation", refusal: "bare human"},
 		{name: "typed instance reason preserves human hold", instance: true, reasonCode: "instance_limitation", refusal: "human"},
-		{name: "configuration change permits instance recovery", instance: true, reasonCode: "instance_limitation", refusal: "policy"},
+		{name: "configuration change permits instance retry", instance: true, retryInPlace: true, reasonCode: "instance_limitation", refusal: "policy"},
 		{name: "instance evidence preserves permission reason", instance: true, reasonCode: "permission_wait", refusal: "reason"},
-		{name: "instance evidence preserves unknown reason", instance: true, reasonCode: "unknown_hold", refusal: "reason"},
+		{name: "instance evidence with unknown reason stays dispatchable", instance: true, retryInPlace: true, reasonCode: "unknown_hold"},
 		{name: "canonical native reference", qualified: true},
 		{name: "bound repository references retain both dependencies", repositoryAlias: true, second: true},
 		{name: "bound repository reference preserves human hold", repositoryAlias: true, refusal: "human"},
@@ -166,7 +168,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				reference = "example-org/example-project" + reference
 			}
 			human := "null"
-			if test.refusal == "human" {
+			if test.refusal == "human" || test.refusal == "bare human" {
 				human = "Approve the release"
 			}
 			report := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: '%s'\n    reason: prerequisite must finish\n    owner: orchestrator\n    predicate:\n      type: issue_state\n      states: [open]\nhuman_action: %s\n```", reference, human)
@@ -180,6 +182,9 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			if test.instance {
 				report = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: 'instance:check-barrier'\n    reason: barrier failed on this host\n    owner: instance\nhuman_action: %s\n```", human)
+				if test.refusal == "human" {
+					report = strings.Replace(report, "human_action:", "  - owner: human\n    reason: Release approval required\nhuman_action:", 1)
+				}
 			}
 			if test.reasonCode != "" {
 				report = strings.Replace(report, "status: blocked", "status: blocked\nreason_code: "+test.reasonCode, 1)
@@ -206,8 +211,15 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			blocked := recovery.Issue
-			if slices.Contains(blocked.OmittedFields, "dependencies") {
+			recordedIssue := recovery.Issue
+			wantState := "Blocked"
+			if test.retryInPlace {
+				wantState = "In Progress"
+			}
+			if recordedIssue.State != wantState {
+				t.Fatalf("lane after attempt = %q, want %q", recordedIssue.State, wantState)
+			}
+			if slices.Contains(recordedIssue.OmittedFields, "dependencies") {
 				t.Fatal("dependency assertion requires the authoritative relationship read")
 			}
 			wantDependencies := 1
@@ -216,28 +228,50 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			} else if test.refusal == "relation" || test.second {
 				wantDependencies = 2
 			}
-			if len(blocked.Dependencies) != wantDependencies {
-				t.Fatalf("reported dependency links = %+v, want %d", blocked.Dependencies, wantDependencies)
+			if len(recordedIssue.Dependencies) != wantDependencies {
+				t.Fatalf("reported dependency links = %+v, want %d", recordedIssue.Dependencies, wantDependencies)
 			}
 			hydrated, err := h.connector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
 			wantBlockers := 1
-			if test.second {
+			if test.second || test.instance && test.refusal == "human" {
 				wantBlockers = 2
 			}
-			if err != nil || len(hydrated) != 1 || hydrated[0].WorkpadSignal == nil || len(hydrated[0].WithNativeWorkpadAuthority().WorkpadSignal.Blockers) != wantBlockers {
-				t.Fatalf("native disposition lost its prerequisite: %+v, %v", hydrated, err)
+			if err != nil || len(hydrated) != 1 {
+				t.Fatalf("hydrate issue: got %d issues, error %v", len(hydrated), err)
+			}
+			signal := hydrated[0].WithNativeWorkpadAuthority().WorkpadSignal
+			if test.retryInPlace {
+				if signal != nil {
+					t.Fatalf("dispatchable issue has a Blocked signal: %+v", signal)
+				}
+			} else if signal == nil || len(signal.Blockers) != wantBlockers {
+				t.Fatalf("native disposition lost its prerequisite: signal=%+v, want %d blockers", signal, wantBlockers)
 			}
 			resolved, err := h.connector.FetchIssueStatesByIdentifiers(t.Context(), []string{string(h.project) + fmt.Sprintf("#%d", prerequisite.Number)})
 			if err != nil || len(resolved) != 1 || resolved[0].ID != string(prerequisite.WorkItemID) || resolved[0].Closed {
 				t.Fatalf("native reference resolved incorrectly: %+v, %v", resolved, err)
 			}
-			attempts, history, err := h.connector.RecordedBlockerContext(t.Context(), blocked.WorkItemID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			attempt, prior, valid := tracker.RecordedNativeBlockers(blocked, attempts, history)
-			if !valid || prior != "In Progress" {
-				t.Fatalf("current report missing: %+v, %s, %t", attempt, prior, valid)
+			var attempt tracker.NativeAttempt
+			prior := "In Progress"
+			if test.retryInPlace {
+				page, err := h.admin.Attempts(t.Context(), recordedIssue.WorkItemID, "")
+				if err != nil || len(page.Items) != 1 || page.NextCursor != "" {
+					t.Fatalf("read instance attempt: got %d attempts, next %q, error %v", len(page.Items), page.NextCursor, err)
+				}
+				attempt = page.Items[0]
+				if attempt.Status != "succeeded" || attempt.CompletionBody != report || attempt.Disposition == nil || attempt.Disposition.Status != workpad.StatusBlocked || attempt.Disposition.ReasonCode != test.reasonCode || len(attempt.Disposition.BlockerEvidence) != 1 || attempt.Disposition.BlockerEvidence[0].Owner != workpad.BlockerOwnerInstance || attempt.Disposition.BlockerEvidence[0].Ref != "instance:check-barrier" {
+					t.Fatalf("instance attempt lost its recorded failure: %+v, disposition=%+v", attempt, attempt.Disposition)
+				}
+			} else {
+				attempts, history, err := h.connector.RecordedBlockerContext(t.Context(), recordedIssue.WorkItemID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var valid bool
+				attempt, prior, valid = tracker.RecordedNativeBlockers(recordedIssue, attempts, history)
+				if !valid || prior != "In Progress" {
+					t.Fatalf("current report missing: %+v, %s, %t", attempt, prior, valid)
+				}
 			}
 			if test.repositoryAlias {
 				wantReference := reference
@@ -256,7 +290,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				}
 			}
 			if test.dirty || test.repositoryAlias {
-				page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")
+				page, err := h.admin.History(t.Context(), recordedIssue.WorkItemID, "")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -282,7 +316,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 				}
 				var later leasestore.Lease
 				seedLater := func(w tenantstore.Writer) error {
-					item, err := w.WorkItem(t.Context(), h.project, blocked.WorkItemID)
+					item, err := w.WorkItem(t.Context(), h.project, recordedIssue.WorkItemID)
 					if err != nil {
 						return err
 					}
@@ -314,7 +348,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 						if _, _, err := w.RecordAttemptEvent(t.Context(), leasestore.AttemptEvent{ID: data.AttemptID, RunID: data.RunID, Fence: leasestore.Fence{LeaseID: later.LeaseID, FencingToken: later.FencingToken}, Sequence: 1, Status: "succeeded", DispatchGeneration: attempt.DispatchGeneration, PayloadObjectKey: ref.Key, PayloadReference: ref}); err != nil {
 							return err
 						}
-						history, err := json.Marshal(tracker.CollaborationEvent{ID: api.ExecutionID("evt", data.AttemptID), OrganizationID: h.organization, ProjectID: h.project, AggregateID: blocked.WorkItemID, Type: "run.finished", SchemaVersion: 1, RecordedAt: h.clock(), Actor: tracker.Actor{Kind: "runner", PrincipalID: attempt.RunnerID}, Data: tracker.CollaborationData{Run: &data}})
+						history, err := json.Marshal(tracker.CollaborationEvent{ID: api.ExecutionID("evt", data.AttemptID), OrganizationID: h.organization, ProjectID: h.project, AggregateID: recordedIssue.WorkItemID, Type: "run.finished", SchemaVersion: 1, RecordedAt: h.clock(), Actor: tracker.Actor{Kind: "runner", PrincipalID: attempt.RunnerID}, Data: tracker.CollaborationData{Run: &data}})
 						if err != nil {
 							return err
 						}
@@ -350,23 +384,45 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 					})
 				}
 			}
-			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: blocked.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
+			request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "too-early", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, PolicyID: h.descriptor.ID, BlockerAttemptID: attempt.AttemptID, ExpectedRevision: recordedIssue.Revision, State: prior, Reason: "dependency_ready", ReasonDetail: "recorded_blocker_recovery"}
 			if test.instance {
-				if test.refusal == "policy" {
-					h.repolicy(t)
-				}
-				if test.refusal != "" && test.refusal != "policy" {
-					if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
+				worker := h.otherWorker(t)
+				if !test.retryInPlace {
+					if _, err := worker.Transition(t.Context(), recordedIssue.WorkItemID, request); err == nil || h.state(t, issue.ID) != "Blocked" {
 						t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
 					}
 					return
 				}
-				if _, err := h.otherWorker(t).Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
-					t.Fatalf("instance-owned blocker recovery = %v, state %s, want %s", err, h.state(t, issue.ID), prior)
+				if test.refusal == "policy" {
+					h.repolicy(t)
+				}
+				identity, err := worker.Transport().RunnerIdentity(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				machine := fixtureSchedulerMachine(h.scheduler)
+				machine.ID = identity.MachineID
+				secondRunner, err := newTestScheduler(worker.Transport(), SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, Now: h.clock})
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidates := CandidatesIn(t, secondRunner, h.descriptor, wantState)
+				if len(candidates) != 1 || candidates[0].ID != issue.ID {
+					t.Fatalf("second runner candidates = %+v, want %s", candidates, issue.ID)
+				}
+				if _, err := secondRunner.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
+					t.Fatal(err)
+				}
+				claim, ok := secondRunner.ExecutionClaim(issue.ID)
+				if !ok || claim.Lease.MachineID != machine.ID || claim.Lease.FencingToken <= latestFence {
+					t.Fatalf("second runner lease = %+v, want machine %s with fence above %d", claim.Lease, machine.ID, latestFence)
+				}
+				if err := secondRunner.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
 				}
 				return
 			}
-			if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err == nil {
+			if _, err := h.native.Transition(t.Context(), recordedIssue.WorkItemID, request); err == nil {
 				t.Fatal("recovery cleared a genuinely unresolved prerequisite")
 			}
 			if len(h.candidates(t)) != 0 {
@@ -386,25 +442,25 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			case "report":
 				request.BlockerAttemptID = "attempt_unrelated"
 			case "operator":
-				current, err := h.admin.Transition(t.Context(), blocked.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: blocked.Revision, State: "Blocked", Reason: "user_requested"})
+				current, err := h.admin.Transition(t.Context(), recordedIssue.WorkItemID, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: recordedIssue.Revision, State: "Blocked", Reason: "user_requested"})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if current.Revision != blocked.Revision {
-					t.Fatalf("same-lane operator hold created a record revision: %d/%d", current.Revision, blocked.Revision)
+				if current.Revision != recordedIssue.Revision {
+					t.Fatalf("same-lane operator hold created a record revision: %d/%d", current.Revision, recordedIssue.Revision)
 				}
 				request.ExpectedRevision = current.Revision
 			case "policy":
 				h.repolicy(t)
 			}
 			if test.refusal == "policy" {
-				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
+				if _, err := h.native.Transition(t.Context(), recordedIssue.WorkItemID, request); err != nil || h.state(t, issue.ID) != prior {
 					t.Fatalf("configuration change prevented recovery: %v", err)
 				}
 				return
 			}
 			if test.refusal != "" {
-				_, err := h.native.Transition(t.Context(), blocked.WorkItemID, request)
+				_, err := h.native.Transition(t.Context(), recordedIssue.WorkItemID, request)
 				if err == nil || h.state(t, issue.ID) != "Blocked" {
 					t.Fatalf("%s authority was bypassed: %v", test.refusal, err)
 				}
@@ -418,7 +474,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			}
 			if test.laterLease != "" {
 				request.ReasonDetail = "dependency_auto_unblock"
-				if _, err := h.native.Transition(t.Context(), blocked.WorkItemID, request); err != nil {
+				if _, err := h.native.Transition(t.Context(), recordedIssue.WorkItemID, request); err != nil {
 					t.Fatalf("ended claim without an attempt prevented recorded recovery: %v", err)
 				}
 			}
@@ -494,7 +550,7 @@ func RunNativeRecordedDependencyAdmission(t *testing.T, factories Constructors) 
 			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatalf("native recorded recovery did not autonomously dispatch: state=%s", h.state(t, issue.ID))
 			}
-			page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")
+			page, err := h.admin.History(t.Context(), recordedIssue.WorkItemID, "")
 			if err != nil {
 				t.Fatal(err)
 			}
