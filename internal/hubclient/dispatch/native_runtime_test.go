@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/nativechange"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -120,13 +122,19 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 			at := time.Now().UTC().Truncate(time.Microsecond)
 			hubTime.Store(at.UnixNano())
 			now := at
-			h.scheduler.now = func() time.Time { return now }
+			h.scheduler.now = clock
 			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: at, WorkerLaunch: &tracker.NativeWorkerLaunch{PID: worker.PID, GroupID: worker.GroupID, ProcessStart: worker.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: at}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
+			supervisorCtx, loseSupervisor := context.WithCancelCause(t.Context())
+			guarded, stopGuard, err := execution.Guard(supervisorCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stopGuard()
 			assertRuntime := func(heartbeat time.Time, sequence int64, expired bool) {
 				t.Helper()
 				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
@@ -154,7 +162,15 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					alive, probeErr := procgroup.Alive(worker)
 					t.Fatalf("renew at %s: %v; state=%s eligible=%v dependencies=%t read=%v alive=%t probe=%v", elapsed, err, current.State, current.SchedulingEligible, current.DependencyReady, readErr, alive, probeErr)
 				}
-				assertRuntime(at.Add(elapsed/(ttl/3)*(ttl/3)), 1+int64(elapsed/(ttl/3)), false)
+				assertRuntime(at, 1, elapsed >= ttl)
+			}
+			loseSupervisor(errors.New("supervisor lost"))
+			<-guarded.Done()
+			if alive, err := procgroup.Alive(worker); err != nil || !alive {
+				t.Fatalf("fixture worker must remain live after supervision ends: %v, %v", alive, err)
+			}
+			if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, now); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+				t.Errorf("heartbeat renewed after supervisor loss with a live worker: %v", err)
 			}
 			if err := command.Process.Kill(); err != nil {
 				t.Fatal(err)
@@ -174,7 +190,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			assertRuntime(at.Add(3*ttl), 10, true)
+			assertRuntime(at, 1, true)
 		})
 	}
 }

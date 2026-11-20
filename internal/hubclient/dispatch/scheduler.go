@@ -304,7 +304,7 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	if claim.lost {
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
-	active, err := s.nativeClaimActive(ctx, claim, false)
+	active, err := s.nativeClaimRenewable(ctx, claim)
 	if err != nil || !active {
 		if err == nil {
 			err = orchestrator.ErrSchedulingClaimLost
