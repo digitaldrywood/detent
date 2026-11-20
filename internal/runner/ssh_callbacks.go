@@ -48,11 +48,12 @@ func (r *Runner) SSHHosts() []string {
 
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
+	_, spoolArtifacts := request.Execution.(spooledArtifactExecution)
 	callbacks := map[string]bool{
 		"usage": true, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
 		"checkpoint": request.CheckpointValidate != nil, "tools": request.AgentToolHandler != nil,
-		"model_permit": request.AcquireModelPermit != nil,
+		"model_permit": request.AcquireModelPermit != nil, "artifact_spool": spoolArtifacts,
 	}
 	for name, enabled := range callbacks {
 		if enabled {
@@ -84,6 +85,8 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		switch name {
 		case "usage":
 			request.OnUsageUpdate = func(update UsageUpdate) error { return peer.Call(ctx, "usage", nil, update) }
+		case "artifact_spool":
+			request.artifactLogChunks = new(int)
 		case "activity":
 			request.OnActivityUpdate = func(update AgentActivityUpdate) error { return peer.Call(ctx, "activity", nil, update) }
 		case "override":
