@@ -789,6 +789,34 @@ func (e *spooledRoundExecution) FinalizeArtifactsWithSpoolCount(ctx context.Cont
 	return e.FinalizeArtifacts(ctx, directory)
 }
 
+func TestRestoredSourceGateRepairSurvivesCompletion(t *testing.T) {
+	info := workspace.Info{Path: t.TempDir()}
+	source := &completedExecutionWorkspace{
+		retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head"}}}},
+		validationExit:             1,
+		validationOutput:           "source.go:4:2: project gate failure",
+	}
+	execution := &spooledRoundExecution{}
+	cfg := config.Config{}
+	cfg.Gate.Run = "make check"
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: source, AgentBackend: &fakeCodexClient{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: 1}), time.Minute)
+	defer cancel()
+	request := RunRequest{
+		Execution: execution, artifactSpool: &sourceArtifactSpool{}, finalizeNativeWork: true,
+		reviewSource:   func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error) { return "", nil },
+		retainedReview: &retainedReviewWorkspace{},
+	}
+	err = r.afterExecution(ctx, request, source, info, workspace.Issue{PhaseSource: &tracker.NativePhaseReceipt{}}, AgentResume{}, false)
+	repair, ok := err.(*sourceGateRepair)
+	if !ok || repair.output != source.validationOutput || execution.finalizations != 0 {
+		t.Fatalf("restored gate result=%T %v, artifact finalizations=%d", err, err, execution.finalizations)
+	}
+}
+
 func TestArtifactsSealAfterCorrectiveRound(t *testing.T) {
 	info := workspace.Info{Path: t.TempDir()}
 	source := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "head"}}}}}
