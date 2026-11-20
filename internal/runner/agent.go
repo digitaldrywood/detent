@@ -1400,7 +1400,10 @@ func (r *Runner) runAgentTurn(
 			}
 		}
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
-			if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+			identity := result.RuntimeIdentity
+			if observe != nil {
+				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, detentSessionID, identity) })
+			} else if err := r.persistSessionIdentity(updateCtx, detentSessionID, identity); err != nil {
 				return err
 			}
 			if result.RuntimeIdentity.HasRuntimeValues() {
