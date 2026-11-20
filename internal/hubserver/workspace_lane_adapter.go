@@ -28,7 +28,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/storageconversion"
-	"github.com/digitaldrywood/detent/internal/localboard"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -65,10 +64,6 @@ func (s *Service) localBoardDeps() coreimport.LocalBoardDeps {
 
 func (s *Service) importLocalBoard(c echo.Context) error {
 	return s.localBoardDeps().ImportLocalBoard(c)
-}
-
-func (s *Service) importLocalBoardRecord(ctx context.Context, scope hubscope.NativeScope, request localboard.Request) (localboard.Result, error) {
-	return s.localBoardDeps().ImportLocalBoardRecord(ctx, scope, request)
 }
 
 const backgroundStorageBudget = storageconversion.BackgroundBudget
@@ -188,14 +183,6 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 
 func (w *workspaceService) refuseRelayWrite(ctx context.Context, record workspaceRecord, connection *relayConnection, frame workspacesession.Frame) string {
 	return w.relayHTTP().RefuseRelayWrite(ctx, workspacehub.Record(record), connection, frame)
-}
-
-func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *relayConnection, record workspaceRecord, frame workspacesession.Frame) {
-	w.relayHTTP().HandlePersonFrame(ctx, connection, workspacehub.Record(record), frame)
-}
-
-func (w *workspaceService) channelPermitted(record workspaceRecord, channel string) bool {
-	return w.relayHTTP().ChannelPermitted(workspacehub.Record(record), channel)
 }
 
 func (w *workspaceService) touchWorkspace(ctx context.Context, record workspaceRecord) {
@@ -334,10 +321,6 @@ func workspaceLabelAllowed(ctx context.Context) bool {
 
 func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	return workspacehub.RequireUnreservedLabels(ctx, labels)
-}
-
-func firstTerminalState(project tracker.NativeProject) (string, bool) {
-	return workspacehub.FirstTerminalState(project)
 }
 
 func workspaceReadableSubject(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, id string) error {

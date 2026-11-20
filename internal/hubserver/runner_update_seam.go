@@ -41,10 +41,6 @@ func (s *Service) runnerUpdateService() *runnerupdate.Service {
 	})
 }
 
-func runnerUpdateTarget(version string) string {
-	return runnerupdate.Target(version)
-}
-
 func minimumRunnerVersion(version string) string {
 	return runnerupdate.MinimumVersion(version)
 }
@@ -63,10 +59,6 @@ func runnerUpdateReady(r runnerauth.Runner, request runnerUpdateChange, now time
 
 func runnerUpdateConflict(revision int64, message string) error {
 	return hubapi.FromFeatureError(runnerupdate.Conflict(revision, message))
-}
-
-func validateRunnerUpdateObservation(report *runnerauth.UpdateObservation, protocol int, version, platform, architecture string) error {
-	return hubapi.FromFeatureError(runnerupdate.ValidateObservation(report, protocol, version, platform, architecture))
 }
 
 func applyUrgentRunnerRouting(r *runnerauth.Runner, urgent urgentRunnerUpdate, version string) {

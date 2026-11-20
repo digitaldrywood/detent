@@ -117,15 +117,6 @@ func (f workspaceFixture) get(t *testing.T, token, id string) *httptest.Response
 	return performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces/"+id, token, nil)
 }
 
-func (f workspaceFixture) list(t *testing.T, query string) workspaceListResponse {
-	t.Helper()
-	response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/workspaces"+query, f.token, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var listing workspaceListResponse
-	decodeHubResponse(t, response, &listing)
-	return listing
-}
-
 // item resolves the dispatch issue a workspace was given, which is the handle
 // the runner is actually offered.
 func (f workspaceFixture) item(t *testing.T, workspaceID string) string {

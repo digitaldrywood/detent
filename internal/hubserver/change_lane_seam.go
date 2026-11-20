@@ -47,10 +47,6 @@ func (s *Service) prepareValidatorAuditDispositions(ctx context.Context, scope h
 	return s.changeAuditEvidence().PrepareValidatorAuditDispositions(ctx, scope, changeID, run)
 }
 
-func lockValidatorAuditDispositions(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, runID int64, expected []eventstore.AuditDisposition) error {
-	return releaseaudits.LockValidatorAuditDispositions(ctx, r, scope, runID, expected)
-}
-
 func (s *Service) summarizeChangeWithAuditDispositions(ctx context.Context, scope hubscope.NativeScope, detail tracker.ChangeDetail, policyID, reviewPolicyID string, now time.Time, priorApproval bool) (tracker.ChangeSummary, error) {
 	return s.changeAuditEvidence().SummarizeChangeWithAuditDispositions(ctx, scope, detail, policyID, reviewPolicyID, now, priorApproval)
 }
@@ -161,20 +157,6 @@ func rootChangeWorkflowTransition(p *changelanding.WorkflowTransition) *changeWo
 		return nil
 	}
 	return &changeWorkflowTransition{feature: p, eligible: p.Eligible, plan: &p.Plan, request: p.Request, outbound: p.Outbound}
-}
-
-type changeReviewWorkflow = changelanding.ReviewWorkflow
-
-func (s *Service) prepareChangeReviewWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, review tracker.ChangeReview, approval hubrecords.ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	return s.changeWorkflow().PrepareChangeReviewWorkflow(ctx, scope, change, version, review, approval, now)
-}
-
-func (s *Service) prepareChangeCheckWorkflow(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, version tracker.ChangeVersion, check tracker.ChangeCheck, approval hubrecords.ChangeVersionApproval, now time.Time) (*changeReviewWorkflow, error) {
-	return s.changeWorkflow().PrepareChangeCheckWorkflow(ctx, scope, change, version, check, approval, now)
-}
-
-func (s *Service) recheckChangeReviewWorkflow(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, p *changeReviewWorkflow, current eventstore.Change) (bool, error) {
-	return s.changeWorkflow().RecheckChangeReviewWorkflow(ctx, w, scope, p, current)
 }
 
 func (s *Service) prepareChangeWorkflowTransition(ctx context.Context, scope hubscope.NativeScope, change tracker.ChangeRequest, approval hubrecords.ChangeVersionApproval, rework bool, now time.Time) (*changeWorkflowTransition, error) {
@@ -558,10 +540,6 @@ func (s *Service) prepareQualityEscapeTenant(ctx context.Context, scope hubscope
 	return s.changeQuality().PrepareQualityEscapeTenant(ctx, scope, change, request, now)
 }
 
-func recheckTenantQualityEscape(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, change tracker.ChangeRequest, escape tracker.QualityEscape, prepared *preparedTenantQualityEscape) error {
-	return changerules.RecheckTenantQualityEscape(ctx, w, scope, change, escape, prepared)
-}
-
 func (s *Service) changeQuality() *changerules.QualityEscapes {
 	return changerules.NewQualityEscapes(changerules.QualityEscapesDeps{
 		PopulationLimit:                maxAnalyticsPopulation,
@@ -635,10 +613,6 @@ func (s *Service) getChange(c echo.Context) error {
 
 func changeDetailResponse(detail tracker.ChangeDetail) tracker.ChangeDetail {
 	return changeapi.ChangeDetailResponse(detail)
-}
-
-func changeVersionResponse(version tracker.ChangeVersion) tracker.ChangeVersion {
-	return changeapi.ChangeVersionResponse(version)
 }
 
 func (s *Service) reviewChange(c echo.Context) error {

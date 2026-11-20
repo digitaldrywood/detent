@@ -7,7 +7,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
@@ -138,10 +137,6 @@ func (s *Service) validateRunnerLeaseTenant(ctx context.Context, scope hubscope.
 
 var errLeaseSelectorUnbound = runnerfleet.ErrLeaseSelectorUnbound
 
-func checkLeaseSelector(pinned policystore.LeasePolicy, identity runnerstore.Identity, legacyChecked bool) error {
-	return runnerfleet.CheckLeaseSelector(pinned, identity, legacyChecked)
-}
-
 func (s *Service) checkLegacyLeaseSelector(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID) error {
 	return s.runnerRoutingDeps().CheckLegacyLeaseSelector(ctx, scope, leaseID)
 }
@@ -234,10 +229,6 @@ func validRunnerPlatform(os, architecture string) bool {
 	return runnerfleet.ValidRunnerPlatform(os, architecture)
 }
 
-func (s *Service) readRunnerIdentityTenant(ctx context.Context, organization tracker.OrganizationID, runnerID string) (runnerauth.Identity, error) {
-	return s.runnerIdentityDeps().ReadRunnerIdentityTenant(ctx, organization, runnerID)
-}
-
 func (s *Service) runnerDiagnosticDeps() runnerfleet.DiagnosticDeps {
 	return runnerfleet.DiagnosticDeps{
 		Repository:      s.config.TenantRepository,
@@ -260,10 +251,6 @@ type preparedRunnerAdmissionDecisions = runnerfleet.PreparedRunnerAdmissionDecis
 
 func (s *Service) prepareRunnerAdmissionDecisions(ctx context.Context, credential hubapi.APICredential, view *runnerauth.ProjectConfiguration) (preparedRunnerAdmissionDecisions, error) {
 	return s.runnerDiagnosticDeps().PrepareRunnerAdmissionDecisions(ctx, credential, view)
-}
-
-func appendRunnerAdmissionDecisions(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, prepared preparedRunnerAdmissionDecisions, receivedAt time.Time) error {
-	return runnerfleet.AppendRunnerAdmissionDecisions(ctx, w, identity, prepared, receivedAt)
 }
 
 func storeRunnerProjectObservationTenant(ctx context.Context, scope hubscope.NativeScope, view runnerauth.ProjectConfiguration, receivedAt time.Time, writer runnerstore.Writer) error {
@@ -309,16 +296,8 @@ func (s *Service) readWorkItemDiff(ctx context.Context, scope hubscope.NativeSco
 	return s.runnerDiffDeps().ReadWorkItemDiff(ctx, scope, item, source)
 }
 
-func (s *Service) postAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, attemptID string, request tracker.AttemptDiffRequest, checkOnly bool) (tracker.AttemptDiffReceipt, error) {
-	return s.runnerDiffDeps().PostAttemptDiffTenant(ctx, scope, attemptID, request, checkOnly)
-}
-
 func (s *Service) readAttemptDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID, source string, seq int64) (tracker.AttemptDiff, error) {
 	return s.runnerDiffDeps().ReadAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
-}
-
-func (s *Service) readWorkItemDiffTenant(ctx context.Context, scope hubscope.NativeScope, item, source string) (tracker.WorkItemDiff, error) {
-	return s.runnerDiffDeps().ReadWorkItemDiffTenant(ctx, scope, item, source)
 }
 
 func (s *Service) attemptDiffBodyExists(c echo.Context) error {
@@ -580,22 +559,6 @@ func isProviderWait(err error) bool {
 	return claimapi.IsProviderWait(err)
 }
 
-func validateProviderCandidates(candidates []tracker.NativeCapacityCandidate) error {
-	return claimapi.ValidateProviderCandidates(candidates)
-}
-
-func validateProviderReports(reports []providercapacity.Report) error {
-	return runnerfleet.ValidateProviderReports(reports)
-}
-
-func mergeRunnerProviderReports(previous, reports []providercapacity.Report, now time.Time) []providercapacity.Report {
-	return runnerfleet.MergeRunnerProviderReports(previous, reports, now)
-}
-
-func validateTenantProviderAttempt(ctx context.Context, reader tenantstore.Reader, runnerID string, data tracker.NativeRunData, now time.Time) error {
-	return claimapi.ValidateTenantProviderAttempt(ctx, reader, runnerID, data, now)
-}
-
 func (s *Service) runnerClaimDeps() claimapi.Deps {
 	return claimapi.Deps{
 		Repository:                       s.config.TenantRepository,
@@ -743,10 +706,6 @@ func nativeClaimProjectEnabled(project projectstore.Record) bool {
 	return claimapi.NativeClaimProjectEnabled(project)
 }
 
-func nativeCompatibleClaimSource(project projectstore.Record, issue tracker.NativeIssue, candidate claimstore.Candidate) bool {
-	return claimapi.NativeCompatibleClaimSource(cutoverSourceReference, project, issue, candidate)
-}
-
 func readNativeClaimChangeFacts(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, plans []hubrecords.NativeClaimPlan) error {
 	return claimapi.ReadNativeClaimChangeFacts(ctx, r, scope, plans)
 }
@@ -817,10 +776,6 @@ func nativeStaleLease(err error, message string) error {
 	return executionapi.NativeStaleLease(err, message)
 }
 
-func validExecutionName(value string) bool {
-	return executionapi.ValidExecutionName(value)
-}
-
 func validCheckpointRef(ref string) bool {
 	return executionapi.ValidCheckpointRef(ref)
 }
@@ -851,20 +806,12 @@ func (s *Service) readNativeAttemptPage(ctx context.Context, scope hubscope.Nati
 	return nativeAttemptPage{Page: page.Page, encoded: page.Encoded}, err
 }
 
-func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
-	return executionapi.NativeAttemptAuthorityProjection(attempt)
-}
-
 func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {
 	return executionapi.NativeAttemptDisplayIdentity(attempt)
 }
 
 func nativeRecordedAttemptIdentity(attempt leasestore.Attempt, runtime bool) (*tracker.NativeExecutionIdentity, bool) {
 	return executionapi.NativeRecordedAttemptIdentity(attempt, runtime)
-}
-
-func nativeExecutionDisplayIdentity(execution *tracker.NativeExecutionIdentity, runtime *agentidentity.Identity) *tracker.NativeExecutionIdentity {
-	return executionapi.NativeExecutionDisplayIdentity(execution, runtime)
 }
 
 func (s *Service) getNativeAttempt(c echo.Context) error {
@@ -904,16 +851,8 @@ func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run trac
 	return executionapi.NativeAttemptRunMatches(snapshot, run)
 }
 
-func readTenantAttemptEvidence(ctx context.Context, r tenantstore.Reader, snapshot *hubrecords.TenantAttemptSnapshot) error {
-	return executionapi.ReadTenantAttemptEvidence(ctx, r, snapshot)
-}
-
 func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error) {
 	return s.runnerAttemptDeps().ReadNativeAttemptRunTenant(ctx, snapshot)
-}
-
-func nativeAttemptArchiveReadError(ref *attachment.ArchiveReference, err error) error {
-	return executionapi.NativeAttemptArchiveReadError(ref, err)
 }
 
 func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, detail *hubrecords.RunDetailReference) ([]byte, error) {
@@ -928,22 +867,6 @@ type attemptSummaryContextKey = executionapi.AttemptSummaryContextKey
 
 func attemptSummaryRead(ctx context.Context) bool {
 	return executionapi.AttemptSummaryRead(ctx)
-}
-
-func (p nativeAttemptPage) candidateBytes(encoded []byte, cursor string) int {
-	return (executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}).CandidateBytes(encoded, cursor)
-}
-
-func (p *nativeAttemptPage) appendAttempt(attempt tracker.NativeAttempt, encoded []byte) {
-	page := executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}
-	page.AppendAttempt(attempt, encoded)
-	p.Page, p.encoded = page.Page, page.Encoded
-}
-
-func (p *nativeAttemptPage) finish() {
-	page := executionapi.NativeAttemptPage{Page: p.Page, Encoded: p.encoded}
-	page.Finish()
-	p.Page, p.encoded = page.Page, page.Encoded
 }
 
 func readAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, item string, attempts []leasestore.Attempt, evidence bool) (tenantstore.Reader, error) {
@@ -999,10 +922,6 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope hubscope.NativeSc
 	return s.runnerRuntimeDeps().ReadNativeRuntime(ctx, scope, item, attemptID, admission...)
 }
 
-func (s *Service) readNativeRuntimeTenant(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
-	return s.runnerRuntimeDeps().ReadNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
-}
-
 type runtimeAttemptSelector struct {
 	firstEvidencePage bool
 	evidenceAfter     string
@@ -1028,10 +947,6 @@ func (s *Service) readSelectedNativeRuntimeTenant(ctx context.Context, scope hub
 		selector.failures.rows, selector.failures.legacy = value.Failures.Rows, value.Failures.Legacy
 	}
 	return evidence, sequence, found, err
-}
-
-func validateNativeAdmissionContext(c tracker.NativeAdmissionContext) error {
-	return executionapi.ValidateNativeAdmissionContext(c)
 }
 
 func (s *Service) hydrateSchedulerDecisionRows(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, evidence tracker.NativeRuntimeEvidence, rows eventstore.SchedulerDecisionRows) (tracker.NativeRuntimeEvidence, error) {
@@ -1083,16 +998,8 @@ func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest, pr
 	return runnerfleet.ValidateTenantHeartbeatProjection(request, projectID)
 }
 
-func (s *Service) readRunnerResponseSnapshot(ctx context.Context, organization tracker.OrganizationID, credential, runner string, project tracker.ProjectID, read func(context.Context, tenantstore.Reader, time.Time) error) error {
-	return s.runnerHeartbeatDeps().ReadRunnerResponseSnapshot(ctx, organization, credential, runner, project, read)
-}
-
 func readRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
 	return runnerfleet.ReadRunnerResponseRouting(ctx, r, identity, snapshot)
-}
-
-func readHeartbeatChangesTenant(ctx context.Context, reader tenantstore.Reader, scope hubscope.NativeScope, cursor nativeCursor, key []byte, reset bool, digest, policyID string, now time.Time) (*runnerauth.HeartbeatChanges, error) {
-	return runnerfleet.ReadHeartbeatChangesTenant(ctx, reader, scope, cursor, key, reset, digest, policyID, now)
 }
 
 func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hubscope.NativeScope, snapshot *runnerauth.RoutingSnapshot) error {
@@ -1106,14 +1013,6 @@ func registrationCleanupRequired(candidate hubrecords.TenantAttemptSnapshot, run
 
 func nativeRunCleanupRequired(run tracker.NativeRunData) bool {
 	return runnerfleet.NativeRunCleanupRequired(run)
-}
-
-func (s *Service) readRunnerCleanupCandidates(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, candidates []runnerauth.ReleasedExecution) ([]hubrecords.TenantAttemptSnapshot, error) {
-	return s.runnerHeartbeatDeps().ReadRunnerCleanupCandidates(ctx, r, scope, candidates)
-}
-
-func (s *Service) resolveRunnerCleanupCandidates(ctx context.Context, scope hubscope.NativeScope, runner string, candidates []hubrecords.TenantAttemptSnapshot, state *runnerauth.ClaimState) error {
-	return s.runnerHeartbeatDeps().ResolveRunnerCleanupCandidates(ctx, scope, runner, candidates, state)
 }
 
 func (s *Service) runnerHeartbeatCapabilitiesDigest(c echo.Context) (string, bool, error) {
@@ -1151,10 +1050,6 @@ func spriteFactValue(value *string) string {
 
 func runtimeRunnersFromSnapshot(snapshot runnerstore.RuntimeCapacitySnapshot, _ hubscope.NativeScope, now time.Time) []runnerauth.Runner {
 	return runnerfleet.RuntimeRunnersFromSnapshot(landingCapacityKey, snapshot, now)
-}
-
-func runtimeLandingCapacity(snapshot runnerstore.RuntimeProviderSnapshot, project tracker.ProjectID) (bool, int) {
-	return runnerfleet.RuntimeLandingCapacity(nativeLandingCapacityUnknown, snapshot, project)
 }
 
 func (s *Service) runnerClaimHTTPDeps() claimapi.HTTPDeps {
@@ -1241,10 +1136,6 @@ func (s *Service) readRuntimeAdmissionTenant(ctx context.Context, scope hubscope
 func nativeRuntimeIssueContractEvaluation(plan hubrecords.NativeClaimPlan) (nativeContractEvaluation, error) {
 	evaluation, err := claimapi.NativeRuntimeIssueContractEvaluation(releaseDeliveryContractFactsCurrent, plan)
 	return nativeContractEvaluation{Allowed: evaluation.Allowed, ReasonCode: evaluation.ReasonCode, Reason: evaluation.Reason, Missing: evaluation.Missing}, err
-}
-
-func (s *Service) readRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {
-	return s.runnerAdmissionDeps().ReadRuntimeUnresolvedDependencies(ctx, r, scope, issue, project)
 }
 
 func decodeRunHistory(ctx context.Context, q hubapi.NativeQueryer, raw string, result *tracker.CollaborationData) error {
