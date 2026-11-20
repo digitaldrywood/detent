@@ -13,12 +13,55 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
+
+func TestProviderKeepalivesDoNotExtendIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lifetime := sessiontimeout.Start(t.Context(), 5*time.Minute, time.Hour, nil)
+		defer lifetime.Close()
+		records := make(chan scanResult, 4)
+		writer := rpcWriter(func(data []byte) (int, error) {
+			var request rpcRecord
+			if err := json.Unmarshal(data, &request); err != nil {
+				return 0, err
+			}
+			results := map[string]string{
+				"initialize":                `{"protocolVersion":1}`,
+				"session/new":               `{"sessionId":"session"}`,
+				"session/set_config_option": `{"configOptions":[{"id":"model","currentValue":"example/model"}]}`,
+			}
+			if request.Method == "session/prompt" {
+				go func() {
+					for range 2 {
+						select {
+						case <-lifetime.Context().Done():
+							return
+						case <-time.After(4 * time.Minute):
+						}
+						records <- scanResult{record: rpcRecord{Method: "session/keepalive"}}
+					}
+					records <- scanResult{record: rpcRecord{ID: request.ID, Result: json.RawMessage(`{"stopReason":"end_turn"}`)}}
+				}()
+				return len(data), nil
+			}
+			records <- scanResult{record: rpcRecord{ID: request.ID, Result: json.RawMessage(results[request.Method])}}
+			return len(data), nil
+		})
+		backend, _ := NewAgentBackend(Options{StallTimeout: 5 * time.Minute})
+		state := &turnState{lifetime: lifetime, req: runner.AgentTurnRequest{Model: "example/model"}, emit: func(runner.AgentUpdate) error { return nil }}
+		err := backend.exchange(lifetime.Context(), writer, records, state)
+		if err := lifetime.Result(err); !errors.Is(err, sessiontimeout.ErrIdle) {
+			t.Fatalf("idle session result = %v", err)
+		}
+	})
+}
 
 func TestACPHelper(t *testing.T) {
 	mode := os.Getenv("DETENT_TEST_ACP")

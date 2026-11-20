@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 type rpcRecord struct {
@@ -70,6 +71,7 @@ func scan(ctx context.Context, reader io.Reader, records chan<- scanResult) {
 }
 
 type turnState struct {
+	lifetime  *sessiontimeout.Session
 	req       runner.AgentTurnRequest
 	emit      runner.AgentUpdateHandler
 	sessionID string
@@ -80,6 +82,9 @@ func (s *turnState) result() runner.AgentTurnResult {
 }
 func (s *turnState) update(u runner.AgentUpdate) error {
 	u.ThreadID, u.TurnID, u.ProviderSessionID = s.sessionID, s.sessionID, s.sessionID
+	if s.lifetime != nil {
+		u.NonActivity = !runner.ObserveProviderActivity(s.lifetime, u, u.Tool == "execute" && u.Status == "in_progress")
+	}
 	return s.emit(u)
 }
 
@@ -93,13 +98,6 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 			}
 			return nil, err
 		}
-		var timer *time.Timer
-		var stalled <-chan time.Time
-		if b.options.StallTimeout > 0 {
-			timer = time.NewTimer(b.options.StallTimeout)
-			stalled = timer.C
-			defer timer.Stop()
-		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -107,17 +105,12 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 					return nil, &infrastructureError{err: ctx.Err(), startup: true}
 				}
 				return nil, ctx.Err()
-			case <-stalled:
-				return nil, &infrastructureError{err: errors.New("OpenCode ACP stream stalled"), startup: method != "session/prompt"}
 			case item, ok := <-records:
 				if !ok {
 					return nil, &infrastructureError{err: io.ErrUnexpectedEOF, startup: method != "session/prompt"}
 				}
 				if item.err != nil {
 					return nil, &infrastructureError{err: item.err, startup: method != "session/prompt"}
-				}
-				if timer != nil {
-					timer.Reset(b.options.StallTimeout)
 				}
 				r := item.record
 				if r.Method != "" {
@@ -140,6 +133,9 @@ func (b *AgentBackend) exchange(ctx context.Context, input io.Writer, records <-
 				}
 				if len(r.Result) == 0 {
 					return nil, &infrastructureError{err: errors.New("ACP response omitted result")}
+				}
+				if s.lifetime != nil {
+					s.lifetime.Event("response/" + strconv.Itoa(id))
 				}
 				return r.Result, nil
 			}

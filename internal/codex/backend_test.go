@@ -743,7 +743,19 @@ func TestAgentBackendNativeCommandWait(t *testing.T) {
 					tools = []runner.AgentTool{{Name: "board_state", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 				}
 				started := time.Now()
-				_, err = backend.RunTurnWithTools(ctx, req, tools, nil, nil)
+				var completedTool bool
+				_, err = backend.RunTurnWithTools(ctx, req, tools, nil, func(update runner.AgentUpdate) error {
+					if update.AuxiliaryTurn && !update.NonActivity {
+						t.Error("unrelated turn update counted as activity")
+					}
+					if tt.traffic == "replay" && update.Type == runner.AgentUpdateToolCompleted {
+						if update.NonActivity != completedTool {
+							t.Error("tool completion activity did not distinguish replay")
+						}
+						completedTool = true
+					}
+					return nil
+				})
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("RunTurnWithTools() = %v, want %v", err, tt.wantErr)
 				}

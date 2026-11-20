@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 type streamRecord struct {
@@ -50,6 +51,7 @@ type usage struct {
 }
 
 type turnState struct {
+	lifetime      *sessiontimeout.Session
 	req           runner.AgentTurnRequest
 	emit          runner.AgentUpdateHandler
 	provider      string
@@ -68,6 +70,9 @@ func (s *turnState) result() runner.AgentTurnResult {
 
 func (s *turnState) update(u runner.AgentUpdate) error {
 	u.ThreadID, u.TurnID, u.ProviderSessionID = s.sessionID, s.sessionID, s.sessionID
+	if s.lifetime != nil {
+		u.NonActivity = !runner.ObserveProviderActivity(s.lifetime, u, u.Type == runner.AgentUpdateToolStarted && u.Status == "ACTIVE" && u.Command != "")
+	}
 	return s.emit(u)
 }
 
@@ -116,13 +121,6 @@ func scan(ctx context.Context, reader io.Reader, records chan<- scanResult) {
 
 func (b *AgentBackend) exchange(ctx context.Context, records <-chan scanResult, writeDone <-chan error, s *turnState) error {
 	started := false
-	var timer *time.Timer
-	var stall <-chan time.Time
-	if b.options.StallTimeout > 0 {
-		timer = time.NewTimer(b.options.StallTimeout)
-		stall = timer.C
-		defer timer.Stop()
-	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -136,14 +134,9 @@ func (b *AgentBackend) exchange(ctx context.Context, records <-chan scanResult, 
 			if err != nil {
 				return err
 			}
-		case <-stall:
-			return &infrastructureError{err: errors.New("antigravity stream stalled"), startup: !started}
 		case item, ok := <-records:
 			if !ok {
 				return &infrastructureError{err: fmt.Errorf("antigravity exited before a result: %w", io.EOF), startup: !started}
-			}
-			if timer != nil {
-				timer.Reset(b.options.StallTimeout)
 			}
 			if item.err != nil {
 				return &infrastructureError{err: fmt.Errorf("invalid Antigravity stream record: %w", item.err), startup: !started}
@@ -218,7 +211,7 @@ func (s *turnState) step(u stepUpdate) error {
 			if !ok {
 				command = ""
 			}
-			if err := s.update(runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: itemID, Tool: u.ToolName, Command: command}); err != nil {
+			if err := s.update(runner.AgentUpdate{Type: runner.AgentUpdateToolStarted, ItemID: itemID, Tool: u.ToolName, Command: command, Status: u.State}); err != nil {
 				return err
 			}
 		}
