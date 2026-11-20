@@ -291,7 +291,7 @@ func CheckWorkflowSourceDrift(ctx context.Context, id string, project globalconf
 		check.Detail += fmt.Sprintf("working tree %d bytes; %s size unavailable: workflow is outside ref checkout", len(working), ref)
 		return check
 	}
-	reference, err := WorkflowSourceGit(ctx, comparisonRoot, "show", ref+":"+filepath.ToSlash(relative))
+	reference, err := WorkflowSourceGit(ctx, comparisonRoot, "show", "--end-of-options", ref+":"+filepath.ToSlash(relative))
 	check.Detail += fmt.Sprintf("working tree %d bytes; %s", len(working), ref)
 	if err != nil {
 		check.Status = Warn

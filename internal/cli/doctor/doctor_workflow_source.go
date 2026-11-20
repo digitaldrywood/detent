@@ -16,8 +16,8 @@ func WorkflowSourceGit(ctx context.Context, sourceRoot string, args ...string) (
 	commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
-	commandArgs := append([]string{"-C", sourceRoot}, args...)
-	cmd := exec.CommandContext(commandCtx, "git", commandArgs...)
+	cmd := exec.CommandContext(commandCtx, "git", args...)
+	cmd.Dir = sourceRoot
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return "", commandCtx.Err()

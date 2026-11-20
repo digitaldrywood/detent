@@ -14,6 +14,29 @@ import (
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 )
 
+func TestDoctorWorkflowRefEndsGitOptions(t *testing.T) {
+	repo, _ := initDoctorWorkflowSourceRepository(t)
+	trace := filepath.Join(t.TempDir(), "git-trace.log")
+	t.Setenv("GIT_TRACE", trace)
+	project := globalconfig.Project{WorkflowRef: "origin/main"}
+	check := checkDoctorWorkflowRefFreshness(t.Context(), "alpha", project, repo)
+	if check.Status != doctorOK {
+		t.Fatalf("workflow ref check = %+v, want healthy", check)
+	}
+	output, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range []string{
+		"rev-parse --verify --end-of-options ",
+		"rev-parse --verify --symbolic-full-name --end-of-options origin/main",
+	} {
+		if !strings.Contains(string(output), command) {
+			t.Errorf("Git trace did not include %q", command)
+		}
+	}
+}
+
 func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 	t.Parallel()
 

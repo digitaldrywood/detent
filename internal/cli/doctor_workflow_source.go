@@ -115,12 +115,12 @@ func defaultDoctorWorkflowSourcePolicy(
 func checkDoctorWorkflowRefFreshness(ctx context.Context, projectID string, project globalconfig.Project, sourceRoot string) doctorCheck {
 	name := "Project " + projectID + " workflow source policy"
 	ref := strings.TrimSpace(project.WorkflowRef)
-	localRevision, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--verify", ref+"^{commit}")
+	localRevision, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
 		return doctorCheck{Name: name, Status: doctorFail, Detail: fmt.Sprintf("project %s workflow_ref %s could not be resolved: %v", projectID, ref, err), Hint: "Fetch the configured workflow ref, then rerun detent doctor."}
 	}
 	localRevision = strings.TrimSpace(localRevision)
-	fullRef, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--symbolic-full-name", ref)
+	fullRef, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--verify", "--symbolic-full-name", "--end-of-options", ref)
 	if err != nil {
 		return doctorCheck{Name: name, Status: doctorWarn, Detail: fmt.Sprintf("project %s workflow_ref %s resolved to %s but its remote counterpart could not be identified: %v", projectID, ref, doctorShortRevision(localRevision), err), Hint: "Use a remote-tracking workflow_ref such as origin/main so doctor can verify freshness."}
 	}
@@ -168,7 +168,7 @@ func checkDoctorWorkflowRefDrift(
 		sourceRoot = expandedWorkdir
 	}
 
-	revision, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--verify", ref+"^{commit}")
+	revision, err := doctorWorkflowSourceGit(ctx, sourceRoot, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
 		return doctorCheck{}, false
 	}
