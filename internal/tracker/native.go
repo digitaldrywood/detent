@@ -611,11 +611,18 @@ type NativeCapacityPage struct {
 }
 
 type NativeLeaseMutation struct {
-	CancelAttempt   bool         `json:"cancel_attempt,omitempty"`
-	LandingCapacity int          `json:"landing_capacity,omitempty"`
-	FencingToken    FencingToken `json:"fencing_token,string"`
-	TTLSeconds      int64        `json:"ttl_seconds,omitempty"`
-	Reason          string       `json:"reason,omitempty"`
+	ProviderPhase   *NativeProviderPhaseMutation `json:"provider_phase,omitempty"`
+	CancelAttempt   bool                         `json:"cancel_attempt,omitempty"`
+	LandingCapacity int                          `json:"landing_capacity,omitempty"`
+	FencingToken    FencingToken                 `json:"fencing_token,string"`
+	TTLSeconds      int64                        `json:"ttl_seconds,omitempty"`
+	Reason          string                       `json:"reason,omitempty"`
+}
+
+type NativeProviderPhaseMutation struct {
+	Expected    providercapacity.Requirement `json:"expected"`
+	Requirement providercapacity.Requirement `json:"requirement"`
+	Sequence    int64                        `json:"sequence,string"`
 }
 
 type NativeDisposition struct {

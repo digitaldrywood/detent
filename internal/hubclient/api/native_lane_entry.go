@@ -37,31 +37,13 @@ func (c *NativeConnector) CurrentLaneEntry(ctx context.Context, issue connector.
 	if cached, ok := c.laneEntries.lookup(id, revision); ok {
 		return cached.transition, cached.found, nil
 	}
-	path, err := NativeItemPath(id)
+	events, err := c.client.RecentWorkflowTransitions(ctx, id, 1)
 	if err != nil {
 		return connector.IssueStateTransition{}, false, err
 	}
 	var latest *tracker.CollaborationEvent
-	cursor := ""
-	for range nativeLaneEntryHistoryPages {
-		params := url.Values{"view": {"timeline"}, "direction": {"newest"}, "limit": {"200"}, "cursor": {cursor}}
-		var page tracker.Page[tracker.CollaborationEvent]
-		if err := c.client.client.request(ctx, http.MethodGet, c.client.base()+path+"/history?"+params.Encode(), nil, &page); err != nil {
-			return connector.IssueStateTransition{}, false, err
-		}
-		for index := range page.Items {
-			if page.Items[index].Type == "workflow.transitioned" {
-				latest = &page.Items[index]
-				break
-			}
-		}
-		cursor = page.NextCursor
-		if latest != nil || cursor == "" {
-			break
-		}
-	}
-	if latest == nil && cursor != "" {
-		return connector.IssueStateTransition{}, false, errors.New("current lane entry history is incomplete")
+	if len(events) != 0 {
+		latest = &events[0]
 	}
 	entry := nativeLaneEntry{revision: revision}
 	if latest != nil && strings.EqualFold(strings.TrimSpace(latest.Data.ToState), strings.TrimSpace(issue.State)) {
@@ -73,6 +55,35 @@ func (c *NativeConnector) CurrentLaneEntry(ctx context.Context, issue connector.
 	}
 	c.laneEntries.store(id, entry)
 	return entry.transition, entry.found, nil
+}
+
+func (c *NativeClient) RecentWorkflowTransitions(ctx context.Context, id tracker.NativeWorkItemID, limit int) ([]tracker.CollaborationEvent, error) {
+	path, err := NativeItemPath(id)
+	if err != nil {
+		return nil, err
+	}
+	var transitions []tracker.CollaborationEvent
+	cursor := ""
+	for range nativeLaneEntryHistoryPages {
+		params := url.Values{"view": {"timeline"}, "direction": {"newest"}, "limit": {"200"}, "cursor": {cursor}}
+		var page tracker.Page[tracker.CollaborationEvent]
+		if err := c.client.request(ctx, http.MethodGet, c.base()+path+"/history?"+params.Encode(), nil, &page); err != nil {
+			return nil, err
+		}
+		for _, event := range page.Items {
+			if event.Type == "workflow.transitioned" {
+				transitions = append(transitions, event)
+				if len(transitions) == limit {
+					return transitions, nil
+				}
+			}
+		}
+		if page.NextCursor == "" {
+			return transitions, nil
+		}
+		cursor = page.NextCursor
+	}
+	return nil, errors.New("current lane entry history is incomplete")
 }
 
 func (e *nativeLaneEntries) lookup(id tracker.NativeWorkItemID, revision string) (nativeLaneEntry, bool) {

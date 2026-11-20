@@ -2,106 +2,45 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/markdownfence"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-type nativePlanWorkflow struct {
-	states []connector.WorkflowState
-	stop   string
-}
-
-// Resolve the existing native workflow before starting a planner. Projects
-// without a dedicated plan lane use their configured review destination; an
-// approved automated result goes directly to implementation under the same lease.
-func (o *Orchestrator) nativePlanLanes(ctx context.Context, issue connector.Issue) (nativePlanWorkflow, error) {
-	states, err := o.connector.(connector.WorkflowStateReader).WorkflowStates(ctx) //nolint:errcheck // nativeWorkflow verifies this capability before native planning.
+func (o *Orchestrator) completePlanApprovalWait(ctx context.Context, state *State, event runpkg.Completion, running Running) {
+	issue := running.Issue
+	wait := event.Result.FinalMessage
+	signal, reported := runpkg.NativeCompletionSignalFromMessage(wait)
+	if !reported || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
+		o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), "plan approval requires a typed question")
+		return
+	}
+	reader := o.connector.(connector.WorkflowStateReader)
+	states, err := reader.WorkflowStates(ctx)
+	if err == nil {
+		_, ok := connector.CompletionLane(states, issue.State, blockedStatusState, true)
+		if !ok || dispatchableState(states, blockedStatusState) {
+			err = errors.New("workflow has no human action destination for plan approval")
+		} else if normalizeState(issue.State) != normalizeState(blockedStatusState) {
+			err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, "human_action", workflowLaneMetadata{ReasonDetail: wait})
+		}
+	}
 	if err != nil {
-		return nativePlanWorkflow{}, err
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
 	}
-	cfg := gate.EffectivePlan(o.cfg.Plan)
-	stop := cfg.Stop
-	if !nativePlanStateExists(states, stop) {
-		stop = normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
+	running.Issue.State = blockedStatusState
+	running.Issue.WorkpadSignal = signal
+	o.observeNativeCompletion(ctx, event, false)
+	if err := o.abandonClaim(ctx, issue.ID); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return
 	}
-	w := nativePlanWorkflow{states: states, stop: stop}
-	if _, ok := w.path(issue.State, planImplementationState); !ok || !dispatchableState(states, planImplementationState) {
-		return w, fmt.Errorf("native plan workflow has no implementation handoff from %s to %s", issue.State, planImplementationState)
-	}
-	if _, ok := w.path(issue.State, stop); !ok || dispatchableState(states, stop) {
-		return w, fmt.Errorf("native plan workflow has no review handoff from %s to %s (configured plan stop %s)", issue.State, stop, cfg.Stop)
-	}
-	return w, nil
-}
-
-func nativePlanStateExists(states []connector.WorkflowState, name string) bool {
-	for _, state := range states {
-		if normalizeState(state.Name) == normalizeState(name) && !state.Terminal && !state.OperatorOnly {
-			return true
-		}
-	}
-	return false
-}
-
-func (w nativePlanWorkflow) path(from, to string) ([]string, bool) {
-	if normalizeState(from) == normalizeState(to) {
-		return nil, true
-	}
-	if target, ok := connector.CompletionLane(w.states, from, to, true); ok {
-		return []string{target}, true
-	}
-	// Hosted Todo moves through In Progress to the existing review lane.
-	if first, ok := connector.CompletionLane(w.states, from, planImplementationState, true); ok {
-		if last, ok := connector.CompletionLane(w.states, first, to, true); ok {
-			return []string{first, last}, true
-		}
-	}
-	return nil, false
-}
-
-func nativePlanReviewOutput(output string) string {
-	lines := strings.Split(output, "\n")
-	var fence markdownfence.Fence
-	for i, line := range lines {
-		if fence.Consume(line) || fence != "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(line), "## Detent Plan Review") {
-			end := i + 1
-			for end < len(lines) {
-				if !fence.Consume(lines[end]) && fence == "" && strings.HasPrefix(strings.TrimSpace(lines[end]), "## ") {
-					break
-				}
-				end++
-			}
-			return strings.TrimSpace(strings.Join(lines[i:end], "\n"))
-		}
-	}
-	return ""
-}
-
-func (o *Orchestrator) nativePlanTarget(ctx context.Context, issue connector.Issue, output string) ([]string, error) {
-	w, err := o.nativePlanLanes(ctx, issue)
-	if err != nil {
-		return nil, err
-	}
-	review := nativePlanReviewOutput(output)
-	evaluation := planReviewEvaluationFromComments([]connector.IssueComment{{Body: review}})
-	decision := gate.EvaluatePlan(o.cfg.Plan, issue.Labels, evaluation.Summary)
-	target := planReviewTargetState(decision.Action)
-	if target == "" || !nativePlanStateExists(w.states, target) {
-		target = w.stop
-		if !o.cfg.AutoPromote.humanReviewEnabled() {
-			target = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
-		}
-	}
-	path, ok := w.path(issue.State, target)
-	if !ok {
-		return nil, fmt.Errorf("native plan workflow has no move from %s to %s", issue.State, target)
-	}
-	return path, nil
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan approval requested")
+	delete(state.Claimed, issue.ID)
+	delete(state.Retry, issue.ID)
+	o.recordCompletionUsage(ctx, state, event, running.Issue)
 }

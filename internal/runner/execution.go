@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
+	"github.com/digitaldrywood/detent/internal/runner/planphase"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -143,42 +144,11 @@ type CompletionExecution interface {
 }
 
 func NativeCompletionSignalFromMessage(message string) (*workpad.Signal, bool) {
-	signal, reported := workpad.SignalFromComment(message, "", "")
-	if reported && signal != nil && signal.Invalid == nil && hostPublicationOnly(signal) {
-		signal.Status, signal.ReasonCode, signal.Blockers = workpad.StatusComplete, "", nil
-	}
-	return signal, reported
+	return phaserecovery.CompletionSignalFromMessage(message)
 }
 
 func NativeDispositionFromMessage(message string) *tracker.NativeDisposition {
-	signal, reported := NativeCompletionSignalFromMessage(message)
-	if !reported || signal == nil || signal.Invalid != nil {
-		return nil
-	}
-	return &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode, FinalSummary: workpad.FinalSummary(message), BlockerEvidence: signal.Blockers}
-}
-
-// hostPublicationOnly reports a blocked disposition whose only stated cause is
-// that the host has not yet published or landed the work. The host publishes
-// only after a complete disposition, so treating it as blocked would wait on
-// itself forever.
-func hostPublicationOnly(signal *workpad.Signal) bool {
-	if signal.Status != workpad.StatusBlocked || signal.HumanAction != "" {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(signal.ReasonCode)) {
-	case "publication_blocked", "awaiting_host_publish":
-		return len(signal.Blockers) == 0
-	case "host_publication_pending":
-		if len(signal.Blockers) == 0 {
-			return true
-		}
-		if len(signal.Blockers) == 1 {
-			blocker := signal.Blockers[0]
-			return blocker.Ref == "instance:tool" && blocker.Owner == workpad.BlockerOwnerInstance && blocker.Predicate == nil
-		}
-	}
-	return false
+	return phaserecovery.DispositionFromMessage(message)
 }
 
 type AvailabilityExecution interface {
@@ -403,6 +373,12 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err := source.PrepareSourceIteration(guarded, *expected); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if req.PlanPhase && !req.phaseReceipts {
+		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
+	}
+	if mode == RunModeImplement && req.phaseReceipts && workflow.Config.Plan.Enabled && req.phaseContinuation.LastPushed == nil {
+		req.PlanPhase = req.PlanPhase || planphase.Unfinished(req.Execution.Recovery(), req.Issue.State, req.phaseContinuation.Workflow)
 	}
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {

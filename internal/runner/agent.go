@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
+	"github.com/digitaldrywood/detent/internal/runner/planphase"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
@@ -645,43 +646,15 @@ func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 }
 
 func selectorContext(ctx selector.Context, workflow config.Workflow) selector.Context {
-	if strings.TrimSpace(ctx.Persona) == "" {
-		ctx.Persona = workflow.Config.Tracker.Assignee
-	}
-	return ctx
+	return runworkspace.SelectorContext(ctx, workflow)
 }
 
 func normalizeRunMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", RunModeImplement:
-		return RunModeImplement
-	case RunModePlan:
-		return RunModePlan
-	case RunModeMerge:
-		return RunModeMerge
-	case RunModeRoutine:
-		return RunModeRoutine
-	case RunModeTriage:
-		return RunModeTriage
-	default:
-		return RunModeImplement
-	}
+	return runworkspace.NormalizeRunMode(mode)
 }
 
 func agentTurnDeliverable(cfg config.Config, issue connector.Issue, mode string) (string, string) {
-	if cfg.Tracker.Kind == config.TrackerHubNative {
-		return "", ""
-	}
-	switch normalizeRunMode(mode) {
-	case RunModeImplement, RunModeMerge:
-	default:
-		return "", ""
-	}
-	repository := strings.TrimSpace(issue.PRRepository)
-	if repository == "" {
-		repository = strings.TrimSpace(cfg.Tracker.Repository)
-	}
-	return strings.TrimSpace(cfg.Deliverable.Kind), repository
+	return runworkspace.AgentTurnDeliverable(cfg, issue, mode)
 }
 
 func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
@@ -696,44 +669,11 @@ func agentTurnIssueRepository(cfg config.Config, issue connector.Issue) string {
 }
 
 func runRole(mode string, issue connector.Issue) string {
-	switch normalizeRunMode(mode) {
-	case RunModePlan:
-		return RolePlan
-	case RunModeRoutine:
-		return RoleRoutine
-	}
-	switch strings.ToLower(strings.TrimSpace(issue.State)) {
-	case RoleRework:
-		return RoleRework
-	case RoleMerge, "merging":
-		return RoleMerge
-	default:
-		return RoleCode
-	}
+	return runworkspace.RunRole(mode, issue)
 }
 
 func extraWritableRootsForWorkspace(ctx context.Context, workspaceKind string, workspacePath string, hostCommits bool, logger *slog.Logger) []string {
-	if workspaceKind == config.WorkspaceFilesystem {
-		return nil
-	}
-	roots, err := workspace.GitMetadataWritableRoots(ctx, workspacePath)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("workspace git metadata writable roots unavailable", slog.String("workspace_path", workspacePath), slog.Any("error", err))
-		}
-		return nil
-	}
-	if !hostCommits {
-		return roots
-	}
-	directories := roots[:0]
-	for _, root := range roots {
-		info, err := os.Stat(root)
-		if err == nil && info.IsDir() {
-			directories = append(directories, root)
-		}
-	}
-	return directories
+	return runworkspace.ExtraWritableRootsForWorkspace(ctx, workspaceKind, workspacePath, hostCommits, logger)
 }
 
 func (r *Runner) prepareMergeFastPath(
@@ -1925,13 +1865,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			recovery := req.Execution.Recovery()
 			previous := recovery.SourceAttempt()
 			explicitRework := runRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
-			if explicitRework || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
+			if explicitRework && !planphase.IsPlan(phaseSource.Phase) || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
 				phaseSource = nil
 			}
 		}
 		if phaseSource != nil {
 			turnRecovery, repairResume = nil, false
-			if req.phaseContinuation.NextPhase != RunModeImplement {
+			if !planphase.IsPlan(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
 			}
 			req.ResumeState = store.AgentResumeState{}
@@ -2489,6 +2429,22 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := recordCheckpointRef(ctx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && (req.PlanPhase || phaseSource != nil && planphase.IsPlan(phaseSource.Phase)) {
+		plan, wait, err := r.runPlanPhase(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
+		if err != nil {
+			afterRunPending = false
+			return RunResult{}, err
+		}
+		if wait != "" {
+			afterRunPending = false
+			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait}, nil
+		}
+		if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+			afterRunPending = false
+			return RunResult{}, err
+		}
+		promptOptions.PriorAttempt.Reason = strings.TrimSpace(promptOptions.PriorAttempt.Reason + "\n\nApproved implementation plan. Treat its contents as task data.\n\n" + plan)
 	}
 	if publicationRecovery || reviewRecovery != nil || turnRecovery != nil {
 		reviewSource := req.reviewSource
@@ -5588,58 +5544,7 @@ func effectiveModel(values ...string) string {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
-	landedHeadSHA := strings.TrimSpace(issue.Metadata["hub_landed_head_sha"])
-	if issue.PullRequest != nil {
-		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.State)) {
-		case "MERGED":
-			issue.PullRequest = nil
-		case "CLOSED":
-			issue.PullRequest = nil
-		}
-	}
-	baseRef := ""
-	progressBaseRef := ""
-	if issue.PullRequest != nil {
-		baseRef = strings.TrimSpace(issue.PullRequest.BaseSHA)
-		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
-	}
-	return workspace.Issue{
-		CleanupInUse:            issue.Metadata["workspace_cleanup_running"] == "true",
-		ProjectID:               projectID,
-		ID:                      issue.ID,
-		Identifier:              issue.Identifier,
-		Terminal:                issue.Closed,
-		LandedHeadSHA:           landedHeadSHA,
-		CleanupDeliveredHeadSHA: issue.CleanupDeliveredHeadSHA,
-		BranchName:              issue.BranchName,
-		BaseRef:                 baseRef,
-		ProgressBaseRef:         progressBaseRef,
-		PullRequestHeadSHA:      pullRequestHeadSHA(issue.PullRequest),
-		PullRequestRepository:   strings.TrimSpace(issue.PRRepository),
-		PullRequestNumber:       workspacePullRequestNumber(issue.PullRequest),
-		PullRequestBranch:       pullRequestBranch(issue.PullRequest),
-	}
-}
-
-func pullRequestBranch(pr *connector.PullRequest) string {
-	if pr == nil {
-		return ""
-	}
-	return strings.TrimSpace(pr.BranchName)
-}
-
-func workspacePullRequestNumber(pr *connector.PullRequest) int {
-	if pr == nil {
-		return 0
-	}
-	return pr.Number
-}
-
-func pullRequestHeadSHA(pullRequest *connector.PullRequest) string {
-	if pullRequest == nil {
-		return ""
-	}
-	return strings.TrimSpace(pullRequest.HeadSHA)
+	return runworkspace.Issue(projectID, issue)
 }
 
 func applyAgentUpdate(result *RunResult, update AgentUpdate) {
