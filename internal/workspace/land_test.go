@@ -887,6 +887,23 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	}
 }
 
+func TestLocalGitLandingReopensRetainedItemWorktree(t *testing.T) {
+	t.Parallel()
+	f := newLandingFixture(t)
+	runGit(t, f.source, "remote", "set-url", "origin", "https://example.test/owner/repository.git")
+	issue := f.issue
+	issue.RetainedLanding = true
+	issue.Landing = &LandOptions{Repository: RepositoryURL(t.Context(), f.source), HeadSHA: f.head}
+	info, err := f.backend.Create(t.Context(), issue)
+	if err != nil || info.Path != f.info.Path || info.Branch != f.info.Branch || info.Created {
+		t.Fatalf("landing should reuse the item workspace: %+v %v", info, err)
+	}
+	issue.Landing.HeadSHA = strings.Repeat("a", 40)
+	if _, err := f.backend.Create(t.Context(), issue); err == nil {
+		t.Fatal("landing accepted a different head")
+	}
+}
+
 func TestLocalGitNativeLanding(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

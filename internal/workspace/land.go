@@ -32,7 +32,7 @@ type LandingWorkspaceCleaner interface {
 }
 
 func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) error {
-	if issue.Landing == nil {
+	if issue.Landing == nil || issue.RetainedLanding {
 		return nil
 	}
 	normalized, err := l.normalizeInfo(info, issue)

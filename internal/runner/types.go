@@ -628,14 +628,16 @@ func (e *agentDurationLimitError) Is(target error) bool {
 }
 
 type RunRequest struct {
-	AttemptWorkspace  workspace.AttemptWorkspace               `json:",omitzero"`
-	PrepareRun        func(context.Context, *RunRequest) error `json:"-"`
-	ProgressDecision  progresscheck.Record                     `json:",omitzero"`
-	workspacePrepared bool
-	workspaceBackend  workspace.Backend
-	LandingBatch      *workspace.LandingBatchTicket `json:"-"`
+	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
+	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
+	ProgressDecision    progresscheck.Record                     `json:",omitzero"`
+	workspacePrepared   bool
+	workspaceBackend    workspace.Backend
+	LandingBatch        *workspace.LandingBatchTicket `json:"-"`
+	RetainItemWorkspace bool
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.
+	DeferExecutionFinish     bool
 	DeferExecutionFinish     bool
 	NativeReviewContinuation *NativeReviewContinuation
 	TriageContext            string

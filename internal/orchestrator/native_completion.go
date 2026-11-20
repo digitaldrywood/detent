@@ -620,6 +620,8 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.Policy = running.Policy
 	request.Mode = runpkg.RunModeMerge
 	request.NativeReviewContinuation = nil
+	_, ownsWorkspace := request.Execution.(runpkg.AttemptWorkerExecution)
+	request.RetainItemWorkspace = !reviewOnly && ownsWorkspace && event.Result.WorkspaceBranch != ""
 	if reviewOnly {
 		change := event.Result.NativeChange
 		request.Mode = runpkg.RunModeImplement
