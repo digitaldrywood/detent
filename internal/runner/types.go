@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -633,6 +634,13 @@ func (e *agentDurationLimitError) Error() string {
 
 func (e *agentDurationLimitError) Is(target error) bool {
 	return target == e.limit || target == context.DeadlineExceeded
+}
+
+func (e *agentDurationLimitError) Unwrap() error {
+	if e.limit == ErrTurnDurationExceeded {
+		return &sessiontimeout.Error{Kind: sessiontimeout.TurnDeadline, Limit: e.duration}
+	}
+	return nil
 }
 
 type RunRequest struct {
