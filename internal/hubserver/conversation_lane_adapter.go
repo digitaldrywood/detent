@@ -24,6 +24,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/coordinator"
 	"github.com/digitaldrywood/detent/internal/runner"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/artifact/cataloghub"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -40,7 +42,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/threads"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) registerArtifactRoutes(e *echo.Echo) {

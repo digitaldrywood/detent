@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -16,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {

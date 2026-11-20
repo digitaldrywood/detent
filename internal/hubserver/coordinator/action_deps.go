@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"

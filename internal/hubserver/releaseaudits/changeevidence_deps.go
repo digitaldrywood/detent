@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -12,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 type ChangeEvidenceDeps struct {

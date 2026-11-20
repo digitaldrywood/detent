@@ -13,8 +13,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/procstart"
 	"golang.org/x/sys/unix"
+
+	"github.com/digitaldrywood/detent/internal/procstart"
 )
 
 func NewLifetime() (*Lifetime, error) {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -16,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacerelay"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/labstack/echo/v4"
 

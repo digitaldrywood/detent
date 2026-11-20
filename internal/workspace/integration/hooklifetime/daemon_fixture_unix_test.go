@@ -15,11 +15,12 @@ import (
 	"syscall"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
-	"golang.org/x/sys/unix"
 )
 
 func runDetachedHook(t *testing.T) {

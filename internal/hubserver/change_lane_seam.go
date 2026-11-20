@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
@@ -31,7 +33,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *Service) getAuditDispositions(c echo.Context) error {

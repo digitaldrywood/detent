@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -19,7 +21,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 func (s *ChangeEvidence) authorizeAuditChange(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, changeID string) error {
