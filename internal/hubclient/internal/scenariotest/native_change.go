@@ -42,6 +42,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -87,7 +88,7 @@ func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(con
 			e.beforePublication(opts)
 		}
 		if e.publicationFault != nil {
-			defer e.publicationFault(&opts)()
+			ctx = e.publicationFault(ctx, &opts)
 		}
 		opts.GitHubClient = e.forge
 		if e.retainedHead != "" {
@@ -1750,39 +1751,30 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if readErr != nil {
 					t.Fatal(readErr)
 				}
-				var publicationFault func(*workspace.LandOptions) func()
-				var readFailure, pushMarker string
+				var publicationFault func(context.Context, *workspace.LandOptions) context.Context
+				var pushCompleted, refReadFailed atomic.Bool
 				if test.PublicationFault == "initial_read" || test.PublicationFault == "post_push_read" {
-					realGit, lookupErr := exec.LookPath("git")
-					if lookupErr != nil {
-						t.Fatal(lookupErr)
-					}
-					wrapper := t.TempDir()
-					pushMarker = filepath.Join(wrapper, "pushed")
-					readFailure = filepath.Join(wrapper, "read-failed")
-					quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
-					condition := "true"
-					if test.PublicationFault == "post_push_read" {
-						condition = "test -f " + quote(pushMarker)
-					}
-					for name, script := range map[string]string{
-						"uploadpack":  "#!/bin/sh\nif " + condition + "; then : > " + quote(readFailure) + "; exit 1; fi\nexec " + quote(realGit) + " upload-pack \"$@\"\n",
-						"receivepack": "#!/bin/sh\n" + quote(realGit) + " receive-pack \"$@\"\nresult=$?\nif [ \"$result\" -ne 0 ]; then exit \"$result\"; fi\n: > " + quote(pushMarker) + "\nexit 1\n",
-					} {
-						if writeErr := os.WriteFile(filepath.Join(wrapper, name), []byte(script), 0o700); writeErr != nil {
-							t.Fatal(writeErr)
-						}
-					}
-					publicationFault = func(opts *workspace.LandOptions) func() {
+					publicationFault = func(ctx context.Context, opts *workspace.LandOptions) context.Context {
 						opts.TargetBranch = "main"
-						for _, name := range []string{"uploadpack", "receivepack"} {
-							nativeChangeGit(t, source, "config", "remote.origin."+name, quote(filepath.Join(wrapper, name)))
-						}
-						return func() {
-							for _, name := range []string{"uploadpack", "receivepack"} {
-								nativeChangeGit(t, source, "config", "--unset", "remote.origin."+name)
+						return commandshell.WithCommandStarter(ctx, func(_ context.Context, cmd *exec.Cmd) (func() error, error) {
+							if slices.Contains(cmd.Args, "ls-remote") && slices.Contains(cmd.Args, "refs/heads/"+oldPublicationBranch) &&
+								(test.PublicationFault == "initial_read" || pushCompleted.Load()) {
+								refReadFailed.Store(true)
+								return nil, errors.New("fixture publication ref read failed")
 							}
-						}
+							push := slices.Contains(cmd.Args, "push")
+							wait, err := commandshell.StartCommand(ctx, cmd)
+							if err != nil || !push {
+								return wait, err
+							}
+							return func() error {
+								if err := wait(); err != nil {
+									return err
+								}
+								pushCompleted.Store(true)
+								return errors.New("fixture git push reply lost")
+							}, nil
+						})
 					}
 				}
 				prBefore := forgePull
@@ -1808,12 +1800,11 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{ownedExecution: owner, forge: forge, losePush: &losePush, retainedHead: retainedHead, publicationFault: publicationFault}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				result.NativeChange = owner.NativeChange()
 				if test.PublicationFault == "initial_read" || test.PublicationFault == "post_push_read" {
-					if _, statErr := os.Stat(readFailure); statErr != nil {
-						t.Fatalf("publication did not reach the injected ref read failure: %v; run error=%v", statErr, err)
+					if !refReadFailed.Load() {
+						t.Fatalf("publication did not reach the injected ref read failure; run error=%v", err)
 					}
-					_, pushErr := os.Stat(pushMarker)
-					if test.PublicationFault == "post_push_read" && pushErr != nil || test.PublicationFault == "initial_read" && !errors.Is(pushErr, os.ErrNotExist) {
-						t.Fatalf("publication ref read failed at the wrong push boundary: %v", pushErr)
+					if pushCompleted.Load() != (test.PublicationFault == "post_push_read") {
+						t.Fatalf("publication ref read failed at the wrong push boundary: push completed=%t", pushCompleted.Load())
 					}
 					if !api.NativeTransportUnavailable(err) || !owner.CompletionData().Handoff.UncertainForgeEffect() || owner.Settled() || provider.calls != callsBefore || forgeCreates != wantCreates || forgePull != prBefore {
 						t.Fatalf("ref read failure lost infrastructure retry: settled=%t checkpoint=%+v error=%v", owner.Settled(), owner.CompletionData().Handoff, err)
@@ -3246,7 +3237,7 @@ type nativePublicationFixtureExecution struct {
 	losePush          *bool
 	retainedHead      string
 	beforePublication func(workspace.LandOptions)
-	publicationFault  func(*workspace.LandOptions) func()
+	publicationFault  func(context.Context, *workspace.LandOptions) context.Context
 }
 
 // claim fetches the only candidate and adopts it, as dispatch does.
