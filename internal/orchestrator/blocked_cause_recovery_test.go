@@ -4,10 +4,22 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
+
+func TestNativeBlockedMaintenanceSkipsUnfencedRetry(t *testing.T) {
+	issue := connector.Issue{ID: "item", State: "Blocked"}
+	tracker := &nativeWorkflowConnector{beforeStates: func() { t.Error("blocked maintenance called the legacy retry path") }}
+	orch := &Orchestrator{connector: tracker}
+	state := newState(orch.cfg)
+	if transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, time.Now()); len(transitioned) != 0 || len(state.Retry) != 0 {
+		t.Fatalf("blocked maintenance transitioned %v and queued %v", transitioned, state.Retry)
+	}
+}
 
 // Exercise both observations synchronously: the run loop may publish either
 // snapshot before a reader observes the park.

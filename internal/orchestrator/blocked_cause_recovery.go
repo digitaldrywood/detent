@@ -320,6 +320,9 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 			}
 		}
 	}
+	if o.nativeWorkflow() {
+		return false
+	}
 	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, issue.BlockerReason, ""); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("blocked recovery retry failed", "issue_id", issue.ID, "error", err)
