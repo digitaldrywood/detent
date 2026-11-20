@@ -2241,6 +2241,7 @@ type NativeAttempt struct {
 	VerdictReason                      *string
 	VerdictNextStep                    *string
 	VerdictDisposition                 *string
+	VerdictRoundID                     *string
 }
 
 type NativeAttemptEvent struct {
@@ -3068,6 +3069,23 @@ type NativeDuplicateChallenge struct {
 	CandidateRevisions []int64
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
+}
+
+type NativePhaseReceipt struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	IssueID        int64
+	Position       int64
+	IdempotencyKey string
+	LeaseID        string
+	FencingToken   int64
+	AttemptID      string
+	Phase          string
+	Branch         string
+	HeadSHA        string
+	TreeSha        string
+	PolicyID       string
+	InputDigest    string
 }
 
 type NativePrPublication struct {

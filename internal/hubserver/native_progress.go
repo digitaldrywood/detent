@@ -760,7 +760,11 @@ func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, 
 	if facts.attempt.IssueID != item.ID {
 		return facts, corestore.ErrNotFound
 	}
-	if err := o.authorizeRunner(ctx, r, facts.attempt, input); err != nil {
+	var fence *tracker.Mutation
+	if input != nil {
+		fence = &tracker.Mutation{LeaseID: input.LeaseID, FencingToken: input.FencingToken}
+	}
+	if err := o.service.authorizeProgressRunner(ctx, r, o.scope, facts.attempt, fence); err != nil {
 		return facts, err
 	}
 	if facts.attempt.Status == "running" {
@@ -802,23 +806,23 @@ func (o terminalProgressOwner) facts(ctx context.Context, r tenantstore.Reader, 
 	return facts, nil
 }
 
-func (o terminalProgressOwner) authorizeRunner(ctx context.Context, r tenantstore.Reader, attempt leasestore.Attempt, input *progresscheck.Publication) error {
-	if o.scope.Credential.Scope != hubapi.APIScopeWorker {
+func (s *Service) authorizeProgressRunner(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, attempt leasestore.Attempt, input *tracker.Mutation) error {
+	if scope.Credential.Scope != hubapi.APIScopeWorker {
 		if input != nil {
 			return hubscope.RunnerUnauthorized()
 		}
 		return nil
 	}
-	now := o.service.config.Clock().UTC()
-	identity, err := r.RunnerIdentityByCredential(ctx, o.scope.Credential.ID)
+	now := s.config.Clock().UTC()
+	identity, err := r.RunnerIdentityByCredential(ctx, scope.Credential.ID)
 	if err != nil {
 		return err
 	}
-	runner := o.scope.Credential.Runner
-	if !runnerIdentityMatchesHeldLease(identity, o.scope.Organization, runner.RunnerID, o.scope.Credential.ID, runner.MachineID, now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
+	runner := scope.Credential.Runner
+	if !runnerIdentityMatchesHeldLease(identity, scope.Organization, runner.RunnerID, scope.Credential.ID, runner.MachineID, now) || identity.State == "disabled" || !slices.Contains(identity.Operations, runnerauth.Read) {
 		return hubscope.RunnerUnauthorized()
 	}
-	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, o.scope.Project, now)
+	allowed, err := r.RunnerProjectAuthorized(ctx, identity.RunnerID, scope.Project, now)
 	if err != nil {
 		return err
 	}
@@ -842,7 +846,7 @@ func (o terminalProgressOwner) authorizeRunner(ctx context.Context, r tenantstor
 	if err != nil {
 		return err
 	}
-	if lease.OrganizationID != o.scope.Organization || lease.IssueID != attempt.IssueID || lease.FencingToken != attempt.FencingToken || lease.MachineID != string(identity.MachineID) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
+	if lease.OrganizationID != scope.Organization || lease.IssueID != attempt.IssueID || lease.FencingToken != attempt.FencingToken || lease.MachineID != string(identity.MachineID) || lease.ReleasedAt != nil || !lease.ExpiresAt.After(now) {
 		return tracker.ErrStaleFencingToken
 	}
 	return nil
