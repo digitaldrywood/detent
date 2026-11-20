@@ -17,8 +17,8 @@ func ToolSourceFingerprint(ctx context.Context, path string) string {
 	if err != nil || truncated || index == "" {
 		return ""
 	}
-	working, err := gitDiffFingerprint(ctx, path, nil, "--no-textconv", "--ignore-submodules=none")
-	if err != nil {
+	working, truncated, err := gitDiffArgsWithinLimit(ctx, path, nil, toolSourceReadLimit, gitDiagnosticArgs("diff", "--no-ext-diff", "--no-textconv", "--binary", "--full-index", "--ignore-submodules=none")...)
+	if err != nil || truncated {
 		return ""
 	}
 	untracked, truncated, err := gitDiffArgsWithinLimit(ctx, path, nil, toolSourceReadLimit, gitDiagnosticArgs("ls-files", "--others", "--exclude-standard", "-z")...)

@@ -479,6 +479,7 @@ func WithThreadPreparation(prepare func(context.Context, string) error) AppServe
 
 func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate UpdateHandler) (result RunTurnResult, err error) {
 	ctx = contextOrBackground(ctx)
+	turnAuthority := ctx
 	if req.ConversationControl != nil {
 		ctx = WithConversationTurn(ctx)
 	}
@@ -646,7 +647,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			}
 		}
 
-		if err := s.streamTurn(lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate, newTurnToolLoop(req, threadID, turnID, s.logger)); err != nil {
+		if err := s.streamTurn(turnAuthority, lifetime, turnTransport, threadID, turnID, req.ToolHandler, elicitationState, onUpdate, newTurnToolLoop(req, threadID, turnID, s.logger)); err != nil {
 			var noProgress *progresscheck.NoProgressError
 			if errors.As(err, &noProgress) {
 				return result, err
@@ -1373,6 +1374,7 @@ func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
 }
 
 func (s *AppServer) streamTurn(
+	authority context.Context,
 	lifetime *sessiontimeout.Session,
 	transport Transport,
 	threadID string,
@@ -1383,16 +1385,58 @@ func (s *AppServer) streamTurn(
 	toolLoop *turnToolLoop,
 ) error {
 	ctx := lifetime.Context()
+	receive := transport.Receive
+	if toolLoop != nil {
+		probeCtx, cancelProbe := context.WithCancel(ctx)
+		defer cancelProbe()
+		toolLoop.probeContext = probeCtx
+		var stop func()
+		receive, stop = readTurnStream(ctx, transport, threadID, turnID, cancelProbe)
+		defer stop()
+	}
+	var snapshotRequested bool
 	for {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
 		}
-		msg, err := transport.Receive(ctx)
+		msg, err := receive(ctx)
 		if err != nil {
+			if toolLoop != nil && authority.Err() == nil {
+				if update, confirmed := s.reconcileTerminalTurn(authority, threadID, turnID); confirmed {
+					if err := emitUpdate(update, onUpdate); err != nil {
+						return err
+					}
+					return finishProviderTurn(authority, update, toolLoop)
+				}
+			}
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
 		if toolLoop != nil {
+			if !snapshotRequested && finalAnswerForTurn(msg, threadID, turnID) {
+				snapshotRequested = true
+				if err := requestTurnSnapshot(ctx, transport, threadID); err != nil {
+					s.logger.DebugContext(ctx, "request provider terminal snapshot", "error", err)
+				}
+			}
+			if snapshotRequested && msg.Method == "" && requestIDMatches(msg.ID, threadReadRequestID) {
+				if update, confirmed := terminalTurnSnapshot(msg.Result, threadID, turnID); confirmed {
+					if err := emitUpdate(update, onUpdate); err != nil {
+						return err
+					}
+					return finishProviderTurn(ctx, update, toolLoop)
+				}
+			}
+			if msg.Method == "turn/completed" {
+				update, _, err := updateFromMessage(msg)
+				if err != nil {
+					return err
+				}
+				if update.ThreadID != threadID || update.TurnID != turnID || update.Status == "" {
+					continue
+				}
+			}
+
 			if err := toolLoop.observe(ctx, transport, msg); err != nil {
 				return err
 			}
@@ -1428,18 +1472,7 @@ func (s *AppServer) streamTurn(
 		if update.Type != UpdateTurnCompleted || update.AuxiliaryTurn {
 			continue
 		}
-		if update.Status == "" || update.Status == "completed" {
-			return nil
-		}
-		if toolLoop != nil && toolLoop.interrupted.Action != "" && update.Status == "interrupted" && update.ThreadID == threadID && update.TurnID == turnID {
-			toolLoop.report(ctx, toolLoop.interrupted, toolLoop.sequence)
-			return &progresscheck.NoProgressError{Evidence: toolLoop.interrupted}
-		}
-		return &TurnFailedError{
-			Status:  update.Status,
-			Message: update.BackendErrorMessage,
-			Body:    update.BackendErrorBody,
-		}
+		return finishProviderTurn(ctx, update, toolLoop)
 	}
 }
 
