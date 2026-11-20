@@ -206,6 +206,7 @@ func (b *AgentBackend) runTurn(
 		},
 		ConversationControl:     req.ConversationControl,
 		DetectToolLoops:         req.DetectToolLoops,
+		RecordLoopIntervention:  req.RecordLoopIntervention,
 		TextOnly:                req.TextOnly,
 		IsolatedTools:           req.IsolatedTools,
 		Workspace:               req.Workspace,

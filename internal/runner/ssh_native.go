@@ -544,3 +544,11 @@ func (e *sshNativeExecution) LatestRoundVerdict(ctx context.Context) (*progressc
 func (e *sshNativeExecution) RecordRoundVerdict(ctx context.Context, payload progresscheck.RoundInput) error {
 	return e.peer.Call(ctx, "execution.RecordRoundVerdict", nil, payload)
 }
+
+func (e *sshNativeExecution) FreezeExecutionChecklist(ctx context.Context, list tracker.ExecutionChecklist) error {
+	return e.peer.Call(ctx, "execution.FreezeExecutionChecklist", nil, list)
+}
+
+func (e *sshNativeExecution) RecordLoopIntervention(ctx context.Context, event tracker.ExecutionLoopIntervention) error {
+	return e.peer.Call(ctx, "execution.RecordLoopIntervention", nil, event)
+}

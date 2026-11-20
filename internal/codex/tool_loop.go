@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -32,32 +33,34 @@ type loopToolItem struct {
 }
 
 type turnToolLoop struct {
-	observer     progresscheck.ToolLoop
-	thread, turn string
-	workspace    string
-	logger       *slog.Logger
-	source       func(context.Context, string) string
-	sequence     uint64
-	active       map[string]struct{}
-	completed    []string
-	parallel     bool
-	uncertain    bool
-	pendingSteer string
-	interrupted  progresscheck.ToolLoopEvidence
+	observer      progresscheck.ToolLoop
+	thread, turn  string
+	workspace     string
+	logger        *slog.Logger
+	source        func(context.Context, string) string
+	sequence      uint64
+	active        map[string]struct{}
+	completed     []string
+	parallel      bool
+	uncertain     bool
+	pendingSteer  progresscheck.ToolLoopEvidence
+	steerSequence uint64
+	record        func(tracker.ExecutionLoopIntervention)
+	interrupted   progresscheck.ToolLoopEvidence
 }
 
 func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message Message) error {
-	if message.Method == "" && requestIDMatches(message.ID, loopSteerRequestID) && l.pendingSteer != "" {
+	if message.Method == "" && requestIDMatches(message.ID, loopSteerRequestID) && l.pendingSteer.Action != "" {
 		if message.Error == nil {
 			var response struct {
 				TurnID string `json:"turnId"`
 			}
 			if json.Unmarshal(message.Result, &response) == nil && response.TurnID == l.turn {
-				l.observer.Acknowledge(l.pendingSteer, l.sequence)
-				l.logger.InfoContext(ctx, "provider tool loop steer acknowledged", "thread_id", l.thread, "turn_id", l.turn, "fingerprint", l.pendingSteer)
+				l.observer.Acknowledge(l.pendingSteer.Fingerprint, l.sequence)
+				l.report(ctx, l.pendingSteer, l.steerSequence)
 			}
 		}
-		l.pendingSteer = ""
+		l.pendingSteer = progresscheck.ToolLoopEvidence{}
 		return nil
 	}
 	if message.Method == "" && requestIDMatches(message.ID, loopInterruptRequestID) && message.Error != nil {
@@ -122,15 +125,15 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 	evidence := l.observer.Observe(l.sequence, fingerprint)
 	switch evidence.Action {
 	case progresscheck.ToolLoopSteer:
-		if l.pendingSteer != "" {
+		if l.pendingSteer.Action != "" {
 			return nil
 		}
 		input, _ := turnInputItems("The same tool experiment has produced the same result three times. Compare the result with the active acceptance criterion. Choose one different check that can resolve what remains unknown. Preserve the existing work and report a contradiction if the criterion cannot be satisfied.", nil, "")
 		if err := sendRequest(ctx, transport, loopSteerRequestID, "turn/steer", map[string]any{"threadId": l.thread, "expectedTurnId": l.turn, "input": input}); err != nil {
 			return err
 		}
-		l.pendingSteer = evidence.Fingerprint
-		l.log(ctx, evidence)
+		l.pendingSteer = evidence
+		l.steerSequence = l.sequence
 	case progresscheck.ToolLoopStop:
 		if err := sendRequest(ctx, transport, loopInterruptRequestID, "turn/interrupt", map[string]string{"threadId": l.thread, "turnId": l.turn}); err != nil {
 			return err
@@ -140,7 +143,10 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 	return nil
 }
 
-func (l *turnToolLoop) log(ctx context.Context, evidence progresscheck.ToolLoopEvidence) {
+func (l *turnToolLoop) report(ctx context.Context, evidence progresscheck.ToolLoopEvidence, sequence uint64) {
+	if l.record != nil {
+		l.record(tracker.ExecutionLoopIntervention{ThreadID: l.thread, TurnID: l.turn, Action: string(evidence.Action), Fingerprint: evidence.Fingerprint, Period: evidence.Period, Repeats: evidence.Repeats, Sequence: sequence})
+	}
 	l.logger.InfoContext(ctx, "provider tool loop intervention", "action", evidence.Action, "repeats", evidence.Repeats, "period", evidence.Period, "fingerprint", evidence.Fingerprint, "thread_id", l.thread, "turn_id", l.turn)
 }
 
@@ -184,5 +190,5 @@ func newTurnToolLoop(req RunTurnRequest, thread, turn string, logger *slog.Logge
 	if !req.DetectToolLoops {
 		return nil
 	}
-	return &turnToolLoop{thread: thread, turn: turn, workspace: req.Workspace, logger: logger, source: workspace.ToolSourceFingerprint}
+	return &turnToolLoop{thread: thread, turn: turn, workspace: req.Workspace, logger: logger, source: workspace.ToolSourceFingerprint, record: req.RecordLoopIntervention}
 }
