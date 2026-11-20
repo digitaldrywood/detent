@@ -21,7 +21,7 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	cmd.ExtraFiles = issue.hookOwner.ExtraFiles(cmd.ExtraFiles)
+	issue.hookOwner.ConfigureCommand(cmd)
 	ctx = WithAttemptWorkspace(ctx, issue.AttemptWorkspace)
 	if AttemptWorkspaceFromContext(ctx).Key() != "" {
 		owner := ValidationProcessOwnerFromContext(ctx)
