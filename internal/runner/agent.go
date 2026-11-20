@@ -2133,7 +2133,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
 			retireRetainedLanding = func() {
 				landing := returnValue.NativeLanding
-				if returnErr != nil || landing == nil || !landing.Landed || landing.MergeSHA == "" || workspaceIssue.Landing == nil || landing.HeadSHA != workspaceIssue.Landing.HeadSHA {
+				if landing == nil || !landing.Landed || landing.MergeSHA == "" || workspaceIssue.Landing == nil || landing.HeadSHA != workspaceIssue.Landing.HeadSHA {
 					return
 				}
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
