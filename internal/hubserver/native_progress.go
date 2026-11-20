@@ -1030,12 +1030,12 @@ func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.
 		if !facts.sameEvidence(current) {
 			return terminalProgressConflict()
 		}
-		owner, ok := w.(leasestore.TerminalProgressWriter)
+		owner, ok := w.(leasestore.ProgressVerdictWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		verdict := leasestore.TerminalProgressVerdict{
-			OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, AttemptID: o.attempt, TerminalSequence: facts.attempt.Sequence,
+		verdict := leasestore.ProgressVerdict{
+			OrganizationID: o.scope.Organization, ProjectID: o.scope.Project, AttemptID: o.attempt, AttemptSequence: facts.attempt.Sequence,
 			EvidenceRevision: request.EvidenceRevision, AttemptedStep: request.Terminal.Step, Success: *input.Decision.Succeeded,
 			Outcome: string(input.Decision.Outcome), Reason: input.Decision.Reason,
 		}
@@ -1045,7 +1045,7 @@ func (o terminalProgressOwner) publish(ctx context.Context, input progresscheck.
 		if record.Disposition != "" {
 			verdict.Disposition = &record.Disposition
 		}
-		if err := owner.RecordTerminalProgressVerdict(ctx, verdict); err != nil {
+		if err := owner.RecordProgressVerdict(ctx, verdict); err != nil {
 			return err
 		}
 		_, err = w.PutReceipt(ctx, receipt)

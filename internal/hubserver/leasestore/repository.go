@@ -329,11 +329,13 @@ type AttemptReceiptReader interface {
 	AttemptReceiptSequences(context.Context, string, []int64) ([]int64, error)
 }
 
-type TerminalProgressVerdict struct {
+type ProgressVerdict struct {
+	RoundID          *string
+	PreviousRoundID  *string
 	OrganizationID   tracker.OrganizationID
 	ProjectID        tracker.ProjectID
 	AttemptID        string
-	TerminalSequence int64
+	AttemptSequence  int64
 	EvidenceRevision string
 	AttemptedStep    string
 	Success          bool
@@ -343,6 +345,10 @@ type TerminalProgressVerdict struct {
 	Disposition      *string
 }
 
-type TerminalProgressWriter interface {
-	RecordTerminalProgressVerdict(context.Context, TerminalProgressVerdict) error
+type ProgressVerdictWriter interface {
+	RecordProgressVerdict(context.Context, ProgressVerdict) error
+}
+
+type RoundVerdictReader interface {
+	LatestRoundVerdictID(context.Context, tracker.ProjectID, int64) (attemptID, roundID string, err error)
 }

@@ -349,7 +349,7 @@ AND i.organization_id=n.organization_id AND i.id=n.issue_id AND i.project_id=n.p
 AND (n.worker_pid,n.worker_pgid,n.worker_started_at,n.worker_start_key)=(sqlc.arg(pid)::integer,sqlc.arg(pgid)::integer,sqlc.arg(started_at)::timestamptz,sqlc.arg(start_key)::text)
 RETURNING n.id;
 
--- name: RecordTerminalProgressVerdict :execrows
+-- name: RecordProgressVerdict :execrows
 UPDATE native_attempts SET
     verdict_evidence_revision = sqlc.arg(evidence_revision),
     verdict_attempted_step = sqlc.arg(attempted_step),
@@ -357,7 +357,18 @@ UPDATE native_attempts SET
     verdict_outcome = sqlc.arg(outcome),
     verdict_reason = sqlc.arg(reason),
     verdict_next_step = sqlc.narg(next_step),
-    verdict_disposition = sqlc.narg(disposition)
+    verdict_disposition = sqlc.narg(disposition),
+    verdict_round_id = sqlc.narg(round_id)
 WHERE organization_id = sqlc.arg(organization_id) AND project_id = sqlc.arg(project_id)
-    AND id = sqlc.arg(attempt_id) AND sequence = sqlc.arg(terminal_sequence)
-    AND status <> 'running' AND verdict_evidence_revision IS NULL;
+    AND id = sqlc.arg(attempt_id) AND sequence = sqlc.arg(attempt_sequence)
+    AND (
+        (sqlc.narg(round_id)::text IS NULL AND status <> 'running' AND verdict_evidence_revision IS NULL)
+        OR (sqlc.narg(round_id)::text IS NOT NULL AND status IN ('running', 'succeeded')
+            AND verdict_round_id IS NOT DISTINCT FROM sqlc.narg(previous_round_id)::text)
+    );
+
+-- name: LatestRoundVerdictID :one
+SELECT attempt.id, attempt.verdict_round_id FROM native_attempts attempt
+WHERE attempt.organization_id = $1 AND attempt.project_id = $2 AND attempt.issue_id = $3
+    AND attempt.verdict_round_id IS NOT NULL
+ORDER BY attempt.fencing_token DESC LIMIT 1;

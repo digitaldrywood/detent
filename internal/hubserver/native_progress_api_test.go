@@ -1135,6 +1135,31 @@ func TestNativeTerminalProgressPublication(t *testing.T) {
 					t.Fatalf("model changed authoritative outcome or route: %+v", after)
 				}
 			}
+			if tc.disposition == "landed" || tc.disposition == "accepted_no_change" {
+				head := publishedHead
+				if head == "" {
+					head = strings.Repeat("a", 40)
+				}
+				round := progresscheck.Publication{
+					Mutation:  tracker.Mutation{IdempotencyKey: "verified-completion", LeaseID: lease.ID, FencingToken: lease.FencingToken},
+					AttemptID: attemptID, PolicyID: fixture.policy,
+					RoundInput: progresscheck.RoundInput{RoundID: "verified-completion", Phase: "merge", Action: progresscheck.RoundDone, HeadSHA: strings.Repeat("f", 40), TreeSHA: strings.Repeat("c", 40)},
+				}
+				requireNativeStatus(t, with(http.MethodPost, path+"/progress", fixture.worker, round), http.StatusUnprocessableEntity)
+				round.HeadSHA = head
+				before := readWorkItem(t, project, fixture.issue.WorkItemID, "")
+				response := with(http.MethodPost, path+"/progress", fixture.worker, round)
+				requireNativeStatus(t, response, http.StatusOK)
+				var record progresscheck.RoundVerdict
+				decodeHubResponse(t, response, &record)
+				if record.Disposition != tc.disposition {
+					t.Fatalf("round disposition = %q, want %q", record.Disposition, tc.disposition)
+				}
+				after := readWorkItem(t, project, fixture.issue.WorkItemID, "")
+				if before.State != after.State || before.Revision != after.Revision {
+					t.Fatalf("round verdict changed the item: before %+v after %+v", before, after)
+				}
+			}
 			if tc.name != "partial success" {
 				return
 			}

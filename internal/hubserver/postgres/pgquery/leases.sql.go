@@ -1231,6 +1231,31 @@ func (q *Queries) InsertLeaseAttempt(ctx context.Context, arg InsertLeaseAttempt
 	return i, err
 }
 
+const latestRoundVerdictID = `-- name: LatestRoundVerdictID :one
+SELECT attempt.id, attempt.verdict_round_id FROM native_attempts attempt
+WHERE attempt.organization_id = $1 AND attempt.project_id = $2 AND attempt.issue_id = $3
+    AND attempt.verdict_round_id IS NOT NULL
+ORDER BY attempt.fencing_token DESC LIMIT 1
+`
+
+type LatestRoundVerdictIDParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	IssueID        int64
+}
+
+type LatestRoundVerdictIDRow struct {
+	ID             string
+	VerdictRoundID *string
+}
+
+func (q *Queries) LatestRoundVerdictID(ctx context.Context, arg LatestRoundVerdictIDParams) (LatestRoundVerdictIDRow, error) {
+	row := q.db.QueryRow(ctx, latestRoundVerdictID, arg.OrganizationID, arg.ProjectID, arg.IssueID)
+	var i LatestRoundVerdictIDRow
+	err := row.Scan(&i.ID, &i.VerdictRoundID)
+	return i, err
+}
+
 const leaseMutationFacts = `-- name: LeaseMutationFacts :one
 SELECT l.organization_id, l.lease_id, l.fencing_token, l.issue_id, l.machine_id, l.session_id, l.work_item_revision, l.landing_capacity, l.acquired_at, l.renewed_at, l.expires_at, l.released_at, l.release_reason, l.project_id, l.runner_id, l.isolation_tier,i.organization_id, i.id, i.native_id, i.project_id, i.number, i.revision, i.event_sequence, i.native_source_key, i.title, i.body_object_key, i.issue_contract_object_key, i.report_context_object_key, i.actor_kind, i.actor_principal_id, i.provenance_provider, i.provenance_external_id, i.archived, i.created_at, i.updated_at, i.native_created_at, i.native_updated_at, i.workflow_state_name, i.last_activity_at, i.issue_type, i.priority, i.dispatch_generation, i.dispatch_requested_at, i.recovery_runner_id, i.recovery_version_id, i.doctor_identity_revision, i.terminal_entered_at, i.archive_restored_at, i.archive_restore_known, i.source_revision, i.source_scheduled, i.source_observed_at
 FROM leases l
@@ -2270,7 +2295,7 @@ func (q *Queries) PageIssueCheckpointAttempts(ctx context.Context, arg PageIssue
 	return items, nil
 }
 
-const recordTerminalProgressVerdict = `-- name: RecordTerminalProgressVerdict :execrows
+const recordProgressVerdict = `-- name: RecordProgressVerdict :execrows
 UPDATE native_attempts SET
     verdict_evidence_revision = $1,
     verdict_attempted_step = $2,
@@ -2278,13 +2303,18 @@ UPDATE native_attempts SET
     verdict_outcome = $4,
     verdict_reason = $5,
     verdict_next_step = $6,
-    verdict_disposition = $7
-WHERE organization_id = $8 AND project_id = $9
-    AND id = $10 AND sequence = $11
-    AND status <> 'running' AND verdict_evidence_revision IS NULL
+    verdict_disposition = $7,
+    verdict_round_id = $8
+WHERE organization_id = $9 AND project_id = $10
+    AND id = $11 AND sequence = $12
+    AND (
+        ($8::text IS NULL AND status <> 'running' AND verdict_evidence_revision IS NULL)
+        OR ($8::text IS NOT NULL AND status IN ('running', 'succeeded')
+            AND verdict_round_id IS NOT DISTINCT FROM $13::text)
+    )
 `
 
-type RecordTerminalProgressVerdictParams struct {
+type RecordProgressVerdictParams struct {
 	EvidenceRevision *string
 	AttemptedStep    *string
 	Success          pgtype.Bool
@@ -2292,14 +2322,16 @@ type RecordTerminalProgressVerdictParams struct {
 	Reason           *string
 	NextStep         *string
 	Disposition      *string
+	RoundID          *string
 	OrganizationID   tracker.OrganizationID
 	ProjectID        tracker.ProjectID
 	AttemptID        string
-	TerminalSequence int64
+	AttemptSequence  int64
+	PreviousRoundID  *string
 }
 
-func (q *Queries) RecordTerminalProgressVerdict(ctx context.Context, arg RecordTerminalProgressVerdictParams) (int64, error) {
-	result, err := q.db.Exec(ctx, recordTerminalProgressVerdict,
+func (q *Queries) RecordProgressVerdict(ctx context.Context, arg RecordProgressVerdictParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordProgressVerdict,
 		arg.EvidenceRevision,
 		arg.AttemptedStep,
 		arg.Success,
@@ -2307,10 +2339,12 @@ func (q *Queries) RecordTerminalProgressVerdict(ctx context.Context, arg RecordT
 		arg.Reason,
 		arg.NextStep,
 		arg.Disposition,
+		arg.RoundID,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.AttemptID,
-		arg.TerminalSequence,
+		arg.AttemptSequence,
+		arg.PreviousRoundID,
 	)
 	if err != nil {
 		return 0, err
