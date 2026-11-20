@@ -76,6 +76,39 @@ func TestCheckDoctorExternalBranchWorktrees(t *testing.T) {
 	}
 }
 
+func TestDefaultGitWorktreesUsesSourceRoot(t *testing.T) {
+	repo, _ := initDoctorWorkflowSourceRepository(t)
+	for _, test := range []struct {
+		name string
+		dir  string
+		want error
+	}{
+		{name: "repository", dir: repo},
+		{name: "missing directory", dir: filepath.Join(repo, "missing"), want: os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			worktrees, err := DefaultGitWorktrees(t.Context(), test.dir)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("worktree list error = %v, want %v", err, test.want)
+			}
+			if test.want != nil {
+				return
+			}
+			if len(worktrees) != 1 || worktrees[0].Branch != "main" {
+				t.Fatalf("worktrees = %+v, want the repository's main worktree", worktrees)
+			}
+			want, err := filepath.EvalSymlinks(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := filepath.EvalSymlinks(worktrees[0].Path)
+			if err != nil || got != want {
+				t.Fatalf("worktree path = %q, error = %v, want %q", got, err, want)
+			}
+		})
+	}
+}
+
 func TestParseDoctorGitWorktrees(t *testing.T) {
 	t.Parallel()
 
