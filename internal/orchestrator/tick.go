@@ -928,8 +928,8 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
 				return resolve(ctx, issue, reports, o.dispatchMode(ctx, state, issue))
 			}
+			request.LegacyPlanStop = gate.EffectivePlan(o.cfg.Plan).Stop
 			if request.Policy.Gates.PlanEnabled {
-				request.Plan = gate.EffectivePlan(o.cfg.Plan)
 				request.PlanProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
 					if o.dispatchMode(ctx, state, issue) == runpkg.RunModeMerge {
 						return resolve(ctx, issue, reports, runpkg.RunModeMerge)

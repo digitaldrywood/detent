@@ -359,12 +359,6 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
-		if continuation := req.phaseContinuation; req.LegacyPlan != nil && workflow.Config.Plan.Enabled &&
-			continuation != nil && req.Execution.Recovery().Change == nil &&
-			(continuation.Plan == nil && continuation.LastPushed == nil || continuation.Plan != nil && continuation.Plan.Draft == "") {
-			req.phaseContinuation.Plan = req.LegacyPlan
-			req.phaseContinuation.NextPhase = RunModePlan
-		}
 		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
 	}
 	if expected := req.NativeLandingRework; expected != nil {

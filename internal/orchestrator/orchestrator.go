@@ -176,7 +176,7 @@ type SchedulingRequest struct {
 	CandidateLimit          int
 	AdmissionLimit          int
 	ProviderRequirement     func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
-	Plan                    gate.PlanConfig
+	LegacyPlanStop          string
 	PlanProviderRequirement func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error)
 	Policy                  policy.Descriptor
 	ProjectID               string
@@ -1625,10 +1625,8 @@ func (o *Orchestrator) releaseShutdownClaims(ctx context.Context, state *State) 
 	for issueID := range state.Claimed {
 		claims[issueID] = struct{}{}
 	}
-	for issueID, deferred := range state.deferredCompletions {
-		if !deferred.LegacyReady {
-			claims[issueID] = struct{}{}
-		}
+	for issueID := range state.deferredCompletions {
+		claims[issueID] = struct{}{}
 	}
 	for issueID := range state.Running {
 		claims[issueID] = struct{}{}

@@ -116,15 +116,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
-	if o.cfg.Plan.Enabled && o.nativeWorkflow() && event.Request.Mode == runpkg.RunModePlan && event.Err == nil && strings.TrimSpace(event.Result.Output) != "" {
-		o.deferTrackerUnavailableCompletion(ctx, state, event, running, nil)
-		return
-	}
-	if deferred := state.deferredCompletions[event.IssueID]; deferred.LegacyReady && event.Result.AdoptedLegacyPlan {
-		if o.workAttempts == nil || deferred.Running.WorkAttemptID == 0 || o.completeDurableWorkAttemptWithMetadata(ctx, state, deferred.Running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan adopted under current lease", nil) {
-			delete(state.deferredCompletions, event.IssueID)
-		}
-	}
 	if o.trimHostCache != nil {
 		o.startWorkspaceCleanup(ctx, state, o.clockNow())
 	}
@@ -185,7 +176,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	defer func() {
 		current, active := state.Running[event.IssueID]
-		if deferred := state.deferredCompletions[event.IssueID]; (deferred.Running.Issue.ID == "" || deferred.LegacyReady) && (!active || current.done == running.done) {
+		if _, deferred := state.deferredCompletions[event.IssueID]; !deferred && (!active || current.done == running.done) {
 			o.heartbeats.remove(event.IssueID)
 			delete(state.Running, event.IssueID)
 			o.publishRuntimeState(state)
@@ -436,7 +427,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			running.Issue = refreshed
 		}
 		progressMetadata := map[string]any{}
-		if !interrupted && !mergeWorkerIssue(running.Issue) && strings.TrimSpace(event.Request.Mode) != runpkg.RunModePlan && strings.TrimSpace(running.Mode) != runpkg.RunModePlan {
+		if !interrupted && !mergeWorkerIssue(running.Issue) {
 			if diffStatsPresent(event.Result.DiffStats) {
 				running.DiffStats = event.Result.DiffStats
 			}
@@ -2147,9 +2138,7 @@ func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
-	if !state.deferredCompletions[issueID].LegacyReady {
-		delete(state.deferredCompletions, issueID)
-	}
+	delete(state.deferredCompletions, issueID)
 }
 
 func (o *Orchestrator) completeTerminalRunning(

@@ -166,10 +166,8 @@ func (s State) UnsettledWork() int {
 	for id := range s.Claimed {
 		ids[id] = struct{}{}
 	}
-	for id, deferred := range s.deferredCompletions {
-		if !deferred.LegacyReady {
-			ids[id] = struct{}{}
-		}
+	for id := range s.deferredCompletions {
+		ids[id] = struct{}{}
 	}
 	return len(ids)
 }

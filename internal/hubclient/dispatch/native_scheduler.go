@@ -511,10 +511,10 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, WorkflowStates: request.WorkflowStates,
 		Authors: request.Filter.Authors, Assignees: request.Filter.Assignees, LabelInclude: request.Filter.LabelInclude, LabelExclude: request.Filter.LabelExclude,
 	}
-	if request.Policy.Gates.PlanEnabled && request.Plan.Stop != "" && request.Policy.Gates.PlanStopDigest == policy.Digest([]byte(request.Plan.Stop)) {
-		claimRequest.LegacyPlanStop = request.Plan.Stop
+	if stop := request.LegacyPlanStop; stop != "" && request.Policy.Gates.PlanStopDigest == policy.Digest([]byte(stop)) {
+		claimRequest.LegacyPlanStop = stop
 		if len(claimRequest.WorkflowStates) != 0 {
-			claimRequest.WorkflowStates = append(slices.Clone(claimRequest.WorkflowStates), request.Plan.Stop)
+			claimRequest.WorkflowStates = append(slices.Clone(claimRequest.WorkflowStates), stop)
 		}
 	}
 	landingCapacitySupported, err := source.NativeClient().HubFeature(ctx, tracker.NativeLandingCapacityCapability)

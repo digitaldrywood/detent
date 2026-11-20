@@ -28,8 +28,6 @@ const (
 )
 
 type deferredCompletion struct {
-	LegacyReady            bool                           `json:"legacy_ready,omitempty"`
-	PriorLegacyPlan        *deferredCompletion            `json:"prior_legacy_plan,omitempty"`
 	FailureDecision        *tracker.FailureAttribution    `json:"failure_decision,omitempty"`
 	Schema                 int                            `json:"schema"`
 	Running                Running                        `json:"running"`
@@ -92,10 +90,6 @@ type deferredCompletionError struct {
 
 func (e *deferredCompletionError) Error() string { return e.message }
 func (e *deferredCompletionError) Unwrap() error { return e.cause }
-
-func (r deferredCompletion) standalonePlan() bool {
-	return r.Error == "" && r.Request.Mode == runpkg.RunModePlan && strings.TrimSpace(r.Result.Output) != ""
-}
 
 func (r deferredCompletion) statusMessage() string {
 	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
@@ -274,11 +268,6 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	if r.FailureDecision != nil {
 		event.Err = runpkg.RestoreFailureDecision(event.Err, *r.FailureDecision)
 	}
-	if event.Request.Mode == runpkg.RunModePlan && event.Err == nil {
-		event.Request.Mode, event.Result.Output = runpkg.RunModeImplement, ""
-		event.Err = fmt.Errorf("%w: standalone plan must continue under the current planning policy", runpkg.ErrNativeRecoveryRequired)
-		event.Retryable = true
-	}
 	return event
 }
 
@@ -320,9 +309,6 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	}
 	o.observeTrackerReadFailure(state, "", fenceErr, deferredAt)
 	record := newDeferredCompletion(event, running, fenceErr, deferredAt)
-	if previous := state.deferredCompletions[event.IssueID]; previous.LegacyReady && previous.Running.WorkAttemptID != running.WorkAttemptID {
-		record.PriorLegacyPlan = &previous
-	}
 	if errors.Is(fenceErr, errNativeReviewPending) {
 		record.Availability.Class = string(gate.ReasonAutomatedReviewMissing)
 	}
@@ -524,13 +510,6 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 			continue
 		}
 		issueID := record.Running.Issue.ID
-		if current := state.deferredCompletions[issueID]; current.PriorLegacyPlan != nil && current.PriorLegacyPlan.Running.WorkAttemptID == attempt.ID {
-			continue
-		}
-		if record.LegacyReady {
-			state.deferredCompletions[issueID] = record
-			continue
-		}
 		claim, restoreErr := o.restoreDeferredExecution(ctx, record)
 		if restoreErr == nil {
 			record.AuthorityRestored = true
@@ -598,51 +577,12 @@ func (o *Orchestrator) retryDeferredCompletion(ctx context.Context, state *State
 		state.Retry[issueID] = retry
 		return false
 	}
-	if o.cfg.Plan.Enabled && record.standalonePlan() {
-		if record.LegacyReady {
-			return true
-		}
-		if !record.Persisted {
-			record.DeferredAt = now
-			record.Persisted = o.persistDeferredCompletion(ctx, state, record)
-			state.deferredCompletions[issueID] = record
-			if !record.Persisted {
-				return retryLater()
-			}
-		}
-		owned := record.AuthorityRestored
-		if !owned {
-			_, err := o.restoreDeferredExecution(ctx, record)
-			if err != nil && !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) && !errors.Is(err, ErrSchedulingClaimLost) {
-				return retryLater()
-			}
-			owned = err == nil
-		}
-		if owned {
-			if err := o.abandonClaim(ctx, issueID); err != nil && !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) && !errors.Is(err, ErrSchedulingClaimLost) {
-				return retryLater()
-			}
-		}
-		record.LegacyReady = true
-		record.DeferredAt = now
-		if !o.persistDeferredCompletion(ctx, state, record) {
-			return retryLater()
-		}
-		o.heartbeats.remove(issueID)
-		delete(state.Claimed, issueID)
-		delete(state.Retry, issueID)
-		state.deferredCompletions[issueID] = record
-		return true
-	}
 	restoring := !record.AuthorityRestored
 	if restoring {
 		claim, err := o.restoreDeferredExecution(ctx, record)
 		if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
 			state.Running[issueID] = record.Running
 			o.rejectUnavailableCompletion(ctx, state, record.completion(), record.Running, err, false)
-			if record.PriorLegacyPlan != nil {
-				state.deferredCompletions[issueID] = *record.PriorLegacyPlan
-			}
 			return true
 		}
 		if err != nil {
@@ -655,6 +595,13 @@ func (o *Orchestrator) retryDeferredCompletion(ctx context.Context, state *State
 		}
 	}
 	completion := record.completion()
+	if completion.Request.Mode == runpkg.RunModePlan {
+		if err := o.abandonClaim(ctx, issueID); err != nil && !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) && !errors.Is(err, ErrSchedulingClaimLost) {
+			return retryLater()
+		}
+		o.rejectUnavailableCompletion(ctx, state, completion, record.Running, runpkg.ErrExecutionAuthorityUnavailable, false)
+		return true
+	}
 	var publisher runpkg.CompletionExecution
 	if completion.Err == nil && completion.Result.NativeChange != nil {
 		completion.Request.Execution = o.nativeCompletionExecution(completion)
@@ -721,16 +668,7 @@ func (o *Orchestrator) retryDeferredCompletion(ctx context.Context, state *State
 	} else {
 		o.handleRunResult(ctx, state, completion)
 	}
-	current, deferred := state.deferredCompletions[issueID]
-	if record.PriorLegacyPlan != nil {
-		if deferred {
-			current.PriorLegacyPlan = record.PriorLegacyPlan
-			current.Persisted = o.persistDeferredCompletion(ctx, state, current)
-			state.deferredCompletions[issueID] = current
-		} else {
-			state.deferredCompletions[issueID] = *record.PriorLegacyPlan
-		}
-	}
+	_, deferred := state.deferredCompletions[issueID]
 	return !deferred
 }
 
