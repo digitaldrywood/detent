@@ -84,6 +84,14 @@ ORDER BY observed_at DESC LIMIT 64`, s.organization, project, attempt, list.Revi
 	return &list, interventions.Err()
 }
 
+func (f *runnerEventSession) RecordExecutionCheckChanges(ctx context.Context, project tracker.ProjectID, attempt, revision, round string, checkedAt time.Time, changes []tracker.ExecutionCheckUpdate) error {
+	if project != f.command.Project || attempt != f.command.AttemptID {
+		return corestore.ErrTenantMismatch
+	}
+	s := &session{organization: f.session.organization, db: runEventQueue{f.pending}}
+	return s.RecordExecutionCheckChanges(ctx, project, attempt, revision, round, checkedAt, changes)
+}
+
 func (s *session) RecordExecutionCheckChanges(ctx context.Context, project tracker.ProjectID, attempt, revision, round string, checkedAt time.Time, changes []tracker.ExecutionCheckUpdate) error {
 	ordinals := make([]int32, len(changes))
 	statuses := make([]string, len(changes))
