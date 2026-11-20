@@ -241,7 +241,7 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 				runExecution, closePeers = nativeSSHExecution(t, t.Context(), execution, t.TempDir())
 				defer closePeers()
 			}
-			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			result, err := agent.Run(t.Context(), runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: test.restart})
 			if err != nil {
 				t.Fatal(err)
 			}
