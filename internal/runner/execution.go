@@ -200,6 +200,11 @@ type ArtifactExecution interface {
 	FinalizeArtifacts(context.Context, string) error
 }
 
+type spooledArtifactExecution interface {
+	SpoolArtifactLog(context.Context, string) error
+	FinalizeArtifactsWithLogState(context.Context, string, bool) error
+}
+
 // ArtifactSourceExecution keeps the upload journal on the execution owner while
 // capturing Git data on the host that owns the checkout. A nil source restores
 // local capture. The journal root is supplied by the central runner, never SSH.
@@ -920,8 +925,10 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	if artifacts, ok := req.Execution.(ArtifactExecution); ok && finalizationErr == nil && artifactErr == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
-		if err := artifacts.FinalizeArtifacts(artifactCtx, info.Path); err != nil {
-			artifactErr = err
+		if spooled, ok := artifacts.(spooledArtifactExecution); ok && req.artifactLogIncomplete != nil {
+			artifactErr = spooled.FinalizeArtifactsWithLogState(artifactCtx, info.Path, *req.artifactLogIncomplete)
+		} else {
+			artifactErr = artifacts.FinalizeArtifacts(artifactCtx, info.Path)
 		}
 	}
 	var diffErr error
