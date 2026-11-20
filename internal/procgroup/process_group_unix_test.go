@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"syscall"
 	"testing"
@@ -223,6 +224,47 @@ func TestTerminateRechecksLeaderBeforeEscalation(t *testing.T) {
 	)
 	if err != nil || outcome != TerminationOutcomeStaleIdentity || killed {
 		t.Fatalf("changed leader was not fenced: outcome=%q kill=%t err=%v", outcome, killed, err)
+	}
+}
+
+func TestWaitOwnedDisambiguatesEPERMAfterLeaderExit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		command string
+		live    bool
+	}{
+		{name: "empty group", command: "exit 17"},
+		{name: "live descendant", command: "sleep 30 & exit 17", live: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			cmd := exec.CommandContext(ctx, "sh", "-c", test.command)
+			Configure(ctx, cmd)
+			var identity Identity
+			if err := startAcknowledged(cmd, func(observed Identity) error {
+				identity = observed
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if test.live {
+				t.Cleanup(func() { _ = TerminateTree(nil, identity.GroupID) })
+			}
+			waitErr, cleanupErr := waitOwned(ctx, cmd, identity, func(context.Context, Identity, time.Duration) (TerminationOutcome, error) {
+				return "", syscall.EPERM
+			})
+			var exitErr *exec.ExitError
+			if !errors.As(waitErr, &exitErr) || exitErr.ExitCode() != 17 {
+				t.Fatalf("command exit = %v, want exit status 17", waitErr)
+			}
+			if runtime.GOOS == "darwin" && !test.live {
+				if cleanupErr != nil {
+					t.Fatalf("retire empty group: %v", cleanupErr)
+				}
+			} else if !errors.Is(cleanupErr, syscall.EPERM) {
+				t.Fatalf("retire unconfirmed group = %v, want EPERM", cleanupErr)
+			}
+		})
 	}
 }
 
