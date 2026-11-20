@@ -715,6 +715,16 @@ func (d Deps) ReadNativeClaimCandidates(ctx context.Context, scope hubscope.Nati
 		if err != nil {
 			return err
 		}
+		if len(page.Items) == 0 && query.After.WorkItemID != "" {
+			query.After = claimstore.CandidateCursor{}
+			page, err = r.CandidatePage(ctx, query)
+			if err != nil {
+				return err
+			}
+			if len(page.Items) > 0 {
+				cursor.Position = query.After
+			}
+		}
 		scan = NativeClaimCandidateScan{PageNext: page.Next, Cursor: cursor}
 		if len(page.Items) == 0 {
 			return nil
