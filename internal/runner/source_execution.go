@@ -28,9 +28,13 @@ func sourceBudgetExhaustedMessage(message string) string {
 	return message + "\n\nThe shared implementation and review turn budget is exhausted; preserve the current source and review findings for Rework.\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
 }
 
-func nativeSourceRework(change *NativeChange, message string) string {
+func completedSourceDisposition(message string) bool {
 	disposition := NativeDispositionFromMessage(message)
-	if disposition == nil || disposition.Status != "complete" || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" {
+	return disposition != nil && disposition.Status == "complete" && !disposition.Blockers && !disposition.HumanAction && disposition.ReasonCode == ""
+}
+
+func nativeSourceRework(change *NativeChange, message string) string {
+	if !completedSourceDisposition(message) {
 		return ""
 	}
 	if change == nil || change.Reviewed || change.VersionID == "" && change.NoChange == nil || change.Error != "" || change.VersionError != "" || change.ImplementationReviewError != "" || change.Landing != nil {
@@ -108,10 +112,10 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 }
 
 func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {
-	if req.retainedReview == nil {
+	source := req.retainedReview
+	if source == nil || !completedSourceDisposition(source.message) {
 		return nil
 	}
-	source := req.retainedReview
 	identity := ""
 	if version != nil {
 		identity = version.ID

@@ -2275,23 +2275,24 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				if test.DependencyOnly {
 					receipts := detail.Reviews[0].Validator.Commands
-					if len(receipts) != 4 {
+					if len(receipts) != 3 {
 						t.Fatalf("command evidence missing from native review: %+v", receipts)
 					}
-					if receipts[0].TimingStage != "finalization" || receipts[0].Command != receipts[1].Command {
+					if receipts[0].TimingStage != "finalization" || !strings.Contains(receipts[0].Command, "make check-fast") ||
+						!strings.Contains(receipts[1].Command, "pnpm build") || !strings.Contains(receipts[2].Command, "pnpm check") {
 						t.Fatalf("native review lost the finalization gate evidence: %+v", receipts)
 					}
 					for index, receipt := range receipts {
 						wantExit := 0
-						if test.FailedCheck && index == 3 {
+						if test.FailedCheck && index == 2 {
 							wantExit = 7
 						}
 						if receipt.HeadSHA != change.HeadSHA || receipt.TreeSHA == "" || receipt.TreeSHA != receipts[0].TreeSHA || receipt.ExitCode != wantExit || receipt.Output == "" {
 							t.Fatalf("unverified native command receipt: %+v", receipt)
 						}
 					}
-					if receipts[0].OutputTruncated != test.LargeOutput || receipts[1].OutputTruncated != test.LargeOutput {
-						t.Fatalf("large output evidence not preserved: finalization=%t validation=%t", receipts[0].OutputTruncated, receipts[1].OutputTruncated)
+					if receipts[0].OutputTruncated != test.LargeOutput {
+						t.Fatalf("large output evidence not preserved: finalization=%t", receipts[0].OutputTruncated)
 					}
 					if change.Reviewed == test.FailedCheck {
 						t.Fatalf("review readiness ignored actual validation: %+v", change)
@@ -2881,6 +2882,9 @@ func (h *nativeChangeHub) repolicy(t *testing.T) {
 }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if handled, err := testsupport.ReplyToRoundVerdict(request, onUpdate); handled {
+		return runner.AgentTurnResult{}, err
+	}
 	if strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
 		return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake failure decision"}`})
 	}

@@ -998,6 +998,9 @@ func (a *committingAgent) RunTurnWithTools(ctx context.Context, request runner.A
 func (*committingAgent) SupportsLiveControl() bool { return true }
 
 func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if handled, err := testsupport.ReplyToRoundVerdict(request, onUpdate); handled {
+		return runner.AgentTurnResult{}, err
+	}
 	if strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
 		return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: `{"outcome":"unknown","reason":"fake failure decision"}`})
 	}
