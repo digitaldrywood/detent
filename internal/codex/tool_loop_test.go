@@ -17,6 +17,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
 		name, steerResult, terminalStatus   string
 		parallel, wrongScope, changedSource bool
+		serializedSiblings, operator        bool
 		methods                             []string
 		stop                                bool
 	}{
@@ -24,6 +25,8 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
 		{name: "terminal completion won race", steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/interrupt"}},
 		{name: "parallel siblings", parallel: true, terminalStatus: "completed"},
+		{name: "serialized siblings", serializedSiblings: true, terminalStatus: "completed"},
+		{name: "operator calls", operator: true, terminalStatus: "completed"},
 		{name: "another provider turn", wrongScope: true, terminalStatus: "completed"},
 		{name: "changed source after steer", changedSource: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/steer"}},
 	} {
@@ -34,7 +37,15 @@ func TestStreamToolLoopControl(t *testing.T) {
 				turn = "other"
 			}
 			for ordinal := 1; ordinal <= 6; ordinal++ {
-				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal)
+				if ordinal == 1 || !test.parallel && !test.serializedSiblings {
+					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
+					messages = append(messages, notificationMessage(t, "item/started", marker))
+				}
+				source := "agent"
+				if test.operator {
+					source = "userShell"
+				}
+				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal, source)
 				messages = append(messages, notificationMessage(t, "item/started", item))
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
@@ -66,7 +77,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 			}
 			lifetime := sessiontimeout.Start(t.Context(), 0, time.Minute, nil)
 			defer lifetime.Close()
-			err = server.streamTurn(lifetime, transport, "thread", "turn", nil, nil, nil, loop)
+			err = server.streamTurn(t.Context(), lifetime, transport, "thread", "turn", nil, nil, nil, loop)
 			var stopped *progresscheck.NoProgressError
 			if test.stop {
 				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != 6 || stopped.Evidence.Period != 1 {
