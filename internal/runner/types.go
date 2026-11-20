@@ -989,6 +989,7 @@ type AgentActivityUpdate struct {
 }
 
 type UsageUpdate struct {
+	ProviderThreadID      string `json:",omitempty"`
 	LastCommand           string
 	DetentSessionID       int64
 	SessionID             string
