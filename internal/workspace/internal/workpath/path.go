@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -88,6 +90,75 @@ func PathWithin(root string, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
+var ErrUnsafePath = errors.New("unsafe workspace path")
+
+type PathError struct {
+	Path   string
+	Root   string
+	Reason string
+}
+
+func (e *PathError) Error() string {
+	return fmt.Sprintf("%s: %s is not safe under %s: %s", ErrUnsafePath, e.Path, e.Root, e.Reason)
+}
+
+func (e *PathError) Unwrap() error {
+	return ErrUnsafePath
+}
+
+func EnsurePrivateDirectories(base string, path string) error {
+	if !PathWithin(base, path) {
+		return &PathError{Path: path, Root: base, Reason: "directory escapes root"}
+	}
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return err
+	}
+	current := base
+	components := []string{current}
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			components = append(components, current)
+		}
+	}
+	for _, component := range components {
+		if err := os.Mkdir(component, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(component)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is not a directory"}
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+			return &PathError{Path: component, Root: base, Reason: "scratch directory is writable by others"}
+		}
+	}
+	return nil
+}
+
+func PathExists(path string) (bool, bool, error) {
+	info, err := os.Lstat(path)
+	if err == nil {
+		return true, info.IsDir(), nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, false, nil
+	}
+	return false, false, fmt.Errorf("inspect path: %w", err)
+}
+
+func DirIsEmpty(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false, fmt.Errorf("read workspace directory: %w", err)
+	}
+	return len(entries) == 0, nil
 }
 
 func CanonicalExistingPath(path string) (string, error) {

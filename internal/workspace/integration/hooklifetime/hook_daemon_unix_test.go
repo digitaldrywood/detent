@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/procstart"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
@@ -403,5 +405,192 @@ func TestManagedHookServiceLivesThroughWork(t *testing.T) {
 				t.Fatal("managed hook service survived work")
 			}
 		})
+	}
+}
+
+func TestLandingHookRetainsVerifiedService(t *testing.T) {
+	for _, foreign := range []bool{false, true} {
+		name := "retained service"
+		if foreign {
+			name = "unowned writer"
+		}
+		t.Run(name, func(t *testing.T) {
+			daemon := detachedHook(t)
+			source := gitfixture.SourceRepo(t)
+			const repository = "https://github.com/example/landing-hook"
+			gitfixture.Git(t, source, "config", "remote.origin.url", repository)
+			head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+			tools := t.TempDir()
+			lsof, err := exec.LookPath("lsof")
+			if err == nil {
+				wrapper := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = -u ]; then echo 'injected UID-wide scan timeout' >&2; exit 2; fi\ndone\nexec " + shellQuote(lsof) + " \"$@\"\n"
+				if err := os.WriteFile(filepath.Join(tools, "lsof"), []byte(wrapper), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+			}
+			hook := "TEST_HOOK_KEEP_DESCRIPTOR=1 "
+			if foreign {
+				hook += hookproc.HookOwnerKey + "=foreign "
+			}
+			hook += daemon.Command + " && echo workspace-ready | tee ready"
+			root := t.TempDir()
+			opts := workspace.LocalGitOptions{Root: root, SourceRoot: source, Hooks: workspace.Hooks{AfterCreate: hook}}
+			backend, err := workspace.NewLocalGit(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := workspace.Issue{Identifier: "EXAMPLE-1", Landing: &workspace.LandOptions{HeadSHA: head, Repository: repository}}
+			info, err := backend.Create(t.Context(), issue)
+			if foreign {
+				var hookErr *workspace.HookError
+				var unverified *workspace.HookExitUnverifiedError
+				if !errors.As(err, &hookErr) || !errors.As(err, &unverified) || !strings.Contains(hookErr.Output, "workspace-ready") || !daemon.Alive(t) {
+					t.Fatalf("unowned writer was accepted or signaled: %v", err)
+				}
+				_, retryErr := backend.Create(t.Context(), issue)
+				if retryErr == nil {
+					t.Fatal("reused a workspace with an unverified hook exit")
+				}
+				pid, start, err := daemonIdentity(daemon.control)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := daemon.quit.Close(); err != nil {
+					t.Fatal(err)
+				}
+				testenv.WaitUntil(t, t.Context(), func() error {
+					alive, err := procstart.Matches(pid, start)
+					if alive {
+						return errors.New("waiting for unowned fixture to exit")
+					}
+					return err
+				})
+				_, retryErr = backend.Create(t.Context(), issue)
+				if retryErr == nil || !strings.Contains(retryErr.Error(), "workspace quarantined at") {
+					t.Fatalf("failed landing was not quarantined after process exit: %v", retryErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("after_create failed after service startup: %v", err)
+			}
+			if !daemon.Alive(t) || !strings.Contains(info.Path, string(filepath.Separator)+".detent"+string(filepath.Separator)+"landing"+string(filepath.Separator)) ||
+				gitfixture.ReadFile(t, filepath.Join(info.Path, "ready")) != "workspace-ready\n" {
+				t.Fatalf("landing workspace was not prepared with its live service: %s", info.Path)
+			}
+			restarted, err := workspace.NewLocalGit(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restarted.CleanupLanding(t.Context(), info, issue); !errors.Is(err, workspace.ErrWorkspacePreserved) || !daemon.Alive(t) {
+				t.Fatalf("retiring verified service without its recorded owner: %v", err)
+			}
+			if err := backend.CleanupLanding(t.Context(), info, issue); err != nil {
+				t.Fatal(err)
+			}
+			if daemon.Alive(t) {
+				t.Fatal("service survived landing workspace retirement")
+			}
+		})
+	}
+}
+
+func TestFailedLandingHookCannotBeReusedBeforeQuarantine(t *testing.T) {
+	source := gitfixture.SourceRepo(t)
+	const repository = "https://github.com/example/landing-hook"
+	gitfixture.Git(t, source, "config", "remote.origin.url", repository)
+	head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	root := t.TempDir()
+	opts := workspace.LocalGitOptions{Root: root, SourceRoot: source, Hooks: workspace.Hooks{
+		AfterCreate: `git worktree lock "$PWD" && exit 19`,
+	}}
+	backend, err := workspace.NewLocalGit(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := workspace.Issue{Identifier: "EXAMPLE-1", Landing: &workspace.LandOptions{HeadSHA: head, Repository: repository}}
+	_, err = backend.Create(t.Context(), issue)
+	var hook *workspace.HookError
+	if !errors.As(err, &hook) || hook.ExitCode != 19 || !strings.Contains(err.Error(), "quarantine failed") {
+		t.Fatalf("locked failed workspace: %v", err)
+	}
+	if _, err := backend.Create(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) {
+		t.Fatalf("reusing locked failed workspace: %v", err)
+	}
+	restarted, err := workspace.NewLocalGit(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Create(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) {
+		t.Fatalf("reusing failed workspace after restart: %v", err)
+	}
+	path := filepath.Join(root, ".detent", "landing", head, "EXAMPLE-1")
+	gitfixture.Git(t, source, "worktree", "unlock", path)
+	if _, err := restarted.Create(t.Context(), issue); err == nil || !strings.Contains(err.Error(), "workspace quarantined at") {
+		t.Fatalf("retiring unlocked failed workspace: %v", err)
+	}
+	opts.Hooks.AfterCreate = "echo ready > hook-ready"
+	reconfigured, err := workspace.ReconfigureBackend(restarted, workspace.KindLocalGit, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := reconfigured.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.Created || gitfixture.ReadFile(t, filepath.Join(fresh.Path, "hook-ready")) != "ready\n" {
+		t.Fatalf("failed hook setup skipped on retry: %+v", fresh)
+	}
+}
+
+func TestFailedFilesystemHookCannotBeReusedAfterRestart(t *testing.T) {
+	daemon := detachedHook(t)
+	opts := workspace.FilesystemOptions{Root: t.TempDir(), Hooks: workspace.Hooks{
+		AfterCreate: "TEST_HOOK_KEEP_DESCRIPTOR=1 " + hookproc.HookOwnerKey + "=foreign " + daemon.Command,
+	}}
+	backend, err := workspace.NewFilesystem(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := workspace.Issue{Identifier: "EXAMPLE-1"}
+	if _, err := backend.Create(t.Context(), issue); err == nil || !daemon.Alive(t) {
+		t.Fatalf("filesystem accepted an unowned hook writer: %v", err)
+	}
+	restarted, err := workspace.NewFilesystem(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Create(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) {
+		t.Fatalf("reusing failed filesystem workspace after restart: %v", err)
+	}
+	if _, err := restarted.CleanupIssue(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) || !daemon.Alive(t) {
+		t.Fatalf("retiring unverified filesystem hook after restart: %v", err)
+	}
+}
+
+func TestFilesystemOutputFailureAllowsSetupRetry(t *testing.T) {
+	opts := workspace.FilesystemOptions{Root: t.TempDir(), OutputRoot: t.TempDir(), Hooks: workspace.Hooks{AfterCreate: "echo ready > hook-ready"}}
+	issue := workspace.Issue{Identifier: "EXAMPLE-1"}
+	blocker := filepath.Join(opts.OutputRoot, issue.Identifier)
+	if err := os.WriteFile(blocker, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	backend, err := workspace.NewFilesystem(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Create(t.Context(), issue); err == nil {
+		t.Fatal("setup proceeded without its output directory")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh.Created || gitfixture.ReadFile(t, filepath.Join(fresh.Path, "hook-ready")) != "ready\n" {
+		t.Fatalf("hook did not run after output directory recovery: %+v", fresh)
 	}
 }

@@ -60,6 +60,8 @@ func reapVerifiedProcesses(ctx context.Context, path string, grace time.Duration
 	return reapProcesses(ctx, path, grace, verified, guardedSignal)
 }
 
+type refreshHookProcessesKey struct{}
+
 type hookSignals interface {
 	prepare(int) (func(), error)
 	signal(int, syscall.Signal) error
@@ -110,12 +112,28 @@ func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, iden
 		}
 		return sameProcess(pid)
 	}
-	observeWriters := lifetime != nil
+	discovered := false
 	verified := func(ctx context.Context, path string) ([]int, error) {
 		var writerErr error
-		if observeWriters {
+		if lifetime != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if discovered && ctx.Value(refreshHookProcessesKey{}) == nil {
+				var live []int
+				for pid := range confirmed {
+					if matches, err := sameProcess(pid); err != nil {
+						return live, err
+					} else if matches {
+						live = append(live, pid)
+					}
+				}
+				if len(live) > 0 {
+					return live, nil
+				}
+			}
 			ctx, writerErr = lifetime.recordWriters(ctx)
-			observeWriters = false
+			discovered = true
 		}
 		candidates, err := ScanOwned(ctx, path, scan)
 		err = errors.Join(err, writerErr)
@@ -275,34 +293,57 @@ func reapProcessesWithWait(
 	signal workspaceProcessSignaler,
 	wait workspaceProcessWaiter,
 ) (int, error) {
-	pids, err := ScanOwned(ctx, path, scan)
+	_, hook := ctx.Value(lifetimeKey{}).(*Lifetime)
+	discovery, cancelDiscovery := ctx, func() {}
+	if hook {
+		discovery, cancelDiscovery = context.WithTimeout(ctx, hookCleanupTimeout)
+	}
+	pids, err := ScanOwned(discovery, path, scan)
+	cancelDiscovery()
+	if hook {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, hookCleanupTimeout)
+		defer cancel()
+	}
+	var discoveryErr error
 	if err != nil {
-		scanErr := fmt.Errorf("scan workspace processes: %w", err)
-		if len(pids) == 0 {
-			return 0, scanErr
-		}
-		reaped := make(map[int]struct{}, len(pids))
-		signalErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
-		return len(reaped), errors.Join(scanErr, signalErr)
+		discoveryErr = fmt.Errorf("scan workspace processes: %w", err)
 	}
 	if len(pids) == 0 {
-		return 0, nil
+		return 0, discoveryErr
 	}
 
 	reaped := make(map[int]struct{}, len(pids))
 	signalErr := signalWorkspaceProcesses(pids, syscall.SIGTERM, signal, reaped)
+	if discoveryErr != nil && (!hook || !errors.Is(discoveryErr, context.DeadlineExceeded)) {
+		return len(reaped), errors.Join(discoveryErr, signalErr)
+	}
 	killed := map[int]struct{}{}
 	for {
 		survivors, err := wait(ctx, path, grace, scan)
+		if err == nil && len(survivors) != 0 && signalErr == nil && hook {
+			refreshed, refreshErr := ScanOwned(context.WithValue(ctx, refreshHookProcessesKey{}, true), path, scan)
+			if refreshErr != nil {
+				for _, pid := range survivors {
+					_, termSent := reaped[pid]
+					_, alreadyKilled := killed[pid]
+					if termSent && !alreadyKilled {
+						err = errors.Join(err, signalWorkspaceProcesses([]int{pid}, syscall.SIGKILL, signal, killed))
+					}
+				}
+				return len(reaped), errors.Join(discoveryErr, refreshErr, err)
+			}
+			survivors = refreshed
+		}
 		if err != nil || len(survivors) == 0 || signalErr != nil {
-			return len(reaped), errors.Join(signalErr, err)
+			return len(reaped), errors.Join(discoveryErr, signalErr, err)
 		}
 		var newcomers, escalate []int
 		for _, pid := range survivors {
 			_, termSent := reaped[pid]
 			_, killSent := killed[pid]
 			if killSent || !termSent && len(killed) > 0 {
-				return len(reaped), fmt.Errorf("workspace processes remained after SIGKILL: pid=%d", pid)
+				return len(reaped), errors.Join(discoveryErr, fmt.Errorf("workspace processes remained after SIGKILL: pid=%d", pid))
 			}
 			if termSent {
 				escalate = append(escalate, pid)

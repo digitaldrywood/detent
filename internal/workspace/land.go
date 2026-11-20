@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
 )
 
 var errSourceDeltaNotIncorporated = errors.New("the current integration base does not incorporate the published source delta")
@@ -55,7 +56,8 @@ func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) e
 	if err := l.removeLandingWorktree(ctx, l.sourceRoot, normalized.Path); err != nil {
 		return errors.Join(stagingErr, err)
 	}
-	return errors.Join(stagingErr, l.removeOwnershipRecord(normalized.Path))
+	l.uses.SetSetupFailed(normalized.Path, false)
+	return errors.Join(stagingErr, l.removeOwnershipRecord(normalized.Path), hookproc.ClearWorkspaceSetupPending(l.root, normalized.Path))
 }
 
 type GitHubPRLander interface {
@@ -273,6 +275,9 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 			}
 		}
 	}()
+	if err := hookproc.MarkWorkspaceSetupPending(l.root, info.Path, l.hooks.AfterCreate); err != nil {
+		return info, false, err
+	}
 	if err := l.addWorktreeWithPrune(ctx, func() error {
 		_, err := l.runGit(ctx, args...)
 		return err
@@ -596,6 +601,9 @@ func incorporatedSourceDelta(ctx context.Context, path, sourceBase, base, head s
 }
 
 func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) error {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, staging); err != nil {
+		return err
+	}
 	if err := l.uses.Stop(ctx, staging); err != nil {
 		return err
 	}
