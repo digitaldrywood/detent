@@ -303,8 +303,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 				runGit(t, fixture.remote, "update-ref", "refs/heads/"+target, base)
 			}
 			repository := "https://github.com/example/repo"
-			runGit(t, fixture.source, "config", "url.file://"+fixture.remote+".insteadOf", repository+".git")
-			runGit(t, fixture.source, "remote", "set-url", "origin", repository+".git")
+			useFixtureGitHubRemote(t, fixture.source, fixture.remote, repository)
 			previous := base
 			externalHead := fixture.head
 			publicationBranch := fixture.info.Branch

@@ -38,7 +38,7 @@ func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhas
 	return nil
 }
 
-func Push(ctx context.Context, path, branch string, verify func(context.Context) error, authorize func(context.Context) error, remoteHead RemoteHead, pushError func(error, string) error) (string, string, string, error) {
+func Push(ctx context.Context, path, branch string, verify, authorize, verifyDestination func(context.Context) error, remoteHead RemoteHead, pushError func(error, string) error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -56,7 +56,13 @@ func Push(ctx context.Context, path, branch string, verify func(context.Context)
 	if err := authorize(ctx); err != nil {
 		return "", "", "", err
 	}
+	if err := verifyDestination(ctx); err != nil {
+		return "", "", "", err
+	}
 	if _, pushErr := gitexec.Run(ctx, path, "push", "--no-follow-tags", gitexec.DefaultRemote, head+":"+ref); pushErr != nil {
+		if err := verifyDestination(ctx); err != nil {
+			return "", "", "", errors.Join(err, pushError(pushErr, branch))
+		}
 		current, exists, readErr := remoteHead(ctx, path, gitexec.DefaultRemote, branch)
 		if readErr != nil || !exists || current != head {
 			return "", "", "", errors.Join(pushError(pushErr, branch), readErr)
