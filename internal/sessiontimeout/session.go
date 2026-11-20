@@ -44,6 +44,8 @@ func (e *Error) Unwrap() error {
 	return context.DeadlineExceeded
 }
 
+type sessionKey struct{}
+
 type Session struct {
 	ctx      context.Context
 	cancel   context.CancelCauseFunc
@@ -70,7 +72,8 @@ func Start(parent context.Context, idle, limit time.Duration, timeout func(conte
 		deadline, stop = timeout(parent, limit, errTurnDeadline)
 	}
 	ctx, cancel := context.WithCancelCause(deadline)
-	s := &Session{ctx: ctx, cancel: cancel, stop: stop, idle: idle, limit: limit}
+	s := &Session{cancel: cancel, stop: stop, idle: idle, limit: limit}
+	s.ctx = context.WithValue(ctx, sessionKey{}, s)
 	s.Activity()
 	return s
 }
@@ -122,6 +125,28 @@ func (s *Session) Event(identity string) bool {
 	}
 	s.activity()
 	return true
+}
+
+func ObserveOwnedCommand(ctx context.Context, id string) func() {
+	s, _ := ctx.Value(sessionKey{}).(*Session)
+	deadline, bounded := ctx.Deadline()
+	if s == nil || !bounded || ctx.Err() != nil {
+		return func() {}
+	}
+	id = "host/" + id
+	s.StartCommand(id)
+	limit := time.Until(deadline)
+	onDeadline := func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			s.cancel(&Error{Kind: CommandDeadline, Limit: limit})
+		}
+	}
+	stop := context.AfterFunc(ctx, onDeadline)
+	return func() {
+		stop()
+		onDeadline()
+		s.EndCommand(id)
+	}
 }
 
 func (s *Session) StartCommand(id string) {
