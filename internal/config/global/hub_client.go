@@ -12,7 +12,7 @@ import (
 const (
 	DefaultHubTokenEnvironment     = "DETENT_HUB_TOKEN"
 	DefaultHubHeartbeatSeconds     = 30
-	DefaultHubLeaseTTLSeconds      = 600
+	DefaultHubLeaseTTLSeconds      = 90 * 60
 	DefaultHubRequestTimeoutMillis = 10000
 )
 
