@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strconv"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -117,8 +119,10 @@ func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
 func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (func() error, error) {
 	Configure(ctx, cmd)
 	var finish func(error) error
+	var observed Identity
 	launch := WithStartAcknowledgement(ctx, func(id Identity) (err error) {
 		finish, err = owner(ctx, cmd, id)
+		observed = id
 		if err == nil && finish == nil {
 			return errors.New("native command has no registered session")
 		}
@@ -130,5 +134,9 @@ func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (
 		}
 		return nil, err
 	}
-	return func() error { return finish(Wait(cmd)) }, nil
+	complete := sessiontimeout.ObserveOwnedCommand(ctx, strconv.Itoa(observed.PID)+"/"+strconv.FormatInt(observed.StartedAt.UnixNano(), 10))
+	return func() error {
+		defer complete()
+		return finish(Wait(cmd))
+	}, nil
 }
