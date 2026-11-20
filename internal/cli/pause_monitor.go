@@ -30,22 +30,6 @@ type pauseMonitorDeps struct {
 	logger           *slog.Logger
 }
 
-func runPauseMonitor(ctx context.Context, deps pauseMonitorDeps) {
-	deps = normalizePauseMonitorDeps(deps)
-	checkPauseExitConditions(ctx, deps)
-
-	ticker := time.NewTicker(deps.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			checkPauseExitConditions(ctx, deps)
-		}
-	}
-}
-
 func checkPauseExitConditions(ctx context.Context, deps pauseMonitorDeps) {
 	deps = normalizePauseMonitorDeps(deps)
 	cfg, err := deps.read()

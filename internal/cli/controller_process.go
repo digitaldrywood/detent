@@ -173,23 +173,6 @@ func (c *controllerConnection) ready(ctx context.Context, controller *ShutdownCo
 	return c.peer.Call(ctx, "ready", nil, ready)
 }
 
-func (c *controllerConnection) publishSnapshots(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot]) {
-	subscription, err := snapshots.Subscribe(ctx)
-	if err != nil {
-		slog.Warn("subscribe terminal controller snapshots", "error", err)
-		return
-	}
-	defer subscription.Close()
-	for snapshot := range subscription.C() {
-		if err := c.peer.Call(ctx, "snapshot", nil, snapshot); err != nil {
-			if ctx.Err() == nil {
-				slog.Warn("forward terminal controller snapshot", "error", err)
-			}
-			return
-		}
-	}
-}
-
 func (c *controllerConnection) close() error {
 	c.peer.Close()
 	return errors.Join(c.input.Close(), c.output.Close())

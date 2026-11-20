@@ -8,17 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/backendcapacity"
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
-	"github.com/digitaldrywood/detent/internal/hub"
-	"github.com/digitaldrywood/detent/internal/orchestrator"
-	"github.com/digitaldrywood/detent/internal/project"
 )
 
 var codexHomeAssignmentPattern = regexp.MustCompile(`(?:^|[[:space:];])CODEX_HOME=(?:"([^"]*)"|'([^']*)'|([^[:space:];|&]+))`)
@@ -28,25 +21,10 @@ const (
 	backendCredentialWatchReconcileDelay = 150 * time.Millisecond
 )
 
-type backendCredentialTarget struct {
-	projectID project.ID
-	scope     backendcapacity.Scope
-}
-
-type backendCredentialWatch struct {
-	path    string
-	targets []backendCredentialTarget
-}
-
 type credentialFileStamp struct {
 	modified int64
 	size     int64
 	mode     uint32
-}
-
-type backendCredentialWatchSet struct {
-	cancel context.CancelFunc
-	done   <-chan struct{}
 }
 
 type backendCredentialWatchTimer interface {
@@ -69,143 +47,6 @@ func (t *standardBackendCredentialWatchTimer) Reset(delay time.Duration) bool {
 
 func (t *standardBackendCredentialWatchTimer) Stop() bool {
 	return t.timer.Stop()
-}
-
-func startBackendCredentialWatchers(
-	ctx context.Context,
-	registry *project.Registry,
-	events *hub.Hub[project.Event],
-	logger *slog.Logger,
-) <-chan struct{} {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	var eventUpdates <-chan project.Event
-	var subscription *hub.Subscription[project.Event]
-	if events != nil {
-		var err error
-		subscription, err = events.Subscribe(ctx)
-		if err != nil {
-			logger.Warn("subscribe backend credential watcher to project events failed", "error", err)
-		} else {
-			eventUpdates = subscription.C()
-		}
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if subscription != nil {
-			defer subscription.Close()
-		}
-		watchers := startBackendCredentialWatchSet(ctx, registry, logger)
-		defer watchers.stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case event, ok := <-eventUpdates:
-				if !ok {
-					eventUpdates = nil
-					continue
-				}
-				switch event.Kind {
-				case project.EventStarted, project.EventStopped, project.EventWorkflowReloaded:
-					watchers.stop()
-					watchers = startBackendCredentialWatchSet(ctx, registry, logger)
-				}
-			}
-		}
-	}()
-	return done
-}
-
-func startBackendCredentialWatchSet(ctx context.Context, registry *project.Registry, logger *slog.Logger) backendCredentialWatchSet {
-	watchCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	watches := configuredBackendCredentialWatches(registry, logger)
-	var workers sync.WaitGroup
-	for _, watch := range watches {
-		watch := watch
-		watchDone, err := startBackendCredentialFileWatcher(watchCtx, watch.path, func(ctx context.Context) {
-			notifyBackendCredentialTargets(ctx, registry, watch.targets, logger)
-		}, logger)
-		if err != nil {
-			logger.Warn("watch backend credential file failed", "path", watch.path, "error", err)
-			continue
-		}
-		workers.Go(func() {
-			<-watchDone
-		})
-	}
-	go func() {
-		workers.Wait()
-		close(done)
-	}()
-	return backendCredentialWatchSet{cancel: cancel, done: done}
-}
-
-func (w backendCredentialWatchSet) stop() {
-	if w.cancel != nil {
-		w.cancel()
-	}
-	if w.done != nil {
-		<-w.done
-	}
-}
-
-func configuredBackendCredentialWatches(registry *project.Registry, logger *slog.Logger) []backendCredentialWatch {
-	if registry == nil {
-		return nil
-	}
-	byPath := map[string][]backendCredentialTarget{}
-	seen := map[string]struct{}{}
-	for _, trackedProject := range registry.List() {
-		if trackedProject == nil || trackedProject.Orchestrator() == nil {
-			continue
-		}
-		for _, backend := range trackedProject.Workflow().Config.AgentBackendConfigs() {
-			if backend.Kind != workflowconfig.AgentBackendCodex {
-				continue
-			}
-			path, err := codexCredentialPath(backend.Command, os.LookupEnv, os.UserHomeDir)
-			if err != nil {
-				logger.Warn("resolve codex credential path failed", "project_id", trackedProject.ID(), "backend_id", backend.ID, "error", err)
-				continue
-			}
-			provider := strings.TrimSpace(backend.Provider)
-			if provider == "" {
-				provider = strings.TrimSpace(backend.CodexOptions().ModelProvider)
-			}
-			target := backendCredentialTarget{
-				projectID: trackedProject.ID(),
-				scope: backendcapacity.Scope{
-					BackendID:   backend.ID,
-					BackendKind: backend.Kind,
-					Provider:    provider,
-				}.Normalize(),
-			}
-			key := path + "\x00" + string(target.projectID) + "\x00" + target.scope.Key()
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			byPath[path] = append(byPath[path], target)
-		}
-	}
-	paths := make([]string, 0, len(byPath))
-	for path := range byPath {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	watches := make([]backendCredentialWatch, 0, len(paths))
-	for _, path := range paths {
-		watches = append(watches, backendCredentialWatch{path: path, targets: byPath[path]})
-	}
-	return watches
 }
 
 func codexCredentialPath(
@@ -259,15 +100,6 @@ func codexHomeFromCommand(command string) string {
 		}
 	}
 	return ""
-}
-
-func startBackendCredentialFileWatcher(
-	ctx context.Context,
-	path string,
-	notify func(context.Context),
-	logger *slog.Logger,
-) (<-chan struct{}, error) {
-	return startBackendCredentialFileWatcherWithRetry(ctx, path, notify, logger, backendCredentialWatchRetryDelay)
 }
 
 func startBackendCredentialFileWatcherWithRetry(
@@ -464,21 +296,4 @@ func readCredentialFileStamp(path string) (credentialFileStamp, error) {
 		size:     info.Size(),
 		mode:     uint32(info.Mode()),
 	}, nil
-}
-
-func notifyBackendCredentialTargets(ctx context.Context, registry *project.Registry, targets []backendCredentialTarget, logger *slog.Logger) {
-	for _, target := range targets {
-		trackedProject, ok := registry.Get(target.projectID)
-		if !ok || trackedProject == nil || trackedProject.Orchestrator() == nil {
-			continue
-		}
-		scheduled, err := trackedProject.Orchestrator().BackendCredentialChanged(ctx, target.scope)
-		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, orchestrator.ErrStopped) {
-				logger.Warn("notify backend credential change failed", "project_id", target.projectID, "backend_id", target.scope.BackendID, "error", err)
-			}
-			continue
-		}
-		logger.Info("backend credential file changed", "project_id", target.projectID, "backend_id", target.scope.BackendID, "capacity_probe_scheduled", scheduled)
-	}
 }

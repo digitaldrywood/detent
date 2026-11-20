@@ -234,13 +234,3 @@ func workspaceLaneProject(projects []globalconfig.Project, projectID string) (gl
 	}
 	return globalconfig.Project{}, false
 }
-
-// runWorkspaceLane runs one lane until ctx is cancelled. A lane that stops on
-// its own is a bug rather than a shutdown, so it is logged; the caller waits
-// for this to return before the process exits, which is what gives every open
-// workspace the chance to unbind instead of timing out unreachable.
-func runWorkspaceLane(ctx context.Context, lane *workspacerunner.Lane, logger *slog.Logger) {
-	if err := lane.Run(ctx); err != nil && ctx.Err() == nil {
-		logger.Warn("workspace.lane_stopped", "error", err)
-	}
-}
