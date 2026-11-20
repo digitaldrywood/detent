@@ -118,10 +118,9 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		return nil, fmt.Errorf("read phase publication repository: %w", err)
 	}
 	e.mu.Lock()
-	attempt, reviewState := e.data.AttemptID, e.stepReviewState()
+	attempt := e.data.AttemptID
 	sameAttempt := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
 	if len(receipts) > 0 {
-		e.phaseSource = &receipts[0]
 		if landing := e.pendingLandingResolution(); landing != nil && e.role == runner.RoleMerge &&
 			receipts[0].AttemptID == attempt && receipts[0].HeadSHA == landing.HeadSHA && receipts[0].PolicyID == lease.PolicyID {
 			sameAttempt.LastPushed = &receipts[0]
@@ -141,6 +140,13 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		return &continuation, nil
 	}
 	pinned := receipts[0]
+	e.mu.Lock()
+	e.phaseSource, e.phasePlanDigest = &pinned, ""
+	if continuation.Plan != nil {
+		e.phasePlanDigest = continuation.Plan.InputDigest
+	}
+	reviewState := e.stepReviewState() + e.phasePlanDigest
+	e.mu.Unlock()
 	if continuation.Plan != nil && !continuation.Plan.Accepted {
 		continuation.LastPushed, continuation.NextPhase = &pinned, "plan"
 		return &continuation, nil
@@ -177,9 +183,6 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		return nil, errors.New("recorded phase source changed during continuation")
 	}
 	continuation.LastPushed, continuation.NextPhase, continuation.Receipts = source.LastPushed, source.NextPhase, source.Receipts
-	if continuation.Plan != nil && continuation.Plan.Accepted {
-		continuation.Receipts = append([]tracker.NativePhaseReceipt{pinned}, continuation.Receipts...)
-	}
 	return &continuation, nil
 }
 
@@ -197,7 +200,7 @@ func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
 	lease := e.claim.lease
 	e.mu.Lock()
-	attemptID, reviewState := e.data.AttemptID, e.stepReviewState()
+	attemptID, reviewState := e.data.AttemptID, e.stepReviewState()+e.phasePlanDigest
 	digest := tracker.PhaseInputDigest(phase, head, tree, lease.PolicyID, reviewState, input)
 	if tracker.IsPlanPhase(phase) {
 		index := slices.IndexFunc(e.data.Steps, func(step tracker.NativeStepReceipt) bool { return step.Step == "plan" })
@@ -205,7 +208,7 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 			e.mu.Unlock()
 			return errors.New("phase receipt requires a recorded plan")
 		}
-		digest = tracker.PlanPhaseDigest(tracker.NativePhaseReceipt{Phase: phase, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID}, e.Recovery(), e.data.Steps[index])
+		digest = tracker.PlanPhaseDigest(tracker.NativePhaseReceipt{Phase: phase, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID}, e.data.Steps[index])
 	}
 	e.mu.Unlock()
 	request := tracker.NativePhaseReceipt{
@@ -225,6 +228,11 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	}
 	if err == nil && recorded != request {
 		return errors.New("Hub phase receipt differs from the published source")
+	}
+	if err == nil && phase == "plan" {
+		e.mu.Lock()
+		e.phasePlanDigest = digest
+		e.mu.Unlock()
 	}
 	return e.executionError(ctx, err)
 }

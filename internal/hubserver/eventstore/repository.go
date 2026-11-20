@@ -284,6 +284,7 @@ type LinkedSource struct {
 type Receipt = receiptstore.Record
 
 type Reader interface {
+	HumanDiscussionSequence(context.Context, tracker.ProjectID, tracker.NativeWorkItemID) (int64, error)
 	RunEvent(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, string) (Event, error)
 	LatestEventRecordedAt(context.Context) (*time.Time, error)
 	HistoryReader

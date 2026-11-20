@@ -43,7 +43,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
-	if o.handlePermissionWaitCompletion(ctx, state, event, running) {
+	if event.Result.Output != runpkg.RunOutputPlanApprovalWait && o.handlePermissionWaitCompletion(ctx, state, event, running) {
 		return true
 	}
 	mode := firstNonBlank(event.Request.Mode, running.Mode)
@@ -70,24 +70,29 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	report, reported := phaserecovery.CompletionSignalFromMessage(event.Result.FinalMessage)
 	if event.Err == nil && event.Result.Output == runpkg.RunOutputPlanApprovalWait {
-		if !reported || report.Invalid != nil || report.Status != workpad.StatusBlocked || report.HumanAction == "" {
+		if !reported || report.Invalid != nil || report.Status != workpad.StatusBlocked || report.HumanAction != tracker.PlanApprovalQuestion {
 			o.retryMachineCompletion(ctx, state, event, running, nextAttempt(running.Attempt), "plan approval requires a typed question")
 			return true
 		}
-		states, err := reader.WorkflowStates(ctx)
-		if err == nil {
-			_, ok := connector.CompletionLane(states, issue.State, blockedStatusState, true)
-			if !ok || dispatchableState(states, blockedStatusState) {
-				err = errors.New("workflow has no human action destination for plan approval")
-			} else if normalizeState(issue.State) != normalizeState(blockedStatusState) {
-				err = o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, "human_action", workflowLaneMetadata{ReasonDetail: event.Result.FinalMessage})
+		o.observeNativeCompletion(ctx, event, false)
+		if execution := o.nativeCompletionExecution(event); execution != nil {
+			if err := execution.Finish(ctx, "succeeded"); err != nil {
+				return handoff(fmt.Errorf("persist plan approval question: %w", err))
 			}
 		}
-		if err != nil {
-			return handoff(err)
+		if normalizeState(issue.State) != normalizeState(blockedStatusState) {
+			states, err := reader.WorkflowStates(ctx)
+			if err != nil {
+				return handoff(err)
+			}
+			if _, ok := connector.CompletionLane(states, issue.State, blockedStatusState, true); !ok || dispatchableState(states, blockedStatusState) {
+				return handoff(errors.New("workflow has no human action destination for plan approval"))
+			}
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, blockedStatusState, event.CompletedAt, "human_action", workflowLaneMetadata{ReasonDetail: event.Result.FinalMessage}); err != nil {
+				return handoff(err)
+			}
 		}
 		running.Issue.State, running.Issue.WorkpadSignal = blockedStatusState, report
-		o.observeNativeCompletion(ctx, event, false)
 		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
 		}

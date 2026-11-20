@@ -35,6 +35,7 @@ import (
 
 type nativeExecution struct {
 	phaseSource       *tracker.NativePhaseReceipt
+	phasePlanDigest   string
 	phaseReservation  atomic.Pointer[providercapacity.Reservation]
 	completionOwner   atomic.Bool
 	preparedPublisher atomic.Bool

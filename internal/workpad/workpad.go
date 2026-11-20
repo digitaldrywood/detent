@@ -200,12 +200,16 @@ func SignalFromWorkpad(body, url, repo string) (*Signal, bool) {
 
 const MaxFinalSummaryBytes = 8 << 10
 
-func FinalSummary(body string) string {
+func PlainSummary(body string) string {
 	_, _, start := lastStatusBlock(body)
 	if start >= 0 {
 		body = body[:start]
 	}
-	body = strings.TrimSpace(body)
+	return strings.TrimSpace(body)
+}
+
+func FinalSummary(body string) string {
+	body = PlainSummary(body)
 	if len(body) > MaxFinalSummaryBytes {
 		body = body[:MaxFinalSummaryBytes-len("…")]
 		for !utf8.ValidString(body) {
@@ -220,6 +224,10 @@ func BlockedDetail(summary, humanAction string) string {
 	if signal, ok := SignalFromComment(summary, "", ""); ok && signal.Invalid == nil && signal.Status == StatusBlocked && strings.TrimSpace(signal.HumanAction) != "" {
 		return summary
 	}
+	return QuestionDetail(summary, humanAction)
+}
+
+func QuestionDetail(summary, humanAction string) string {
 	status := fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
 	summary = FinalSummary(summary)
 	room := MaxFinalSummaryBytes - len(status) - len("\n\n")
@@ -281,6 +289,9 @@ func lastStatusBlock(body string) (string, bool, int) {
 		lines = append(lines, line)
 	}
 
+	if inFence {
+		lastStart = start
+	}
 	return last, found, lastStart
 }
 
