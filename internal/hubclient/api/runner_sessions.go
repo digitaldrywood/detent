@@ -79,7 +79,14 @@ func (s *RunnerSessions) BindExecution(ctx context.Context, execution runner.Exe
 	if execution == nil {
 		return ctx
 	}
-	return WithMutationAuthority(ctx, s.base(), execution.Recovery().Lease, func() error { return context.Cause(ctx) })
+	lease, scope := execution.Recovery().Lease, s.base()
+	authority := nativeMutationAuthority{scope: scope, lease: lease, cancellation: func() error { return context.Cause(ctx) }, guard: ctx}
+	if inherited, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok &&
+		inherited.scope == scope && inherited.lease.WorkItemID == lease.WorkItemID &&
+		inherited.lease.ID == lease.ID && inherited.lease.FencingToken == lease.FencingToken {
+		authority.guard = inherited.guard
+	}
+	return context.WithValue(ctx, nativeMutationAuthorityKey{}, authority)
 }
 
 func sessionReadError(err error) error {
