@@ -52,7 +52,18 @@ func (o *Orchestrator) completeNativeLandingRun(
 			return o.parkPermissionWait(ctx, state, event, running, wait)
 		}
 	}
-	if !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+	pendingResolution := landing.Path == "merge_resolution_pending" && landing.RefusalKind == workspace.LandRefusalConflict
+	if !landing.Landed && pendingResolution && !mergeWorkerIssue(issue) && event.Request.DeferExecutionFinish && event.Request.RetainItemWorkspace && o.supervisor != nil {
+		if state.Draining || running.CompletionLane != "" || running.Cancellation != nil {
+			return false
+		}
+		if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
+			o.warnNativeCompletion(issue, err)
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		}
+		return true
+	}
+	if !landing.Landed && (landing.Waiting || pendingResolution || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA
 		}

@@ -108,12 +108,17 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	e.mu.Lock()
 	attempt, reviewState := e.data.AttemptID, e.stepReviewState()
+	sameAttempt := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
 	if len(receipts) > 0 {
 		e.phaseSource = &receipts[0]
+		if landing := e.pendingLandingResolution(); landing != nil && e.role == runner.RoleMerge &&
+			receipts[0].AttemptID == attempt && receipts[0].HeadSHA == landing.HeadSHA && receipts[0].PolicyID == lease.PolicyID {
+			sameAttempt.LastPushed = &receipts[0]
+		}
 	}
 	e.mu.Unlock()
 	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
-		return &tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}, nil
+		return &sameAttempt, nil
 	}
 	pinned := receipts[0]
 	var phases []tracker.NativePhaseReceipt

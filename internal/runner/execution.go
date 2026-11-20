@@ -322,6 +322,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	release := r.keepAwake(ctx)
 	defer release()
 	if req.Execution == nil {
+		if req.NativeLandingRework != nil {
+			return RunResult{}, fmt.Errorf("%w: native landing rework execution is unavailable", ErrNativeRecoveryRequired)
+		}
 		if req.NativeReviewContinuation != nil {
 			return RunResult{}, fmt.Errorf("%w: native review execution is unavailable", ErrNativeRecoveryRequired)
 		}
@@ -391,6 +394,15 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, failedStep("publication", err)
 		}
 		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
+	}
+	if expected := req.NativeLandingRework; expected != nil {
+		source, ok := req.Execution.(NativeSourceIterationExecution)
+		if !ok || mode != RunModeImplement || !req.RetainItemWorkspace {
+			return RunResult{}, fmt.Errorf("%w: native landing rework requires the held workspace", ErrNativeRecoveryRequired)
+		}
+		if err := source.PrepareSourceIteration(guarded, *expected); err != nil {
+			return RunResult{}, err
+		}
 	}
 	sourceReviewed := false
 	if normalizeRunMode(req.Mode) == RunModeImplement {

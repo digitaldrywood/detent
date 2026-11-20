@@ -1917,7 +1917,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	reviewRecovery, turnRecovery, repairResume := nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	publicationRecovery := req.publicationRecovery(mode)
 	var phaseSource *tracker.NativePhaseReceipt
-	if mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
+	if req.NativeLandingRework != nil {
+		reviewRecovery, turnRecovery, repairResume = nil, nil, false
+	} else if mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
 		phaseSource = req.phaseContinuation.LastPushed
 		if phaseSource != nil {
 			recovery := req.Execution.Recovery()
@@ -1990,7 +1992,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	workspaceIssue.FreshCheckout = false
-	landingRework := req.Execution != nil && mode == RunModeImplement && phaserecovery.LandingNeedsRework(req.Execution.Recovery())
+	landingRework := req.Execution != nil && mode == RunModeImplement && (req.NativeLandingRework != nil || phaserecovery.LandingNeedsRework(req.Execution.Recovery()))
 	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding

@@ -38,6 +38,10 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.prepareReview(ctx, expected)
+}
+
+func (e *nativeExecution) prepareReview(ctx context.Context, expected tracker.NativeChangeReference) error {
 	if e.change != nil && e.change.NoChange != nil {
 		if expected.ChangeID != "" || expected.VersionID != "" || expected.HeadSHA != e.change.HeadSHA {
 			return reviewRefusal("no_change_source_mismatch")
@@ -347,12 +351,42 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	return nil
 }
 
+func (e *nativeExecution) pendingLandingResolution() *tracker.NativeLandingReceipt {
+	if e.data.Runtime == nil {
+		return nil
+	}
+	landing := e.data.Runtime.Landing
+	if landing == nil || landing.Landed || landing.Path != "merge_resolution_pending" || landing.RefusalKind != workspace.LandRefusalConflict {
+		return nil
+	}
+	return landing
+}
+
 func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected tracker.NativeChangeReference) error {
-	if err := e.PrepareReview(ctx, expected); err != nil {
+	if err := e.Validate(ctx); err != nil {
 		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if landing := e.pendingLandingResolution(); e.role == runner.RoleMerge && landing != nil {
+		if e.data.Identity == nil || e.recoveredSource == nil || *e.recoveredSource != expected ||
+			landing.ChangeID != expected.ChangeID || landing.VersionID != expected.VersionID || landing.HeadSHA != expected.HeadSHA {
+			return reviewRefusal("landing_rework_source_mismatch")
+		}
+		detail, err := e.claim.source.NativeClient().CurrentChange(ctx, e.claim.lease.WorkItemID)
+		if err != nil {
+			return err
+		}
+		if detail.Change.ID != expected.ChangeID || detail.Change.CurrentVersion != expected.VersionID || detail.Summary.Status != "reviewed" {
+			return reviewRefusal("landing_rework_version_not_current")
+		}
+		if err := e.flushObservations(ctx); err != nil {
+			return err
+		}
+		e.role = e.data.Identity.Role
+	} else if err := e.prepareReview(ctx, expected); err != nil {
+		return err
+	}
 	e.settled = false
 	e.change = nil
 	e.validation = nil

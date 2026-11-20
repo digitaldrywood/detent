@@ -644,6 +644,7 @@ type RunRequest struct {
 	// native collaboration and lane writes finish under the execution lease.
 	DeferExecutionFinish     bool
 	NativeReviewContinuation *NativeReviewContinuation
+	NativeLandingRework      *tracker.NativeChangeReference
 	TriageContext            string
 
 	// ProviderReports supplies the scheduling snapshot; dispatch never starts an agent.
