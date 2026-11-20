@@ -15,7 +15,7 @@ func TestProviderIdentityRetriesUntilAcknowledged(t *testing.T) {
 		writes := []store.SessionProviderIdentity{}
 		failure := errors.New("unavailable")
 		failures := make(chan error, 1)
-		offer, stop := KeepProviderIdentity(t.Context(), func(_ context.Context, got store.SessionProviderIdentity) error {
+		offer, retry, stop := KeepProviderIdentity(t.Context(), func(_ context.Context, got store.SessionProviderIdentity) error {
 			writes = append(writes, got)
 			if len(writes) == 1 {
 				return failure
@@ -33,7 +33,7 @@ func TestProviderIdentityRetriesUntilAcknowledged(t *testing.T) {
 		default:
 			t.Fatal("first write failure was not reported")
 		}
-		offer(id)
+		retry()
 		synctest.Wait()
 		offer(id)
 		synctest.Wait()
