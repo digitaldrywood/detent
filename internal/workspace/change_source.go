@@ -137,11 +137,11 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if issue.Source.Transferred && issue.Source.Version.Source == nil {
 		return false, refuse(LandRefusalMissingHead, "the transferred version has no retained bundle; republish the exact head with source capture before retrying transfer")
 	}
-	transferred := issue.Source.Transferred
-	if transferred && state.HeadSHA == issue.Source.Version.HeadSHA && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0 {
+	restore := issue.Source.Transferred || !issue.NativeRework && issue.Source.PushedPhase != nil && issue.PullRequestHeadSHA == issue.Source.Version.HeadSHA
+	if restore && state.HeadSHA == issue.Source.Version.HeadSHA && len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0 {
 		return false, nil
 	}
-	if !transferred {
+	if !restore {
 		if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 			return false, nil
 		}
@@ -153,9 +153,9 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 			return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the existing clean worktree head %s differs from the recorded source base and head of version %s; preserve its current head and reconcile the Change before recovery", state.HeadSHA, issue.Source.Version.ID))
 		}
 	}
-	if transferred || state.HeadSHA != issue.Source.Version.BaseSHA {
+	if restore || state.HeadSHA != issue.Source.Version.BaseSHA {
 		if _, err := l.quarantineWorktree(ctx, info.Path); err != nil {
-			if transferred {
+			if issue.Source.Transferred {
 				return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("transferred version %s has unresolved local source custody; reconcile the assigned worktree through source recovery before retrying transfer: %v", issue.Source.Version.ID, err))
 			}
 			return false, err
