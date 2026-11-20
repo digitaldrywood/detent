@@ -104,6 +104,10 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 		human, _ := runtimeoutput.Diagnostic(signal.HumanAction, 1024)
 		fallback = roundAssessment{Action: progresscheck.RoundHumanAction, HumanAction: human}
 	}
+	providerBoundary := providerRoundOutcome(runErr, "")
+	if providerBoundary != "" {
+		fallback = roundAssessment{Action: progresscheck.RoundContinue, NextPhase: phase}
+	}
 	var phases []string
 	if fallback.Action == progresscheck.RoundContinue {
 		phases = append(phases, fallback.NextPhase)
@@ -117,10 +121,6 @@ func (r *Runner) decideRound(ctx context.Context, req RunRequest, backend worksp
 	}
 
 	signature := ""
-	providerBoundary := providerRoundOutcome(runErr, "")
-	if providerBoundary != "" {
-		action, next, human = "continue", phase, ""
-	}
 	if failure := nativeTerminalFailure(runErr, r.now(), result.TurnStartRefused); failure != nil {
 		if failure.Stage == "validation" {
 			phase = "project_gate"
