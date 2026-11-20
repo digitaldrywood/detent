@@ -660,8 +660,10 @@ type RunRequest struct {
 	RecoveryAttemptID         int64 // Existing operator retry intent; automatic host spillover has none.
 	ResumeState               store.AgentResumeState
 	SelectorContext           selector.Context
-	OnUsageUpdate             UsageUpdateHandler            `json:"-"`
-	OnActivityUpdate          AgentActivityUpdateHandler    `json:"-"`
+	OnUsageUpdate             UsageUpdateHandler         `json:"-"`
+	OnActivityUpdate          AgentActivityUpdateHandler `json:"-"`
+	observationPeer           *SSHPeer
+	artifactLogIncomplete     *bool
 	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
 	ProgressProbe             SessionProgressProbe          `json:"-"`
 	CheckpointValidate        func(context.Context) error   `json:"-"`

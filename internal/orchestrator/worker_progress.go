@@ -140,7 +140,11 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	if p.closed {
 		return context.Canceled
 	}
-	running := applyRunningUsage(*p.latest.Load(), update)
+	latest := p.latest.Load()
+	if update.CompletionSourceStart == nil && !update.LastEventAt.IsZero() && update.LastEventAt.Before(latest.LastEventAt) {
+		return nil
+	}
+	running := applyRunningUsage(*latest, update)
 	persistCheckpoint := update.CompletionSourceStart != nil && p.attempts != nil && running.WorkAttemptID > 0
 	visible := running
 	if persistCheckpoint {

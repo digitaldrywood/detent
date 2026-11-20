@@ -3,8 +3,10 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -169,16 +171,38 @@ func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context
 }
 
 func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
+	for _, blocked := range []string{"runtime", "artifact", "usage", "activity"} {
+		t.Run(blocked, func(t *testing.T) { testCodexTurnWhileObservationBlocked(t, blocked) })
+	}
+}
+
+func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
+	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		observing := make(chan struct{})
 		release := make(chan struct{})
 		defer close(release)
-		execution := &slowTurnObservation{observing: observing, release: release}
+		execution := &slowTurnObservation{observing: observing, release: release, blocked: blocked}
+		var peer *SSHPeer
+		if blocked == "usage" || blocked == "activity" {
+			left, right := net.Pipe()
+			central := NewSSHPeer(ctx, left, left, func(ctx context.Context, method string, _ []json.RawMessage) (any, error) {
+				if method == blocked {
+					return nil, execution.block(ctx)
+				}
+				return nil, nil
+			})
+			peer = NewSSHPeer(ctx, right, right, nil)
+			defer func() { central.Close(); peer.Close(); left.Close(); right.Close() }()
+		}
 		info := workspace.Info{Path: t.TempDir()}
 		source := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head"}}}}}
-		backend := &completionWithPendingTool{observing: observing}
+		backend := &completionWithPendingTool{observing: observing, blockAfter: AgentUpdateTurnStarted}
+		if blocked == "artifact" {
+			backend.blockAfter = AgentUpdateMessageDelta
+		}
 		sessions := &fakeSessionStore{sessionID: 42}
 		r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: backend})
 		if err != nil {
@@ -188,13 +212,17 @@ func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 		done := make(chan agentTurnExecution, 1)
 		go func() {
 			request := RunRequest{
-				Execution: execution, finalizeNativeWork: true,
+				Execution: execution, finalizeNativeWork: true, workspaceBackend: source, artifactLogIncomplete: &execution.artifactIncomplete,
 				AgentTools: []AgentTool{{Name: "get_change"}},
 				AgentToolHandler: func(ctx context.Context, _ AgentToolCall) (AgentToolResult, error) {
 					close(toolStarted)
 					<-ctx.Done()
 					return AgentToolResult{}, ctx.Err()
 				},
+			}
+			if peer != nil {
+				wire := SSHRunRequest{Request: request, Callbacks: []string{"usage", "activity"}}
+				request = wire.Bind(ctx, peer)
 			}
 			issue := workspace.Issue{}
 			result := r.runAgentTurn(ctx, backend, AgentTurnRequest{}, request, info, issue, config.Agent{}, "", nil, time.Now(), 42, agentidentity.Identity{}, nil, 0, "example-model", "codex")
@@ -218,7 +246,10 @@ func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 				t.Fatalf("terminal error=%v message=%q turn=%q", result.err, result.result.FinalMessage, result.turnResult.TurnID)
 			}
 			if source.finalizationCalls != 1 {
-				t.Fatalf("source finalizations = %d", source.finalizationCalls)
+				t.Fatalf("source finalizations=%d", source.finalizationCalls)
+			}
+			if blocked == "artifact" && !execution.artifactIncomplete {
+				t.Fatal("cancelled artifact upload was reported as complete")
 			}
 		default:
 			t.Fatal("matching completion was held behind a runtime observation")
@@ -228,11 +259,32 @@ func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 
 type slowTurnObservation struct {
 	finalizingTestExecution
-	observing chan struct{}
-	release   <-chan struct{}
+	observing          chan struct{}
+	release            <-chan struct{}
+	blocked            string
+	artifactIncomplete bool
 }
 
 func (e *slowTurnObservation) ObserveRuntime(ctx context.Context, _ tracker.NativeRuntimeObservation) error {
+	if e.blocked != "runtime" {
+		return nil
+	}
+	return e.block(ctx)
+}
+
+func (e *slowTurnObservation) SpoolArtifactLog(ctx context.Context, _ string) error {
+	if e.blocked != "artifact" {
+		return nil
+	}
+	return e.block(ctx)
+}
+
+func (e *slowTurnObservation) FinalizeArtifactsWithLogState(ctx context.Context, directory string, incomplete bool) error {
+	e.artifactIncomplete = incomplete
+	return e.FinalizeArtifacts(ctx, directory)
+}
+
+func (e *slowTurnObservation) block(ctx context.Context) error {
 	select {
 	case <-e.observing:
 	default:
@@ -248,7 +300,8 @@ func (e *slowTurnObservation) ObserveRuntime(ctx context.Context, _ tracker.Nati
 
 type completionWithPendingTool struct {
 	fakeCodexClient
-	observing <-chan struct{}
+	observing  <-chan struct{}
+	blockAfter AgentUpdateType
 }
 
 func (b *completionWithPendingTool) RunTurnWithTools(ctx context.Context, _ AgentTurnRequest, _ []AgentTool, call AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -268,7 +321,7 @@ func (b *completionWithPendingTool) RunTurnWithTools(ctx context.Context, _ Agen
 		if err := update(event); err != nil {
 			return AgentTurnResult{}, err
 		}
-		if event.Type == AgentUpdateTurnStarted {
+		if event.Type == b.blockAfter {
 			<-b.observing
 		}
 	}

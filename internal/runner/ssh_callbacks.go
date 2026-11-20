@@ -78,6 +78,7 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 
 func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 	request := wire.Request
+	request.observationPeer = peer
 	request.Issue.IsolationPolicy = wire.IsolationPolicy
 	for _, name := range wire.Callbacks {
 		switch name {
@@ -202,7 +203,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return (*tracker.NativePhaseContinuation)(nil), nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
-			case "SourceReview", "PrepareSourceIteration", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
+			case "SourceReview", "PrepareSourceIteration", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "SpoolArtifactLog", "FinalizeArtifacts", "FinalizeArtifactsWithLogState", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")

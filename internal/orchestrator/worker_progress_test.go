@@ -97,11 +97,14 @@ func TestWorkerProgressHeartbeatUsesLatestObservation(t *testing.T) {
 	target := heartbeatTarget{issueID: running.Issue.ID, progress: progress, workAttemptHeartbeat: base}
 	manager.upsert(target)
 	for _, message := range []string{"workspace created", "tests running"} {
-		update := runpkg.UsageUpdate{SessionID: "session", LastMessage: message, RecentEvents: []telemetry.ActivityEvent{{Message: message}}}
+		update := runpkg.UsageUpdate{SessionID: "session", LastEventAt: now, LastMessage: message, RecentEvents: []telemetry.ActivityEvent{{Message: message}}}
 		if err := progress.observe(t.Context(), update); err != nil {
 			t.Fatal(err)
 		}
 		update.RecentEvents[0].Message = "caller changed its copy"
+	}
+	if err := progress.observe(t.Context(), runpkg.UsageUpdate{SessionID: "older", LastEventAt: now.Add(-time.Second), LastMessage: "late SSH observation", Tokens: runpkg.TokenTotals{TotalTokens: 99}}); err != nil {
+		t.Fatal(err)
 	}
 	if len(attempts.heartbeats) != 0 {
 		t.Fatal("ordinary observations performed synchronous persistence")
@@ -115,7 +118,7 @@ func TestWorkerProgressHeartbeatUsesLatestObservation(t *testing.T) {
 	if got := attempts.heartbeats[0]; got.LeaseExpiresAt.Sub(got.HeartbeatAt) != 2*time.Minute {
 		t.Fatalf("heartbeat ignored updated lease duration: %#v", got)
 	}
-	if got := running.withProgress(); got.SessionID != "session" || got.RecentEvents[0].Message != "tests running" {
+	if got := running.withProgress(); got.SessionID != "session" || got.RecentEvents[0].Message != "tests running" || got.Tokens.TotalTokens != 0 {
 		t.Fatalf("progress snapshot = %#v", got)
 	}
 	state := newState(Config{})
