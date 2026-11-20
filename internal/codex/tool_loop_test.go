@@ -15,17 +15,18 @@ import (
 
 func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
-		name, steerResult, terminalStatus   string
-		parallel, wrongScope, changedSource bool
-		serializedSiblings, operator        bool
-		methods                             []string
-		stop                                bool
+		name, steerResult, terminalStatus           string
+		parallel, wrongScope, changedSource         bool
+		serializedSiblings, operator, freshEvidence bool
+		methods                                     []string
+		stop                                        bool
 	}{
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
 		{name: "terminal completion won race", steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/interrupt"}},
 		{name: "parallel siblings", parallel: true, terminalStatus: "completed"},
 		{name: "serialized siblings", serializedSiblings: true, terminalStatus: "completed"},
+		{name: "fresh sibling evidence each decision", freshEvidence: true, terminalStatus: "completed"},
 		{name: "operator calls", operator: true, terminalStatus: "completed"},
 		{name: "another provider turn", wrongScope: true, terminalStatus: "completed"},
 		{name: "changed source after steer", changedSource: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/steer"}},
@@ -41,6 +42,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
 					messages = append(messages, notificationMessage(t, "item/started", marker))
 				}
+				if ordinal == 4 && test.steerResult != "" {
+					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
+				}
 				source := "agent"
 				if test.operator {
 					source = "userShell"
@@ -50,8 +54,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
 				}
-				if ordinal == 3 && test.steerResult != "" {
-					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
+				if test.freshEvidence {
+					sibling := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"sibling-%d","source":"agent","command":"other check","cwd":"/workspace","status":"completed","exitCode":0,"aggregatedOutput":"new result %d"}}`, turn, ordinal, ordinal)
+					messages = append(messages, notificationMessage(t, "item/started", sibling), notificationMessage(t, "item/completed", sibling))
 				}
 			}
 			if test.parallel {
@@ -60,6 +65,8 @@ func TestStreamToolLoopControl(t *testing.T) {
 					messages = append(messages, message)
 				}
 			}
+			marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-next"}}`, turn)
+			messages = append(messages, notificationMessage(t, "item/started", marker))
 			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"other","status":"interrupted"}}`), notificationMessage(t, "turn/completed", fmt.Sprintf(`{"threadId":"thread","turn":{"id":"turn","status":%q}}`, test.terminalStatus)))
 			transport := &fakeAppServerTransport{received: messages}
 			server, err := NewAppServer(staticTransportFactory{transport: transport})
