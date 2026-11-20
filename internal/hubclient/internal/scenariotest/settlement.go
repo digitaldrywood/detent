@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/testenv"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
@@ -185,8 +186,8 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 				nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
-				nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
-				nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+				nativeChangeGit(t, source, "remote", "add", "origin", remote)
+				testenv.UseGitHubFixtureRemote(t, source, remote, nativeChangeRepository)
 				nativeChangeGit(t, source, "push", "origin", "main")
 				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 				if err != nil {

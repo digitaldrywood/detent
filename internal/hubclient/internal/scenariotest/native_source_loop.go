@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -281,8 +282,8 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			source := nativeChangeSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
-			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
-			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+			nativeChangeGit(t, source, "remote", "add", "origin", remote)
+			testenv.UseGitHubFixtureRemote(t, source, remote, nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
 			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
@@ -626,8 +627,8 @@ func runNativeReplacementProjectGate(t *testing.T, factories Constructors, repai
 	origin := nativeChangeSourceRepo(t)
 	remote := filepath.Join(t.TempDir(), "origin.git")
 	nativeChangeGit(t, origin, "init", "--bare", "-b", "main", remote)
-	nativeChangeGit(t, origin, "remote", "add", "origin", nativeChangeRepository)
-	nativeChangeGit(t, origin, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, origin, "remote", "add", "origin", remote)
+	testenv.UseGitHubFixtureRemote(t, origin, remote, nativeChangeRepository)
 	nativeChangeGit(t, origin, "push", "-u", "origin", "main")
 	first, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "first"), SourceRoot: origin, AutoBranch: true})
 	if err != nil {
@@ -675,8 +676,7 @@ func runNativeReplacementProjectGate(t *testing.T, factories Constructors, repai
 	}
 	checkout := filepath.Join(t.TempDir(), "replacement")
 	nativeChangeGit(t, origin, "clone", "--", remote, checkout)
-	nativeChangeGit(t, checkout, "remote", "set-url", "origin", nativeChangeRepository)
-	nativeChangeGit(t, checkout, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	testenv.UseGitHubFixtureRemote(t, checkout, remote, nativeChangeRepository)
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "second"), SourceRoot: checkout, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
