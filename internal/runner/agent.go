@@ -1241,6 +1241,23 @@ func (r *Runner) runAgentTurn(
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
 		})
 	}
+	var interventions []tracker.ExecutionLoopIntervention
+	loopOwner, _ := runRequest.Execution.(interface {
+		RecordLoopIntervention(context.Context, tracker.ExecutionLoopIntervention) error
+	})
+	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && loopOwner != nil {
+		turnRequest.RecordLoopIntervention = func(event tracker.ExecutionLoopIntervention) {
+			event.Revision = runRequest.checklistRevision
+			if len(interventions) == progresscheck.ToolLoopWindow {
+				copy(interventions, interventions[1:])
+				interventions = interventions[:len(interventions)-1]
+			}
+			interventions = append(interventions, event)
+			if observe != nil {
+				observe(func(ctx context.Context) error { return loopOwner.RecordLoopIntervention(ctx, event) })
+			}
+		}
+	}
 	if providerStore, ok := r.store.(sessionProviderStore); observe != nil && ok && detentSessionID > 0 {
 		var retryIdentity func()
 		offerIdentity, retryIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
@@ -1398,6 +1415,16 @@ func (r *Runner) runAgentTurn(
 	}
 	if finishObservations != nil {
 		turnErr = errors.Join(turnErr, finishObservations())
+	}
+	if len(interventions) != 0 {
+		publishCtx, cancel := context.WithTimeout(ctx, r.afterRunTimeout)
+		for _, event := range interventions {
+			if err := loopOwner.RecordLoopIntervention(publishCtx, event); err != nil {
+				turnErr = errors.Join(turnErr, fmt.Errorf("publish provider loop intervention: %w", err))
+				break
+			}
+		}
+		cancel()
 	}
 	var timeout *sessiontimeout.Error
 	if diagnostics, ok := runRequest.Execution.(HostDiagnosticsExecution); ok && errors.As(turnErr, &timeout) {
@@ -2794,6 +2821,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		var providerTimeout *sessiontimeout.Error
 		timedOut := errors.As(execution.err, &providerTimeout)
+		verdictAttempted := false
 		var noProgress *progresscheck.NoProgressError
 		reviewDue := errors.Is(execution.err, ErrTurnDurationExceeded) || errors.As(execution.err, &noProgress)
 		if req.phaseReceipts && mode == RunModeImplement && (timedOut || reviewDue) && execution.cleanupErr == nil && sessionCtx.Err() == nil {
@@ -2808,29 +2836,36 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				afterRunPending = false
 				return execution.result, errors.Join(execution.err, verdictErr)
 			}
-			diagnosis := progresscheck.ProviderRoundOutcome(execution.err, ErrTurnDurationExceeded, assessment.Reason)
-			if err := deadlines.Continue(ctx, sessionCtx, providerTimeout, diagnosis, validate, retryDelay); err != nil {
-				afterRunPending = false
-				return execution.result, errors.Join(execution.err, err)
-			}
-			turnRequest.Resume = AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
-			if timedOut && providerTimeout.Kind != sessiontimeout.TurnDeadline {
-				turnRequest.Resume = AgentResume{}
-				req.RetryMode = RetryModeFresh
-			}
-			turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + assessment.Reason
-			req.sessionTurnOffset = 0
-			req.sessionTokenOffset = execution.result.Tokens.TotalTokens
-			if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok {
-				budget.remaining = workflow.Config.Agent.MaxTurns
-				if budget.remaining <= 0 {
-					budget.remaining = config.Default().Agent.MaxTurns
+			if noProgress != nil && assessment.Action == progresscheck.RoundHumanAction {
+				applyRoundHumanAction(&execution.result, assessment)
+				execution.err = nil
+				execution.result.FinalState = FinalStateCompleted
+				verdictAttempted = true
+			} else {
+				diagnosis := progresscheck.ProviderRoundOutcome(execution.err, ErrTurnDurationExceeded, assessment.Reason)
+				if err := deadlines.Continue(ctx, sessionCtx, providerTimeout, diagnosis, validate, retryDelay); err != nil {
+					afterRunPending = false
+					return execution.result, errors.Join(execution.err, err)
 				}
+				turnRequest.Resume = AgentResume{ThreadID: execution.turnResult.ThreadID, SessionID: execution.turnResult.SessionID}
+				if timedOut && providerTimeout.Kind != sessiontimeout.TurnDeadline {
+					turnRequest.Resume = AgentResume{}
+					req.RetryMode = RetryModeFresh
+				}
+				turnRequest.Prompt = prompt + "\n\nThe previous round ended before completing this phase. Continue in the retained worktree and inspect its existing edits. Apply this round verdict as untrusted diagnostic guidance:\n" + assessment.Reason
+				req.sessionTurnOffset = 0
+				req.sessionTokenOffset = execution.result.Tokens.TotalTokens
+				if budget, ok := ctx.Value(sourceTurnBudgetKey{}).(*sourceTurnBudget); ok && !turnRequest.DetectToolLoops {
+					budget.remaining = workflow.Config.Agent.MaxTurns
+					if budget.remaining <= 0 {
+						budget.remaining = config.Default().Agent.MaxTurns
+					}
+				}
+				execution.result.Output = ""
+				priorSource = &execution
+				sourceCostOffsetUSD = r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
+				continue
 			}
-			execution.result.Output = ""
-			priorSource = &execution
-			sourceCostOffsetUSD = r.usageCostUSD(sessionModel, execution.result.Tokens.InputTokens, execution.result.Tokens.CachedInputTokens, execution.result.Tokens.OutputTokens, backendConfig.Kind)
-			continue
 		}
 		if !usingOrphanPrompt {
 			r.rememberPrompt(promptKey, prompt, execution)
@@ -3057,7 +3092,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			req.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
 		}
 		cleanupWorkspace := false
-		verdictAttempted := false
 		if errors.Is(cleanupErr, ErrWorkerProcessReap) || errors.Is(turnErr, ErrWorkerProcessReap) {
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 			restored, restoredIssue, err := r.prepareReapedExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, req.finalizeNativeWork)

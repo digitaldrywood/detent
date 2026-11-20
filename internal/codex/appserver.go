@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -193,13 +194,14 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
-	DetectToolLoops       bool
-	FinalPrompt           func() string
-	TextOnly              bool
-	IsolatedTools         bool
-	Permissions           string
-	RuntimeWorkspaceRoots []string
-	Config                map[string]any
+	RecordLoopIntervention func(tracker.ExecutionLoopIntervention)
+	DetectToolLoops        bool
+	FinalPrompt            func() string
+	TextOnly               bool
+	IsolatedTools          bool
+	Permissions            string
+	RuntimeWorkspaceRoots  []string
+	Config                 map[string]any
 	// ConversationControl, when set, wraps the transport so live conversation
 	// commands and provider questions are multiplexed into the turn.
 	ConversationControl *runner.AgentConversationControl
@@ -1430,7 +1432,7 @@ func (s *AppServer) streamTurn(
 			return nil
 		}
 		if toolLoop != nil && toolLoop.interrupted.Action != "" && update.Status == "interrupted" && update.ThreadID == threadID && update.TurnID == turnID {
-			toolLoop.log(ctx, toolLoop.interrupted)
+			toolLoop.report(ctx, toolLoop.interrupted, toolLoop.sequence)
 			return &progresscheck.NoProgressError{Evidence: toolLoop.interrupted}
 		}
 		return &TurnFailedError{

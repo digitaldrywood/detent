@@ -173,6 +173,17 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 	if round := c.QueryParam("round"); round != "" {
 		return s.getNativeRoundVerdict(c, scope, round)
 	}
+	if attempt := c.QueryParam("checklist_attempt"); attempt != "" {
+		ctx := c.Request().Context()
+		if _, err := s.readNativeAttemptTenant(ctx, scope, c.Param("item"), attempt); err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		list, err := s.readExecutionChecklist(ctx, scope, attempt)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		return c.JSON(http.StatusOK, list)
+	}
 	if attempt := c.QueryParam("attempt"); attempt != "" {
 		ctx := s.runDetailContext(s.contentContext(c.Request().Context()))
 		owner := terminalProgressOwner{service: s, scope: scope, item: tracker.NativeWorkItemID(c.Param("item")), attempt: attempt}
@@ -209,6 +220,12 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	scope := hubscope.NativeRequestScope(c)
+	if input.LoopIntervention != nil {
+		return s.publishLoopIntervention(c, scope, input)
+	}
+	if input.Checklist != nil {
+		return s.publishNativeChecklist(c, scope, input)
+	}
 	if input.RoundID != "" {
 		return s.publishNativeRoundVerdict(c, scope, input)
 	}

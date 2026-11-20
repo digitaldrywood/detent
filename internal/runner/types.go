@@ -370,10 +370,11 @@ type AgentModel struct {
 }
 
 type AgentTurnRequest struct {
-	DetectToolLoops     bool
-	acknowledgeProcess  func(context.Context, procgroup.Identity, string) error
-	ExtraNetworkDomains []string
-	AllowLocalBinding   bool
+	RecordLoopIntervention func(tracker.ExecutionLoopIntervention)
+	DetectToolLoops        bool
+	acknowledgeProcess     func(context.Context, procgroup.Identity, string) error
+	ExtraNetworkDomains    []string
+	AllowLocalBinding      bool
 	// ConversationControl, when set, connects a live conversation to the turn on
 	// backends that implement AgentLiveBackend.
 	ConversationControl *AgentConversationControl
@@ -619,6 +620,7 @@ type sourceArtifactSpool struct {
 }
 
 type RunRequest struct {
+	checklistRevision   string
 	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
 	workspacePrepared   bool

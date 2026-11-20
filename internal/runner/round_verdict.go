@@ -137,7 +137,8 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 		findings = strings.TrimSpace(findings + "\nProvider round outcome: " + providerBoundary)
 		fallback = progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: phase}
 	}
-	canAskHuman := runErr == nil && result.NativeLanding == nil && runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement
+	var noProgress *progresscheck.NoProgressError
+	canAskHuman := (runErr == nil || errors.As(runErr, &noProgress)) && result.NativeLanding == nil && runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement
 	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
 		canAskHuman = false
 	}

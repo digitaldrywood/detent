@@ -144,6 +144,16 @@ func (c *NativeClient) LatestRoundVerdict(ctx context.Context, item tracker.Nati
 	return output, err
 }
 
+func (c *NativeClient) PublishExecutionChecklist(ctx context.Context, item tracker.NativeWorkItemID, input progresscheck.Publication) (tracker.ExecutionChecklist, error) {
+	var output tracker.ExecutionChecklist
+	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, &output)
+	return output, err
+}
+
+func (c *NativeClient) PublishLoopIntervention(ctx context.Context, item tracker.NativeWorkItemID, input progresscheck.Publication) error {
+	return c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, nil)
+}
+
 func (c *NativeClient) PublishRoundVerdict(ctx context.Context, item tracker.NativeWorkItemID, input progresscheck.Publication) (progresscheck.RoundVerdict, error) {
 	var output progresscheck.RoundVerdict
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/work-items/"+url.PathEscape(string(item))+"/progress", input, &output)

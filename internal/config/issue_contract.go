@@ -179,7 +179,14 @@ func (c IssueContract) AcceptanceCriteria(body string) []string {
 			}
 		}
 	}
-	text := issueContractSectionBodies(body)[section]
+	return issueChecklistEntries(issueContractSectionBodies(body)[section])
+}
+
+func VerificationCriteria(body string) []string {
+	return issueChecklistEntries(issueContractSectionBodies(body)["how we know it worked"])
+}
+
+func issueChecklistEntries(text string) []string {
 	indent := -1
 	inFence := false
 	for _, line := range strings.Split(text, "\n") {

@@ -16,13 +16,15 @@ const RetrievedEvidenceCapability = "progress_retrieved_evidence"
 type Publication struct {
 	tracker.Mutation
 	RoundInput
-	AttemptID        string           `json:"attempt_id,omitempty"`
-	EvidenceRevision string           `json:"evidence_revision,omitempty"`
-	ExpectedRevision tracker.Revision `json:"expected_revision,string,omitempty"`
-	RequestID        string           `json:"request_id"`
-	PolicyID         string           `json:"policy_id"`
-	Instance         string           `json:"instance"`
-	Decision         Decision         `json:"decision"`
+	Checklist        *tracker.ExecutionChecklist        `json:"checklist,omitempty"`
+	LoopIntervention *tracker.ExecutionLoopIntervention `json:"loop_intervention,omitempty"`
+	AttemptID        string                             `json:"attempt_id,omitempty"`
+	EvidenceRevision string                             `json:"evidence_revision,omitempty"`
+	ExpectedRevision tracker.Revision                   `json:"expected_revision,string,omitempty"`
+	RequestID        string                             `json:"request_id"`
+	PolicyID         string                             `json:"policy_id"`
+	Instance         string                             `json:"instance"`
+	Decision         Decision                           `json:"decision"`
 }
 
 type TerminalEvidence struct {

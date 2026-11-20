@@ -305,6 +305,15 @@ func (o nativeRoundOwner) commit(ctx context.Context, input progresscheck.Public
 		if err := owner.RecordProgressVerdict(ctx, verdict); err != nil {
 			return err
 		}
+		if len(record.ChecklistChanges) > 0 {
+			checks, ok := w.(leasestore.ChecklistWriter)
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			if err := checks.RecordExecutionCheckChanges(ctx, o.scope.Project, attempt.ID, record.ChecklistRevision, record.RoundID, record.ObservedAt, record.ChecklistChanges); err != nil {
+				return err
+			}
+		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	})
@@ -387,6 +396,14 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		}
 	}
 	recordRoundProgress(&record, previous, command, previous.PolicyID == record.PolicyID && previous.CriteriaRevision == record.CriteriaRevision)
+	list, err := o.service.readExecutionChecklist(ctx, o.scope, input.AttemptID)
+	if err != nil {
+		return record, err
+	}
+	if list != nil && list.Revision == progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
+		record.ChecklistRevision = list.Revision
+		record.ChecklistChanges = checklistChanges(list.Checks, record, command, attempt.Steps)
+	}
 
 	return record, nil
 }

@@ -377,6 +377,7 @@ type NativeRuntimeAdmission struct {
 }
 
 type NativeRuntimeEvidence struct {
+	Checklist                *ExecutionChecklist          `json:"checklist,omitempty"`
 	ChangeSequence           int64                        `json:"change_sequence"`
 	CurrentVersion           *NativeChangeVersionEvidence `json:"current_version,omitempty"`
 	SourceRecovery           *NativeSourceRecovery        `json:"source_recovery,omitempty"`
