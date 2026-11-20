@@ -2,9 +2,9 @@ package workspace
 
 import (
 	"context"
-	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
 )
 
@@ -13,18 +13,15 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if err != nil {
 		return "", "", "", err
 	}
-	return phasegit.Push(ctx, info.Path, info.PublishBranch(), func(ctx context.Context) error {
+	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
+	return phasegit.Push(ctx, info.Path, info.PublishBranch(), repository, func(ctx context.Context) error {
 		return l.VerifyReviewTree(ctx, info, issue)
 	}, authorize, func(ctx context.Context) error {
-		repository := l.phaseRepository
-		if expected := strings.TrimSpace(issue.PullRequestRepository); expected != "" {
-			repository = expected
-		}
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
 		return nil
-	}, remoteBranchHead, classifyLandingPush)
+	}, classifyLandingPush)
 }
 
 func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) error {

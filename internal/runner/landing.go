@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -65,7 +66,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if prepared != nil {
 		previous := *prepared
-		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.BaseRef != target.BaseRef || previous.SourceMergeSHA != target.SourceMergeSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !sameLandingExternal(previous.External, target.External) {
+		if previous.ChangeID != target.ChangeID || previous.VersionID != target.VersionID || previous.HeadSHA != target.HeadSHA || previous.BaseSHA != target.BaseSHA || previous.BaseRef != target.BaseRef || previous.SourceMergeSHA != target.SourceMergeSHA || previous.SecurityAudit != target.SecurityAudit || previous.Repository != target.Repository || previous.PublicationRepository != target.PublicationRepository || previous.Method != target.Method || previous.GitHubPullRequest != target.GitHubPullRequest || !reflect.DeepEqual(previous.External, target.External) {
 			return r.refusedLanding(req, previous, workspace.LandRefusalHeadMoved, "the reviewed version changed during workspace preparation"), nil
 		}
 	}
@@ -88,6 +89,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	effectiveGate := gate.Effective(workflow.Config.Gate)
 	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	options.ChangeID = target.ChangeID
+	options.PublicationRepository = target.PublicationRepository
 	options.SourceBaseSHA = target.BaseSHA
 	if target.SourceMergeSHA != "" {
 		options.ExpectedBaseSHA = target.BaseSHA
@@ -103,7 +105,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		if err != nil {
 			return err
 		}
-		if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit {
+		if current.ChangeID != target.ChangeID || current.VersionID != target.VersionID || current.HeadSHA != target.HeadSHA || current.BaseSHA != target.BaseSHA || current.SecurityAudit != target.SecurityAudit || current.PublicationRepository != target.PublicationRepository {
 			return errors.New("reviewed version changed before landing push")
 		}
 		return nil
@@ -404,13 +406,6 @@ func validateLandingHead(ctx context.Context, backend workspace.Backend, info wo
 		return &receipt, &workspace.ValidationError{Stage: workspace.ValidationStageLanding, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
 	}
 	return &receipt, nil
-}
-
-func sameLandingExternal(a, b *tracker.ChangeExternalReference) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return *a == *b
 }
 
 const (

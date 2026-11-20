@@ -175,7 +175,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			opts := LandOptions{HeadSHA: f.head, Method: "squash", Repository: repository, Message: "Native Change Request", GitHubClient: client}
+			opts := LandOptions{PublicationRepository: f.remote, HeadSHA: f.head, Method: "squash", Repository: repository, Message: "Native Change Request", GitHubClient: client}
 			issue := f.issue
 			issue.Landing = &opts
 			info, err := f.backend.Create(t.Context(), issue)
@@ -585,7 +585,7 @@ func TestLocalGitLandChangeViaGitHubAlreadyMerged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			opts := LandOptions{HeadSHA: fixture.head, Method: "squash", Repository: repository, GitHubClient: client}
+			opts := LandOptions{PublicationRepository: fixture.remote, HeadSHA: fixture.head, Method: "squash", Repository: repository, GitHubClient: client}
 			if test.external {
 				opts.External = &tracker.ChangeExternalReference{Provider: "github", ID: "7", URL: repository + "/pull/7"}
 			}

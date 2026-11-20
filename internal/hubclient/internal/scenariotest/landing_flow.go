@@ -118,6 +118,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	source := nativeChangeSourceRepo(t)
 	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+	h.configureCloneURL(remote)
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 	nativeChangeGit(t, source, "push", "-u", "origin", "main")

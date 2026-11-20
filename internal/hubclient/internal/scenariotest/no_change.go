@@ -195,6 +195,7 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			}
 			base := strings.TrimSpace(string(baseOutput))
 			remote := filepath.Join(t.TempDir(), "origin.git")
+			h.configureCloneURL(remote)
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)

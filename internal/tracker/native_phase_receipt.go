@@ -12,7 +12,8 @@ type NativePhaseReceipt struct {
 }
 
 type NativePhaseContinuation struct {
-	LastPushed *NativePhaseReceipt  `json:"last_pushed,omitempty"`
-	NextPhase  string               `json:"next_phase,omitempty"`
-	Receipts   []NativePhaseReceipt `json:"receipts"`
+	RepositoryURL string               `json:"repository_url,omitempty"`
+	LastPushed    *NativePhaseReceipt  `json:"last_pushed,omitempty"`
+	NextPhase     string               `json:"next_phase,omitempty"`
+	Receipts      []NativePhaseReceipt `json:"receipts"`
 }

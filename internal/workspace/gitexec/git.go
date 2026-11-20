@@ -51,6 +51,13 @@ func WithInput(ctx context.Context, dir string, env []string, fileOutput bool, i
 }
 
 func withInputCommand(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
+	if len(env) > 0 {
+		env = append(os.Environ(), env...)
+	}
+	return withCommandEnvironment(ctx, dir, env, fileOutput, input, run, args...)
+}
+
+func withCommandEnvironment(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
@@ -58,9 +65,7 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 		cmd.Stdin = strings.NewReader(input)
 	}
 	cmd.WaitDelay = WaitDelay
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = env
 	var output []byte
 	var err error
 	if fileOutput {

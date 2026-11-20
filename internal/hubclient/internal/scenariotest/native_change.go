@@ -344,6 +344,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 
 			remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+			h.configureCloneURL(remote)
 			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
 			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
@@ -2509,7 +2510,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					if err != nil {
 						t.Fatal(err)
 					}
-					_, err = backend.(workspace.GitHubPRLander).LandChangeViaGitHub(guarded, info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}, workspace.LandOptions{HeadSHA: target.HeadSHA, Repository: target.Repository, Method: target.Method, GitHubClient: client})
+					_, err = backend.(workspace.GitHubPRLander).LandChangeViaGitHub(guarded, info, workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier}, workspace.LandOptions{HeadSHA: target.HeadSHA, Repository: target.Repository, PublicationRepository: remote, Method: target.Method, GitHubClient: client})
 					var refusal *workspace.LandRefusal
 					var status *github.StatusError
 					if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalBaseMoved || !errors.As(err, &status) || status.StatusCode != http.StatusMethodNotAllowed || mergeRequests != 1 {
@@ -2737,6 +2738,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	var requests sync.RWMutex
+	var projectCloneURL string
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		requests.RLock()
 		defer requests.RUnlock()
@@ -2749,7 +2751,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 				return
 			}
 		}
-		service.Handler().ServeHTTP(w, r)
+		testsupport.ServeProjectCloneURL(w, r, service.Handler(), projectCloneURL)
 	}
 	t.Cleanup(func() {
 		requests.Lock()
@@ -2777,6 +2779,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{config: config, clock: config.Clock, review: review, organization: tracker.OrganizationID(config.Hosted.OrganizationID), project: hubclientPostgresProject(config), descriptor: clientTestPolicy(), markHistoricalCheckpointSourceUnknown: markHistoricalCheckpointSourceUnknown, checkpointSourceKnown: checkpointSourceKnown}
+	h.configureCloneURL = func(url string) {
+		requests.Lock()
+		defer requests.Unlock()
+		projectCloneURL = url
+	}
 	h.restart = func() {
 		t.Helper()
 		requests.Lock()
@@ -2850,6 +2857,7 @@ func (h *nativeChangeHub) publish(t *testing.T, item tracker.NativeWorkItemID, c
 // nativeChangeHub is a real hub with a native project whose workflow has a
 // review lane, and a worker client and scheduler that claim from it.
 type nativeChangeHub struct {
+	configureCloneURL                     func(string)
 	markHistoricalCheckpointSourceUnknown func(context.Context, string) error
 	checkpointSourceKnown                 func(context.Context, string) (bool, error)
 	config                                hubserver.Config

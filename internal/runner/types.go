@@ -867,27 +867,28 @@ type RunResult struct {
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
-	ConflictFiles      []string
-	ReviewDispositions []tracker.ReviewDisposition
-	ReviewPending      bool
-	SourceMergeSHA     string
-	BaseRef            string
-	BaseSHA            string
-	SecurityAudit      bool
-	Validation         *gate.CommandResult
-	RebaseRequired     bool
-	MergeResolution    bool
-	CI                 *tracker.NativeLandingCIReceipt
-	SourceIssues       []tracker.ExternalReference
-	External           *tracker.ChangeExternalReference
-	ChangeID           string
-	VersionID          string
-	HeadSHA            string
-	Method             string
-	Repository         string
-	GitHubPullRequest  bool
-	Title              string
-	Number             int64
+	PublicationRepository string
+	ConflictFiles         []string
+	ReviewDispositions    []tracker.ReviewDisposition
+	ReviewPending         bool
+	SourceMergeSHA        string
+	BaseRef               string
+	BaseSHA               string
+	SecurityAudit         bool
+	Validation            *gate.CommandResult
+	RebaseRequired        bool
+	MergeResolution       bool
+	CI                    *tracker.NativeLandingCIReceipt
+	SourceIssues          []tracker.ExternalReference
+	External              *tracker.ChangeExternalReference
+	ChangeID              string
+	VersionID             string
+	HeadSHA               string
+	Method                string
+	Repository            string
+	GitHubPullRequest     bool
+	Title                 string
+	Number                int64
 }
 
 // NativeLanding reports a landing run's outcome. A landed version names the

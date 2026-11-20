@@ -232,6 +232,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		nativeChangeGit(t, source, "clone", "--bare", "--", source, remote)
 	}
 	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	h.configureCloneURL(remote)
 	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 	hooks := workspace.Hooks{}
 	if failure == "workspace" {

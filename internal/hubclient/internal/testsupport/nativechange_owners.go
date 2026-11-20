@@ -2,6 +2,9 @@ package testsupport
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -156,4 +159,31 @@ func NativeChangeRefreshReviews(ctx context.Context, cfg hubserver.Config) error
 			return err
 		}
 	}
+}
+
+func ServeProjectCloneURL(w http.ResponseWriter, r *http.Request, next http.Handler, cloneURL string) {
+	path := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if cloneURL == "" || r.Method != http.MethodGet || len(path) != 6 || path[0] != "api" || path[1] != "v2" || path[2] != "organizations" || path[4] != "projects" {
+		next.ServeHTTP(w, r)
+		return
+	}
+	recorder := httptest.NewRecorder()
+	next.ServeHTTP(recorder, r)
+	for key, values := range recorder.Header() {
+		w.Header()[key] = values
+	}
+	if recorder.Code != http.StatusOK {
+		w.WriteHeader(recorder.Code)
+		_, _ = recorder.Body.WriteTo(w)
+		return
+	}
+	var project tracker.NativeProject
+	if err := json.Unmarshal(recorder.Body.Bytes(), &project); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	project.CloneURL = cloneURL
+	w.Header().Del("Content-Length")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(project)
 }

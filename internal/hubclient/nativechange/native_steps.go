@@ -3,6 +3,7 @@ package nativechange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -100,6 +101,10 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	if err != nil {
 		return nil, err
 	}
+	project, err := client.Project(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read phase publication repository: %w", err)
+	}
 	e.mu.Lock()
 	attempt, reviewState := e.data.AttemptID, e.stepReviewState()
 	if len(receipts) > 0 {
@@ -107,7 +112,7 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	e.mu.Unlock()
 	if len(receipts) == 0 || receipts[0].AttemptID == attempt {
-		return &tracker.NativePhaseContinuation{}, nil
+		return &tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}, nil
 	}
 	pinned := receipts[0]
 	var phases []tracker.NativePhaseReceipt
@@ -142,6 +147,7 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	if continuation.LastPushed == nil || *continuation.LastPushed != pinned {
 		return nil, errors.New("recorded phase source changed during continuation")
 	}
+	continuation.RepositoryURL = project.CloneURL
 	return &continuation, nil
 }
 

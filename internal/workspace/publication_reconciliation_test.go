@@ -42,7 +42,7 @@ func TestPublicationReconciliationBeforeForgeRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			var effects []string
-			opts := LandOptions{Repository: repository, HeadSHA: f.head, GitHubClient: client, UnresolvedEffect: true, ExpectedPublicationHead: f.remoteMain(t), PublicationEffect: func(_ context.Context, kind, state string, _ GitHubPublication) error {
+			opts := LandOptions{Repository: repository, PublicationRepository: f.remote, HeadSHA: f.head, GitHubClient: client, UnresolvedEffect: true, ExpectedPublicationHead: f.remoteMain(t), PublicationEffect: func(_ context.Context, kind, state string, _ GitHubPublication) error {
 				effects = append(effects, kind+":"+state)
 				return nil
 			}}

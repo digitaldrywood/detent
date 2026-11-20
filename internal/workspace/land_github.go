@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 type githubLandingPull struct {
@@ -139,12 +140,13 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 	if remote == "" {
 		remote = defaultGitRemote
 	}
-	if err := verifyPublicationRemote(ctx, normalized.Path, remote, opts.Repository); err != nil {
+	destination, err := landingPublicationRepository(ctx, normalized.Path, remote, *opts)
+	if err != nil {
 		return GitHubPublication{}, err
 	}
 	base := strings.TrimSpace(opts.TargetBranch)
 	if base == "" {
-		base, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		base, err = gitexec.PublicationDefaultBranch(ctx, destination)
 		if err != nil {
 			var commandErr *CommandError
 			if errors.As(err, &commandErr) {
@@ -174,7 +176,7 @@ func (l *LocalGit) gitHubPublicationIdentity(ctx context.Context, info Info, iss
 		if !validLandingHead(pull.Head.SHA) || pull.Head.SHA != opts.HeadSHA && pull.Head.SHA != opts.ExternalHeadSHA || pull.State != "open" || pull.Merged || pull.MergedAt != "" {
 			return GitHubPublication{}, githubPublicationRefusal(pull, pull.Head.Repo.FullName, branch, opts.HeadSHA, base)
 		}
-		published, exists, err := githubPublicationBranchHead(ctx, normalized.Path, remote, branch)
+		published, exists, err := githubPublicationBranchHead(ctx, destination, branch)
 		if err != nil {
 			return GitHubPublication{}, fmt.Errorf("inspect retained PR branch: %w", err)
 		}
@@ -216,8 +218,8 @@ func githubPublicationRefusal(pull githubLandingPull, repository, branch, head, 
 	return refuse(LandRefusalHeadMoved, fmt.Sprintf("PR publication identity mismatch: expected repository=%s branch=%s target=%s head=%s; observed head_repository=%s base_repository=%s branch=%s target=%s head=%s state=%s merged=%t; preserve source and reconcile the recorded PR before retrying", repository, branch, base, head, pull.Head.Repo.FullName, pull.Base.Repo.FullName, pull.Head.Ref, pull.Base.Ref, pull.Head.SHA, pull.State, pull.Merged || pull.MergedAt != ""))
 }
 
-func githubPublicationBranchHead(ctx context.Context, path, remote, branch string) (string, bool, error) {
-	head, exists, err := remoteBranchHead(ctx, path, remote, branch)
+func githubPublicationBranchHead(ctx context.Context, repository, branch string) (string, bool, error) {
+	head, exists, err := gitexec.PublicationBranchHead(ctx, repository, branch)
 	if err != nil {
 		return "", false, forgeavailability.NewError(forgeavailability.Scope{Host: "github.com"}, forgeavailability.ClassTransport, err)
 	}
@@ -235,10 +237,11 @@ func reconcilePublicationRefusal(ctx context.Context, path, remote, branch, base
 	if authorityErr := opts.Authorize(ctx); authorityErr != nil {
 		return authorityErr
 	}
-	if remoteErr := verifyPublicationRemote(ctx, path, remote, opts.Repository); remoteErr != nil {
+	destination, remoteErr := landingPublicationRepository(ctx, path, remote, opts)
+	if remoteErr != nil {
 		return remoteErr
 	}
-	if _, _, readErr := githubPublicationBranchHead(ctx, path, remote, branch); readErr != nil {
+	if _, _, readErr := githubPublicationBranchHead(ctx, destination, branch); readErr != nil {
 		return readErr
 	}
 	publication := GitHubPublication{Repository: opts.Repository, BaseRef: base, Branch: branch, HeadSHA: opts.HeadSHA}
@@ -257,10 +260,11 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		}
 		return l.verifyGitHubPublicationSource(ctx, info, issue, opts)
 	}
-	if err := verifyPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+	destination, err := landingPublicationRepository(ctx, info.Path, remote, opts)
+	if err != nil {
 		return githubLandingPull{}, false, false, err
 	}
-	previous, exists, err := githubPublicationBranchHead(ctx, info.Path, remote, branch)
+	previous, exists, err := githubPublicationBranchHead(ctx, destination, branch)
 	if err != nil {
 		return githubLandingPull{}, false, false, fmt.Errorf("inspect published attempt branch: %w", err)
 	}
@@ -343,7 +347,7 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 			return githubLandingPull{}, false, headChanged, err
 		}
 	}
-	push := []string{"push", "--force-with-lease=refs/heads/" + branch + ":" + previous, remote, head + ":refs/heads/" + branch}
+	pushLease := "--force-with-lease=refs/heads/" + branch + ":" + previous
 	if previous != head {
 		if err := authorize(); err != nil {
 			return githubLandingPull{}, false, headChanged, err
@@ -351,8 +355,8 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 		if err := effect("git_push", "pending"); err != nil {
 			return githubLandingPull{}, false, headChanged, err
 		}
-		if _, err := runGitAt(ctx, info.Path, push...); err != nil {
-			observed, _, readErr := githubPublicationBranchHead(ctx, info.Path, remote, branch)
+		if err := gitexec.PushPublication(ctx, info.Path, destination, head+":refs/heads/"+branch, pushLease); err != nil {
+			observed, _, readErr := githubPublicationBranchHead(ctx, destination, branch)
 			if readErr == nil && observed != head && observed != previous {
 				return githubLandingPull{}, false, headChanged, errors.Join(refuse(LandRefusalHeadMoved, "the publication branch moved during push; rebase before retrying publication"), effect("git_push", "none"))
 			}
@@ -461,7 +465,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	base := strings.TrimSpace(opts.TargetBranch)
 	if base == "" {
-		base, err = remoteDefaultBranch(ctx, normalized.Path, remote)
+		base, err = gitexec.PublicationDefaultBranch(ctx, opts.publicationRepository())
 		if err != nil {
 			return LandResult{}, fmt.Errorf("resolve remote default branch: %w", err)
 		}
@@ -564,7 +568,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		if err != nil {
 			return LandResult{}, err
 		}
-		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
+		if err := gitexec.VerifyMergedBranch(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
 			return LandResult{}, err
 		}
 	} else {
@@ -638,7 +642,11 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 						return LandResult{Rebased: true}, retryErr
 					}
 					branch := githubLandingBranch(normalized, opts)
-					if _, err := runGitAt(ctx, normalized.Path, "push", "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA, remote, retryHead+":refs/heads/"+branch); err != nil {
+					destination, destinationErr := landingPublicationRepository(ctx, normalized.Path, remote, opts)
+					if destinationErr != nil {
+						return LandResult{}, destinationErr
+					}
+					if err := gitexec.PushPublication(ctx, normalized.Path, destination, retryHead+":refs/heads/"+branch, "--force-with-lease=refs/heads/"+branch+":"+opts.HeadSHA); err != nil {
 						return LandResult{Rebased: true}, classifyLandingPush(err, branch)
 					}
 					rebased = true
@@ -673,7 +681,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	result = LandResult{CI: result.CI, Gate: validation, MergeSHA: mergeSHA, BaseRef: base, BaseBefore: baseBefore, Method: opts.Method, AttemptBranchPushed: opts.External == nil, Rebased: rebased}
 	if opts.ExpectedBaseSHA != "" {
-		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
+		if err := gitexec.VerifyMergedBranch(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
 			return result, err
 		}
 		if err := verifyReviewedGitHubLanding(ctx, normalized.Path, head, mergeSHA, opts.ExpectedBaseSHA); err != nil {
@@ -685,7 +693,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 		return result, fmt.Errorf("keep merged landing: %w", err)
 	}
 	if !alreadyMerged && opts.ExpectedBaseSHA == "" {
-		if err := verifyGitHubLandingMerge(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
+		if err := gitexec.VerifyMergedBranch(ctx, normalized.Path, remote, base, baseRef, mergeSHA); err != nil {
 			return result, err
 		}
 	}
@@ -726,7 +734,8 @@ func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions,
 	if err := resolveLandingReviewThreads(ctx, opts.GitHubClient, repository, number, head, nil, opts); err != nil {
 		return merged, err
 	}
-	if err := verifyPublicationRemote(ctx, info.Path, remote, opts.Repository); err != nil {
+	destination, err := landingPublicationRepository(ctx, info.Path, remote, opts)
+	if err != nil {
 		return merged, err
 	}
 	commit := head
@@ -739,7 +748,7 @@ func pushReviewedGitHubLanding(ctx context.Context, info Info, opts LandOptions,
 	if err := opts.Authorize(ctx); err != nil {
 		return merged, err
 	}
-	if _, err := runGitAt(ctx, info.Path, "push", "--force-with-lease=refs/heads/"+base+":"+opts.ExpectedBaseSHA, remote, commit+":refs/heads/"+base); err != nil {
+	if err := gitexec.PushPublication(ctx, info.Path, destination, commit+":refs/heads/"+base, "--force-with-lease=refs/heads/"+base+":"+opts.ExpectedBaseSHA); err != nil {
 		classified := classifyLandingPush(err, base)
 		var refusal *LandRefusal
 		if errors.As(classified, &refusal) && refusal.Kind == LandRefusalProtected {
@@ -774,16 +783,6 @@ func verifyReviewedGitHubLanding(ctx context.Context, path, head, mergeSHA, base
 	}
 	if _, err := runGitAt(ctx, path, "diff", "--quiet", head, mergeSHA, "--"); err != nil {
 		return refuse(LandRefusalHeadMoved, "the merged release tree differs from the reviewed version")
-	}
-	return nil
-}
-
-func verifyGitHubLandingMerge(ctx context.Context, path, remote, base, baseRef, mergeSHA string) error {
-	if _, err := runGitAt(ctx, path, "fetch", remote, "+refs/heads/"+base+":"+baseRef); err != nil {
-		return fmt.Errorf("verify merged base branch: %w", err)
-	}
-	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", mergeSHA, baseRef); err != nil {
-		return fmt.Errorf("GitHub merge commit %s is not on %s: %w", mergeSHA, base, err)
 	}
 	return nil
 }
@@ -1006,7 +1005,7 @@ func (l *LocalGit) verifyGitHubLandingSource(ctx context.Context, info Info, iss
 		return errors.Join(refusal, err)
 	}
 	fetched = strings.TrimSpace(fetched)
-	refs, err := runGitAt(ctx, info.Path, "ls-remote", remote, "refs/heads/"+branch, "refs/heads/"+base)
+	refs, err := gitexec.ReadPublicationRefs(ctx, opts.publicationRepository(), false, "refs/heads/"+branch, "refs/heads/"+base)
 	if err != nil {
 		return githubLandingConflictReadFailure("git ls-remote", fmt.Errorf("verify refused landing refs: %w", err), refusal)
 	}

@@ -186,6 +186,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				source := nativeChangeSourceRepo(t)
 				remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 				nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+				h.configureCloneURL(remote)
 				nativeChangeGit(t, source, "remote", "add", "origin", remote)
 				testenv.UseGitHubFixtureRemote(t, source, remote, nativeChangeRepository)
 				nativeChangeGit(t, source, "push", "origin", "main")
@@ -392,6 +393,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 							return authorize(ctx)
 						}
 					}
+					opts.PublicationRepository = remote
 					opts.HeadSHA, opts.Repository, opts.TargetBranch, opts.Message, opts.GitHubClient = version.HeadSHA, version.Repository, "main", "Publish existing repair", client
 					publisher := backend.(interface {
 						PrepareGitHubPublication(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (workspace.GitHubPublication, error)

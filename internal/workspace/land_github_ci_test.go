@@ -151,7 +151,7 @@ func TestLocalGitLandingCI(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			opts := LandOptions{HeadSHA: f.head, Method: "squash", Repository: repository, GitHubClient: client, ValidationCommand: "test -f feature.txt", RequiredStatusChecks: []string{"Full CI"}, CITriggerLabel: "run-full-ci"}
+			opts := LandOptions{PublicationRepository: f.remote, HeadSHA: f.head, Method: "squash", Repository: repository, GitHubClient: client, ValidationCommand: "test -f feature.txt", RequiredStatusChecks: []string{"Full CI"}, CITriggerLabel: "run-full-ci"}
 			if test.prior {
 				opts.PreviousCI = &tracker.NativeLandingCIReceipt{HeadSHA: f.head, PullRequest: 7, TriggerLabel: "run-full-ci", Triggered: true}
 			}

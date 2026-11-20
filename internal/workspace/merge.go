@@ -206,39 +206,6 @@ func (l *LocalGit) restoreAfterFailedGate(ctx context.Context, info Info, origin
 	}, nil
 }
 
-func remoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
-	output, err := runGitAt(ctx, workspacePath, remoteGitArgs("ls-remote", "--symref", remote, "HEAD")...)
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
-			continue
-		}
-		branch := strings.TrimPrefix(fields[1], "refs/heads/")
-		if branch != fields[1] && strings.TrimSpace(branch) != "" {
-			return branch, nil
-		}
-	}
-	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
-}
-
-func remoteDefaultBranchHead(ctx context.Context, workspacePath string, remote string) (string, string, error) {
-	branch, err := remoteDefaultBranch(ctx, workspacePath, remote)
-	if err != nil {
-		return "", "", err
-	}
-	head, exists, err := remoteBranchHead(ctx, workspacePath, remote, branch)
-	if err != nil {
-		return "", "", err
-	}
-	if !exists {
-		return "", "", fmt.Errorf("remote %s default branch %s is missing", remote, branch)
-	}
-	return branch, head, nil
-}
-
 func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
 	inProgress, err := rebaseInProgress(ctx, workspacePath)
 	if err != nil {
