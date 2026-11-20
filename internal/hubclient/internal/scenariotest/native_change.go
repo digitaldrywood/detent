@@ -1568,11 +1568,11 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 					if prerequisite != "" {
 						commands := result.NativeChange.Validator.Commands
-						if len(commands) != 3 || commands[2].Command != provider.validatorCommand || commands[2].ExitCode == 0 {
+						if len(commands) != 2 || commands[1].Command != provider.validatorCommand || commands[1].ExitCode == 0 {
 							t.Fatalf("validator rework lacks failed prerequisite command: %+v", commands)
 						}
-						if commands[0].TimingStage != "finalization" || commands[0].ExitCode != 0 || commands[0].Command != commands[1].Command || commands[1].ExitCode != 0 {
-							t.Fatalf("validator rework lost successful finalization and validation gates: %+v", commands)
+						if commands[0].TimingStage != "finalization" || commands[0].ExitCode != 0 || commands[0].Command != validationCommand || commands[0].HeadSHA != result.NativeChange.HeadSHA || commands[0].HeadSHA != commands[1].HeadSHA || commands[0].TreeSHA == "" || commands[0].TreeSHA != commands[1].TreeSHA {
+							t.Fatalf("validator rework lost the successful finalization receipt for the reviewed source: %+v", commands)
 						}
 						if err := os.WriteFile(prerequisite, []byte("ready"), 0o600); err != nil {
 							t.Fatal(err)
