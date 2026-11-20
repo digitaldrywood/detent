@@ -59,7 +59,7 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 	if strings.TrimSpace(project.CloneURL) == "" {
 		return target, errors.New("landing requires a configured project repository")
 	}
-	if target.GitHubPullRequest && !gitexec.SamePublicationRepository(gitexec.HTTPSRemoteURL("https://github.com/"+project.Repository+".git"), gitexec.HTTPSRemoteURL(target.Repository)) {
+	if target.GitHubPullRequest && !gitexec.SamePublicationRepository("https://github.com/"+project.Repository, target.Repository) {
 		return target, errors.New("reviewed GitHub repository differs from the configured project repository")
 	}
 	target.PublicationRepository = project.CloneURL

@@ -1,17 +1,22 @@
 package scenariotest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -119,6 +124,7 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		t.Fatalf("different project repository: %v", err)
 	}
 	h.configureProjectCheckout(t, nativeChangeRepository)
+	checkReviewedRepositoryAdmission(t, h, candidates[0], change.ID, execution)
 	target, err := execution.LandingTarget(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +178,82 @@ func RunNativeExecutionOperatorLandingTarget(t *testing.T, factories Constructor
 		t.Fatalf("stale policy target error = %v", err)
 	}
 }
+
+func checkReviewedRepositoryAdmission(t *testing.T, h *nativeChangeHub, issue connector.Issue, changeID string, execution runner.LandingExecution) {
+	t.Helper()
+	agent, err := runner.NewRunner(runner.Dependencies{
+		ProcessSource: emptyProcessSource,
+		Store:         api.NewRunnerSessions(h.native), ProjectID: "local", Workspace: &conversationStubWorkspace{}, AgentBackend: NewReviewAgent(),
+		Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}}, Prompt: "Complete the issue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ name, repository string }{
+		{"percent escaped", "https://github.com/%65xample/native-change"},
+		{"trailing slash", nativeChangeRepository + "/"},
+		{"git suffix", nativeChangeRepository + ".git"},
+		{"Unicode case fold", nativeChangeRepository + "ſ"},
+		{"host case", "https://GitHub.com/example/native-change"},
+		{"explicit HTTPS port", "https://github.com:443/example/native-change"},
+		{"HTTPS userinfo", "https://example@github.com/example/native-change"},
+		{"dot segment", "https://github.com/example/./native-change"},
+		{"different repository", "https://github.com/example/other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "Unicode case fold" {
+				h.configureProjectCheckout(t, "example/native-changes")
+				defer h.configureProjectCheckout(t, nativeChangeRepository)
+			}
+			requests := fixtureClient(h.native.Transport()).requests
+			original := requests.Load()
+			requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				response, err := original.RoundTrip(request)
+				if err != nil || request.URL.Query().Get("view") != "bounded" || !strings.HasSuffix(request.URL.Path, "/changes/"+changeID) || response.StatusCode != http.StatusOK {
+					return response, err
+				}
+				defer response.Body.Close()
+				var result operatortool.ChangeResult
+				if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+					return nil, err
+				}
+				for i := range result.Detail.Versions {
+					result.Detail.Versions[i].Repository = test.repository
+				}
+				body, err := json.Marshal(result)
+				if err != nil {
+					return nil, err
+				}
+				response.Body = io.NopCloser(bytes.NewReader(body))
+				response.ContentLength = int64(len(body))
+				return response, nil
+			}))
+			defer requests.Store(original)
+			probe := &landingAdmissionExecution{Execution: h.scheduler.RunExecution(issue.ID), LandingExecution: execution}
+			_, err := agent.Run(t.Context(), runner.RunRequest{Execution: probe, ProjectID: "local", Issue: issue, Mode: runner.RunModeMerge})
+			if probe.starts != 0 || err == nil || !strings.Contains(err.Error(), "reviewed GitHub repository differs") {
+				t.Fatalf("landing admission for %q returned %v after %d starts", test.repository, err, probe.starts)
+			}
+		})
+	}
+}
+
+type landingAdmissionExecution struct {
+	runner.Execution
+	runner.LandingExecution
+	starts int
+}
+
+func (e *landingAdmissionExecution) StartLanding(context.Context, int64, uint64) error {
+	e.starts++
+	return errors.New("unexpected landing start")
+}
+
+func (*landingAdmissionExecution) ObserveLanding(context.Context, runner.NativeLanding) error {
+	return nil
+}
+
+func (*landingAdmissionExecution) Finish(context.Context, string) error { return nil }
 
 func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
