@@ -67,11 +67,10 @@ func WithScope(ctx context.Context, pool *pgxpool.Pool) context.Context {
 }
 
 func New(ctx context.Context, pool *pgxpool.Pool, readOnly bool) Reader {
-	scope, _ := ctx.Value(workflowReadsKey{}).(*workflowReads)
-	if scope != nil && scope.pool != pool {
-		scope = nil
+	if scope, ok := ctx.Value(workflowReadsKey{}).(*workflowReads); ok && scope != nil && scope.pool == pool {
+		return Reader{scope: scope, readOnly: readOnly}
 	}
-	return Reader{scope: scope, readOnly: readOnly}
+	return Reader{readOnly: readOnly}
 }
 
 func (r *Reader) BeginSnapshot() {

@@ -19,8 +19,10 @@ func (s *Service) newScheduledSourceMaintenance() *scheduledSourceMaintenance {
 	feature := operatorcommands.NewScheduledSources(operatorcommands.ScheduledSourceDeps{
 		Owns: owns,
 		Store: func() operatorcommands.ScheduledSourceBackfiller {
-			owner, _ := s.config.TenantRepository.(operatorcommands.ScheduledSourceBackfiller)
-			return owner
+			if owner, ok := s.config.TenantRepository.(operatorcommands.ScheduledSourceBackfiller); ok {
+				return owner
+			}
+			return nil
 		},
 		Details: s.runDetailStore,
 	})

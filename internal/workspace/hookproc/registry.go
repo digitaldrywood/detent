@@ -74,6 +74,13 @@ type hookLifetime struct {
 
 type hookLifetimeKey struct{}
 
+func hookLifetimeFromContext(ctx context.Context) *hookLifetime {
+	if lifetime, ok := ctx.Value(hookLifetimeKey{}).(*hookLifetime); ok {
+		return lifetime
+	}
+	return nil
+}
+
 type Owner struct {
 	mu         sync.Mutex
 	running    bool
@@ -107,7 +114,7 @@ func (u *Registry) Start(ctx context.Context, path string) (*Owner, error) {
 	if u == nil || (runtime.GOOS != "darwin" && runtime.GOOS != "linux") {
 		return nil, nil
 	}
-	lifetime, _ := ctx.Value(hookLifetimeKey{}).(*hookLifetime)
+	lifetime := hookLifetimeFromContext(ctx)
 	descriptor, err := NewLifetime()
 	if err != nil {
 		return nil, fmt.Errorf("open hook lifetime: %w", err)
@@ -142,7 +149,7 @@ func (u *Registry) removable(ctx context.Context, path string) ([]*Owner, error)
 	if u == nil {
 		return nil, nil
 	}
-	lifetime, _ := ctx.Value(hookLifetimeKey{}).(*hookLifetime)
+	lifetime := hookLifetimeFromContext(ctx)
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	for owner := range u.hooks[path] {

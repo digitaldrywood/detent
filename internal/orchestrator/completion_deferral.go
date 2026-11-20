@@ -602,7 +602,9 @@ func (o *Orchestrator) retryDeferredCompletion(ctx context.Context, state *State
 	var publisher runpkg.CompletionExecution
 	if completion.Err == nil && completion.Result.NativeChange != nil {
 		completion.Request.Execution = o.nativeCompletionExecution(completion)
-		publisher, _ = completion.Request.Execution.(runpkg.CompletionExecution)
+		if execution, ok := completion.Request.Execution.(runpkg.CompletionExecution); ok {
+			publisher = execution
+		}
 	}
 	review := publisher != nil && record.Availability.Class == string(gate.ReasonAutomatedReviewMissing)
 	runCtx, running := ctx, record.Running

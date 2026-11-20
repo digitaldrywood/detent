@@ -60,11 +60,12 @@ func (a AttemptWorkspace) PrepareScratch(root string) (string, error) {
 type attemptWorkspaceContextKey struct{}
 
 func AttemptWorkspaceFromContext(ctx context.Context) AttemptWorkspace {
-	if ctx == nil {
-		return AttemptWorkspace{}
+	if ctx != nil {
+		if attempt, ok := ctx.Value(attemptWorkspaceContextKey{}).(AttemptWorkspace); ok {
+			return attempt
+		}
 	}
-	attempt, _ := ctx.Value(attemptWorkspaceContextKey{}).(AttemptWorkspace)
-	return attempt
+	return AttemptWorkspace{}
 }
 
 func splitCheckoutIssueKey(key string) (string, string) {

@@ -33,7 +33,10 @@ func preserveWorkspace(ctx context.Context, backend workspace.Backend, issue wor
 
 func (req RunRequest) workspaceTarget(ctx context.Context, project string) (workspace.Issue, bool) {
 	issue := workspaceIssue(project, req.Issue)
-	owner, _ := req.Execution.(runworkspace.AttemptOwner)
+	var owner runworkspace.AttemptOwner
+	if execution, ok := req.Execution.(runworkspace.AttemptOwner); ok {
+		owner = execution
+	}
 	attempt, known := runworkspace.ResolveAttempt(ctx, req.AttemptWorkspace, owner, req.Issue)
 	issue.AttemptWorkspace = attempt
 	return issue, known

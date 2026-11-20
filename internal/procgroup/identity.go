@@ -85,8 +85,8 @@ func WithStartAcknowledgement(ctx context.Context, acknowledge func(Identity) er
 }
 
 func StartAuthorized(ctx context.Context, cmd *exec.Cmd) error {
-	acknowledge, _ := ctx.Value(startAcknowledgementKey{}).(func(Identity) error)
-	if acknowledge == nil {
+	acknowledge, ok := ctx.Value(startAcknowledgementKey{}).(func(Identity) error)
+	if !ok || acknowledge == nil {
 		if shell.HasCommandStarter(ctx) {
 			return errors.New("native process requires a launch acknowledgement")
 		}

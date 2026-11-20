@@ -251,8 +251,10 @@ type NativeMachineHeartbeatRequest struct {
 
 func (d IdentityDeps) HeartbeatNativeMachine(c echo.Context) error {
 	if after, requested := c.QueryParams()["attempt_worker_after"]; requested {
-		credential, _ := c.Get("hub_api_credential").(hubapi.APICredential)
-		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project")), Credential: credential}
+		scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project"))}
+		if credential, ok := c.Get("hub_api_credential").(hubapi.APICredential); ok {
+			scope.Credential = credential
+		}
 		inventory, err := attemptworkers.Read(c.Request().Context(), d.Repository, scope, tracker.MachineID(c.Param("machine")), after, d.Now)
 		if err != nil {
 			return d.HTTPError(c, err)

@@ -260,11 +260,14 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 }
 
 func (c *NativeClient) reconcileValidatorReceipt(ctx context.Context, item tracker.NativeWorkItemID, id, version, key string, raw []byte, publicationErr error) error {
+	changePath, err := ChangePath(item, id, "")
+	if err != nil {
+		return publicationErr
+	}
 	supported, err := c.HubFeature(ctx, tracker.NativeValidatorReceiptCapability)
 	if err != nil || !supported {
 		return publicationErr
 	}
-	changePath, _ := ChangePath(item, id, "")
 	query := url.Values{"view": {"validator_receipt"}, "version_id": {version}, "idempotency_key": {key}}
 	var receipt struct {
 		RequestSHA256 string `json:"request_sha256"`

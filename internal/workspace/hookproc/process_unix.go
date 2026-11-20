@@ -67,14 +67,14 @@ type hookSignals interface {
 
 func verifiedProcessTargets(ctx context.Context, path string, scan Scanner, identity func(int) (string, error), environment func(int) ([]string, error), signal workspaceProcessSignaler) (Scanner, workspaceProcessSignaler) {
 	starts := map[int]string{}
-	owner, _ := ctx.Value(hookOwnerKey{}).(string)
+	owner, hasOwner := ctx.Value(hookOwnerKey{}).(string)
 	confirmed := map[int]string{}
-	lifetime, _ := ctx.Value(lifetimeKey{}).(*Lifetime)
+	lifetime, hasLifetime := ctx.Value(lifetimeKey{}).(*Lifetime)
 	var bindings hookSignals
-	if owner != "" && signal == nil {
+	if hasOwner && owner != "" && signal == nil {
 		bindings = platformHookSignals(lifetime)
 	}
-	if lifetime != nil {
+	if hasLifetime && lifetime != nil {
 		confirmed = lifetime.starts
 	}
 	for pid, start := range confirmed {
