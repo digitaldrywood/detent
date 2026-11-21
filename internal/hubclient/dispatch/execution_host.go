@@ -23,7 +23,11 @@ func (s *Scheduler) ExecutionClaim(item string) (ExecutionClaim, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.nativeClaims[item]
-	return ExecutionClaim{Lost: c.lost, Source: c.source, Lease: c.lease, Recovery: c.recovery, LandingCapacity: c.landingCapacity, Deadline: c.deadline, Execution: c.execution}, ok
+	if ok && !c.lost && c.leaseChanged == nil {
+		c.leaseChanged = make(chan struct{})
+		s.nativeClaims[item] = c
+	}
+	return ExecutionClaim{Lost: c.lost, Source: c.source, Lease: c.lease, Recovery: c.recovery, LandingCapacity: c.landingCapacity, Deadline: c.deadline, LeaseChanged: c.leaseChanged, Execution: c.execution}, ok
 }
 func (s *Scheduler) ValidateExecutionPolicy(ctx context.Context, item, policyID string) error {
 	return s.checkClaimPolicy(ctx, item, policyID)
@@ -47,7 +51,20 @@ func (s *Scheduler) RenewExecution(ctx context.Context, lease tracker.NativeLeas
 		return runner.ErrExecutionAuthorityUnavailable
 	}
 	_, err := s.renewNativeClaim(ctx, string(lease.WorkItemID), claim, capacity)
+	if err != nil {
+		s.signalExpiredLease(lease)
+	}
 	return err
+}
+func (s *Scheduler) signalExpiredLease(lease tracker.NativeLease) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := string(lease.WorkItemID)
+	claim, ok := s.nativeClaims[item]
+	if ok && claim.lease.ID == lease.ID && claim.lease.FencingToken == lease.FencingToken && !s.now().Before(claim.deadline) {
+		claim.signalLeaseChange()
+		s.nativeClaims[item] = claim
+	}
 }
 func (s *Scheduler) RemainingExecution(lease tracker.NativeLease) time.Duration {
 	s.mu.Lock()

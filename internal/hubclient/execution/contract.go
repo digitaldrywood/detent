@@ -40,6 +40,7 @@ type ExecutionClaim struct {
 	Recovery        tracker.NativeRecovery
 	LandingCapacity int
 	Deadline        time.Time
+	LeaseChanged    <-chan struct{}
 	Execution       Execution
 }
 type ExecutionHost interface {

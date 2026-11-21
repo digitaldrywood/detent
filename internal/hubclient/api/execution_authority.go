@@ -10,4 +10,14 @@ func WithMutationAuthority(ctx context.Context, scope string, lease tracker.Nati
 	return context.WithValue(ctx, nativeMutationAuthorityKey{}, nativeMutationAuthority{scope: scope, lease: lease, cancellation: cancellation, guard: ctx})
 }
 
+func WithPublicationRetry(ctx context.Context, retry func(context.Context, func() error) error) context.Context {
+	authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	if !ok {
+		return ctx
+	}
+	authority.retry = retry
+	authority.publications = true
+	return context.WithValue(ctx, nativeMutationAuthorityKey{}, authority)
+}
+
 func MutationEffectError(ctx context.Context) error { return nativeEffectError(ctx) }

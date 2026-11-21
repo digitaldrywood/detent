@@ -1,7 +1,9 @@
 package nativechange
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -16,6 +18,8 @@ import (
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnersession"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -130,4 +134,179 @@ type publicationRenewalHost struct {
 
 func (h publicationRenewalHost) RenewExecution(context.Context, tracker.NativeLease, int) error {
 	return h.err
+}
+
+func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
+	for _, step := range []string{"review", "validator"} {
+		t.Run(step, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
+				var sent []byte
+				calls := 0
+				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					switch {
+					case strings.HasSuffix(request.URL.Path, "/validate"):
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(request.URL.Path, "/events"):
+						calls++
+						body, err := io.ReadAll(request.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var event tracker.NativeRunEvent
+						if err := json.Unmarshal(body, &event); err != nil || event.Type != "run.checkpointed" || event.IdempotencyKey == "" ||
+							event.Mutation.LeaseID != "" || event.Mutation.FencingToken != 0 || event.Data.LeaseID != lease.ID || event.Data.FencingToken != lease.FencingToken {
+							t.Fatalf("checkpoint = %+v, %v", event, err)
+						}
+						if calls == 1 {
+							sent = body
+							return nil, io.ErrUnexpectedEOF
+						}
+						if !bytes.Equal(sent, body) {
+							t.Fatal("checkpoint replay changed the request")
+						}
+						response.WriteHeader(http.StatusNoContent)
+					default:
+						t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+					}
+					return response.Result(), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: 5 * time.Second, LeaseTTL: 75 * time.Second, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(75 * time.Second)}, descriptor, "project")
+				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				execution.storedSeq = execution.data.Sequence + 1
+				ctx, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				err = execution.RecordStep(ctx, tracker.NativeStepReceipt{Step: step})
+				if err != nil || calls != 2 || execution.data.Sequence != 1 {
+					t.Fatalf("checkpoint sent %d POSTs, sequence = %d, result = %v", calls, execution.data.Sequence, err)
+				}
+			})
+		})
+	}
+}
+
+func TestRunnerSessionStartSurvivesHubOutageWithSameFence(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		ttl     time.Duration
+		revoked bool
+	}{
+		{name: "recovers within lease", ttl: 75 * time.Second},
+		{name: "expires during outage", ttl: 8 * time.Second},
+		{name: "revoked on reconnect", ttl: 75 * time.Second, revoked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				const outage = 16 * time.Second
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
+				var sent []byte
+				calls := 0
+				outageStarted := false
+				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					if strings.HasSuffix(request.URL.Path, "/runner-sessions") {
+						calls++
+						body, err := io.ReadAll(request.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var mutation runnersession.Mutation
+						if err := json.Unmarshal(body, &mutation); err != nil || mutation.Key == "" || mutation.LeaseID != lease.ID || mutation.FencingToken != lease.FencingToken || mutation.Worker == nil {
+							t.Fatalf("session mutation = %+v, %v", mutation, err)
+						}
+						if sent != nil && !bytes.Equal(sent, body) {
+							t.Fatal("session replay changed the request")
+						}
+						sent = body
+						if time.Since(start) < outage {
+							return nil, io.ErrUnexpectedEOF
+						}
+						io.WriteString(response, `{"id":42,"revision":1}`)
+						return response.Result(), nil
+					}
+					if outageStarted && time.Since(start) < outage {
+						return nil, io.ErrUnexpectedEOF
+					}
+					switch {
+					case strings.HasSuffix(request.URL.Path, "/validate"):
+						io.WriteString(response, "{}")
+					case test.revoked && (strings.HasSuffix(request.URL.Path, "/renew") || strings.HasSuffix(request.URL.Path, "/release")):
+						response.WriteHeader(http.StatusConflict)
+						io.WriteString(response, `{"code":"stale_fencing_token"}`)
+					case strings.HasSuffix(request.URL.Path, "/renew"):
+						confirmed := lease
+						confirmed.ServerTime, confirmed.RenewedAt = time.Now(), time.Now()
+						confirmed.ExpiresAt = confirmed.ServerTime.Add(test.ttl)
+						if err := json.NewEncoder(response).Encode(confirmed); err != nil {
+							return nil, err
+						}
+					default:
+						t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+					}
+					return response.Result(), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: time.Second, LeaseTTL: test.ttl, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				host := publicationRenewalHost{ExecutionHost: scheduler, err: api.ErrUnavailable}
+				execution := NewExecution(host, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(test.ttl), execution: execution}, descriptor, "project")
+				guarded, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				outageStarted = true
+				heartbeatDone := make(chan error, 1)
+				timer := time.AfterFunc(min(test.ttl, outage), func() {
+					_, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now())
+					heartbeatDone <- err
+				})
+				defer timer.Stop()
+				sessions := api.NewRunnerSessions(native)
+				id, err := sessions.StartSession(sessions.BindExecution(guarded, execution), store.SessionStart{Worker: &store.WorkerProcessRegistration{}})
+				if test.revoked || test.ttl < outage {
+					if id != 0 || calls != 1 || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || time.Since(start) != min(test.ttl, outage) {
+						t.Fatalf("lost session = %d, calls = %d, elapsed = %v, error = %v", id, calls, time.Since(start), err)
+					}
+					return
+				}
+				if err != nil || id != 42 || calls != 2 || time.Since(start) != outage {
+					t.Fatalf("session = %d, calls = %d, elapsed = %v, error = %v", id, calls, time.Since(start), err)
+				}
+				if err := <-heartbeatDone; err != nil {
+					t.Fatalf("lease heartbeat did not recover: %v", err)
+				}
+			})
+		})
+	}
 }

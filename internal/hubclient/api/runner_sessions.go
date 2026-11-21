@@ -91,6 +91,13 @@ func (s *RunnerSessions) BindExecution(ctx context.Context, execution runner.Exe
 		inherited.scope == scope && inherited.lease.WorkItemID == lease.WorkItemID &&
 		inherited.lease.ID == lease.ID && inherited.lease.FencingToken == lease.FencingToken {
 		authority.guard = inherited.guard
+		authority.retry = inherited.retry
+		authority.publications = inherited.publications
+	}
+	if owner, ok := execution.(interface {
+		RetryPhasePublication(context.Context, func() error) error
+	}); ok {
+		authority.retry = owner.RetryPhasePublication
 	}
 	return context.WithValue(ctx, nativeMutationAuthorityKey{}, authority)
 }
@@ -218,7 +225,8 @@ func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionSt
 			return value.ID, err
 		}
 		err = errors.Join(runner.ErrWorkerSessionStartUncertain, err)
-		if ctx.Err() != nil {
+		authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+		if ctx.Err() != nil || authority.retry != nil {
 			return 0, err
 		}
 		var reconcileErr error

@@ -232,15 +232,24 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	target, _, _ := strings.Cut(path, "?")
 	var replayMutation bool
-	var publication tracker.Mutation
+	var publication, fenced tracker.Mutation
 	switch request := input.(type) {
 	case runnersession.Mutation:
 		replayMutation = strings.HasSuffix(target, "/runner-sessions")
+		fenced = tracker.Mutation{IdempotencyKey: request.Key, LeaseID: request.LeaseID, FencingToken: request.FencingToken}
 	case tracker.NativeRunEvent:
 		replayMutation = request.IdempotencyKey != "" && strings.Contains(target, "/work-items/") && strings.HasSuffix(target, "/events")
+		if replayMutation {
+			fenced = tracker.Mutation{IdempotencyKey: request.IdempotencyKey, LeaseID: request.Data.LeaseID, FencingToken: request.Data.FencingToken}
+		}
 	case tracker.NativePhaseReceipt:
 		if strings.HasSuffix(target, "/phases") {
 			publication = request.Mutation
+		}
+	case tracker.ReviewChange:
+		if strings.HasSuffix(target, "/reviews") {
+			fenced = request.Mutation
+			replayMutation = fenced.IdempotencyKey != "" && fenced.LeaseID != "" && fenced.FencingToken > 0
 		}
 	case progresscheck.Publication:
 		if strings.HasSuffix(target, "/progress") {
@@ -249,20 +258,34 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
+	authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	var guard context.Context
 	if replayPublication {
-		if authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok {
-			guard = authority.guard
+		guard = authority.guard
+		fenced = publication
+	}
+	send := func() error {
+		return c.withinRequestBudget(ctx, guard, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
+			if replayPublication {
+				if err := nativeEffectError(ctx); err != nil {
+					return err
+				}
+			}
+			return c.requestOnce(ctx, timeout, method, path, headers, input, output)
+		})
+	}
+	sessionPath := authority.scope + "/runner-sessions"
+	sessionRequest := target == sessionPath || strings.HasPrefix(target, sessionPath+"/")
+	itemPath := authority.scope + "/work-items/" + url.PathEscape(string(authority.lease.WorkItemID)) + "/"
+	publicationRequest := authority.publications && strings.HasPrefix(target, itemPath)
+	if authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
+		if method == http.MethodGet || method == http.MethodHead ||
+			method == http.MethodPost && fenced.IdempotencyKey != "" && fenced.LeaseID == authority.lease.ID &&
+				fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken {
+			return authority.retry(ctx, send)
 		}
 	}
-	return c.withinRequestBudget(ctx, guard, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
-		if replayPublication {
-			if err := nativeEffectError(ctx); err != nil {
-				return err
-			}
-		}
-		return c.requestOnce(ctx, timeout, method, path, headers, input, output)
-	})
+	return send()
 }
 
 func (c *Client) requestOnce(ctx context.Context, timeout time.Duration, method string, path string, headers http.Header, input any, output any) error {

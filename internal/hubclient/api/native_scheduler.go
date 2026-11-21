@@ -34,6 +34,11 @@ func NativeTransportUnavailable(err error) bool {
 	return errors.Is(err, ErrUnavailable) || errors.Is(err, context.DeadlineExceeded)
 }
 
+func NativePublicationUnavailable(err error) bool {
+	var oversized *responseSizeError
+	return NativeTransportUnavailable(err) && !errors.As(err, &oversized)
+}
+
 func NativeAuthorityLost(err error) bool {
 	var apiErr *APIError
 	return errors.Is(err, orchestrator.ErrSchedulingClaimLost) || NativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
