@@ -86,32 +86,32 @@ type toolDecision struct {
 }
 
 type toolSteer struct {
-	first        uint64
+	fingerprint  string
+	period       int
 	acknowledged uint64
 }
 
 type ToolLoop struct {
 	history []toolDecision
-	steers  map[string]toolSteer
+	steer   toolSteer
 }
 
 func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence {
 	if sequence == 0 || len(l.history) > 0 && sequence <= l.history[len(l.history)-1].sequence {
 		return ToolLoopEvidence{}
 	}
+	if period := l.steer.period; period != 0 && l.history[len(l.history)-period].fingerprint != fingerprint {
+		l.steer = toolSteer{}
+	}
 	if len(l.history) == ToolLoopWindow {
 		copy(l.history, l.history[1:])
 		l.history = l.history[:ToolLoopWindow-1]
 	}
 	l.history = append(l.history, toolDecision{fingerprint: fingerprint, sequence: sequence})
-	for key, steer := range l.steers {
-		if steer.first < l.history[0].sequence {
-			delete(l.steers, key)
-		}
-	}
-	if fingerprint == "" {
-		return ToolLoopEvidence{}
-	}
+	return l.Evidence()
+}
+
+func (l *ToolLoop) Evidence() ToolLoopEvidence {
 	for period := 1; period <= 4; period++ {
 		repeats := l.repeatedSuffix(period)
 		if repeats < toolLoopSteerAt {
@@ -119,16 +119,11 @@ func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence
 		}
 		key := l.cycleKey(period)
 		evidence := ToolLoopEvidence{Fingerprint: key, Period: period, Repeats: repeats}
-		steer, exists := l.steers[key]
-		if !exists {
-			if l.steers == nil {
-				l.steers = make(map[string]toolSteer)
-			}
-			l.steers[key] = toolSteer{first: sequence}
+		if key != l.steer.fingerprint {
 			evidence.Action = ToolLoopSteer
 			return evidence
 		}
-		if repeats >= toolLoopStopAt && steer.acknowledged != 0 && l.history[len(l.history)-toolLoopSteerAt*period].sequence > steer.acknowledged {
+		if repeats >= toolLoopStopAt && l.steer.acknowledged != 0 && l.history[len(l.history)-toolLoopSteerAt*period].sequence > l.steer.acknowledged {
 			evidence.Action = ToolLoopStop
 			return evidence
 		}
@@ -137,11 +132,13 @@ func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence
 	return ToolLoopEvidence{}
 }
 
+func (l *ToolLoop) SteerSent(evidence ToolLoopEvidence) {
+	l.steer = toolSteer{fingerprint: evidence.Fingerprint, period: evidence.Period}
+}
+
 func (l *ToolLoop) Acknowledge(fingerprint string, lastStarted uint64) {
-	steer, exists := l.steers[fingerprint]
-	if exists && steer.acknowledged == 0 && lastStarted >= steer.first {
-		steer.acknowledged = lastStarted
-		l.steers[fingerprint] = steer
+	if l.steer.fingerprint == fingerprint {
+		l.steer.acknowledged = lastStarted
 	}
 }
 

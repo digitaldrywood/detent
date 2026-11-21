@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,15 +22,18 @@ import (
 func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
 		name, steerResult, terminalStatus           string
-		toolType, pollResult                        string
+		toolType, pollResult, command, outcomes     string
 		parallel, wrongScope, changedOutput         bool
 		serializedSiblings, operator, freshEvidence bool
 		methods                                     []string
+		ackAfter                                    []int
+		sequences                                   []uint64
 		stop                                        bool
 		lateAck                                     bool
 		freshThird, sealFirst                       bool
 		customTool, nestedSibling                   bool
 		missingResponse, unavailableSourceProbe     bool
+		varyMCPContent                              bool
 	}{
 		{name: "custom tool output joins its native execution without reasoning markers", sealFirst: true, customTool: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
@@ -52,6 +56,11 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "fresh sibling evidence each decision", freshEvidence: true, terminalStatus: "completed"},
 		{name: "operator calls", operator: true, terminalStatus: "completed"},
 		{name: "another provider turn", wrongScope: true, terminalStatus: "completed"},
+		{name: "silent workspace command", command: "./format-next", outcomes: "      ", terminalStatus: "completed"},
+		{name: "redirected inspection", command: "/bin/pwd > next.txt", terminalStatus: "completed"},
+		{name: "pending steer releases a different streak", outcomes: "aaabbbbbb", ackAfter: []int{6, 6}, sequences: []uint64{3, 6, 9}, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/steer", "turn/interrupt"}, stop: true},
+		{name: "same result after a break gets a fresh steer", outcomes: "aaabaaaaaa", ackAfter: []int{3, 7}, sequences: []uint64{3, 7, 10}, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/steer", "turn/interrupt"}, stop: true},
+		{name: "settled MCP job with changing content", toolType: "mcpToolCall", varyMCPContent: true, pollResult: `"result":{"content":[{"type":"text","text":"result %d"}],"structuredContent":{"job_id":"build-1","status":"completed"}}`, terminalStatus: "completed"},
 		{name: "changed output after steer", changedOutput: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/steer"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,14 +96,19 @@ func TestStreamToolLoopControl(t *testing.T) {
 			if test.wrongScope {
 				turn = "other"
 			}
-			repeats := 6
+			stopRepeats := 6
 			if test.lateAck {
-				repeats = 7
+				stopRepeats = 7
 			}
+			calls := stopRepeats
 			if test.freshThird {
-				repeats = 3
+				calls = 3
 			}
-			for ordinal := 1; ordinal <= repeats; ordinal++ {
+			if test.outcomes != "" {
+				calls = len(test.outcomes)
+			}
+			command := firstNonBlank(test.command, "/bin/pwd")
+			for ordinal := 1; ordinal <= calls; ordinal++ {
 				if !test.customTool && (ordinal == 1 || !test.parallel && !test.serializedSiblings) {
 					marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-%d"}}`, turn, ordinal)
 					messages = append(messages, notificationMessage(t, "item/started", marker))
@@ -110,9 +124,16 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if test.changedOutput && ordinal > 3 {
 					output = "failed differently"
 				}
-				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":%q,"status":"completed","exitCode":1,"aggregatedOutput":%q}}`, turn, ordinal, source, root, output)
+				if test.outcomes != "" {
+					output = strings.TrimSpace(test.outcomes[ordinal-1 : ordinal])
+				}
+				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":%q,"cwd":%q,"status":"completed","exitCode":0,"aggregatedOutput":%q}}`, turn, ordinal, source, command, root, output)
 				if test.toolType != "" {
-					item = fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":%q,"id":"tool-%d","server":"builder","namespace":"tools","tool":"job_status","status":"completed","arguments":{"job_id":"build-1"},%s}}`, turn, test.toolType, ordinal, test.pollResult)
+					poll := test.pollResult
+					if test.varyMCPContent {
+						poll = fmt.Sprintf(poll, ordinal)
+					}
+					item = fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":%q,"id":"tool-%d","server":"builder","namespace":"tools","tool":"job_status","status":"completed","arguments":{"job_id":"build-1"},%s}}`, turn, test.toolType, ordinal, poll)
 				}
 				if !test.customTool {
 					messages = append(messages, notificationMessage(t, "item/started", item))
@@ -150,8 +171,13 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if test.customTool {
 					messages = append(messages, notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"custom_tool_call_output","call_id":"call-%d"}}`, turn, ordinal)))
 				}
-				if ordinal == 3 && !test.lateAck && test.steerResult != "" {
+				if len(test.ackAfter) == 0 && ordinal == 3 && !test.lateAck && test.steerResult != "" {
 					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
+				}
+				for _, ack := range test.ackAfter {
+					if ordinal == ack {
+						messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
+					}
 				}
 			}
 			if test.parallel {
@@ -192,13 +218,21 @@ func TestStreamToolLoopControl(t *testing.T) {
 			}, loop)
 			var stopped *progresscheck.NoProgressError
 			if test.stop {
-				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != repeats || stopped.Evidence.Period != 1 {
+				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != stopRepeats || stopped.Evidence.Period != 1 {
 					t.Fatalf("stop = %v, evidence %+v", err, stopped)
 				}
-				if len(recorded) != 2 || recorded[0].Action != "steer" || recorded[0].Repeats != 3 ||
-					recorded[1].Action != "stop" || recorded[1].Repeats != repeats ||
-					recorded[0].Fingerprint == "" || recorded[0].Fingerprint != recorded[1].Fingerprint {
+				if len(recorded) != len(test.methods) {
 					t.Fatalf("confirmed interventions = %+v", recorded)
+				}
+				steer, stop := recorded[len(recorded)-2], recorded[len(recorded)-1]
+				if steer.Action != "steer" || steer.Repeats != 3 || stop.Action != "stop" || stop.Repeats != stopRepeats ||
+					steer.Fingerprint == "" || steer.Fingerprint != stop.Fingerprint {
+					t.Fatalf("confirmed interventions = %+v", recorded)
+				}
+				for i, sequence := range test.sequences {
+					if recorded[i].Sequence != sequence {
+						t.Fatalf("confirmed interventions = %+v, want sequences %v", recorded, test.sequences)
+					}
 				}
 			} else if err != nil {
 				t.Fatal(err)
