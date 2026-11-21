@@ -23,11 +23,13 @@ func TestStreamToolLoopControl(t *testing.T) {
 		lateAck                                     bool
 		freshThird, sealFirst                       bool
 		customTool, nestedSibling                   bool
+		missingResponse                             bool
 	}{
 		{name: "custom tool output joins its native execution without reasoning markers", sealFirst: true, customTool: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
 		{name: "response closes before final tool result", sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "third response contains new sibling evidence", freshThird: true, terminalStatus: "completed"},
+		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
@@ -70,7 +72,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 				}
 				if test.customTool {
 					messages = append(messages, notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"custom_tool_call","call_id":"call-%d"}}`, turn, ordinal)))
-				} else if source == "agent" {
+				} else if source == "agent" && !test.missingResponse && !test.serializedSiblings {
 					messages = append(messages, rawLoopCall(t, turn, fmt.Sprintf("tool-%d", ordinal)))
 				}
 				var sibling string
@@ -88,7 +90,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if !test.parallel {
 					messages = append(messages, notificationMessage(t, "item/completed", item), notificationMessage(t, "item/completed", item))
 				}
-				if !test.sealFirst {
+				if !test.sealFirst && !test.missingResponse && !test.serializedSiblings {
 					messages = append(messages, sealed)
 				}
 				if sibling != "" {

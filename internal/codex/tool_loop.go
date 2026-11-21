@@ -181,13 +181,13 @@ func (l *turnToolLoop) observeResponse(ctx context.Context, transport Transport,
 	case "function_call", "local_shell_call", "custom_tool_call", "tool_search_call", "web_search_call", "image_generation_call":
 		id := firstNonBlank(params.Item.CallID, params.Item.ID)
 		custom := params.Item.Type == "custom_tool_call"
-		if l.rawClosed && l.rawToolID != "" && l.rawCustom && custom && l.rawToolID != id && len(l.active) == 0 {
+		if l.rawClosed && l.rawToolID != "" && l.rawToolID != id && len(l.active) == 0 {
 			if err := l.finishDecision(ctx, transport, false); err != nil || l.interrupted.Action != "" {
 				return err
 			}
 			l.nextDecision()
 		}
-		if l.sequence == 0 && custom {
+		if l.sequence == 0 {
 			l.sequence++
 		}
 		if id == "" || l.rawToolID != "" && l.rawToolID != id {
@@ -225,7 +225,7 @@ func (l *turnToolLoop) rememberID(ids *[]string, id string) {
 
 func (l *turnToolLoop) finishDecision(ctx context.Context, transport Transport, confirmed bool) error {
 	fingerprint := l.decisionResult
-	if l.decisionCalls != 1 || !confirmed && l.rawToolID != "" {
+	if !confirmed || l.decisionCalls != 1 {
 		fingerprint = ""
 	}
 	return l.intervene(ctx, transport, l.observer.Observe(l.sequence, fingerprint))
