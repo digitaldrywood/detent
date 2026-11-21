@@ -256,9 +256,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
-			{Files: 1, Added: 2, Fingerprint: "first-diff", HeadSHA: "first-physical-head", HeadObservedAt: startedAt},
-			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff", HeadSHA: "second-physical-head", HeadObservedAt: startedAt.Add(time.Second)},
-			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
+			{Files: 1, Added: 2, Fingerprint: "turn-diff", HeadSHA: "turn-head", HeadObservedAt: completedAt},
 			{Files: 2, Added: 5, Removed: 1, Fingerprint: "final-diff"},
 		},
 		recoveryStates: []workspace.RecoveryState{
@@ -312,6 +310,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 					},
 				},
 			},
+			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
 		},
 		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
 	}
@@ -412,8 +411,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.Tokens.ModelContextWindow == nil || *result.Tokens.ModelContextWindow != modelContextWindow {
 		t.Fatalf("RunResult ModelContextWindow = %#v, want %d", result.Tokens.ModelContextWindow, modelContextWindow)
 	}
-	if len(usageUpdates) != 6 {
-		t.Fatalf("usage updates len = %d, want workspace start, dispatch baseline, plus 4 agent updates", len(usageUpdates))
+	if len(usageUpdates) != 7 {
+		t.Fatalf("usage updates len = %d, want workspace start, dispatch baseline, plus 5 agent updates", len(usageUpdates))
 	}
 	if usageUpdates[0].LastEvent != "workspace_create_started" || !usageUpdates[0].LastEventAt.Equal(startedAt) {
 		t.Fatalf("workspace usage update = %#v, want startup progress", usageUpdates[0])
@@ -449,9 +448,6 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].LastEventAt.IsZero() {
 		t.Fatal("second usage update LastEventAt is zero")
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.Fingerprint != "first-diff" || usageUpdates[1].DiffStats.HeadSHA != "first-physical-head" || usageUpdates[1].DiffStats.Status != "ok" {
-		t.Fatalf("second usage update DiffStats = %#v, want live diff", usageUpdates[1].DiffStats)
-	}
 	if usageUpdates[2].TurnCount != 1 || usageUpdates[2].Tokens.TotalTokens != 125 {
 		t.Fatalf("third usage update = %#v, want 1 turn and 125 tokens", usageUpdates[2])
 	}
@@ -461,17 +457,21 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "token_usage" || usageUpdates[2].RecentEvents[2].Message != "125 total tokens (100 in, 25 out)" {
 		t.Fatalf("third usage update RecentEvents = %#v, want token-specific activity", usageUpdates[2].RecentEvents)
 	}
-	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 || usageUpdates[2].DiffStats.HeadSHA != "second-physical-head" {
-		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
-	}
 	if usageUpdates[3].RateLimits == nil || usageUpdates[3].RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("fourth usage update RateLimits = %#v, want codex-primary", usageUpdates[3].RateLimits)
 	}
 	if len(usageUpdates[3].RecentEvents) != 4 || usageUpdates[3].RecentEvents[3].Event != "rate_limits" || usageUpdates[3].RecentEvents[3].Message != "Codex primary rate limits updated" {
 		t.Fatalf("fourth usage update RecentEvents = %#v, want rate-limit-specific activity", usageUpdates[3].RecentEvents)
 	}
-	if usageUpdates[3].DiffStats.FilesChanged != 2 || usageUpdates[3].DiffStats.AddedLines != 5 || usageUpdates[3].DiffStats.RemovedLines != 1 {
-		t.Fatalf("fourth usage update DiffStats = %#v, want refreshed diff", usageUpdates[3].DiffStats)
+	for _, usage := range usageUpdates[:4] {
+		if !reflect.DeepEqual(usage.DiffStats, DiffStats{}) {
+			t.Fatalf("usage at %q has a diff before turn completion: %+v", usage.LastEvent, usage.DiffStats)
+		}
+	}
+	terminalUsage := usageUpdates[4]
+	if stat := terminalUsage.DiffStats; terminalUsage.LastEvent != string(AgentUpdateTurnCompleted) || stat.FilesChanged != 1 || stat.AddedLines != 2 ||
+		stat.HeadSHA != "turn-head" || stat.Fingerprint != "turn-diff" || stat.Status != "ok" {
+		t.Fatalf("turn completion usage = %+v, want the turn diff", terminalUsage)
 	}
 	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 || result.DiffStats.HeadSHA != "final-head" || result.DiffStats.Fingerprint != "final-diff" || !result.DiffStats.RecoveryStateExpected || !result.DiffStats.RecoveryStateAvailable {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed, final head, and final fingerprint", result.DiffStats)
@@ -491,8 +491,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		workspaceBackend.createIssue.BranchName != "detent/digitaldrywood_detent_22" {
 		t.Fatalf("Create() issue = %#v", workspaceBackend.createIssue)
 	}
-	if workspaceBackend.diffCalls != 3 {
-		t.Fatalf("DiffStat calls = %d, want throttled live calls plus final stat", workspaceBackend.diffCalls)
+	if workspaceBackend.diffCalls != 2 {
+		t.Fatalf("DiffStat calls = %d, want turn completion and finalization", workspaceBackend.diffCalls)
 	}
 	if codexClient.request.Workspace != workspacePath {
 		t.Fatalf("codex workspace = %q, want %q", codexClient.request.Workspace, workspacePath)
