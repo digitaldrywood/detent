@@ -1851,7 +1851,7 @@ func TestFetchCandidateIssuesForTickPassesAuthorizationFilterHint(t *testing.T) 
 	orch := Orchestrator{cfg: cfg, connector: tracker}
 	state := newState(cfg)
 
-	got, err := orch.fetchCandidateIssuesForTick(context.Background(), &state)
+	got, err := orch.fetchCandidateIssuesForTick(context.Background(), &state, time.Now())
 	if err != nil {
 		t.Fatalf("fetchCandidateIssuesForTick() error = %v", err)
 	}
@@ -4544,7 +4544,7 @@ func TestNativeAuthorizationBeforeClaim(t *testing.T) {
 			o := &Orchestrator{cfg: cfg, scheduling: scheduling, connector: &nativeWorkflowConnector{}}
 			state := newState(cfg)
 			state.nativeAdmission = &tracker.NativeAdmissionContext{PolicyID: "previous"}
-			_, err := o.fetchCandidateIssuesForTick(t.Context(), &state)
+			_, err := o.fetchCandidateIssuesForTick(t.Context(), &state, time.Now())
 			if test.refuse {
 				if err == nil || scheduling.fetches != 0 {
 					t.Fatalf("unsupported policy reached claim: %d, %v", scheduling.fetches, err)

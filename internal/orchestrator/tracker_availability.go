@@ -209,17 +209,17 @@ func (o *Orchestrator) probeTrackerAvailability(ctx context.Context, state *Stat
 				state.StatusDrift = cloneStatusDrift(drift)
 			}
 		} else {
-			_, err = o.fetchCandidateIssuesForTick(ctx, state)
+			_, err = o.fetchCandidateIssuesForTick(ctx, state, now)
 		}
 	case telemetry.RefreshSourceStatuses:
 		states := o.observedStatusFetchStatesForTick(state)
 		if len(states) > 0 {
 			_, err = o.fetchObservedIssuesByStates(ctx, states)
 		} else {
-			_, err = o.fetchCandidateIssuesForTick(ctx, state)
+			_, err = o.fetchCandidateIssuesForTick(ctx, state, now)
 		}
 	default:
-		_, err = o.fetchCandidateIssuesForTick(ctx, state)
+		_, err = o.fetchCandidateIssuesForTick(ctx, state, now)
 	}
 	if err == nil {
 		recordRefreshSourceSuccess(state, trackerConditionRefreshSource(condition), now)

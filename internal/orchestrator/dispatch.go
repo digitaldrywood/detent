@@ -304,7 +304,7 @@ func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *S
 		return
 	}
 	o.publishState(ctx, state)
-	fresh, err := o.fetchCandidateIssuesForTick(ctx, state)
+	fresh, err := o.fetchCandidateIssuesForTick(ctx, state, now)
 	if err != nil {
 		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
 		if o.logger != nil {

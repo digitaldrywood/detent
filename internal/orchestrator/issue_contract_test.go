@@ -164,7 +164,7 @@ func TestIssueContractDispatchAndRecovery(t *testing.T) {
 				source := &hubSchedulingSource{}
 				orch.scheduling = source
 				orch.now = func() time.Time { return now }
-				if _, err := orch.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+				if _, err := orch.fetchCandidateIssuesForTick(t.Context(), &state, now); err != nil {
 					t.Fatal(err)
 				}
 				if source.request.CandidateReady(t.Context(), issue) {
