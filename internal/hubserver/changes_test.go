@@ -1867,6 +1867,8 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				first = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, first.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
 			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			owner.enroll(t)
+			reportRunnerCapacity(t, f.service, f.base, owner.redemption.Credential, owner.binding.MachineID, owner.redemption.DisplayName, owner.redemption.BackendIsolation, owner.redemption.Capacity)
 			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Heartbeat)
 			waiter.enroll(t)
 			reportRunnerCapacity(t, secondFixture.service, secondFixture.base, waiter.redemption.Credential, waiter.binding.MachineID, waiter.redemption.DisplayName, waiter.redemption.BackendIsolation, waiter.redemption.Capacity)
