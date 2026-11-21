@@ -39,7 +39,13 @@ type SSHCallbacks struct {
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
 	closed                bool
-	active                map[int64]UsageUpdate
+	active                map[int64]callbackSession
+	uncertainLocalStarts  map[string]store.SessionStart
+}
+
+type callbackSession struct {
+	UsageUpdate
+	combined bool
 }
 
 func (r *Runner) LocalRunCallbacks(request RunRequest) *SSHCallbacks {
@@ -50,7 +56,7 @@ func (r *Runner) LocalRunCallbacks(request RunRequest) *SSHCallbacks {
 }
 
 func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
-	return &SSHCallbacks{landingBatch: request.LandingBatch, handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]UsageUpdate)}
+	return &SSHCallbacks{landingBatch: request.LandingBatch, handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]callbackSession)}
 }
 
 func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
@@ -101,11 +107,11 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	switch method {
 	case "store.StartSession":
 		if id, ok := result.(int64); ok && id > 0 {
-			c.active[id] = UsageUpdate{DetentSessionID: id}
+			c.active[id] = callbackSession{UsageUpdate: UsageUpdate{DetentSessionID: id}}
 		}
 	case "local.start":
 		if start, ok := result.(localSessionStartResult); ok && start.ID > 0 {
-			c.active[start.ID] = UsageUpdate{DetentSessionID: start.ID}
+			c.active[start.ID] = callbackSession{UsageUpdate: UsageUpdate{DetentSessionID: start.ID}, combined: true}
 		}
 	case "store.FinishSession", "store.ReconcileSessionFinalization", "local.finish":
 		if len(args) > 0 {
@@ -119,7 +125,8 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 			var update UsageUpdate
 			if json.Unmarshal(args[0], &update) == nil {
 				if previous, ok := c.active[update.DetentSessionID]; ok && !update.LastEventAt.Before(previous.LastEventAt) {
-					c.active[update.DetentSessionID] = update
+					previous.UsageUpdate = update
+					c.active[update.DetentSessionID] = previous
 				}
 			}
 		}
@@ -136,15 +143,46 @@ func (c *SSHCallbacks) Finish(ctx context.Context, at time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var errs []error
+	cleanupCtx := ctx
+	if c.local != nil {
+		var cancel context.CancelFunc
+		cleanupCtx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		for key, start := range c.uncertainLocalStarts {
+			id, err := c.store.StartSession(withWorkerSessionStartKey(cleanupCtx, key), start)
+			if id <= 0 {
+				if err == nil {
+					err = ErrExecutionAuthorityUnavailable
+				}
+				errs = append(errs, err)
+				continue
+			}
+			c.active[id] = callbackSession{UsageUpdate: UsageUpdate{DetentSessionID: id}, combined: true}
+			delete(c.uncertainLocalStarts, key)
+		}
+	}
+	const reason = "execution worker exited"
 	for id, update := range c.active {
+		tokens := update.Tokens
+		finish := store.SessionFinish{CompletedAt: at, FinalState: FinalStateFailed, Turns: int64(update.TurnCount), InputTokens: tokens.InputTokens, CachedInputTokens: tokens.CachedInputTokens, OutputTokens: tokens.OutputTokens, ReasoningOutputTokens: tokens.ReasoningOutputTokens, TotalTokens: tokens.TotalTokens, ProviderThreadID: update.ProviderThreadID, RuntimeIdentity: update.RuntimeIdentity}
+		finishCtx := ctx
 		if c.local != nil {
-			if err := c.local.reapSessionWorkerProcess(ctx, id, c.issue, "execution worker exited"); err != nil {
+			var err error
+			if update.combined {
+				finishCtx = cleanupCtx
+				err = c.local.reapSessionWorkerProcessWithRecorder(cleanupCtx, id, c.issue, reason, nil, func(_ context.Context, reap store.WorkerProcessReap) error {
+					finish.Reap = &reap
+					return nil
+				})
+			} else {
+				err = c.local.reapSessionWorkerProcess(ctx, id, c.issue, reason)
+			}
+			if err != nil {
 				errs = append(errs, err)
 				continue
 			}
 		}
-		tokens := update.Tokens
-		if err := c.store.FinishSession(ctx, id, store.SessionFinish{CompletedAt: at, FinalState: FinalStateFailed, Turns: int64(update.TurnCount), InputTokens: tokens.InputTokens, CachedInputTokens: tokens.CachedInputTokens, OutputTokens: tokens.OutputTokens, ReasoningOutputTokens: tokens.ReasoningOutputTokens, TotalTokens: tokens.TotalTokens, ProviderThreadID: update.ProviderThreadID, RuntimeIdentity: update.RuntimeIdentity}); err != nil {
+		if err := c.store.FinishSession(finishCtx, id, finish); err != nil {
 			errs = append(errs, err)
 		} else {
 			delete(c.active, id)

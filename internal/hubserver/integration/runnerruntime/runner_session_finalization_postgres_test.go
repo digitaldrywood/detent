@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -425,18 +426,20 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 		name          string
 		lostResponses int32
 		deadline      bool
+		disconnect    bool
 	}{
 		{name: "one lost response", lostResponses: 1},
 		{name: "both responses lost", lostResponses: 2},
 		{name: "caller deadline after commit", lostResponses: 1, deadline: true},
+		{name: "local worker disconnect after commit", lostResponses: 1, disconnect: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			testPostgresHostSessionStartRollback(t, hubfixture.NewLeasedRunners(t), test.lostResponses, test.deadline)
+			testPostgresHostSessionStartRollback(t, hubfixture.NewLeasedRunners(t), test.lostResponses, test.deadline, test.disconnect)
 		})
 	}
 }
 
-func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunners, lostResponses int32, deadline bool) {
+func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunners, lostResponses int32, deadline, disconnect bool) {
 	t.Helper()
 	const index = 0
 	lease := f.Leases[index]
@@ -450,6 +453,7 @@ func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunne
 	}
 	var first atomic.Pointer[startReceipt]
 	var attempts atomic.Int32
+	var disconnectWorker func()
 	fault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/runner-sessions") {
 			f.Hub.Handler().ServeHTTP(w, r)
@@ -498,6 +502,10 @@ func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunne
 				cancel(context.DeadlineExceeded)
 				return
 			}
+			if disconnect {
+				disconnectWorker()
+				return
+			}
 		}
 		w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
 		w.WriteHeader(response.Code)
@@ -519,10 +527,31 @@ func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunne
 	if err != nil {
 		t.Fatal(err)
 	}
-	caller = owner.WorkerCommandContext(caller, runner.RunRequest{
+	request := runner.RunRequest{
 		Issue:            connector.Issue{ID: string(lease.WorkItemID)},
 		AttemptWorkspace: workspace.AttemptWorkspace{Organization: string(f.Organization), Project: "prj_runner", Attempt: f.Data[index].AttemptID},
-	})
+	}
+	var callbacks *runner.SSHCallbacks
+	if disconnect {
+		callbacks = owner.LocalRunCallbacks(request)
+		left, right := net.Pipe()
+		controller := runner.NewSSHPeer(ctx, left, left, callbacks.Handle)
+		worker := runner.NewSSHPeer(caller, right, right, nil)
+		t.Cleanup(func() {
+			_ = left.Close()
+			_ = right.Close()
+			<-controller.Context().Done()
+			<-worker.Context().Done()
+		})
+		disconnectWorker = func() {
+			_ = right.Close()
+			<-controller.Context().Done()
+		}
+		sessions := runner.LocalSessionStore{SSHSessionStore: runner.SSHSessionStore{Peer: worker}, Combined: true}
+		caller = (&runner.SSHExecutionSources{}).BindWorkerProcesses(caller, "prj_runner", sessions, request)
+	} else {
+		caller = owner.WorkerCommandContext(caller, request)
+	}
 	launchCtx, finish := (runner.AgentProcessRequest{Workspace: root}).OwnProviderLaunch(caller)
 	cmd := exec.CommandContext(launchCtx, "git", "init")
 	cmd.Dir = root
@@ -538,7 +567,14 @@ func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunne
 		_ = procgroup.Wait(cmd)
 		t.Fatal("command launched after the start response was lost")
 	}
-	if err := finish(err); !api.NativeTransportUnavailable(err) || deadline && !errors.Is(err, context.DeadlineExceeded) {
+	if disconnect {
+		if !errors.Is(err, runner.ErrWorkerSessionStartUncertain) {
+			t.Fatalf("worker disconnect was not an uncertain launch: %v", err)
+		}
+		if err := callbacks.Finish(ctx, time.Now()); err != nil {
+			t.Fatalf("controller disconnect cleanup: %v", err)
+		}
+	} else if err := finish(err); !api.NativeTransportUnavailable(err) || deadline && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("rollback changed the start error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".git")); !errors.Is(err, os.ErrNotExist) {

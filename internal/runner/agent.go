@@ -5020,6 +5020,10 @@ func (r *Runner) reapSessionWorkerProcess(ctx context.Context, sessionID int64, 
 }
 
 func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sessionID int64, issue connector.Issue, reason string, reapWorkspace func() error) error {
+	return r.reapSessionWorkerProcessWithRecorder(context.WithoutCancel(ctx), sessionID, issue, reason, reapWorkspace, nil)
+}
+
+func (r *Runner) reapSessionWorkerProcessWithRecorder(ctx context.Context, sessionID int64, issue connector.Issue, reason string, reapWorkspace func() error, recordReap func(context.Context, store.WorkerProcessReap) error) error {
 	type workerProcessReapResult struct {
 		process store.WorkerProcess
 		outcome procgroup.TerminationOutcome
@@ -5029,7 +5033,7 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	staleIdentity := false
 	processStore, ok := r.store.(sessionWorkerProcessReaper)
 	if ok && sessionID > 0 {
-		active, err := processStore.ListActiveWorkerProcesses(context.WithoutCancel(ctx))
+		active, err := processStore.ListActiveWorkerProcesses(ctx)
 		if err != nil {
 			reapErrors = fmt.Errorf("list agent session worker processes: %w", err)
 		}
@@ -5038,7 +5042,7 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 				continue
 			}
 			identity := procgroup.Identity{PID: process.PID, GroupID: process.GroupID, StartedAt: process.StartedAt}
-			outcome, reapErr := r.reapWorkerProcess(context.WithoutCancel(ctx), identity, r.workerReapGrace)
+			outcome, reapErr := r.reapWorkerProcess(ctx, identity, r.workerReapGrace)
 			if outcome == procgroup.TerminationOutcomeStaleIdentity {
 				staleIdentity = true
 				reapErr = errors.Join(reapErr, errors.New("worker process identity changed; retain artifacts"))
@@ -5073,7 +5077,7 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 		if reap == nil {
 			reap = workspace.ReapWorkerArtifactProcesses
 		}
-		_, err := reap(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
+		_, err := reap(ctx, process.CleanupRoot, process.CleanupPath, r.workerReapGrace)
 		reapErrors = errors.Join(reapErrors, err)
 	}
 	if reapErrors != nil {
@@ -5082,10 +5086,15 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 	if !ok {
 		return nil
 	}
+	if recordReap == nil {
+		recordReap = func(ctx context.Context, reap store.WorkerProcessReap) error {
+			return processStore.MarkSessionWorkerProcessReaped(ctx, sessionID, reap)
+		}
+	}
 	for _, reaped := range processes {
 		process := reaped.process
 		outcome := reaped.outcome
-		cleanupAttempts, cleanupErr := r.cleanupSessionWorkerArtifacts(context.WithoutCancel(ctx), process.CleanupRoot, process.CleanupPath)
+		cleanupAttempts, cleanupErr := r.cleanupSessionWorkerArtifacts(ctx, process.CleanupRoot, process.CleanupPath)
 		if cleanupErr != nil {
 			r.logWorkerEventLevel(slog.LevelWarn, issue, "worker_artifact_cleanup_failed",
 				telemetry.DetentSessionIDKey, sessionID,
@@ -5103,7 +5112,7 @@ func (r *Runner) reapSessionWorkerProcessWithWorkspace(ctx context.Context, sess
 				"path", strings.TrimSpace(process.CleanupPath),
 			)
 		}
-		if err := processStore.MarkSessionWorkerProcessReaped(context.WithoutCancel(ctx), sessionID, store.WorkerProcessReap{
+		if err := recordReap(ctx, store.WorkerProcessReap{
 			ReapedAt: r.now().UTC(),
 			Outcome:  string(outcome),
 			Reason:   strings.TrimSpace(reason),

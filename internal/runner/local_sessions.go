@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/google/uuid"
@@ -93,10 +94,24 @@ func (c *SSHCallbacks) startLocalSession(ctx context.Context, start store.Sessio
 		return localSessionStartResult{}, err
 	}
 	start.Worker.CleanupRoot = root
-	id, err := c.store.StartSession(withWorkerSessionStartKey(ctx, c.localStartNamespace+":"+key), start)
-	if err != nil && id <= 0 {
+	key = c.localStartNamespace + ":" + key
+	if pending, ok := c.uncertainLocalStarts[key]; ok && !reflect.DeepEqual(pending, start) {
+		return localSessionStartResult{}, errors.New("local session start inputs changed")
+	}
+	id, err := c.store.StartSession(withWorkerSessionStartKey(ctx, key), start)
+	if id <= 0 {
+		if errors.Is(err, ErrWorkerSessionStartUncertain) {
+			if c.uncertainLocalStarts == nil {
+				c.uncertainLocalStarts = make(map[string]store.SessionStart)
+			}
+			c.uncertainLocalStarts[key] = start
+		}
+		if err == nil {
+			err = ErrExecutionAuthorityUnavailable
+		}
 		return localSessionStartResult{}, err
 	}
+	delete(c.uncertainLocalStarts, key)
 	return localSessionStartResult{ID: id, Failure: encodeSSHError(err)}, nil
 }
 
