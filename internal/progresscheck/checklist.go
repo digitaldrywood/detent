@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -84,11 +85,20 @@ func NativeReviewCriteria(acceptance []string, body, projectCommand string) []st
 	return criteria
 }
 
+var gateRepairPreparation = regexp.MustCompile(
+	"(?i)^(?:Stage the first candidate from `[^`\n]+` for the host gate once\\. " +
+		"It (?:rejects|handles|passes) [a-z0-9 -]+ but (?:misses|fails) [a-z0-9 -]+\\. )?" +
+		"After the host records [a-z0-9 -]+ as failed, (?:repair|fix) (?:it|the [a-z0-9_-]+)(?: with `[^`\n]+`)?$",
+)
+
 func referencesOnlyCheck(criterion, command string) bool {
 	if command == "" {
 		return false
 	}
 	criterion = strings.TrimSpace(criterion)
+	if preparation, final, found := strings.Cut(criterion, ", then run "); found && gateRepairPreparation.MatchString(preparation) {
+		criterion = final
+	}
 	quoted := "`" + command + "`"
 	for _, form := range []string{command, quoted, "Run " + command, "Run " + quoted} {
 		if criterion == form || criterion == form+"." {
@@ -164,18 +174,29 @@ type checklistEvidence struct {
 func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklistEvidence) []tracker.ExecutionCheckUpdate {
 	var updates []tracker.ExecutionCheckUpdate
 	command, validator, audit := evidence.command, evidence.validator, evidence.audit
-	gateReceipt := command != nil && command.HeadSHA == evidence.head && command.TreeSHA != "" && command.TreeSHA == evidence.tree && command.ReceiptID != ""
+	var gateDigest string
+	var gateStatus tracker.ExecutionCheckStatus
+	if command != nil && !command.InstanceFailure() && command.HeadSHA == evidence.head && command.TreeSHA != "" && command.TreeSHA == evidence.tree && command.ReceiptID != "" {
+		gateDigest = policy.Digest([]byte(command.Command))
+		gateStatus = tracker.CheckPassed
+		if command.ExitCode != 0 {
+			gateStatus = tracker.CheckFailed
+		}
+	}
+	hasProjectGateReceipt := gateDigest != "" && slices.ContainsFunc(checks, func(check tracker.ExecutionCheck) bool {
+		return check.Kind == tracker.CheckProjectGate && check.CheckDigest == gateDigest
+	})
 	for _, check := range checks {
 		var status tracker.ExecutionCheckStatus
 		var receipt string
-		switch check.Kind {
+		kind := check.Kind
+		if kind == tracker.CheckVerification && hasProjectGateReceipt && referencesOnlyCheck(check.Text, command.Command) {
+			kind = tracker.CheckProjectGate
+		}
+		switch kind {
 		case tracker.CheckProjectGate:
-			if gateReceipt && check.CheckDigest == policy.Digest([]byte(command.Command)) {
-				receipt = command.ReceiptID
-				status = tracker.CheckPassed
-				if command.ExitCode != 0 {
-					status = tracker.CheckFailed
-				}
+			if hasProjectGateReceipt && (check.Kind == tracker.CheckVerification || check.CheckDigest == gateDigest) {
+				status, receipt = gateStatus, command.ReceiptID
 			}
 		case tracker.CheckIndependentReview:
 			if validator != nil {
@@ -215,7 +236,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 		if status == "" || receipt == "" {
 			continue
 		}
-		if check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
+		if kind != tracker.CheckProjectGate && check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
 			status = tracker.CheckFlaky
 		}
 		updates = append(updates, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Head: evidence.head, Tree: evidence.tree, Receipt: receipt})
