@@ -6,6 +6,7 @@ type Info struct {
 	Branch            string
 	ReviewBranch      string
 	PublicationBranch string
+	StartHeadSHA      string
 	Created           bool
 }
 
