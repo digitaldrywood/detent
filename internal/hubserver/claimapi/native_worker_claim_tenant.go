@@ -988,7 +988,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			return err
 		}
 		workspaceLane := slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability)
-		if workspaceItem && !workspaceLane || !workspaceItem && !landing && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) && len(request.ProviderCandidates) == 0 {
+		if workspaceItem && !workspaceLane || !workspaceItem && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) && len(request.ProviderCandidates) == 0 {
 			return ErrNoClaimableWork
 		}
 		if workspaceItem && plan.Replay == nil {
@@ -1214,7 +1214,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		}
 		var selectedReservation *providercapacity.Reservation
 		var selectionRequired error
-		if !workspaceItem && replay == nil && (!landing || len(request.ProviderCandidates) > 0) {
+		if !workspaceItem && replay == nil {
 			if len(request.ProviderCandidates) == 0 {
 				reports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
 				if err != nil {
@@ -1262,7 +1262,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			if err != nil {
 				return err
 			}
-			if !workspaceItem && (len(request.ProviderCandidates) > 0 || !landing && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability)) {
+			if !workspaceItem && (len(request.ProviderCandidates) > 0 || slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability)) {
 				candidate := nativeClaimProviderCandidate(request, item.NativeID)
 				if !foundReservation || candidate == nil || reservation.Reservation.Requirement != candidate.Requirement {
 					return tracker.ErrLeaseConflict

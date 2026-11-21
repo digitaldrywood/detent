@@ -1833,7 +1833,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "expired changed-lane owner cannot renew an occupied slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, laneChanged: true},
 		{name: "negative capacity is invalid", ownerCapacity: -1},
 		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true, admission: "ready"},
-		{name: "native-only landing with provider reports", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "ready"},
+		{name: "native-only landing requires provider selection", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "unknown"},
 		{name: "concurrent claims acquire one slot", ownerCapacity: 1, contenderCapacity: 1, concurrent: true},
 		{name: "expired renewal races a new claim", ownerCapacity: 1, contenderCapacity: 1, concurrent: true, renewRace: true},
 		{name: "busy landing permits other ready work", ownerCapacity: 1, contenderCapacity: 1, fallback: true},
@@ -2128,7 +2128,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						continue
 					}
 					found = true
-					if admission.Outcome != test.admission || slices.Contains(admission.Unavailable, "project_landing_capacity") != (test.admission == "unknown") {
+					if admission.Outcome != test.admission || slices.Contains(admission.Unavailable, "project_landing_capacity") != (test.admission == "unknown" && !test.nativeOnly) || test.nativeOnly && !slices.Contains(admission.Unavailable, "provider_candidate_requirement") {
 						t.Fatalf("runtime admission invents incoming capacity: %#v", admission)
 					}
 				}
@@ -2154,13 +2154,18 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					}
 				}
 			}
+			if test.nativeOnly {
+				refused := secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity, claimStates...)
+				requireNativeStatus(t, refused, http.StatusConflict)
+				secondFixture.requirement = providercapacity.Requirement{Role: "merge", Backend: "codex", Model: "test-model"}
+			}
 			claimed := secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity, claimStates...)
 			requireNativeStatus(t, claimed, want)
 			if test.nativeOnly {
 				var lease tracker.NativeLease
 				decodeHubResponse(t, claimed, &lease)
-				if lease.ProviderReservation != nil {
-					t.Fatalf("Git-only landing acquired a provider reservation: %+v", lease.ProviderReservation)
+				if lease.ProviderReservation == nil || lease.ProviderReservation.Requirement != secondFixture.requirement {
+					t.Fatalf("landing did not reserve the selected provider: %+v", lease.ProviderReservation)
 				}
 			}
 			if want == http.StatusConflict && test.ownerCapacity == 1 {

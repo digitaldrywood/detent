@@ -82,7 +82,7 @@ func NativeChangeWorker(t *testing.T, cfg hubserver.Config, project tracker.Proj
 		if err := w.RegisterMachine(t.Context(), leasestore.Machine{OrganizationID: organization, ID: string(machine), Hostname: "host", Capacity: 1, Version: "test"}); err != nil {
 			return err
 		}
-		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: credentialID, Name: "Example worker", Hash: apikey.HashToken(token), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
+		if err := w.CreateAccessCredential(t.Context(), accessstore.Credential{OrganizationID: organization, ID: credentialID, Name: "Example worker " + id, Hash: apikey.HashToken(token), Scope: "worker", NativeOnly: true, Kind: "service", ProjectAccess: "selected", CreatedAt: now, UpdatedAt: now, ExpiresAt: &expires}); err != nil {
 			return err
 		}
 		if err := w.CreateAccessTokenGrant(t.Context(), accessstore.TokenGrant{OrganizationID: organization, TokenID: credentialID, ProjectID: project}); err != nil {

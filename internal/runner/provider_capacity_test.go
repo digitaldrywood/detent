@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, state, mode, body, modelOverride, routeModel, wantModel, wantRole string
+		landingHead                                                             string
 		catalogErr                                                              error
 		missing                                                                 bool
 	}{
@@ -34,6 +36,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 		{name: "catalog failure cannot affect dispatch", routeModel: "sol", body: "```detent-agent\nschema: 1\nmodel: astra\n```", catalogErr: errors.New("offline"), wantModel: "astra", wantRole: RoleCode},
 		{name: "provider default remains explicit", wantModel: "provider_default", wantRole: RoleCode},
 		{name: "plan role", mode: RunModePlan, routeModel: "sol", wantModel: "plan-model", wantRole: RolePlan},
+		{name: "reviewed head reserves merge role in progress", state: "In Progress", mode: RunModeMerge, landingHead: strings.Repeat("a", 40), routeModel: "sol", wantModel: "sol", wantRole: RoleMerge},
 		{name: "merge role fallback", state: "Merging", routeModel: "sol", wantModel: "sol", wantRole: RoleMerge},
 		{name: "rework role", state: "Rework", routeModel: "sol", wantModel: "sol", wantRole: RoleRework},
 	} {
@@ -45,7 +48,7 @@ func TestDispatchCapacityPreservesRouting(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := &Runner{agentRuntime: agentRuntime{router: router, backends: map[string]AgentBackend{"code": backend, "plan": backend}, backendConfigs: map[string]config.AgentBackend{"code": {ID: "code"}, "plan": {ID: "plan"}}}}
-			issue := connector.Issue{State: test.state, Description: test.body, ModelOverride: test.modelOverride}
+			issue := connector.Issue{State: test.state, Description: test.body, ModelOverride: test.modelOverride, NativeLandingHeadSHA: test.landingHead}
 			reports := []providercapacity.Report{{Backend: "code", Models: []string{"sol", "astra"}}, {Backend: "plan", Models: []string{"plan-model"}}}
 			if test.missing {
 				reports = nil

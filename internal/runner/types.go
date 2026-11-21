@@ -772,6 +772,7 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	landing         bool
 	usageExecution  Execution
 	complete        func(context.Context, SecurityAuditExecution) error
 	evidence        ValidationEvidenceExecution
