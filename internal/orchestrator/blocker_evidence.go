@@ -663,16 +663,19 @@ func backendCapacityOutageMatches(outages map[string]BackendOutage, resource str
 }
 
 func evaluateConfigFingerprintPredicate(
-	ctx context.Context,
+	_ context.Context,
 	o *Orchestrator,
-	predicateContext *blockerPredicateContext,
+	_ *blockerPredicateContext,
 	predicate workpad.Predicate,
 ) (string, string) {
-	signals := o.blockedCauseSignals(ctx, predicateContext.issue, RunModeImplement, predicateContext.issue.State, DiffStats{})
-	if strings.TrimSpace(signals.ConfigFingerprint) == "" {
+	if o.recoveryInspector == nil {
 		return blockerEvidenceStatusUnverifiable, "live config fingerprint is unavailable"
 	}
-	if strings.TrimSpace(signals.ConfigFingerprint) == strings.TrimSpace(predicate.Fingerprint) {
+	fingerprint := strings.TrimSpace(o.recoveryInspector.BlockedRecoveryConfigFingerprint())
+	if fingerprint == "" {
+		return blockerEvidenceStatusUnverifiable, "live config fingerprint is unavailable"
+	}
+	if fingerprint == strings.TrimSpace(predicate.Fingerprint) {
 		return blockerEvidenceStatusHolds, "config fingerprint is unchanged"
 	}
 	return blockerEvidenceStatusCleared, "config fingerprint changed"

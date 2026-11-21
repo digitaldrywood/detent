@@ -380,7 +380,6 @@ func (o *Orchestrator) finishOperatorStopTransition(ctx context.Context, state *
 			issue,
 			RunModeImplement,
 			string(store.WorkAttemptTerminalOperatorStopped),
-			blockedRecoveryPredicateManaged,
 			result.Destination,
 			DiffStats{},
 		)
