@@ -74,11 +74,11 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 		request.Resume = AgentResume{}
 		request.MaxTurns = 1
 		request.ToolInstructions = instructions
-		return r.generateTextTurn(ctx, backend, request, execution, backendKind, maxBytes, nil, nil)
+		return r.generateTextTurn(ctx, backend, request, execution, backendKind, maxBytes, nil)
 	}
 }
 
-func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, request AgentTurnRequest, execution Execution, backendKind string, maxBytes int, tools []AgentTool, handler AgentToolHandler) (string, error) {
+func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, request AgentTurnRequest, execution Execution, backendKind string, maxBytes int, onUpdate AgentUpdateHandler) (string, error) {
 	ctx, finish := (AgentProcessRequest{Workspace: request.Workspace, TempDir: request.TempDir}).OwnProviderLaunch(ctx)
 	var text strings.Builder
 	lastItem := ""
@@ -86,8 +86,10 @@ func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, req
 	if usage.Model == "" {
 		usage.Model = "provider_default"
 	}
-	result, err, cleanupErr := runAgentBackendTurnWithTools(ctx, backend, request, tools, handler, func(_ context.Context, update AgentUpdate) error {
+	normalizeUsage := NewTokenUsageNormalizer(false)
+	result, err, cleanupErr := runAgentBackendTurnWithTools(ctx, backend, request, nil, nil, func(_ context.Context, update AgentUpdate) error {
 		if update.Type == AgentUpdateTokenUsage {
+			update.Tokens = normalizeUsage(update.Tokens)
 			usage.Tokens = TokenTotals{InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens, OutputTokens: update.Tokens.OutputTokens}
 		}
 		if update.Billing != "" {
@@ -106,6 +108,9 @@ func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, req
 				return errors.New("generated text exceeds limit")
 			}
 			text.WriteString(update.Delta)
+		}
+		if onUpdate != nil {
+			return onUpdate(update)
 		}
 		return nil
 	})
