@@ -652,7 +652,7 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 	if typed && f.WorkOrder {
 		running = boardviewsql.RunningCard
 	}
-	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease, running)
+	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease, running, typed)
 	if err != nil {
 		return nil, err
 	}

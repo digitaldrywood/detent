@@ -105,7 +105,7 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (str
 		columns = boardListColumns
 	}
 	if overlay || f.WorkOrder {
-		cte = projectBoardDirty + ","
+		cte = boardviewsql.ProjectDirtyItems + ","
 		page, order = boardModelOverlayPage(f.WorkOrder, where, order, limit)
 		laneRank, state, dispatchable = "b.effective_lane_rank", "b.effective_state", "b.effective_dispatchable"
 		running = "b.effective_running"
@@ -123,20 +123,9 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (str
 	return query, args, nil
 }
 
-var projectBoardDirty = boardviewsql.DirtyItems("SELECT $2::text AS id")
-
-const boardModelDirtyMatch = "d.project_id=b.project_id AND d.work_item_id=b.work_item_id"
 const boardModelClean = " AND b.work_item_id <> ALL(ARRAY(SELECT work_item_id FROM dirty))"
 
 const boardModelWorkOrder = "effective_running DESC,b.dispatchable DESC,b.issue_number DESC,b.identifier"
-
-var boardModelDirtyFields = strings.NewReplacer(
-	"b.lane_rank", "coalesce(d.board_rank,b.lane_rank)",
-	"b.state", "coalesce(d.state,b.state)",
-	"b.archived", "coalesce(d.archived,b.archived)",
-	"b.terminal", "coalesce(d.terminal,b.terminal)",
-	"b.dispatchable", "coalesce(d.dispatchable,b.dispatchable)",
-)
 
 var boardModelEffectiveFields = strings.NewReplacer(
 	"b.lane_rank", "b.effective_lane_rank",
@@ -146,10 +135,10 @@ var boardModelEffectiveFields = strings.NewReplacer(
 
 func boardModelOverlayPage(work bool, where, order, limit string) (string, string) {
 	const fields = "b.lane_rank AS effective_lane_rank,b.state AS effective_state,b.archived AS effective_archived,b.terminal AS effective_terminal,b.dispatchable AS effective_dispatchable"
-	dirtyWhere := boardModelDirtyFields.Replace(where)
+	dirtyWhere := boardviewsql.EffectiveDirtyFields(where)
 	clean := " FROM native_board_items b WHERE " + where + boardModelClean
 	cleanColumns := "SELECT b.*," + fields + ","
-	dirtyColumns := "SELECT b.*," + boardModelDirtyFields.Replace(fields) + ","
+	dirtyColumns := "SELECT b.*," + boardviewsql.EffectiveDirtyFields(fields) + ","
 	tail := " LIMIT " + limit
 	running := "b.running"
 	prefix := ""
@@ -158,7 +147,7 @@ func boardModelOverlayPage(work bool, where, order, limit string) (string, strin
 		running = boardviewsql.RunningCard
 	}
 	dirty := "(" + dirtyColumns + running + " AS effective_running FROM dirty d JOIN native_board_items b ON " +
-		boardModelDirtyMatch + " WHERE " + dirtyWhere + " ORDER BY " + boardModelDirtyFields.Replace(order) + tail + ")"
+		boardviewsql.DirtyItemMatch + " WHERE " + dirtyWhere + " ORDER BY " + boardviewsql.EffectiveDirtyFields(order) + tail + ")"
 	pages := "(" + cleanColumns + "b.running AS effective_running" + clean + " ORDER BY " + order + tail + ") UNION ALL " + dirty
 	if work {
 		const liveMatch = "l.project_id=b.project_id AND l.work_item_id=b.work_item_id"
@@ -238,10 +227,10 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 		if err != nil {
 			return result, err
 		}
-		laneSQL := "WITH " + projectBoardDirty + " SELECT " + boardModelDirtyFields.Replace("b.state") +
-			",count(*),count(*) FILTER (WHERE " + boardviewsql.RunningCard + " AND NOT " + boardModelDirtyFields.Replace("b.terminal") +
-			") FROM native_board_items b LEFT JOIN dirty d ON " + boardModelDirtyMatch + " WHERE " +
-			boardModelDirtyFields.Replace(where) + " GROUP BY 1 ORDER BY 1 LIMIT 201"
+		laneSQL := "WITH " + boardviewsql.ProjectDirtyItems + " SELECT " + boardviewsql.EffectiveDirtyFields("b.state") +
+			",count(*),count(*) FILTER (WHERE " + boardviewsql.RunningCard + " AND NOT " + boardviewsql.EffectiveDirtyFields("b.terminal") +
+			") FROM native_board_items b LEFT JOIN dirty d ON " + boardviewsql.DirtyItemMatch + " WHERE " +
+			boardviewsql.EffectiveDirtyFields(where) + " GROUP BY 1 ORDER BY 1 LIMIT 201"
 		batch.Queue(laneSQL, laneArgs...).Query(func(rows pgx.Rows) error {
 			defer rows.Close()
 			result.Lanes = []viewstore.BoardLane{}

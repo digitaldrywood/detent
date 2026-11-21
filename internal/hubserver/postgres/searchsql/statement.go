@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 )
@@ -38,7 +39,7 @@ func FingerprintScan(args *[]any, f viewstore.BoardSelection) string {
 	return "(WITH RECURSIVE scan(work_item_id,steps) AS (SELECT " + next(start) + ",1 UNION ALL SELECT " + next(" AND f.work_item_id>scan.work_item_id") + fmt.Sprintf(",scan.steps+1 FROM scan WHERE scan.work_item_id IS NOT NULL AND scan.steps<%d) SELECT work_item_id FROM scan WHERE work_item_id IS NOT NULL)", searchstore.WindowRows)
 }
 
-func Ranked(f viewstore.BoardSelection, where string, args []any, columns, running string) (string, []any, error) {
+func Ranked(f viewstore.BoardSelection, where string, args []any, columns, running string, overlay bool) (string, []any, error) {
 	if f.WorkOrder && f.After != nil {
 		return "", nil, corestore.ErrInvalidPage
 	}
@@ -85,11 +86,20 @@ func Ranked(f viewstore.BoardSelection, where string, args []any, columns, runni
 	if f.WorkOrder {
 		inner, outer = "s.exact DESC,b.running DESC,b.dispatchable DESC,s.number DESC,b.identifier", "page.exact DESC,page.running DESC,page.dispatchable DESC,page.number DESC,b.identifier"
 	}
+	candidateDirty, pageDirty, dispatchable := "", "", "b.dispatchable"
+	if overlay {
+		matched += "," + boardviewsql.ProjectDirtyItems
+		candidateDirty = " LEFT JOIN dirty d ON d.project_id=$2 AND d.work_item_id=s.work_item_id"
+		pageDirty = " LEFT JOIN dirty d ON " + boardviewsql.DirtyItemMatch
+		where = boardviewsql.EffectiveDirtyFields(where)
+		columns = boardviewsql.EffectiveDirtyFields(columns)
+		dispatchable = boardviewsql.EffectiveDirtyFields(dispatchable)
+	}
 	args = append(args, f.Limit)
 	query := matched + ", scored AS MATERIALIZED (SELECT m.work_item_id,m.number,m.rank," + exact + " AS exact FROM matched m)" +
-		", page AS (SELECT s.work_item_id,s.exact,s.rank,s.number,b.running,b.dispatchable FROM (SELECT * FROM scored" + after + " ORDER BY exact DESC,rank DESC,number DESC OFFSET 0) s" +
-		" CROSS JOIN LATERAL (SELECT b.identifier," + running + " AS running,b.dispatchable FROM native_board_items b WHERE " + where + " AND b.work_item_id=s.work_item_id LIMIT 1) b" +
+		", page AS (SELECT s.work_item_id,s.exact,s.rank,s.number,b.running,b.dispatchable FROM (SELECT * FROM scored" + after + " ORDER BY exact DESC,rank DESC,number DESC OFFSET 0) s" + candidateDirty +
+		" CROSS JOIN LATERAL (SELECT b.identifier," + running + " AS running," + dispatchable + " AS dispatchable FROM native_board_items b WHERE " + where + " AND b.work_item_id=s.work_item_id LIMIT 1) b" +
 		" ORDER BY " + inner + fmt.Sprintf(" LIMIT $%d)", len(args)) +
-		" SELECT " + columns + ",page.exact,page.rank,page.number FROM page JOIN native_board_items b ON b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=page.work_item_id ORDER BY " + outer
+		" SELECT " + columns + ",page.exact,page.rank,page.number FROM page JOIN native_board_items b ON b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=page.work_item_id" + pageDirty + " ORDER BY " + outer
 	return query, args, nil
 }
