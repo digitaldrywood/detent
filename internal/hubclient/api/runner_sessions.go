@@ -27,12 +27,13 @@ import (
 type RunnerSessions struct {
 	*NativeClient
 
-	mu           sync.Mutex
-	workersMu    sync.Mutex
-	keys         map[int64]string
-	workers      map[int64]store.WorkerProcessRegistration
-	acknowledged map[int64]acknowledgedSessionMetadata
-	lastRevision acknowledgedSessionRevision
+	mu               sync.Mutex
+	workersMu        sync.Mutex
+	keys             map[int64]string
+	workers          map[int64]store.WorkerProcessRegistration
+	acknowledged     map[int64]acknowledgedSessionMetadata
+	lastRevision     acknowledgedSessionRevision
+	pendingMutations map[int64]chan struct{}
 
 	workerStartSecret string
 }
@@ -116,19 +117,66 @@ func (s *RunnerSessions) snapshot(ctx context.Context, id int64) (runnersession.
 	return result, sessionReadError(err)
 }
 
-func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutation) (runnersession.Snapshot, error) {
+func (s *RunnerSessions) beginMutation(ctx context.Context, sessionID int64) (func(), error) {
+	if sessionID == 0 {
+		return func() {}, nil
+	}
+	for {
+		if err := nativeEffectError(ctx); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		current := s.pendingMutations[sessionID]
+		if current == nil {
+			current = make(chan struct{})
+			if s.pendingMutations == nil {
+				s.pendingMutations = make(map[int64]chan struct{})
+			}
+			s.pendingMutations[sessionID] = current
+			s.mu.Unlock()
+			return func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				delete(s.pendingMutations, sessionID)
+				close(current)
+			}, nil
+		}
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, nativeEffectError(ctx)
+		case <-current:
+		}
+	}
+}
+
+func (s *RunnerSessions) forgetRevision(sessionID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.lastRevision.sessionID == sessionID {
+		s.lastRevision = acknowledgedSessionRevision{}
+	}
+}
+
+func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutation) (runnersession.Snapshot, error) {
 	authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	if !ok || authority.scope != s.base() || authority.lease.ID == "" {
-		s.lastRevision = acknowledgedSessionRevision{}
+		s.forgetRevision(request.SessionID)
 		return runnersession.Snapshot{}, runner.ErrExecutionAuthorityUnavailable
 	}
-	if err := nativeEffectError(ctx); err != nil {
-		s.lastRevision = acknowledgedSessionRevision{}
+	end, err := s.beginMutation(ctx, request.SessionID)
+	if err != nil {
 		return runnersession.Snapshot{}, err
 	}
+	defer end()
+	if err := nativeEffectError(ctx); err != nil {
+		s.forgetRevision(request.SessionID)
+		return runnersession.Snapshot{}, err
+	}
+	s.mu.Lock()
 	metadata := s.acknowledged[request.SessionID]
+	last := s.lastRevision
+	s.mu.Unlock()
 	if metadata.matches(request, authority) {
 		return runnersession.Snapshot{}, nil
 	}
@@ -136,14 +184,14 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 		request.Key = uuid.NewString()
 	}
 	request.LeaseID, request.FencingToken = authority.lease.ID, authority.lease.FencingToken
-	cached := s.lastRevision.matches(request.SessionID, authority)
+	cached := last.matches(request.SessionID, authority)
 	if request.SessionID > 0 {
 		if cached {
-			request.ExpectedRevision = s.lastRevision.revision
+			request.ExpectedRevision = last.revision
 		} else {
 			current, err := s.snapshot(ctx, request.SessionID)
 			if err != nil {
-				s.lastRevision = acknowledgedSessionRevision{}
+				s.forgetRevision(request.SessionID)
 				return current, err
 			}
 			request.ExpectedRevision = current.Revision
@@ -156,7 +204,7 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 		}
 		return s.client.Request(ctx, http.MethodPost, s.base()+"/runner-sessions", request, &result)
 	}
-	err := send()
+	err = send()
 	var conflict *APIError
 	if cached && errors.As(err, &conflict) && conflict.Status == http.StatusConflict && conflict.Code == "revision_conflict" {
 		current, readErr := s.snapshot(ctx, request.SessionID)
@@ -169,10 +217,12 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 			err = send()
 		}
 	}
-	if err != nil {
-		s.lastRevision = acknowledgedSessionRevision{}
-	} else {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
 		s.lastRevision = acknowledgedSessionRevision{sessionID: result.ID, revision: result.Revision, leaseID: authority.lease.ID, fencingToken: authority.lease.FencingToken}
+	} else if s.lastRevision.sessionID == request.SessionID {
+		s.lastRevision = acknowledgedSessionRevision{}
 	}
 
 	var api *APIError
@@ -182,7 +232,7 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Code == "stale_fencing_token" || api.Code == "policy_mismatch") {
 		err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}
-	if err == nil {
+	if err == nil && request.SessionID > 0 {
 		if request.Finish != nil || request.Reaped != nil {
 			delete(s.acknowledged, request.SessionID)
 		} else if request.Provider != nil || request.Worker != nil {
