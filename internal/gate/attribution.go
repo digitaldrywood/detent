@@ -8,6 +8,12 @@ import (
 
 const TemporaryFailureExitCode = 75
 
+const instanceAttribution = "instance"
+
+func (result CommandResult) InstanceFailure() bool {
+	return result.ExitCode != 0 && result.Attribution == instanceAttribution
+}
+
 func CommandObservation(result CommandResult) failureattribution.Observation {
 	return failureattribution.Observation{Command: result.Command, HeadSHA: result.HeadSHA, ExitCode: result.ExitCode, Output: result.Output, Complete: !result.OutputTruncated && !result.FinishedAt.IsZero()}
 }
@@ -52,7 +58,7 @@ func NormalizeAttribution(result *ValidatorResult) {
 
 func NormalizeCommandAttribution(base, head string, result *CommandResult) {
 	if result.ExitCode == TemporaryFailureExitCode {
-		result.Attribution = "instance"
+		result.Attribution = instanceAttribution
 		return
 	}
 	if len(result.Findings) == 0 && result.ExitCode != 0 {

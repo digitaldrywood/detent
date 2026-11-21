@@ -39,21 +39,8 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 	for _, criterion := range contract.AcceptanceCriteria(body) {
 		add(tracker.CheckAcceptance, criterion, "", tracker.CheckNeedsReview)
 	}
-	var gateReferences []string
-	for _, criterion := range config.VerificationCriteria(body) {
-		if referencesOnlyCheck(criterion, gateConfig.Run) {
-			gateReferences = append(gateReferences, criterion)
-			continue
-		}
-		add(tracker.CheckVerification, criterion, "", tracker.CheckNeedsReview)
-	}
 	if gateConfig.Run != "" {
-		if len(gateReferences) == 0 {
-			gateReferences = append(gateReferences, "Project command gate")
-		}
-		for _, reference := range gateReferences {
-			add(tracker.CheckProjectGate, reference, policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
-		}
+		add(tracker.CheckProjectGate, "Project command gate", policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
 	}
 	for _, check := range gateConfig.RequiredStatusChecks {
 		add(tracker.CheckStatusGate, check, policy.Digest([]byte(check)), tracker.CheckUnverified)
@@ -72,30 +59,6 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 
 func ChecklistRevision(body, policyID string) string {
 	return policy.Digest([]byte(policyID + "\x00" + body))
-}
-
-func NativeReviewCriteria(acceptance []string, body, projectCommand string) []string {
-	criteria := slices.Clone(acceptance)
-	for _, criterion := range config.VerificationCriteria(body) {
-		if !referencesOnlyCheck(criterion, projectCommand) && !slices.Contains(criteria, criterion) {
-			criteria = append(criteria, criterion)
-		}
-	}
-	return criteria
-}
-
-func referencesOnlyCheck(criterion, command string) bool {
-	if command == "" {
-		return false
-	}
-	criterion = strings.TrimSpace(criterion)
-	quoted := "`" + command + "`"
-	for _, form := range []string{command, quoted, "Run " + command, "Run " + quoted} {
-		if criterion == form || criterion == form+"." {
-			return true
-		}
-	}
-	return false
 }
 
 func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) (RoundInput, *gate.CommandResult) {
@@ -164,7 +127,7 @@ type checklistEvidence struct {
 func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklistEvidence) []tracker.ExecutionCheckUpdate {
 	var updates []tracker.ExecutionCheckUpdate
 	command, validator, audit := evidence.command, evidence.validator, evidence.audit
-	gateReceipt := command != nil && command.HeadSHA == evidence.head && command.TreeSHA != "" && command.TreeSHA == evidence.tree && command.ReceiptID != ""
+	gateReceipt := command != nil && !command.InstanceFailure() && command.HeadSHA == evidence.head && command.TreeSHA != "" && command.TreeSHA == evidence.tree && command.ReceiptID != ""
 	for _, check := range checks {
 		var status tracker.ExecutionCheckStatus
 		var receipt string
@@ -195,7 +158,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 					status = tracker.CheckManual
 				}
 			}
-		case tracker.CheckAcceptance, tracker.CheckVerification:
+		case tracker.CheckAcceptance:
 			if validator != nil {
 				var gateCommand string
 				if command != nil {
@@ -215,7 +178,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 		if status == "" || receipt == "" {
 			continue
 		}
-		if check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
+		if check.Kind != tracker.CheckProjectGate && check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
 			status = tracker.CheckFlaky
 		}
 		updates = append(updates, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Head: evidence.head, Tree: evidence.tree, Receipt: receipt})
