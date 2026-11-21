@@ -16,6 +16,7 @@ import (
 func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
 		name, steerResult, terminalStatus           string
+		toolType, pollResult                        string
 		parallel, wrongScope, changedSource         bool
 		serializedSiblings, operator, freshEvidence bool
 		methods                                     []string
@@ -29,6 +30,13 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
 		{name: "response closes before final tool result", sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "third response contains new sibling evidence", freshThird: true, terminalStatus: "completed"},
+		{name: "running MCP job", toolType: "mcpToolCall", pollResult: `"result":{"content":[],"structuredContent":{"job_id":"build-1","status":"running"}}`, terminalStatus: "completed"},
+		{name: "running dynamic job", toolType: "dynamicToolCall", pollResult: `"contentItems":[{"type":"inputText","text":"{\"job_id\":\"build-1\",\"status\":\"running\"}"}]`, customTool: true, sealFirst: true, terminalStatus: "completed"},
+		{name: "opaque job status", toolType: "mcpToolCall", pollResult: `"result":{"content":[{"type":"text","text":"The job is done"}]}`, terminalStatus: "completed"},
+		{name: "unknown job status", toolType: "mcpToolCall", pollResult: `"result":{"job_id":"build-1","status":"unknown"}`, terminalStatus: "completed"},
+		{name: "completed result for another job", toolType: "mcpToolCall", pollResult: `"result":{"content":[],"structuredContent":{"job_id":"build-2","status":"completed"}}`, terminalStatus: "completed"},
+		{name: "completed MCP job", toolType: "mcpToolCall", pollResult: `"result":{"content":[],"structuredContent":{"job_id":"build-1","status":"completed"}}`, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "missing dynamic job", toolType: "dynamicToolCall", pollResult: `"contentItems":[{"type":"inputText","text":"{\"job_id\":\"build-1\",\"status\":\"not_found\"}"}]`, customTool: true, sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
 		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
@@ -67,6 +75,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 					source = "userShell"
 				}
 				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal, source)
+				if test.toolType != "" {
+					item = fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":%q,"id":"tool-%d","server":"builder","namespace":"tools","tool":"job_status","status":"completed","arguments":{"job_id":"build-1"},%s}}`, turn, test.toolType, ordinal, test.pollResult)
+				}
 				if !test.customTool {
 					messages = append(messages, notificationMessage(t, "item/started", item))
 				}
