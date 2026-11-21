@@ -214,6 +214,29 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 	w.LocalGit.AfterRun(ctx, info, issue)
 }
 
+func TestNativeSourceGateStopsWhenSSHOwnerDisconnects(t *testing.T) {
+	controller, worker := net.Pipe()
+	defer controller.Close()
+	defer worker.Close()
+	peer := NewSSHPeer(t.Context(), worker, worker, nil)
+	defer peer.Close()
+	runner := &Runner{finalizationContext: context.WithTimeoutCause}
+	req := RunRequest{Execution: &testExecution{}, observationPeer: peer}
+	gateCtx, stop := runner.sourceFinalizationContext(peer.Context(), req, time.Minute)
+	defer stop()
+	if err := controller.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-peer.Context().Done():
+	case <-t.Context().Done():
+		t.Fatal("worker did not observe controller disconnect")
+	}
+	if !errors.Is(gateCtx.Err(), context.Canceled) {
+		t.Fatalf("gate kept running after controller disconnect: %v", gateCtx.Err())
+	}
+}
+
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
