@@ -737,7 +737,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 		}
 		preparedEvent := preparedNativeRunEvent{artifactList: artifactList, independent: independent, dependencies: dependencies, authority: authority, attempt: attemptEvent, history: history, claimDisposition: nativeAttemptClaimDisposition(event.Data, effectiveCheckpoint, scope.Project)}
 		if !termination && !attemptEvent.UsageCorrection {
-			if source, command := progresscheck.RunChecklistEvidence(predecessor, event.Data); validNativeGitSource(source.HeadSHA, source.HeadSHA) && (source.TreeSHA == "" || validNativeGitSource(source.HeadSHA, source.TreeSHA)) {
+			if source := progresscheck.RunChecklistEvidence(predecessor, event.Data); validNativeGitSource(source.HeadSHA, source.HeadSHA) && (source.TreeSHA == "" || validNativeGitSource(source.HeadSHA, source.TreeSHA)) {
 				if !checklistRead {
 					checklist, err = s.readExecutionChecklist(ctx, scope, event.Data.AttemptID)
 					if err != nil {
@@ -757,7 +757,7 @@ func (s *Service) appendNativeRunEventTenant(ctx context.Context, scope hubscope
 				if checklist != nil {
 					verdict := progresscheck.RoundVerdict{RoundInput: source, PolicyID: event.Data.PolicyID}
 					preparedEvent.checklistRevision = checklist.Revision
-					preparedEvent.checklistChanges = progresscheck.ChecklistChanges(checklist.Checks, verdict, command, event.Data.Steps)
+					preparedEvent.checklistChanges = progresscheck.ChecklistChanges(checklist.Checks, verdict, event.Data.Runtime, event.Data.Steps)
 					progresscheck.ApplyChecklistChanges(checklist.Checks, preparedEvent.checklistChanges)
 				}
 			}

@@ -178,9 +178,16 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
-			next := h.descriptor
-			next.Gates.Validator, next.Gates.SecurityAudit, next.Gates.AutomatedReview = true, test.audit, gate.AutomatedReviewRequired
-			next = next.WithID()
+			gateCfg := gate.Config{Run: "git status --porcelain", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}
+			workflow := config.Workflow{Config: config.Default(), Prompt: "Complete the issue"}
+			workflow.Config.Agent.MaxTurns = 5
+			workflow.Config.Gate = gateCfg
+			workflow.Config.Tracker.Kind, workflow.Config.Tracker.Repository = config.TrackerHubNative, nativeChangeRepository
+			next, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.Config.Policy = next
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 				t.Fatal(err)
 			}
@@ -231,8 +238,7 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 				}
 			}
 
-			gateCfg := gate.Config{Run: "git status --porcelain", SecurityAudit: gate.SecurityAuditConfig{Enabled: test.audit}, AutomatedReview: gate.AutomatedReviewRequired, Validator: gate.ValidatorConfig{Enabled: true}}
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurns: 5}, Gate: gateCfg}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
+			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: sessions, ProjectID: "local", Workflow: workflow, Workspace: backend, AgentBackend: provider, ReapWorkspaceProcesses: func(context.Context, string, time.Duration) (int, error) { return 0, nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -246,6 +252,11 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			owner := execution.(*ownedExecution)
+			checklist, err := h.admin.ExecutionChecklist(t.Context(), tracker.NativeWorkItemID(issue.ID), owner.CompletionData().AttemptID)
+			if err != nil || checklist == nil || checklist.PolicyID != next.ID || checklist.FrozenAt.IsZero() {
+				t.Fatalf("runner did not report the frozen checklist: %+v, %v", checklist, err)
+			}
 			change := result.NativeChange
 			if test.advanceDuringReview {
 				if change == nil || change.NoChangeAccepted(gateCfg) || !strings.Contains(change.VersionError, "base advanced") {
@@ -256,7 +267,6 @@ func RunNoChangeRequiredGates(t *testing.T, factories Constructors) {
 			if change == nil || !change.NoChangeAccepted(gateCfg) || change.HeadSHA != base || change.ChangeID != "" || change.VersionID != "" || change.Landing != nil || provider.calls != 3+boolCount(test.audit) {
 				t.Fatalf("no-change gates did not accept current base without publication: change=%+v calls=%d", change, provider.calls)
 			}
-			owner := execution.(*ownedExecution)
 			if owner.CompletionSnapshot().WorktreeHead != base {
 				t.Fatalf("no-change completion created a commit instead of verifying base: head=%s base=%s", owner.CompletionSnapshot().WorktreeHead, base)
 			}

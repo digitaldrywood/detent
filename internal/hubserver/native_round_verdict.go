@@ -305,15 +305,6 @@ func (o nativeRoundOwner) commit(ctx context.Context, input progresscheck.Public
 		if err := owner.RecordProgressVerdict(ctx, verdict); err != nil {
 			return err
 		}
-		if len(record.ChecklistChanges) > 0 {
-			checks, ok := w.(leasestore.ChecklistWriter)
-			if !ok {
-				return hubapi.NativeWorkItemStorageUnavailable()
-			}
-			if err := checks.RecordExecutionCheckChanges(ctx, o.scope.Project, attempt.ID, record.ChecklistRevision, record.RoundID, record.ObservedAt, record.ChecklistChanges); err != nil {
-				return err
-			}
-		}
 		_, err = w.PutReceipt(ctx, receipt)
 		return err
 	})
@@ -371,26 +362,14 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 	}
 	list, err := o.service.readExecutionChecklist(ctx, o.scope, input.AttemptID)
 	if err != nil {
-		return record, err
+		o.service.config.Logger.WarnContext(ctx, "read round checklist", "error", err, "attempt_id", input.AttemptID)
 	}
-	if input.ChecklistRevision != "" && (list == nil || list.Revision != input.ChecklistRevision) || list != nil && list.Revision != progresscheck.ChecklistRevision(issue.Body, input.PolicyID) {
-		return record, checklistSuperseded()
-	}
-	if list != nil {
+	if err == nil && list != nil && list.Revision == progresscheck.ChecklistRevision(issue.Body, input.PolicyID) &&
+		(input.ChecklistRevision == "" || list.Revision == input.ChecklistRevision) {
 		record.ChecklistRevision = list.Revision
-		record.ChecklistChanges = progresscheck.ChecklistChanges(list.Checks, record, command, attempt.Steps)
-		if record.Disposition == progresscheck.NoChangeDisposition {
-			workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, descriptor)
-			if err != nil {
-				return record, err
-			}
-			changes, ready := progresscheck.NoChangeStepChecklist(list, *attempt.Finalization.NoChange, attempt.Steps, gate.Effective(workflow.Config.Gate))
-			if !ready {
-				return record, hubapi.NativePublicInvalid("No-change completion requires evidence for the frozen checklist")
-			}
-			record.ChecklistChanges = changes
-		}
+		record.ChecklistChanges = progresscheck.ChecklistChanges(list.Checks, record, attempt.Runtime, attempt.Steps)
 	}
+
 	if !exactCommand || command.ReceiptID == "" {
 		return record, nil
 	}

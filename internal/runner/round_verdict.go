@@ -90,19 +90,19 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	if err != nil {
 		return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read prior round verdict: %w", err)
 	}
+	workflow, runtime, _, _ := r.runtimeSnapshot()
 	var checklist *tracker.ExecutionChecklist
 	if owner, ok := req.Execution.(interface {
 		ExecutionChecklist(context.Context) (*tracker.ExecutionChecklist, error)
-	}); ok && req.checklistRevision != "" {
+	}); ok && req.phaseReceipts {
 		checklist, err = owner.ExecutionChecklist(ctx)
 		if err != nil {
-			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, fmt.Errorf("read frozen checklist: %w", err)
+			r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_round_checklist_unavailable", "error", err)
 		}
-		if checklist == nil || checklist.Revision != req.checklistRevision {
-			return progresscheck.RoundAssessment{}, progresscheck.RoundInput{}, progresscheck.ErrChecklistSuperseded
+		if err != nil || checklist != nil && checklist.Revision != progresscheck.ChecklistRevision(req.Issue.Description, workflow.Config.Policy.ID) {
+			checklist = nil
 		}
 	}
-	workflow, runtime, _, _ := r.runtimeSnapshot()
 	fallback := progresscheck.RoundAssessment{Action: progresscheck.RoundContinue, NextPhase: "implement"}
 	completion := "none"
 	var criteria []gate.CriterionEvidence

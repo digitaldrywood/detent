@@ -40,6 +40,9 @@ type Lifecycle interface {
 	runner.NoChangeExecution
 	runner.PhaseReceiptExecution
 	runner.RoundVerdictExecution
+	FreezeExecutionChecklist(context.Context, tracker.ExecutionChecklist) error
+	ExecutionChecklist(context.Context) (*tracker.ExecutionChecklist, error)
+	RecordLoopIntervention(context.Context, tracker.ExecutionLoopIntervention) error
 	runner.PipelineExecution
 	runner.PreStartConversationExecution
 	runner.ProcessUsageExecution

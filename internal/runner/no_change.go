@@ -7,7 +7,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -77,6 +76,5 @@ func (c *NativeChange) NoChangeAccepted(cfg gate.Config) bool {
 			return false
 		}
 	}
-	_, ready := progresscheck.NoChangeChecklist(c.Checklist, *n, c.Validator, c.ImplementationReview, c.SecurityAudit, cfg)
-	return ready
+	return true
 }

@@ -126,7 +126,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 			return errors.New("no-change review differs from the verified source")
 		}
 		e.change.ImplementationReview = &result
-		return e.refreshNoChangeChecklist(ctx)
+		return nil
 	}
 	if e.change == nil || e.lastDiff == nil || e.change.VersionID != result.VersionID || e.lastDiff.HeadSHA != result.HeadSHA || e.lastDiff.BaseSHA != result.BaseSHA {
 		return errors.New("native implementation review differs from the published source")
@@ -179,7 +179,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 			return errors.New("no-change review differs from the verified source")
 		}
 		e.change.Validator = &result
-		return e.refreshNoChangeChecklist(ctx)
+		return nil
 	}
 	if e.change == nil || e.change.VersionID != result.VersionID {
 		return &APIError{Status: 422, Code: "invalid_request", Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}}

@@ -68,7 +68,7 @@ func AssessRound(ctx context.Context, e RoundEvidence, fallback RoundAssessment,
 			return RoundAssessment{}, RoundInput{}, err
 		}
 		details, _ := runtimeoutput.Diagnostic(string(frozen), 16<<10)
-		prompt += "\n\nFrozen checklist and recorded interventions:\n" + details
+		prompt += "\n\nFrozen checklist and recorded interventions (reporting context only; use verified evidence above for completion and landing):\n" + details
 	}
 	var noProgress *NoProgressError
 	if errors.As(e.ProviderError, &noProgress) {
