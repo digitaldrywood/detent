@@ -1924,6 +1924,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if previous := recovery.SourceAttempt(); previous != nil && req.AttemptWorkspace.Key() != "" {
 			workspaceIssue.RecoveryAttemptWorkspace = req.AttemptWorkspace
 			workspaceIssue.RecoveryAttemptWorkspace.Attempt = previous.AttemptID
+			workspaceIssue.PinStartHead = !nativeLanding && phaseSource == nil && replacesReleasedDirtyCheckout(previous, recovery.Lease, req.AttemptWorkspace.Attempt)
 		}
 	}
 	workspaceIssue.FreshCheckout = false

@@ -256,6 +256,7 @@ type Issue struct {
 	RetainedLanding         bool
 	finalizationBranch      string
 	PhaseSource             *tracker.NativePhaseReceipt
+	PinStartHead            bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
 	NativeRework            bool
@@ -739,6 +740,17 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 				return Info{}, err
 			}
 			_, err = l.verifyReworkBranch(ctx, info, issue)
+			if err == nil && issue.PinStartHead {
+				ref := "HEAD"
+				if issue.Source != nil {
+					ref = issue.Source.Version.HeadSHA
+				} else if info.PublicationBranch != "" {
+					ref, err = l.newBranchStartRef(ctx, info.PublishBranch())
+				}
+				if err == nil {
+					info.StartHeadSHA, err = l.resolveWorktreeStartHead(ctx, ref)
+				}
+			}
 			release()
 			if err != nil {
 				return Info{}, err
@@ -783,7 +795,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			}
 			head = receipt.HeadSHA
 		}
-		created, err = l.createWorktree(ctx, info, issue.FreshCheckout, head)
+		created, err = l.createWorktree(ctx, &info, issue.FreshCheckout, head, issue.PinStartHead)
 	}
 	preservationAttempted := false
 	if issue.Landing != nil && created {
@@ -853,7 +865,7 @@ func (l *LocalGit) runAfterCreate(ctx context.Context, info Info, issue Issue) e
 	})
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, info Info, fresh bool, baseRef string) (bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, info *Info, fresh bool, baseRef string, pinStartHead bool) (bool, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
 	release, err := l.acquireSourceOperation(ctx)
@@ -866,11 +878,18 @@ func (l *LocalGit) createWorktree(ctx context.Context, info Info, fresh bool, ba
 	if err != nil {
 		return false, err
 	}
-	if baseRef == "HEAD" && (fresh || !exists && info.PublicationBranch != "") {
+	if baseRef == "HEAD" && (fresh || (!exists || pinStartHead) && info.PublicationBranch != "") {
 		baseRef, err = l.newBranchStartRef(ctx, info.PublishBranch())
 		if err != nil {
 			return false, err
 		}
+	}
+	if pinStartHead {
+		info.StartHeadSHA, err = l.resolveWorktreeStartHead(ctx, baseRef)
+		if err != nil {
+			return false, err
+		}
+		baseRef = info.StartHeadSHA
 	}
 	if fresh {
 		if scope, _ := splitCheckoutIssueKey(info.Key); scope == "" {
@@ -890,6 +909,14 @@ func (l *LocalGit) createWorktree(ctx context.Context, info Info, fresh bool, ba
 		}
 	}
 	return l.ensureWorktree(ctx, path, branch, baseRef)
+}
+
+func (l *LocalGit) resolveWorktreeStartHead(ctx context.Context, ref string) (string, error) {
+	head, err := l.runGit(ctx, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace start commit: %w", withCommandOutput(err))
+	}
+	return strings.TrimSpace(head), nil
 }
 
 func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {

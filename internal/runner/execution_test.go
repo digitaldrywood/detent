@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1272,7 +1273,7 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 				}},
 			}}
 			local := workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}
-			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil); reason != "local_checkpoint_changed" {
+			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil, "", ""); reason != "local_checkpoint_changed" {
 				t.Fatalf("fixture did not require rework verification: %s", reason)
 			}
 			validated := false
@@ -1292,6 +1293,142 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 			}
 			if local.HeadSHA != "published-head" || local.WorkspaceFingerprint != "published-digest" {
 				t.Fatalf("missing source changed local recovery state: %+v", local)
+			}
+		})
+	}
+}
+
+func TestNativeReplacementCheckoutRequiresSelectedStart(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		stale bool
+	}{
+		{name: "selected start commit"},
+		{name: "older reachable commit", stale: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			source := initRunnerSourceRepo(t)
+			gitfixture.AddOrigin(t, source, runRunnerGit)
+			older := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			replacement := prior
+			replacement.Attempt = "attempt_22222222222222222222222222222222"
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress", BranchName: "feature/example"}
+			target := runworkspace.Issue(prior.Project, issue)
+			target.AttemptWorkspace = prior
+			old, err := backend.Create(ctx, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft := filepath.Join(old.Path, "README.md")
+			const draftText = "unfinished work\n"
+			if err := os.WriteFile(draft, []byte(draftText), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldState, err := backend.RecoveryState(ctx, old, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			target.AttemptWorkspace = replacement
+			var existing workspace.Info
+			if test.stale {
+				existing, err = backend.Create(ctx, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			runRunnerGit(t, source, "commit", "--allow-empty", "-m", "advance remote default")
+			expected := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			runRunnerGit(t, source, "push", "origin", "main")
+			runRunnerGit(t, source, "checkout", "--detach", older)
+			if test.stale {
+				state, err := backend.RecoveryState(ctx, existing, target)
+				if err != nil || state.HeadSHA != older || !state.DiffStat.IsEmpty() || state.UnpushedCommits != 0 {
+					t.Fatalf("stale checkout is not clean and reachable: state=%+v err=%v", state, err)
+				}
+			}
+			released := time.Now()
+			execution := &testExecution{recovery: tracker.NativeRecovery{
+				Lease: tracker.NativeLease{ID: "current-lease", MachineID: "machine"}, SourceAttemptID: prior.Attempt,
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{AttemptID: prior.Attempt, LeaseID: "prior-lease", MachineID: "machine"},
+					Status:        "succeeded", ClaimReleasedAt: &released,
+					Checkpoint: &tracker.NativeCheckpoint{
+						Storage: "local_only", Availability: "available", WorktreeState: "dirty", Resume: "fresh_checkout",
+						HeadSHA: oldState.HeadSHA, WorkspaceDigest: oldState.WorkspaceFingerprint, ExternalEffect: "none", EffectState: "none",
+					},
+				}},
+			}}
+			agent := &releaseDeliveryAgent{}
+			cfg := config.Config{}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, ProjectID: prior.Project, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Store: newNativeSessionOwner(policy.Descriptor{}).client(replacement.Attempt), Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.DiscardHandler)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(ctx, RunRequest{ProjectID: prior.Project, Execution: execution, Issue: issue, Mode: RunModeImplement, AttemptWorkspace: replacement})
+			if got := gitfixture.ReadFile(t, draft); got != draftText {
+				t.Fatalf("prior dirty checkout changed: %q", got)
+			}
+			if test.stale {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || !strings.Contains(err.Error(), "local_checkpoint_changed") || agent.calls != 0 || result.TurnStarted {
+					t.Fatalf("stale replacement reached execution: head=%s calls=%d error=%v", agent.head, agent.calls, err)
+				}
+				if got := strings.TrimSpace(runRunnerGit(t, existing.Path, "rev-parse", "HEAD")); got != older {
+					t.Fatalf("stale replacement was changed: head=%s want=%s", got, older)
+				}
+			} else if agent.calls != 1 || agent.head != expected || !result.TurnStarted {
+				t.Fatalf("selected replacement did not reach execution: head=%s want=%s calls=%d error=%v", agent.head, expected, agent.calls, err)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryDistinguishesReleasedCheckout(t *testing.T) {
+	t.Parallel()
+	released := time.Now()
+	identity := tracker.NativeExecutionIdentity{Role: RoleCode}
+	for _, test := range []struct {
+		name          string
+		checkout      string
+		releasedAt    *time.Time
+		previousLease tracker.LeaseID
+		digest        string
+		trackedPaths  []string
+		wantAction    string
+		wantReason    string
+	}{
+		{name: "fresh checkout under a replacement lease", checkout: "current", releasedAt: &released, previousLease: "prior-lease", digest: "new-base", wantAction: "fresh_checkout", wantReason: "checkpoint_unavailable"},
+		{name: "retained checkout with changed source", checkout: "prior", releasedAt: &released, previousLease: "prior-lease", digest: "changed", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+		{name: "retained checkout with verified source", checkout: "prior", releasedAt: &released, previousLease: "prior-lease", digest: "checkpoint", wantAction: "resume_session", wantReason: "verified_local_session"},
+		{name: "different checkout without recorded release", checkout: "current", previousLease: "prior-lease", digest: "new-base", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+		{name: "different checkout already has local work", checkout: "current", releasedAt: &released, previousLease: "prior-lease", digest: "new-base", trackedPaths: []string{"staged.go"}, wantAction: "fresh_checkout", wantReason: "local_work_preserved"},
+		{name: "different checkout under the same lease", checkout: "current", previousLease: "current-lease", digest: "new-base", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recovery := tracker.NativeRecovery{
+				Lease:           tracker.NativeLease{ID: "current-lease", MachineID: "machine"},
+				SourceAttemptID: "prior",
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData:   tracker.NativeRunData{AttemptID: "prior", LeaseID: test.previousLease, MachineID: "machine", Identity: &identity},
+					Status:          "succeeded",
+					ClaimReleasedAt: test.releasedAt,
+					Checkpoint: &tracker.NativeCheckpoint{
+						Storage: "local_only", Availability: "available", WorktreeState: "dirty", Resume: "resume_session",
+						HeadSHA: "head", WorkspaceDigest: "checkpoint", ExternalEffect: "none", EffectState: "none",
+					},
+				}},
+			}
+			local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: test.digest, TrackedPaths: test.trackedPaths}
+			action, reason := nativeRecoveryAction(recovery, local, true, store.AgentResumeState{}, identity, false, nil, test.checkout, "head")
+			if action != test.wantAction || reason != test.wantReason {
+				t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, test.wantAction, test.wantReason)
 			}
 		})
 	}
@@ -1474,7 +1611,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					recovery.Attempts[0].Checkpoint.WorkspaceDigest = "obsolete-digest"
 				}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current, "", "")
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && (wantAction == "resume_session" || wantReason == "session_restart_required") {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"
@@ -2560,7 +2697,7 @@ func TestNativeRecoveryWipeDerivedHold(t *testing.T) {
 				}
 				recovery := tracker.NativeRecovery{SourceAttemptID: "source", Lease: tracker.NativeLease{MachineID: "runner"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "runner"}, Checkpoint: checkpoint}}}
 				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
-				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil)
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil, "", "")
 				if action != test.wantAction || reason != test.wantReason {
 					t.Fatalf("resume=%s: decision=%s/%s, want %s/%s", resume, action, reason, test.wantAction, test.wantReason)
 				}
