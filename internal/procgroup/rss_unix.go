@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-
-	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 func processGroupRSS(ctx context.Context, identity Identity) (uint64, error) {
@@ -23,7 +21,7 @@ func processGroupRSS(ctx context.Context, identity Identity) (uint64, error) {
 	}
 	cmd := exec.CommandContext(ctx, "ps", "-axo", "pgid=,rss=")
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	output, err := commandshell.CommandOutput(ctx, cmd, false)
+	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("inspect process group RSS: %w", err)
 	}

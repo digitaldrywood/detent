@@ -85,3 +85,44 @@ func finishProviderTurn(ctx context.Context, update Update, toolLoop *turnToolLo
 	}
 	return &TurnFailedError{Status: update.Status, Message: update.BackendErrorMessage, Body: update.BackendErrorBody}
 }
+
+func legacyTurnCompletion(message Message, thread, turn string) (Update, bool) {
+	switch message.Method {
+	case "task_complete", "codex/event/task_complete":
+	default:
+		return Update{}, false
+	}
+	var event struct {
+		ID             string
+		ThreadID       string
+		WireThreadID   string `json:"thread_id"`
+		ConversationID string
+		TurnID         string
+		WireTurnID     string `json:"turn_id"`
+		Msg            struct {
+			Type         string
+			ThreadID     string
+			WireThreadID string `json:"thread_id"`
+			TurnID       string
+			WireTurnID   string `json:"turn_id"`
+		}
+	}
+	if json.Unmarshal(message.Params, &event) != nil || (event.Msg.Type != "" && event.Msg.Type != "task_complete") {
+		return Update{}, false
+	}
+	turnIDs := []string{event.TurnID, event.WireTurnID, event.Msg.TurnID, event.Msg.WireTurnID, event.ID}
+	if firstNonBlank(turnIDs...) == "" {
+		return Update{}, false
+	}
+	for _, id := range turnIDs {
+		if id != "" && id != turn {
+			return Update{}, false
+		}
+	}
+	for _, id := range []string{event.ThreadID, event.WireThreadID, event.ConversationID, event.Msg.ThreadID, event.Msg.WireThreadID} {
+		if id != "" && id != thread {
+			return Update{}, false
+		}
+	}
+	return Update{Type: UpdateTurnCompleted, Method: message.Method, ThreadID: thread, TurnID: turn, Status: "completed"}, true
+}

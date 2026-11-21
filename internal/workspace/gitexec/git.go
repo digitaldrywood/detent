@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -133,6 +136,11 @@ func PrepareLocalInspection(cmd *exec.Cmd) bool {
 	if len(cmd.Args) <= 3 || cmd.Args[0] != "git" || cmd.Args[1] != "-C" || !localInspection(cmd.Args[3:]) {
 		return false
 	}
+	prepareLocalInspection(cmd)
+	return true
+}
+
+func prepareLocalInspection(cmd *exec.Cmd) {
 	args := append([]string{}, cmd.Args[:3]...)
 	args = append(args, "--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
 	if cmd.Args[3] == "diff" {
@@ -142,7 +150,65 @@ func PrepareLocalInspection(cmd *exec.Cmd) bool {
 		cmd.Args = append(args, cmd.Args[3:]...)
 	}
 	cmd.Env = append(cmd.Environ(), "GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0")
-	return true
+}
+
+func runLocalInspection(ctx context.Context, cmd *exec.Cmd) error {
+	prepareLocalInspection(cmd)
+	wait, err := procgroup.StartLocalInspection(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	return wait()
+}
+
+func WithDiffInspection(ctx context.Context, path, index, head string, inspect func(context.Context) error) (err error) {
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	objects, err := ReadPublicationSource(ctx, path, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return err
+	}
+	objects = strings.TrimSuffix(objects, "\n")
+	shared, err := ReadPublicationSource(ctx, path, "rev-parse", "--path-format=absolute", "--shared-index-path")
+	if err != nil {
+		return err
+	}
+	scratch, err := Scratch()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	format := "sha1"
+	if len(head) == 64 {
+		format = "sha256"
+	}
+	env := publicationEnvironment()
+	if _, err := withCommandEnvironment(ctx, scratch, env, false, "", runLocalInspection, "init", "--bare", "--template=", "--object-format="+format); err != nil {
+		return err
+	}
+	if shared = strings.TrimSuffix(shared, "\n"); shared != "" {
+		data, err := os.ReadFile(shared)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(scratch, filepath.Base(shared)), data, 0o600); err != nil {
+			return err
+		}
+	}
+	env = append(env, "GIT_DIR="+scratch, "GIT_WORK_TREE="+path, "GIT_INDEX_FILE="+index,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+strconv.Quote(objects), "GIT_ATTR_NOSYSTEM=1")
+	options := []string{"-c", "core.excludesFile=" + filepath.Join(filepath.Dir(objects), "info", "exclude")}
+	return inspect(commandshell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+		cmd.Env = env
+		if cmd.Args[3] == "diff" {
+			cmd.Args = slices.Insert(cmd.Args, 4, "--ignore-submodules=dirty")
+		}
+		prepareLocalInspection(cmd)
+		cmd.Args = slices.Insert(cmd.Args, 3, options...)
+		return procgroup.StartLocalInspection(ctx, cmd)
+	}))
 }
 
 func localInspection(args []string) bool {

@@ -53,7 +53,6 @@ import (
 
 const (
 	defaultAfterRunTimeout         = time.Minute
-	liveDiffStatsInterval          = 2 * time.Second
 	recentActivityLimit            = 5
 	defaultProjectID               = "default"
 	orphanRestartInstruction       = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
@@ -1213,7 +1212,7 @@ func (r *Runner) runAgentTurn(
 	if !result.RuntimeIdentity.IsZero() {
 		eventAt := r.now()
 		progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: result.RuntimeIdentity}, eventAt)
-		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, false); err != nil {
+		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, false, false); err != nil {
 			return agentTurnExecution{result: result, err: err}
 		}
 	}
@@ -1264,10 +1263,10 @@ func (r *Runner) runAgentTurn(
 	var liveDiff atomic.Pointer[liveDiffSnapshot]
 	if observe != nil && runRequest.OnUsageUpdate != nil {
 		var diffProgress agentRunProgress
-		updates.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
+		updates.turnUsageUpdate = func(usage UsageUpdate, refreshDiff bool) error {
 			observe(func(ctx context.Context) error {
-				if runRequest.Admission == nil {
-					if stat, ok := r.liveDiffStats(ctx, runRequest.workspaceBackend, info, workspaceIssue, &diffProgress, at); ok {
+				if refreshDiff && runRequest.Admission == nil {
+					if stat, ok := r.refreshLiveDiffStats(ctx, runRequest.workspaceBackend, info, workspaceIssue, &diffProgress); ok {
 						liveDiff.Store(&liveDiffSnapshot{stats: stat, headObservedAt: diffProgress.diffStatsHeadObservedAt})
 					}
 				}
@@ -1370,7 +1369,7 @@ func (r *Runner) runAgentTurn(
 			}
 			activity = false
 		}
-		if err := r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity); err != nil {
+		if err := r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity, isCompletedAgentTurn(update)); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -4365,7 +4364,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	progress := newAgentRunProgress(runtimeoutput.Policy{MaxBytes: workflow.Config.Agent.OutputTruncation.MaxBytes}, "", "", 0, "", 0)
 	eventAt := r.now()
 	progress.apply(AgentUpdate{Type: AgentUpdateRuntimeIdentity, RuntimeIdentity: runtimeIdentity}, eventAt)
-	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, false); err != nil {
+	if err := r.publishRunUpdate(sessionCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, false, false); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	var output strings.Builder
@@ -4388,9 +4387,12 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 
 		if peer := req.observationPeer; peer != nil && runReq.OnUsageUpdate != nil {
 			var diffProgress agentRunProgress
-			runReq.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
+			runReq.turnUsageUpdate = func(usage UsageUpdate, refreshDiff bool) error {
 				observe(func(ctx context.Context) error {
-					if stat, ok := r.liveDiffStats(ctx, runWorkspace, info, workspaceIssue, &diffProgress, at); ok {
+					if refreshDiff {
+						r.refreshLiveDiffStats(ctx, runWorkspace, info, workspaceIssue, &diffProgress)
+					}
+					if stat, ok := diffProgress.cachedDiffStats(); ok {
 						usage.DiffStats = stat
 					}
 					return peer.Call(ctx, "usage", nil, usage)
@@ -4463,7 +4465,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			}
 		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update)); err != nil {
+		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update), isCompletedAgentTurn(update)); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
@@ -5626,7 +5628,6 @@ type agentRunProgress struct {
 	recentEvents              []telemetry.ActivityEvent
 	diffStats                 DiffStats
 	diffStatsCollected        bool
-	diffStatsCheckedAt        time.Time
 	diffStatsHeadObservedAt   time.Time
 	toolInvocations           map[string]deliverableToolInvocation
 	toolOutputTails           map[string]string
@@ -6478,6 +6479,7 @@ func (r *Runner) publishRunUpdate(
 	runStartedAt time.Time,
 	detentSessionID int64,
 	activity bool,
+	refreshDiff bool,
 ) error {
 	if runtime, ok := req.Execution.(RuntimeExecution); ok && activity {
 		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: eventAt, Identity: result.RuntimeIdentity}); err != nil {
@@ -6513,15 +6515,21 @@ func (r *Runner) publishRunUpdate(
 		RSSObservedAt:         progress.rssObservedAt,
 	}
 	if req.turnUsageUpdate != nil {
-		return req.turnUsageUpdate(usage, eventAt)
+		return req.turnUsageUpdate(usage, refreshDiff)
 	}
 	if req.Admission == nil {
-		diffStats, ok := r.liveDiffStats(ctx, req.workspaceBackend, info, issue, progress, eventAt)
-		if ok {
+		if refreshDiff {
+			r.refreshLiveDiffStats(ctx, req.workspaceBackend, info, issue, progress)
+		}
+		if diffStats, ok := progress.cachedDiffStats(); ok {
 			usage.DiffStats = diffStats
 		}
 	}
 	return req.OnUsageUpdate(usage)
+}
+
+func isCompletedAgentTurn(update AgentUpdate) bool {
+	return update.Type == AgentUpdateTurnCompleted && !update.AuxiliaryTurn
 }
 
 func providerUpdateIsActivity(update AgentUpdate) bool {
@@ -6605,19 +6613,13 @@ type liveDiffSnapshot struct {
 	headObservedAt time.Time
 }
 
-func (r *Runner) liveDiffStats(
+func (r *Runner) refreshLiveDiffStats(
 	ctx context.Context,
 	backend workspace.Backend,
 	info workspace.Info,
 	issue workspace.Issue,
 	progress *agentRunProgress,
-	eventAt time.Time,
 ) (DiffStats, bool) {
-	if !progress.shouldRefreshDiffStats(eventAt) {
-		return progress.cachedDiffStats()
-	}
-
-	progress.diffStatsCheckedAt = eventAt
 	stat, err := runobserve.SampleDiff(ctx, backend, info, issue, r.logger)
 	if err != nil {
 		return progress.cachedDiffStats()
@@ -6629,13 +6631,6 @@ func (r *Runner) liveDiffStats(
 	progress.diffStatsHeadObservedAt = stat.HeadObservedAt
 	progress.diffStatsCollected = true
 	return diffStats, true
-}
-
-func (p *agentRunProgress) shouldRefreshDiffStats(eventAt time.Time) bool {
-	if p.diffStatsCheckedAt.IsZero() {
-		return true
-	}
-	return eventAt.Sub(p.diffStatsCheckedAt) >= liveDiffStatsInterval
 }
 
 func (p *agentRunProgress) cachedDiffStats() (DiffStats, bool) {

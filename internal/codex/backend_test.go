@@ -815,6 +815,57 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 	return t.fakeAppServerTransport.Receive(ctx)
 }
 
+func TestAgentBackendCompletesOnTaskComplete(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		method string
+		params string
+	}{
+		{"direct", "task_complete", `{"threadId":"thread-1","turn_id":"turn-1"}`},
+		{"legacy envelope", "codex/event/task_complete", `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","turn_id":"turn-1"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &blockingAppServerTransport{newFakeAppServerTransport([]Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
+					rolloutResponseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1","model":"example-model"}}`, nil),
+					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+					notificationMessage(t, "codex/event/task_complete", `{"id":"old-turn","conversationId":"thread-1","msg":{"type":"task_complete"}}`),
+					notificationMessage(t, "task_complete", `{"thread_id":"another-thread","turn_id":"turn-1"}`),
+					notificationMessage(t, "task_complete", `{"type":"task_complete"}`),
+					notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":"ready"}`),
+					notificationMessage(t, test.method, test.params),
+				})}
+				server, err := NewAppServer(staticTransportFactory{transport}, WithTurnTimeout(time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				backend, err := NewAgentBackend(server, Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var answer string
+				var completions int
+				started := time.Now()
+				result, err := backend.RunTurnWithTools(t.Context(), runner.AgentTurnRequest{Workspace: t.TempDir(), Prompt: "Complete the turn", DetectToolLoops: true}, []runner.AgentTool{{Name: "work_item", InputSchema: json.RawMessage(`{"type":"object"}`)}}, nil, func(update runner.AgentUpdate) error {
+					switch update.Type {
+					case runner.AgentUpdateMessageDelta:
+						answer += update.Delta
+					case runner.AgentUpdateTurnCompleted:
+						if !update.AuxiliaryTurn {
+							completions++
+						}
+					}
+					return nil
+				})
+				if err != nil || result.TurnID != "turn-1" || answer != "ready" || completions != 1 || time.Since(started) != 0 {
+					t.Fatalf("result=%+v err=%v answer=%q completions=%d elapsed=%s", result, err, answer, completions, time.Since(started))
+				}
+			})
+		})
+	}
+}
+
 func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 	for _, test := range []struct {
 		name                   string

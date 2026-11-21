@@ -2,7 +2,28 @@
 
 package procgroup
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"testing"
+)
+
+func TestRSSInspectionDoesNotRegisterCommand(t *testing.T) {
+	t.Parallel()
+	identity, err := inspectProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := WithCommandOwner(t.Context(), func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error) {
+		t.Error("RSS inspection registered a host command")
+		return nil, errors.New("unexpected host command")
+	}, func(*exec.Cmd) bool { return false })
+	if rss, err := RSS(ctx, identity); err != nil || rss == 0 {
+		t.Fatalf("RSS = %d, %v", rss, err)
+	}
+}
 
 func TestParseProcessGroupRSS(t *testing.T) {
 	t.Parallel()

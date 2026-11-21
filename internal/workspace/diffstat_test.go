@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -604,8 +603,7 @@ func TestLocalGitDiffStat(t *testing.T) {
 		t.Fatalf("write worker scratch: %v", err)
 	}
 
-	trace := filepath.Join(t.TempDir(), "git-events.json")
-	t.Setenv("GIT_TRACE2_EVENT", trace)
+	runGit(t, info.Path, "update-index", "--split-index")
 	got, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
 	if err != nil {
 		t.Fatalf("DiffStat() error = %v", err)
@@ -615,33 +613,6 @@ func TestLocalGitDiffStat(t *testing.T) {
 	}
 	if got.TreeSHA != clean.TreeSHA || got.HeadSHA != head || !got.HeadObservedAt.After(changedHead.HeadObservedAt) {
 		t.Fatalf("nonempty head observation = %+v", got)
-	}
-	data, err := os.ReadFile(trace)
-	if err != nil {
-		t.Fatal(err)
-	}
-	commands := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		if line == "" {
-			continue
-		}
-		var event struct {
-			Event string   `json:"event"`
-			Argv  []string `json:"argv"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			t.Fatal(err)
-		}
-		if event.Event != "start" {
-			continue
-		}
-		commands++
-		if slices.Contains(event.Argv, "diff") && !slices.Contains(event.Argv, head) {
-			t.Fatalf("diff is not pinned to captured head: %v", event.Argv)
-		}
-	}
-	if commands != 5 {
-		t.Fatalf("Git processes per nonempty refresh = %d, want 5", commands)
 	}
 	originalFingerprint := got.Fingerprint
 
@@ -719,6 +690,20 @@ func TestLocalGitDiffStat(t *testing.T) {
 			}
 		})
 	}
+	t.Run("configured clean filter", func(t *testing.T) {
+		dir := initSourceRepo(t)
+		writeFileDiffFile(t, dir, ".gitattributes", "README.md filter=fixture\n")
+		runGit(t, dir, "add", ".gitattributes")
+		runGit(t, dir, "commit", "-m", "record attributes")
+		runGit(t, dir, "config", "filter.fixture.clean", "cat; printf x >> filter.log")
+		writeFileDiffFile(t, dir, "README.md", "updated\n")
+		if stat, err := GitDiffStat(t.Context(), dir); err != nil || stat.Files != 1 || stat.Fingerprint == "" {
+			t.Fatalf("diff = %+v, %v", stat, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "filter.log")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("clean filter marker stat = %v, want file absent", err)
+		}
+	})
 	for _, format := range []string{"sha1", "sha256"} {
 		t.Run("object format/"+format, func(t *testing.T) {
 			path := t.TempDir()
