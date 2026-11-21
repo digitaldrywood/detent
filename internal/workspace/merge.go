@@ -15,6 +15,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -386,7 +387,7 @@ func WithAttemptWorkspace(ctx context.Context, attempt AttemptWorkspace) context
 		return ctx
 	}
 	ctx = context.WithValue(ctx, attemptWorkspaceContextKey{}, attempt)
-	return procgroup.WithCommandOwner(ctx, ownAttemptCommand)
+	return procgroup.WithCommandOwner(ctx, ownAttemptCommand, gitexec.PrepareLocalInspection)
 }
 
 func ownAttemptCommand(ctx context.Context, cmd *exec.Cmd, id procgroup.Identity) (func(error, error) error, error) {
@@ -505,7 +506,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	procgroup.Configure(ctx, cmd)
 	evidenceCtx := ctx
 	if native {
-		evidenceCtx = procgroup.WithCommandOwner(ctx, ownAttemptCommand)
+		evidenceCtx = procgroup.WithCommandOwner(ctx, ownAttemptCommand, gitexec.PrepareLocalInspection)
 	}
 	inputs := validationInputs(cmd)
 	result.Evidence = inputs.Evidence(evidenceCtx, command)
