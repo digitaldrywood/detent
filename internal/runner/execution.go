@@ -1127,7 +1127,14 @@ func (req RunRequest) operatorFreshRetry() bool {
 	return req.RetryMode == RetryModeFresh && req.RecoveryAttemptID > 0
 }
 
-func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh bool, current *workspace.ChangeSource) (string, string) {
+func replacesReleasedDirtyCheckout(previous *tracker.NativeAttempt, lease tracker.NativeLease, checkoutAttempt string) bool {
+	return previous != nil && previous.Checkpoint != nil && previous.MachineID == lease.MachineID &&
+		checkoutAttempt != "" && previous.AttemptID != "" && checkoutAttempt != previous.AttemptID &&
+		previous.ClaimReleasedAt != nil && previous.LeaseID != "" && lease.ID != "" && previous.LeaseID != lease.ID &&
+		previous.Checkpoint.Storage == "local_only" && previous.Checkpoint.WorktreeState == "dirty"
+}
+
+func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.RecoveryState, sessionAvailable bool, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, operatorFresh bool, current *workspace.ChangeSource, checkoutAttempt, startHead string) (string, string) {
 	if len(recovery.Attempts) == 0 && recovery.SourceAttemptID == "" {
 		return "fresh_checkout", "no_prior_attempt"
 	}
@@ -1162,6 +1169,17 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
 	localAvailable := sameMachine && local != nil
+	if replacesReleasedDirtyCheckout(previous, recovery.Lease, checkoutAttempt) {
+		if local == nil {
+			return "manual_recovery", "local_checkpoint_changed"
+		}
+		if local.DiffStat.IsEmpty() && len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 && local.UnpushedCommits == 0 {
+			if startHead == "" || local.HeadSHA != startHead {
+				return "manual_recovery", "local_checkpoint_changed"
+			}
+			localAvailable = false
+		}
+	}
 	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if checkpoint.GitRef() {
 		if !operatorFresh && checkpointMatches && sessionAvailable && checkpoint.Resume == "resume_session" && identityMatches {
@@ -1225,7 +1243,11 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 			return store.AgentResumeState{}, err
 		}
 	}
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
+	startHead := info.StartHeadSHA
+	if issue.PhaseSource != nil {
+		startHead = issue.PhaseSource.HeadSHA
+	}
+	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
@@ -1258,7 +1280,7 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 						break
 					}
 				}
-				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
+				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 				if action != "manual_recovery" {
 					if err := req.Execution.Start(ctx, identity); err != nil {
 						return store.AgentResumeState{}, err
