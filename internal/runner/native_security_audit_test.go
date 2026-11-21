@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -32,6 +33,17 @@ type nativeSecurityAuditTestExecution struct {
 	cleanWorkspace bool
 	evidence       []ValidationEvidence
 	diff           string
+	auditProvider  providercapacity.Requirement
+	providerErr    error
+}
+
+func (*nativeSecurityAuditTestExecution) StartPhased(context.Context, tracker.NativeExecutionIdentity) error {
+	return nil
+}
+
+func (e *nativeSecurityAuditTestExecution) SetPhaseProvider(_ context.Context, requirement providercapacity.Requirement) error {
+	e.auditProvider = requirement
+	return e.providerErr
 }
 
 type nativeSecurityAuditIsolationBackend struct {
@@ -95,7 +107,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		name                        string
 		kind, authentication        string
 		disabled, blocking, failed  bool
-		landing                     bool
+		landing, providerFull       bool
 		claimPolicy, ambientPolicy  bool
 		nonNative                   bool
 		processClockOffset          time.Duration
@@ -108,6 +120,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	}{
 		{name: "source audit uses claimed native project", localProjectID: "example-local-key"},
 		{name: "landing audit uses claimed native project", landing: true, localProjectID: "example-local-key"},
+		{name: "landing audit waits for provider capacity", landing: true, providerFull: true, failed: true},
 		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
 		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
 		{name: "native OS identity clock precedes audit clock", processClockOffset: -2 * time.Second},
@@ -157,7 +170,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				backend.updates[0].WorkerProcess.PID = 0
 			}
 			backend.result.AuthenticationMode = authentication
-			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess {
+			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess && !test.providerFull {
 				backend.err = errors.New("backend unavailable")
 			}
 			cfg := config.Default()
@@ -205,6 +218,9 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				execution.publicationErr = errors.New("Hub artifact unavailable")
 			}
 			execution.cleanWorkspace = test.cleanedWorkspace
+			if test.providerFull {
+				execution.providerErr = errors.New("audit provider capacity is full")
+			}
 			patch := "+change"
 			if test.large {
 				patch = "diff --git a/file.go b/file.go\n@@ -0,0 +1 @@\n" + strings.Repeat("+record\n", 80000)
@@ -229,6 +245,12 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				}
 			} else {
 				approved, err = runner.auditNativeChange(ctx, req)
+			}
+			if test.providerFull {
+				want := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: "audit-model"}
+				if !errors.Is(err, execution.providerErr) || backend.calls != 0 || execution.auditProvider != want {
+					t.Fatalf("audit capacity refusal allowed model work: requirement=%+v, turns=%d, %v", execution.auditProvider, backend.calls, err)
+				}
 			}
 			if (err != nil) != test.failed {
 				t.Fatalf("audit error = %v", err)

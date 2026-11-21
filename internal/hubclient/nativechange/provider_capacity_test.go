@@ -6,15 +6,21 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/diagnostics"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -96,15 +102,80 @@ func TestLocalProviderRevalidation(t *testing.T) {
 	}
 }
 
-func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
+func TestReviewedMergingClaimReservesProvider(t *testing.T) {
 	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		conflict bool
+	}{
+		{name: "registers and lands"},
+		{name: "pending conflict waits for capacity", conflict: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testReviewedMergingClaimReservesProvider(t, test.conflict)
+		})
+	}
+}
+
+func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 	h := newNativeChangeHubTransport(t, "Merging", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Merging"}},
 		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}, true)
-	h.configureCloneURL(nativeChangeRepository)
+	requirement := providercapacity.Requirement{Role: runner.RoleMerge, Backend: "codex", Model: "test-model"}
+	reports := func() ([]providercapacity.Report, error) {
+		return []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "local", SharedAccountAlias: "team",
+			Models: []string{"test-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()}}, nil
+	}
+	fixtureConfigureScheduler(t, h, func(cfg *SchedulerConfig) { cfg.ProviderReports = reports })
+	var claimReason string
+	fetch := func(issueID string) ([]connector.Issue, error) {
+		return h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+			ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress"},
+			CandidateReady: func(_ context.Context, issue connector.Issue) bool { return issue.ID == issueID },
+			CandidateClaimObserved: func(_ context.Context, _ connector.Issue, _ bool, reason string, _ *providercapacity.Requirement) {
+				claimReason = reason
+			},
+			ProviderRequirement: func(_ context.Context, issue connector.Issue, _ []providercapacity.Report) (providercapacity.Requirement, error) {
+				selected := requirement
+				if issue.State != "Merging" {
+					selected.Role = runner.RoleCode
+				}
+				return selected, nil
+			},
+		})
+	}
+	source := nativeChangeSourceRepo(t)
+	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+	h.configureCloneURL(remote)
+	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, source, "push", "-u", "origin", "main")
+	headAt := func(dir, ref string) string {
+		t.Helper()
+		command := exec.CommandContext(t.Context(), "git", "rev-parse", ref)
+		command.Dir = dir
+		output, err := command.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	base := headAt(source, "HEAD")
+	nativeChangeGit(t, source, "checkout", "-b", "reviewed")
+	if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("reviewed change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nativeChangeGit(t, source, "commit", "-am", "prepare reviewed change")
+	head := headAt(source, "HEAD")
+	capture, err := workspace.CaptureChangeSource(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeChangeGit(t, source, "checkout", "main")
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{
 		Mutation: nativeMutationKey(),
 		Policy:   tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}},
@@ -117,10 +188,42 @@ func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+	version := h.publishCaptured(t, item, change.ID, head, &capture, "", base)
 	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved", Body: "Reviewed the current version"}); err != nil {
 		t.Fatal(err)
 	}
+	if conflict {
+		items, err := fetch(issue.ID)
+		if err != nil || len(items) != 1 || items[0].ID != issue.ID {
+			t.Fatalf("claim to record prior conflict: %+v, %v", items, err)
+		}
+		if _, err := h.scheduler.AdoptClaim(t.Context(), items[0], h.clock()); err != nil {
+			t.Fatal(err)
+		}
+		prior := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+		reservation := prior.ProviderCapacity()
+		if reservation == nil {
+			t.Fatal("prior attempt did not reserve its provider")
+		}
+		if err := prior.Start(t.Context(), tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}); err != nil {
+			t.Fatal(err)
+		}
+		if err := prior.ObserveLanding(t.Context(), runner.NativeLanding{ChangeID: change.ID, VersionID: version.ID, HeadSHA: head,
+			BaseSHA: base, Path: "merge_resolution_pending", RefusalKind: workspace.LandRefusalConflict, ConflictFiles: []string{"README.md"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := prior.Finish(t.Context(), "failed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatal(err)
+		}
+		detail, err := h.admin.CurrentChange(t.Context(), item)
+		if err != nil || len(detail.Versions) == 0 || detail.Versions[0].Landing == nil || detail.Versions[0].Landing.Path != "merge_resolution_pending" {
+			t.Fatalf("reviewed version did not retain the conflict: %+v, %v", detail.Versions, err)
+		}
+	}
+
 	current, err := h.admin.Issue(t.Context(), item)
 	if err != nil {
 		t.Fatal(err)
@@ -130,18 +233,36 @@ func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	fixtureConfigureScheduler(t, h, func(cfg *SchedulerConfig) {
-		cfg.ProviderReports = func() ([]providercapacity.Report, error) {
-			return []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "local", SharedAccountAlias: "team",
-				Models: []string{"test-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()}}, nil
+	if conflict {
+		occupied := h.createInProgress(t, "Occupy the provider account")
+		other := h.otherWorker(t)
+		holder, err := newTestScheduler(other.Transport(), SchedulerConfig{
+			OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
+			Machine:         Machine{ID: testsupport.NativeChangeOtherMachineID, Hostname: "other-host", Capacity: 1, Version: "test"},
+			ProviderReports: reports, Now: h.clock, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("configure capacity holder: %v", err)
 		}
-	})
-	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
-		ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress"},
-		ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
-			return providercapacity.Requirement{}, errors.New("landing unexpectedly asked for a provider")
-		},
-	})
+		items, err := holder.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+			ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress"},
+			CandidateReady: func(_ context.Context, issue connector.Issue) bool { return issue.ID == occupied.ID },
+			ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				return providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: requirement.Model}, nil
+			},
+		})
+		if err != nil || len(items) != 1 || items[0].ID != occupied.ID {
+			t.Fatalf("occupy provider account: %+v, %v", items, err)
+		}
+		items, err = fetch(issue.ID)
+		if err != nil || len(items) != 0 || claimReason != "hub_claim.provider_capacity" {
+			t.Fatalf("pending conflict landing did not wait for provider capacity: %+v, %s, %v", items, claimReason, err)
+		}
+		if err := holder.ReleaseClaim(t.Context(), occupied.ID, "released"); err != nil {
+			t.Fatalf("release capacity holder: %v", err)
+		}
+	}
+	candidates, err := fetch(issue.ID)
 	if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID || candidates[0].State != "Merging" || candidates[0].NativeLandingHeadSHA != version.HeadSHA {
 		t.Fatalf("historical landing was not claimed for its reviewed head: %+v, %v", candidates, err)
 	}
@@ -150,8 +271,8 @@ func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
 	}
 	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 	lease := execution.Recovery().Lease
-	if lease.ID == "" || execution.ProviderCapacity() != nil {
-		t.Fatalf("expected a fenced Git-only claim without a provider: lease=%q provider=%+v", lease.ID, execution.ProviderCapacity())
+	if reserved := execution.ProviderCapacity(); lease.ID == "" || reserved == nil || reserved.Requirement != requirement {
+		t.Fatalf("reviewed landing did not reserve its provider: lease=%q provider=%+v", lease.ID, reserved)
 	}
 	now := h.clock().UTC().Truncate(time.Microsecond)
 	worker := tracker.NativeAttemptWorker{PID: 500, PGID: 500, StartedAt: now, StartKey: "fixture-start"}
@@ -166,23 +287,45 @@ func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
 	if err != nil || !primary {
 		t.Fatalf("register reviewed landing worker: primary=%t error=%v", primary, err)
 	}
-	if err := execution.StartLanding(t.Context(), observation.LocalAttemptID, observation.Generation); err != nil {
+	identity := tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
+	if conflict {
+		if err := execution.StartLanding(t.Context(), observation.LocalAttemptID, observation.Generation); err != nil {
+			t.Fatalf("start the pending conflict landing: %v", err)
+		}
+		if err := execution.Start(t.Context(), identity); err != nil {
+			t.Fatalf("start merge resolution with the reserved provider: %v", err)
+		}
+		return
+	}
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+		ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := execution.FlushRuntime(t.Context()); err != nil {
+	provider := &committingAgent{}
+	agent, err := runner.NewRunner(runner.Dependencies{
+		ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: provider, Store: api.NewRunnerSessions(h.native),
+		Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "git diff --check"}}},
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	result, err := agent.Run(t.Context(), runner.RunRequest{
+		ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge, Execution: execution,
+		AttemptWorkspace: execution.AttemptWorkspace(), WorkAttemptID: observation.LocalAttemptID, Generation: observation.Generation, DeferExecutionFinish: true,
+	})
+	landed := result.NativeLanding
+	if err != nil || landed == nil || !landed.Landed || landed.HeadSHA != head || landed.MergeSHA != headAt(remote, "refs/heads/main") || provider.calls != 0 {
+		t.Fatalf("registered landing did not publish the reviewed source: %+v, provider turns=%d, %v", landed, provider.calls, err)
 	}
 	recovery, err := h.admin.Recovery(t.Context(), item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
 	if len(recovery.Attempts) != 1 || recovery.Attempts[0].LeaseID != lease.ID || recovery.Attempts[0].FencingToken != lease.FencingToken ||
 		recovery.Attempts[0].Identity == nil || *recovery.Attempts[0].Identity != identity {
-		t.Fatalf("registered landing did not start as Git on its original lease: %+v", recovery.Attempts)
-	}
-	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test-model"}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatalf("landing worker could start a model without a provider reservation: %v", err)
+		t.Fatalf("landing did not retain its worker and reserved identity on the original lease: %+v", recovery.Attempts)
 	}
 }
 

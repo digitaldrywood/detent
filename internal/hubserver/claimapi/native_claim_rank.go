@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -312,14 +313,14 @@ func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor
 				continue
 			}
 		}
-		if !landing && len(reports) > 0 {
+		if len(reports) > 0 {
 			if resolver == nil {
 				resolver, err = d.nativeClaimRankResolver(ctx, competitor.scope, plan)
 				if err != nil {
 					return false, false, err
 				}
 			}
-			if !nativeClaimRankProviderSupported(resolver, plan, request, reports) {
+			if !nativeClaimRankProviderSupported(resolver, plan, request, reports, landing) {
 				continue
 			}
 		}
@@ -376,17 +377,24 @@ func (d Deps) nativeClaimRankResolver(ctx context.Context, scope hubscope.Native
 	return runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
 }
 
-func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, plan hubrecords.NativeClaimPlan, request tracker.NativeClaim, reports []providercapacity.Report) bool {
+func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, plan hubrecords.NativeClaimPlan, request tracker.NativeClaim, reports []providercapacity.Report, landing bool) bool {
 	var requirement providercapacity.Requirement
 	if candidate := nativeClaimProviderCandidate(request, plan.Item.NativeID); candidate != nil && int64(candidate.Revision) == plan.Item.Revision {
 		requirement = candidate.Requirement
 	} else {
 		issue := plan.Issue
-		identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
+		candidate := connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State}
+		var identity agentidentity.Identity
+		var err error
+		if landing {
+			identity, err = resolver.IdentityForRole(candidate, runner.RoleMerge)
+		} else {
+			identity, err = resolver.Identity(candidate)
+		}
 		if err != nil {
 			return false
 		}
-		requirement = providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}
+		requirement = providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendID, Model: cmp.Or(identity.RequestedModel.Value, "provider_default")}
 	}
 	if requirement.Validate() != nil {
 		return false
