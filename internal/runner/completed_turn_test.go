@@ -979,6 +979,7 @@ type deadlineRoundScenario struct {
 	judgeFailure   error
 	loseFence      bool
 	loseFinalReply bool
+	answer         string
 }
 
 func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
@@ -988,6 +989,13 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	source := &deadlineRoundWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: strings.Repeat("c", 40), WorkspaceFingerprint: "completed-digest"}}}}}}
 	sessions := &fakeSessionStore{sessionID: 42}
 	execution := &deadlineRoundExecution{failFirstPublication: scenario.judgeFailure != nil, loseFence: scenario.loseFence, loseFinalReply: scenario.loseFinalReply}
+	if scenario.answer != "" {
+		execution.recovery.Discussion = []tracker.NativeComment{
+			{Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, Body: scenario.answer},
+			{Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, Body: "Deleted wording", Deleted: true},
+			{Actor: tracker.Actor{Kind: "runner", PrincipalID: "runner"}, Body: "Superseded worker question"},
+		}
+	}
 	var logs bytes.Buffer
 	limit := &controlledDurationLimit{}
 	impl, judgments, lastValidation := 0, 0, 0
@@ -997,6 +1005,9 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	agent := &deadlineRoundBackend{run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 		if req.TextOnly {
 			judgments++
+			if scenario.answer != "" && (!strings.Contains(req.Prompt, scenario.answer) || strings.Contains(req.Prompt, "Deleted wording") || strings.Contains(req.Prompt, "Superseded worker question")) {
+				t.Error("round judge did not receive the current human discussion only")
+			}
 			if impl == 1 {
 				timeoutRecordedBeforeJudge = len(execution.timeouts) == 1 && execution.timeouts[0].Kind == sessiontimeout.TurnDeadline
 				lastValidation = execution.validations
@@ -1073,6 +1084,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
 		t.Fatalf("round evidence = %+v", verdict)
 	}
+}
+
+func TestRoundJudgeReadsOperatorAnswer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runNativeDeadlineRounds(t, deadlineRoundScenario{answer: "Use the approved completed-row wording: complete."})
+	})
 }
 
 func TestRoundJudgeThreadStartFailureRetainsTimeoutAndRetriesInPlace(t *testing.T) {
