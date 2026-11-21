@@ -298,7 +298,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		}
 		delete(state.Claimed, running.Issue.ID)
 	}
-	attemptCompleted := o.completeDurableWorkAttemptWithMetadata(
+	o.completeDurableWorkAttemptWithMetadata(
 		ctx,
 		state,
 		running,
@@ -314,21 +314,7 @@ func (o *Orchestrator) handleGitHubRESTCapacityCompletion(
 		o.releaseClaim(state, running.Issue.ID)
 		return true
 	}
-	var parked bool
-	running.Issue, _, parked = o.demoteTerminalAttemptRetry(
-		ctx,
-		state,
-		running.Issue,
-		running.WorkProductPushed,
-		workAttemptErrorRunner,
-		attemptCompleted,
-		running.Mode,
-		running.DiffStats,
-		event.CompletedAt,
-	)
-	if parked {
-		return true
-	}
+	running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
 	if headroom {
 		o.scheduleGitHubRESTCapacityRetry(state, running, outage, retryAt)
 	} else {

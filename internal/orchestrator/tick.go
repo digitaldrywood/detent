@@ -54,6 +54,11 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	if manual == nil && len(state.Claimed) == 0 && len(state.Running) == 0 && len(state.deferredCompletions) == 0 {
+		if routing, ok := o.scheduling.(interface{ ProjectAtZeroCapacity(string) bool }); ok && routing.ProjectAtZeroCapacity(o.cfg.Project.ID) {
+			return
+		}
+	}
 	if o.trimHostCache != nil {
 		o.startWorkspaceCleanup(ctx, state, now)
 	}

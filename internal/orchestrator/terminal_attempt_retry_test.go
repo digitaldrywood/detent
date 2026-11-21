@@ -891,7 +891,13 @@ func TestReconcileTerminalAttemptRetryStatesDemotesRecoveredEmptyAttempt(t *test
 		},
 	}
 
-	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, []connector.Issue{pushed, empty, planned, successfulPlan, resumedRework}, now)
+	issues := []connector.Issue{pushed, empty, planned, successfulPlan, resumedRework}
+	native := &Orchestrator{cfg: cfg, connector: &nativeWorkflowConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}, scheduling: &hubSchedulingSource{}}
+	if transitions := native.reconcileTerminalAttemptRetryStates(t.Context(), &state, issues, now); len(transitions) != 0 {
+		t.Fatalf("native terminal attempts moved lanes without a claim: %+v", transitions)
+	}
+
+	transitions := o.reconcileTerminalAttemptRetryStates(t.Context(), &state, issues, now)
 
 	if len(transitions) != 2 || transitions[0].ID != empty.ID || transitions[0].State != "Todo" || transitions[1].ID != resumedRework.ID || transitions[1].State != "Rework" {
 		t.Fatalf("transitions = %#v, want empty legacy attempt in Todo and recorded source restored to Rework", transitions)
@@ -1384,14 +1390,11 @@ func TestRetainedWorkAttemptsExpireOnTick(t *testing.T) {
 func TestTerminalRetryTransitionFailures(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name       string
-		limit      *int
-		failState  string
-		wantState  string
-		wantParked bool
+		name      string
+		failState string
+		wantState string
 	}{
-		{name: "zero holds locally when tracker park fails", limit: new(0), failState: "Blocked", wantState: "Todo", wantParked: false},
-		{name: "default preserves retry when tracker park fails", failState: "Blocked", wantState: "Todo"},
+		{name: "retry ignores a blocked-lane write failure", failState: "Blocked", wantState: "Todo"},
 		{name: "retry transition failure retains original lane", failState: "Todo", wantState: "In Progress"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1409,9 +1412,9 @@ func TestTerminalRetryTransitionFailures(t *testing.T) {
 			for i := 1; i <= count; i++ {
 				state.WorkAttempts = append(state.WorkAttempts, telemetry.WorkAttempt{AttemptID: int64(i), IssueID: issue.ID, Status: string(store.WorkAttemptStatusTerminal), TerminalState: string(store.WorkAttemptTerminalFailure), ErrorClass: workAttemptErrorRunner})
 			}
-			updated, _, parked := o.demoteTerminalAttemptRetry(t.Context(), &state, issue, false, workAttemptErrorRunner, true, RunModeImplement, DiffStats{}, now)
-			if updated.State != tt.wantState || parked != tt.wantParked {
-				t.Fatalf("state/parked = %s/%t, want %s/%t", updated.State, parked, tt.wantState, tt.wantParked)
+			updated, _ := o.demoteTerminalAttemptRetry(t.Context(), &state, issue, false, now)
+			if updated.State != tt.wantState {
+				t.Fatalf("state = %s, want %s", updated.State, tt.wantState)
 			}
 			if len(state.Blocked) != 0 {
 				t.Fatal("retry transition created a park")

@@ -258,22 +258,6 @@ func TestObservedStructuredBlockedRecoveryReasonAuthorizesRecovery(t *testing.T)
 	t.Fatal("Blocked entry event not found")
 }
 
-func TestBlockedRecoverySignatureUsesDiffFingerprintAndBaseOID(t *testing.T) {
-	t.Parallel()
-
-	issue := blockedRecoverySignatureIssue("issue-signature-shape", "agent-controlled-head", "stable-diff", "base-oid", "dirty")
-	got := mustBlockedRecoverySignature(t, issue)
-	want := "pr=418;fingerprint=stable-diff;base=base-oid"
-	if got != want {
-		t.Fatalf("blockedRecoverySignature() = %q, want %q", got, want)
-	}
-	for _, excluded := range []string{"kind=", "head="} {
-		if strings.Contains(got, excluded) {
-			t.Fatalf("blockedRecoverySignature() = %q, must not include %q", got, excluded)
-		}
-	}
-}
-
 func latestEnteredLaneReason(events []store.WorkflowPhaseEvent, lane string) (string, bool) {
 	for index := len(events) - 1; index >= 0; index-- {
 		event := events[index]
@@ -438,16 +422,6 @@ func recordBlockedRecoveryReasonEvent(
 	}); err != nil {
 		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
 	}
-}
-
-func mustBlockedRecoverySignature(t *testing.T, issue connector.Issue) string {
-	t.Helper()
-
-	signature, ok := blockedRecoverySignature(issue)
-	if !ok {
-		t.Fatalf("blockedRecoverySignature() unavailable for %#v", issue.PullRequest)
-	}
-	return signature
 }
 
 func assertWorkflowActionSignature(

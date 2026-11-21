@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 )
@@ -214,4 +217,23 @@ func TestRoundCriterionEvidenceFitsPublicationBound(t *testing.T) {
 	if err != nil || marshalErr != nil || len(data) > MaxOutputBytes || len(input.Criteria) != 1 || input.Criteria[0].Criterion != "Small criterion" {
 		t.Fatalf("serialized bytes=%d criteria=%d errors=%v / %v", len(data), len(input.Criteria), err, marshalErr)
 	}
+}
+
+func TestRoundBackoffTracksVerifiedSource(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var deadlines RoundDeadlines
+		var attempts []int
+		delay := func(attempt int) time.Duration {
+			attempts = append(attempts, attempt)
+			return time.Second
+		}
+		for _, source := range []string{"tree-1", "tree-1", "", "tree-2", "tree-2"} {
+			if err := deadlines.WaitForSource(t.Context(), source, delay); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !slices.Equal(attempts, []int{1, 2, 3, 1, 2}) {
+			t.Fatalf("retry attempts = %v", attempts)
+		}
+	})
 }

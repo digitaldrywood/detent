@@ -44,6 +44,11 @@ func (s *Scheduler) ConnectorForProject(project string) (connector.Connector, bo
 	return source, true
 }
 
+func (s *Scheduler) ProjectAtZeroCapacity(project string) bool {
+	source := s.nativeProject(project)
+	return source != nil && s.client.ProjectAtZeroCapacity(source.NativeClient().ProjectID())
+}
+
 func (s *Scheduler) ObserveNativeAdmission(project string, current tracker.NativeAdmissionContext) {
 	if s.client.Enrollment() == nil || s.nativeProject(project) == nil {
 		return

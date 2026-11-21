@@ -268,7 +268,6 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	state *State,
 	issue connector.Issue,
 	now time.Time,
-	cohort ...*blockedRecoveryDependencyEvidence,
 ) bool {
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) && (issue.IssueContract == nil || issue.IssueContract.ReturnState == "" || normalizeState(issue.State) != normalizeState(o.cfg.StopRunTargetState)) {
 		return false

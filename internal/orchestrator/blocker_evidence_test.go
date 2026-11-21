@@ -309,9 +309,6 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 				prior.State = "Rework"
 				prior.PullRequest = &connector.PullRequest{Number: 24, HeadSHA: "unchanged-head"}
 				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, now.Add(-time.Hour), "rework_limit", workflowLaneMetadata{ReworkBreaker: &workflowLaneReworkBreakerMetadata{Reason: string(AutoPromoteReasonCINotGreen)}})
-				if _, found := orch.latestReworkBreakerPark(t.Context(), issue); !found {
-					t.Fatal("fixture must retain the unrelated Rework-limit owner")
-				}
 			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)

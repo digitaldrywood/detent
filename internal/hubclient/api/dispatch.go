@@ -124,6 +124,19 @@ func (c *Client) Draining() bool {
 	defer c.runner.routingMu.Unlock()
 	return c.runner.routing != nil && c.runner.routing.Routing.State == "draining"
 }
+func (c *Client) ProjectAtZeroCapacity(project tracker.ProjectID) bool {
+	if c.runner == nil {
+		return false
+	}
+	c.runner.routingMu.Lock()
+	defer c.runner.routingMu.Unlock()
+	if c.runner.routing == nil {
+		return false
+	}
+	limit, configured := c.runner.routing.Routing.ProjectCapacityLimits[project]
+	return configured && limit == 0
+}
+
 func (c *Client) ProjectConfigurationRequest() *runnerauth.ProjectConfigurationRequest {
 	return c.runner.projectConfigurationRequest()
 }
