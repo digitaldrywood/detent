@@ -654,7 +654,7 @@ type RunRequest struct {
 	OnUsageUpdate             UsageUpdateHandler         `json:"-"`
 	OnActivityUpdate          AgentActivityUpdateHandler `json:"-"`
 	observationPeer           *SSHPeer
-	turnUsageUpdate           func(UsageUpdate, time.Time) error
+	turnUsageUpdate           func(UsageUpdate, bool) error
 	artifactSpool             *sourceArtifactSpool
 	OnOverrideRejected        AgentOverrideRejectionHandler `json:"-"`
 	ProgressProbe             SessionProgressProbe          `json:"-"`

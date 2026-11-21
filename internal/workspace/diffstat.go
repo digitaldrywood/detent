@@ -17,6 +17,7 @@ import (
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -336,6 +337,19 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 	}
 	defer cleanup()
 
+	if includeIndex {
+		return gitDiffWithIndex(ctx, workspacePath, tempIndex, index, true)
+	}
+	var observation gitDiffObservation
+	err = gitexec.WithDiffInspection(ctx, workspacePath, tempIndex, index.HeadSHA, func(inspectionCtx context.Context) error {
+		var err error
+		observation, err = gitDiffWithIndex(inspectionCtx, workspacePath, tempIndex, index, false)
+		return err
+	})
+	return observation, err
+}
+
+func gitDiffWithIndex(ctx context.Context, workspacePath, tempIndex string, index gitIndexObservation, includeIndex bool) (gitDiffObservation, error) {
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
 	addPaths := []string{"."}
 	addEnv := env
@@ -365,6 +379,7 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 		}
 	}
 	var stat DiffStat
+	var err error
 	if includeIndex {
 		staged, err := gitDiffStatWithEnv(ctx, workspacePath, env, "--cached", index.HeadSHA)
 		if err != nil {

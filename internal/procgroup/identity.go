@@ -139,11 +139,18 @@ func WithCommandOwner(ctx context.Context, owner CommandOwner, prepareLocalInspe
 			return nil, errors.New("native command has no process owner")
 		}
 		if prepareLocalInspection(cmd) {
-			Configure(ctx, cmd)
-			return func() error { return Wait(cmd) }, Start(cmd)
+			return StartLocalInspection(ctx, cmd)
 		}
 		return startOwnedCommand(ctx, cmd, owner)
 	})
+}
+
+func StartLocalInspection(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+	Configure(ctx, cmd)
+	if err := Start(cmd); err != nil {
+		return nil, err
+	}
+	return func() error { return Wait(cmd) }, nil
 }
 
 func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (func() error, error) {

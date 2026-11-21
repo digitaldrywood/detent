@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -16,9 +19,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
@@ -170,6 +175,62 @@ func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context
 	}
 }
 
+func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
+	directory := initRunnerSourceRepo(t)
+	attemptDiffFile(t, directory, "work.go", "package example\n")
+	info := workspace.Info{Path: directory}
+	source := &resourceUsageWorkspace{Backend: &fakeWorkspaceBackend{info: info}}
+	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}}
+	for sample := range 5 {
+		backend.updates = append(backend.updates, AgentUpdate{Type: AgentUpdateResourceUsage, RSSBytes: uint64(sample + 1)})
+	}
+	backend.updates = append(backend.updates, AgentUpdate{Type: AgentUpdateTurnCompleted, ThreadID: "thread", TurnID: "turn", Status: "completed"})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: &fakeSessionStore{sessionID: 42}, Workspace: source, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	r.now = func() time.Time {
+		at = at.Add(3 * time.Second)
+		return at
+	}
+	var registered []string
+	ctx := procgroup.WithCommandOwner(t.Context(), func(_ context.Context, cmd *exec.Cmd, _ procgroup.Identity) (func(error, error) error, error) {
+		registered = append(registered, strings.Join(cmd.Args, " "))
+		return func(runErr, cleanupErr error) error { return errors.Join(runErr, cleanupErr) }, nil
+	}, gitexec.PrepareLocalInspection)
+	var gotSamples []uint64
+	var terminalDiff DiffStats
+	request := RunRequest{workspaceBackend: source, OnUsageUpdate: func(usage UsageUpdate) error {
+		if usage.LastEvent == string(AgentUpdateTurnCompleted) {
+			terminalDiff = usage.DiffStats
+		} else {
+			gotSamples = append(gotSamples, usage.RSSBytes)
+			if source.samples != 0 || len(registered) != 0 {
+				t.Errorf("RSS sample %d: %d diff refreshes and %d host command registrations", usage.RSSBytes, source.samples, len(registered))
+			}
+		}
+		return nil
+	}}
+	result := r.runAgentTurn(ctx, backend, AgentTurnRequest{}, request, info, workspace.Issue{}, config.Agent{}, "", nil, at, 42, agentidentity.Identity{}, nil, 0, "example-model", "codex")
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !slices.Equal(gotSamples, []uint64{1, 2, 3, 4, 5}) || source.samples != 1 || terminalDiff.FilesChanged != 1 || terminalDiff.Fingerprint == "" || len(registered) != 0 {
+		t.Fatalf("RSS samples=%v diff refreshes=%d terminal diff=%+v host commands=%v", gotSamples, source.samples, terminalDiff, registered)
+	}
+}
+
+type resourceUsageWorkspace struct {
+	workspace.Backend
+	samples int
+}
+
+func (w *resourceUsageWorkspace) DiffStat(ctx context.Context, info workspace.Info, _ workspace.Issue) (workspace.DiffStat, error) {
+	w.samples++
+	return workspace.GitDiffStat(ctx, info.Path)
+}
+
 func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 	for _, blocked := range []string{"runtime", "artifact", "usage", "activity", "live diff"} {
 		t.Run(blocked, func(t *testing.T) { testCodexTurnWhileObservationBlocked(t, blocked) })
@@ -200,8 +261,11 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 		info := workspace.Info{Path: t.TempDir()}
 		source := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head"}}}}}
 		backend := &completionWithPendingTool{observing: observing, blockAfter: AgentUpdateTurnStarted}
-		if blocked == "artifact" {
+		switch blocked {
+		case "artifact":
 			backend.blockAfter = AgentUpdateMessageDelta
+		case "live diff":
+			backend.blockAfter = AgentUpdateTurnCompleted
 		}
 		var sessions SessionStore = &fakeSessionStore{sessionID: 42}
 

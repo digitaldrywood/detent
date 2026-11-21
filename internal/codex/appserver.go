@@ -1418,6 +1418,16 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
+		if update, matched := legacyTurnCompletion(msg, threadID, turnID); matched {
+			if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil {
+				return failure
+			}
+			if err := emitUpdate(update, onUpdate); err != nil {
+				return err
+			}
+			return finishProviderTurn(ctx, update, toolLoop)
+		}
+
 		if toolLoop != nil {
 			if !snapshotRequested && finalAnswerForTurn(msg, threadID, turnID) {
 				snapshotRequested = true
