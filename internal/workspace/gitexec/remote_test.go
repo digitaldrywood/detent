@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 )
@@ -27,14 +28,56 @@ func TestLocalGitInspectionSkipsCommandRegistration(t *testing.T) {
 		{"rev-parse", "--git-common-dir"}, {"worktree", "list", "--porcelain", "-z"},
 		{"ls-files", "--others", "--exclude-standard", "-z"},
 		{"diff", "--cached", "--name-only", "--no-ext-diff", "-z", "--", "."},
-		{"diff", "--no-ext-diff", "--stat", "--", "."}, {"status", "--porcelain"},
 		{"add", "--", "."},
 	} {
 		if _, err := Run(ctx, checkout, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"init", "config user.name Local Test", "add -- ."}
+	for name, data := range map[string]string{".gitattributes": "tracked.txt filter=fixture\n", "tracked.txt": "before\n"} {
+		if err := os.WriteFile(filepath.Join(checkout, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Run(ctx, checkout, "config", "filter.fixture.clean", "cat; printf x >> filter.log"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, checkout, "add", "--", ".gitattributes", "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	tracked := filepath.Join(checkout, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(1, 0)
+	if err := os.Chtimes(tracked, at, at); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(checkout, "filter.log")
+	for _, test := range []struct {
+		args   []string
+		helper bool
+	}{
+		{[]string{"status", "--porcelain", "--untracked-files=no"}, true},
+		{[]string{"diff", "--no-ext-diff", "--stat", "--", "."}, true},
+		{[]string{"diff", "--cached", "--no-ext-diff", "--stat", "--", "."}, false},
+	} {
+		if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if _, err := Run(ctx, checkout, test.args...); err != nil {
+			t.Fatal(err)
+		}
+		_, err := os.Stat(marker)
+		if test.helper && err != nil || !test.helper && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%v filter invocation: %v", test.args, err)
+		}
+	}
+	want := []string{
+		"init", "config user.name Local Test", "add -- .",
+		"config filter.fixture.clean cat; printf x >> filter.log", "add -- .gitattributes tracked.txt",
+		"status --porcelain --untracked-files=no", "diff --no-ext-diff --stat -- .",
+	}
 	if !slices.Equal(registered, want) {
 		t.Fatalf("registered commands = %q, want %q", registered, want)
 	}

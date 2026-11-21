@@ -196,9 +196,20 @@ func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionSt
 	key := rand.Text() + rand.Text()
 	worker := start.Worker
 	start.Worker = nil
-	value, err := s.mutate(ctx, runnersession.Mutation{Start: &start, Worker: worker, ProcessKey: key})
+	request := runnersession.Mutation{Key: uuid.NewString(), Start: &start, Worker: worker, ProcessKey: key}
+	value, err := s.mutate(ctx, request)
 	if err != nil {
-		return value.ID, err
+		if worker == nil || !NativeTransportUnavailable(err) || ctx.Err() != nil {
+			return value.ID, err
+		}
+		var reconcileErr error
+		value, reconcileErr = s.mutate(ctx, request)
+		if reconcileErr != nil {
+			return 0, errors.Join(err, reconcileErr)
+		}
+		if value.ID <= 0 {
+			return 0, err
+		}
 	}
 	s.workersMu.Lock()
 	defer s.workersMu.Unlock()
@@ -212,7 +223,7 @@ func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionSt
 		}
 		s.workers[value.ID] = *worker
 	}
-	return value.ID, nil
+	return value.ID, err
 }
 
 func (s *RunnerSessions) processKey(id int64) string {

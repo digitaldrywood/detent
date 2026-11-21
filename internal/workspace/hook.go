@@ -23,6 +23,7 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	cmd.Stderr = &output
 	issue.hookOwner.ConfigureCommand(cmd)
 	ctx = WithAttemptWorkspace(ctx, issue.AttemptWorkspace)
+	var rollbackErr error
 	if AttemptWorkspaceFromContext(ctx).Key() != "" {
 		owner := ValidationProcessOwnerFromContext(ctx)
 		if owner == nil {
@@ -35,10 +36,13 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 		if process == nil {
 			return nil, errors.New("native hook has no fenced session")
 		}
-		issue.hookOwner.OnExit(func(cleanup context.Context) error { return process.Finished(cleanup, gate.CommandResult{}, nil) })
+		issue.hookOwner.OnExit(func(cleanup context.Context) error {
+			return process.Finished(cleanup, gate.CommandResult{}, rollbackErr)
+		})
 		ctx = procgroup.WithStartAcknowledgement(ctx, func(id procgroup.Identity) error { return process.Started(ctx, id) })
 	}
 	if err := procgroup.StartAuthorized(ctx, cmd); err != nil {
+		rollbackErr = procgroup.StartRollbackCleanup(err)
 		return output.Bytes(), errors.Join(ctx.Err(), err)
 	}
 	err := procgroup.Wait(cmd)

@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner/sshexec"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -136,7 +138,29 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "store.") {
 			name := strings.TrimPrefix(method, "store.")
 			switch name {
-			case "StartSession", "FinishSession", "ReconcileSessionFinalization", "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy", "LatestAgentResumeState", "LatestIssueAgentResumeState", "ListSecurityAuditDispositions":
+			case "StartSession":
+				return invokeSSHMethod(ctx, func(ctx context.Context, start store.SessionStart) (int64, error) {
+					if start.Worker != nil || sessions == nil {
+						return 0, errors.New("generic SSH session start cannot register a worker")
+					}
+					return sessions.StartSession(ctx, start)
+				}, "", arguments)
+			case "FinishSession":
+				return invokeSSHMethod(ctx, func(ctx context.Context, id int64, finish store.SessionFinish) error {
+					if finish.Reap != nil || sessions == nil {
+						return errors.New("generic SSH session finish cannot reap a worker")
+					}
+					return sessions.FinishSession(ctx, id, finish)
+				}, "", arguments)
+			case "ReconcileSessionFinalization":
+				return invokeSSHMethod(ctx, func(ctx context.Context, id int64, value *sessionmodel.Finalization) error {
+					owner, ok := sessions.(sessionFinalizationStore)
+					if !ok || value != nil && value.Finish.Reap != nil {
+						return errors.New("generic SSH session finalization cannot reap a worker")
+					}
+					return owner.ReconcileSessionFinalization(ctx, id, value)
+				}, "", arguments)
+			case "RecordUsageEvent", "UpdateSessionIdentity", "UpdateSessionProviderIdentity", "UpdateSessionResumeState", "RecordWorkflowPhaseEvent", "SaveWorkflowActivityProfile", "SessionProgress", "SaveSessionProgress", "SessionPolicy", "LatestAgentResumeState", "LatestIssueAgentResumeState", "ListSecurityAuditDispositions":
 				return invokeSSHMethod(ctx, sessions, name, arguments)
 			default:
 				return nil, errors.New("unsupported SSH store method")
