@@ -63,7 +63,8 @@ SELECT COALESCE((
                transaction_timestamp() AS observed_at
         FROM runner_sessions
         WHERE organization_id=:'organization' AND project_id=:'project' AND attempt_id=:'attempt'
-          AND role='validator' AND final_state='running' AND completed_at IS NULL AND provider_thread_id<>''
+          AND role='validator' AND final_state='running' AND completed_at IS NULL
+          AND started_at<=transaction_timestamp()
         ORDER BY started_at DESC,id DESC LIMIT 1
     ) s
 ), 'null'::json);
