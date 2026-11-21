@@ -82,7 +82,12 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 	projectOwner := s.projectConfiguration
 	s.mu.Unlock()
 	for _, source := range s.nativeProjectSnapshot() {
-		result = errors.Join(result, s.heartbeatNativeMachine(ctx, source, projectOwner))
+		if err := s.heartbeatNativeMachine(ctx, source, projectOwner); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		_, err := s.reconnectNativeClaims(ctx, nil, source, 0)
+		result = errors.Join(result, err)
 	}
 	return result
 }
@@ -536,7 +541,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if request.CandidateLimit > 0 {
 		limit = min(limit, request.CandidateLimit)
 	}
-	leases, err := s.reconnectNativeClaims(ctx, request, source, limit)
+	leases, err := s.reconnectNativeClaims(ctx, &request, source, limit)
 	if err != nil {
 		return nil, schedulingError(err)
 	}
@@ -685,7 +690,7 @@ func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *Nati
 	return nil
 }
 
-func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, limit int) ([]tracker.NativeLease, error) {
+func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request *orchestrator.SchedulingRequest, source *NativeConnector, limit int) ([]tracker.NativeLease, error) {
 	if s.client.Enrollment() == nil {
 		return nil, nil
 	}
@@ -718,9 +723,19 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 	if err := s.client.Request(ctx, http.MethodGet, path, nil, &owner); err != nil {
 		return nil, err
 	}
+	var policyID string
+	if request != nil {
+		policyID = request.Policy.ID
+	} else {
+		approval, err := source.NativeClient().ProjectPolicy(ctx)
+		if err != nil {
+			return nil, err
+		}
+		policyID = approval.Policy.ID
+	}
 	var leases []tracker.NativeLease
 	for _, held := range owner.Leases {
-		if held.ProjectID != source.NativeClient().ProjectID() || held.Policy.ID != request.Policy.ID || len(held.Exclusions) != 0 {
+		if held.ProjectID != source.NativeClient().ProjectID() || held.Policy.ID != policyID || len(held.Exclusions) != 0 {
 			continue
 		}
 		s.mu.Lock()
@@ -736,12 +751,15 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		if recovery.ContinuationEligible == nil {
 			return nil, ErrUnavailable
 		}
+		interrupted := false
 		for _, attempt := range recovery.Attempts {
-			if attempt.LeaseID == held.ID && attempt.Status != "running" && attempt.Status != "interrupted" {
-				adopted = true
+			if attempt.LeaseID != held.ID || attempt.FencingToken != held.FencingToken {
+				continue
 			}
+			interrupted = interrupted || attempt.Status == "interrupted"
+			adopted = adopted || attempt.Status != "running" && attempt.Status != "interrupted"
 		}
-		if adopted {
+		if adopted || request == nil && !interrupted {
 			continue
 		}
 		renewable := *recovery.ContinuationEligible
@@ -752,12 +770,12 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 			}
 		}
 		if !renewable {
+			if request == nil {
+				continue
+			}
 			if err := source.NativeClient().ReleaseAttempt(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "cancelled", true); err != nil && !nativeLeaseLost(err) {
 				return nil, err
 			}
-			continue
-		}
-		if request.CandidateKnownWait != nil && request.CandidateKnownWait(issueFromNative(recovery.Issue)) {
 			continue
 		}
 		lease, err := source.NativeClient().Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
@@ -766,6 +784,9 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		}
 		if err != nil {
 			return nil, err
+		}
+		if request == nil || request.CandidateKnownWait != nil && request.CandidateKnownWait(issueFromNative(recovery.Issue)) {
+			continue
 		}
 		leases = append(leases, lease)
 		if len(leases) == limit {
