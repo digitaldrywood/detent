@@ -20,7 +20,7 @@ import (
 
 func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, attempts []leasestore.Attempt, evidence bool) (tenantstore.AttemptMetadata, error) {
 	metadata := tenantstore.AttemptMetadata{
-		Leases: make(map[string]leasestore.Lease), Events: make(map[string]eventstore.Event),
+		Leases: make(map[string]leasestore.ObservedLease), Events: make(map[string]eventstore.Event),
 		Archives: make(map[string]artifactstore.ArchiveObject), Attachments: make(map[string]attachmentstore.Record),
 		Evidence: make(map[string][]attachmentstore.Record),
 	}
@@ -45,12 +45,16 @@ func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID
 		return metadata, nil
 	}
 	batch := &pgx.Batch{}
-	batch.Queue(`SELECT organization_id,lease_id,fencing_token,issue_id,machine_id,session_id,work_item_revision,landing_capacity,acquired_at,renewed_at,expires_at,released_at,release_reason,project_id,runner_id,isolation_tier FROM leases WHERE organization_id=$1 AND lease_id=ANY($2::text[])`, s.organization, leases).Query(func(rows pgx.Rows) error {
-		values, err := pgx.CollectRows(rows, pgx.RowToStructByName[pgquery.Lease])
-		for _, value := range values {
-			metadata.Leases[value.LeaseID] = leasestore.Lease(value)
+	batch.Queue(observedLeaseSQL+"l.lease_id=ANY($2::text[])", s.organization, leases).Query(func(rows pgx.Rows) error {
+		defer rows.Close()
+		for rows.Next() {
+			value, err := scanObservedLease(rows)
+			if err != nil {
+				return err
+			}
+			metadata.Leases[value.LeaseID] = value
 		}
-		return err
+		return rows.Err()
 	})
 	batch.Queue(`SELECT latest.* FROM unnest($4::text[]) requested(attempt_id) CROSS JOIN LATERAL (
 		SELECT * FROM collaboration_events WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3

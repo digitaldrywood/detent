@@ -427,6 +427,9 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodGet, wrongItemPath, token, nil), http.StatusNotFound)
 
 	clock.Advance(6 * time.Minute)
+	if _, err := adminDB.ExecContext(t.Context(), "UPDATE leases SET expires_at=transaction_timestamp() WHERE organization_id=$1 AND lease_id=$2", organization.ID, lease.LeaseID); err != nil {
+		t.Fatal(err)
+	}
 	response = performHubAPIRequest(t, service, http.MethodGet, runtimePath, token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	evidence = tracker.NativeRuntimeEvidence{}
@@ -469,9 +472,6 @@ func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(
 		if err := repository.WriteTenant(t.Context(), organization.ID, corestore.Serving, func(w tenantstore.Writer) error {
 			row, err := w.WorkItem(t.Context(), project.ID, issue.WorkItemID)
 			if err != nil {
-				return err
-			}
-			if _, err := w.Release(t.Context(), leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, "finished"); err != nil {
 				return err
 			}
 			next, err = w.Claim(t.Context(), leasestore.Claim{IssueID: row.ID, ExpectedRevision: row.Revision, MachineID: machineID, SessionID: "runtime-next-session", LeaseID: "lease_runtime_next", TTL: 15 * time.Minute})

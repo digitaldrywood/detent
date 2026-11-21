@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -65,9 +66,25 @@ func (s *session) LockMachine(ctx context.Context, id string) (leasestore.Machin
 	return machine, mapError(ctx, err)
 }
 
+const observedLeaseSQL = `SELECT l.organization_id,l.lease_id,l.fencing_token,l.issue_id,l.machine_id,l.session_id,l.work_item_revision,l.landing_capacity,l.acquired_at,l.renewed_at,l.expires_at,l.released_at,l.release_reason,l.project_id,l.runner_id,l.isolation_tier,
+ transaction_timestamp(),(` + boardviewsql.UnexpiredLease + `) FROM leases l WHERE l.organization_id=$1 AND `
+
+func scanObservedLease(row interface{ Scan(...any) error }) (leasestore.ObservedLease, error) {
+	var lease leasestore.ObservedLease
+	err := row.Scan(&lease.OrganizationID, &lease.LeaseID, &lease.FencingToken, &lease.IssueID, &lease.MachineID, &lease.SessionID,
+		&lease.WorkItemRevision, &lease.LandingCapacity, &lease.AcquiredAt, &lease.RenewedAt, &lease.ExpiresAt, &lease.ReleasedAt,
+		&lease.ReleaseReason, &lease.ProjectID, &lease.RunnerID, &lease.IsolationTier, &lease.At, &lease.Unexpired)
+	return lease, err
+}
+
 func (s *session) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
 	row, err := s.queries.GetLease(ctx, pgquery.GetLeaseParams{OrganizationID: s.organization, LeaseID: id})
 	return leasestore.Lease(row), mapError(ctx, err)
+}
+
+func (s *session) LeaseSnapshot(ctx context.Context, id string) (leasestore.ObservedLease, error) {
+	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.lease_id=$2", s.organization, id))
+	return lease, mapError(ctx, err)
 }
 
 func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasestore.Lease, error) {
@@ -102,13 +119,9 @@ func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (lease
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
-func (s *session) ActiveLeaseForIssueSnapshot(ctx context.Context, issueID int64) (leasestore.Lease, time.Time, error) {
-	var at time.Time
-	if err := s.db.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&at); err != nil {
-		return leasestore.Lease{}, time.Time{}, mapError(ctx, err)
-	}
-	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID, LeaseClock: &at})
-	return leasestore.Lease(row), at, mapError(ctx, err)
+func (s *session) ActiveLeaseForIssueSnapshot(ctx context.Context, issueID int64) (leasestore.ObservedLease, error) {
+	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.issue_id=$2 AND "+boardviewsql.UnexpiredLease, s.organization, issueID))
+	return lease, mapError(ctx, err)
 }
 
 func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {

@@ -284,7 +284,7 @@ func TestBoardViewCardsMatchLaneCards(t *testing.T) {
 				card.StatusLine = nativeBoardStatusLine(card)
 				snapshot := boardProjectionSnapshot{organizationSlug: strings.ReplaceAll(string(org), "_", "-"), project: record, item: item}
 				if card.Execution != nil {
-					snapshot.lease = &leasestore.Lease{LeaseID: card.Execution.ID, FencingToken: 1, ExpiresAt: card.Execution.ExpiresAt}
+					snapshot.lease = &leasestore.ObservedLease{Lease: leasestore.Lease{LeaseID: card.Execution.ID, FencingToken: 1, ExpiresAt: card.Execution.ExpiresAt}}
 				}
 				row := boardProjectionRecord(snapshot, card)
 				row.ProjectedAt = now

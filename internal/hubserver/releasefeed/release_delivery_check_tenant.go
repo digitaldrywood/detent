@@ -99,10 +99,11 @@ func (s *Delivery) readReleaseDeliveryRows(ctx context.Context, r tenantstore.Re
 		}
 		attempt := rows.attempt.Attempt
 		if attempt.ID != "" && attempt.Status == "succeeded" && attempt.WorkItemRevision >= rows.current.Revision && attempt.DispatchGeneration >= rows.current.DispatchGeneration {
-			rows.attempt.Lease, err = r.Lease(ctx, attempt.LeaseID)
+			lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 			if err != nil {
 				return rows, err
 			}
+			rows.attempt.Lease, rows.attempt.LeaseObservation = lease.Lease, lease.LeaseObservation
 			if err = hubrecords.ReadTenantAttemptPayload(ctx, r, &rows.attempt); err != nil {
 				return rows, err
 			}
