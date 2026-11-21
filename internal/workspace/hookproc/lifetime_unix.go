@@ -57,32 +57,13 @@ func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error
 type writerSnapshotKey struct{}
 
 func (l *Lifetime) recordWriters(ctx context.Context) (context.Context, error) {
+	retained := l.retainedWriters(ctx)
 	holders, err := l.candidates(ctx)
 	ctx = context.WithValue(ctx, writerSnapshotKey{}, holders)
-	matched := false
-	for _, pid := range holders {
-		start, inspectErr := procstart.Identity(pid)
-		if errors.Is(inspectErr, procstart.ErrNotRunning) {
-			continue
-		}
-		if inspectErr != nil {
-			err = errors.Join(err, inspectErr)
-			continue
-		}
-		writer, inspectErr := l.holdsWriter(ctx, pid)
-		if inspectErr != nil || !writer {
-			err = errors.Join(err, inspectErr)
-			continue
-		}
-		current, inspectErr := procstart.Matches(pid, start)
-		if inspectErr != nil || !current {
-			err = errors.Join(err, inspectErr)
-			continue
-		}
-		matched = true
-		if l.starts[pid] != start {
-			l.recordWitness(pid, start)
-		}
+	matched, verifyErr := l.recordWriterCandidates(ctx, holders)
+	err = errors.Join(err, verifyErr)
+	if !matched && err == nil {
+		matched, err = l.stillHoldsWriter(ctx, retained)
 	}
 	if !matched || err != nil {
 		active, activeErr := l.Active()
@@ -92,6 +73,62 @@ func (l *Lifetime) recordWriters(ctx context.Context) (context.Context, error) {
 		err = errors.Join(err, activeErr)
 	}
 	return ctx, err
+}
+
+func (l *Lifetime) retainedWriters(ctx context.Context) map[int]string {
+	retained := make(map[int]string, len(l.starts))
+	for pid, start := range l.starts {
+		if observed, err := l.writerIdentity(ctx, pid); err == nil && observed != "" && observed == start {
+			retained[pid] = observed
+		}
+	}
+	return retained
+}
+
+func (l *Lifetime) stillHoldsWriter(ctx context.Context, before map[int]string) (bool, error) {
+	for pid, start := range before {
+		observed, err := l.writerIdentity(ctx, pid)
+		if err != nil || observed == start {
+			return observed == start, err
+		}
+	}
+	return false, nil
+}
+
+func (l *Lifetime) recordWriterCandidates(ctx context.Context, candidates []int) (bool, error) {
+	matched := false
+	var err error
+	for _, pid := range candidates {
+		start, inspectErr := l.writerIdentity(ctx, pid)
+		err = errors.Join(err, inspectErr)
+		if start == "" {
+			continue
+		}
+		matched = true
+		if l.starts[pid] != start {
+			l.recordWitness(pid, start)
+		}
+	}
+	return matched, err
+}
+
+func (l *Lifetime) writerIdentity(ctx context.Context, pid int) (string, error) {
+	start, err := procstart.Identity(pid)
+	if errors.Is(err, procstart.ErrNotRunning) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	writer, err := l.holdsWriter(ctx, pid)
+	if err != nil || !writer {
+		return "", err
+	}
+	current, err := procstart.Matches(pid, start)
+	if err != nil || !current {
+		return "", err
+	}
+	return start, nil
 }
 
 func (l *Lifetime) Active() (bool, error) {
