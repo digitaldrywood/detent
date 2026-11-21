@@ -683,13 +683,32 @@ func TestNativeCandidateStatesExcludeTheLandingLane(t *testing.T) {
 	if got := strings.Join(orch.candidateFetchStatesForTick(&state), ","); got != "todo,in progress" {
 		t.Fatalf("native candidate states = %s", got)
 	}
-	issue := completionTransitionIssue("Merging", "")
-	if mode := orch.dispatchMode(t.Context(), &state, issue); mode != runpkg.RunModeImplement {
-		t.Fatalf("bare Merging lane chose mode %q", mode)
-	}
-	issue.NativeLandingHeadSHA = "reviewed-head"
-	if mode := orch.dispatchMode(t.Context(), &state, issue); mode != runpkg.RunModeMerge {
-		t.Fatalf("evidenced landing chose mode %q", mode)
+	for _, test := range []struct {
+		name, head, label, mode string
+	}{
+		{name: "missing approval", label: "requires-human-review", mode: runpkg.RunModeImplement},
+		{name: "reviewed head", head: "reviewed-head", mode: runpkg.RunModeMerge},
+		{name: "human approved", head: "reviewed-head", label: "requires-human-review", mode: runpkg.RunModeMerge},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issue := dispatchTestIssue("historical-landing", "Merging")
+			issue.NativeLandingHeadSHA = test.head
+			if test.label != "" {
+				issue.Labels = []string{test.label}
+			}
+			state := newState(cfg)
+			orch := &Orchestrator{cfg: cfg, connector: orch.connector, supervisor: newTestSupervisor(t, FakeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1)}
+			if !orch.dispatchIssue(t.Context(), &state, issue, 0, time.Now(), "") {
+				t.Fatal("dispatch refused the candidate")
+			}
+			active := state.Running[issue.ID]
+			defer active.cancel()
+			result := <-orch.runResults
+			<-active.done
+			if result.Request.Mode != test.mode {
+				t.Fatalf("dispatched mode %q, want %q", result.Request.Mode, test.mode)
+			}
+		})
 	}
 }
 
