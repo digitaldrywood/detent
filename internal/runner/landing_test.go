@@ -1060,6 +1060,54 @@ type validationLandingBackend struct {
 	landingBackend
 }
 
+type directLandingCleanupBackend struct {
+	landingBackend
+	cleanupErr   error
+	cleanupCalls int
+}
+
+func (b *directLandingCleanupBackend) CleanupLanding(context.Context, workspace.Info, workspace.Issue) error {
+	b.cleanupCalls++
+	return b.cleanupErr
+}
+
+func TestDirectNativeLandingReportsCleanup(t *testing.T) {
+	head, merged := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for _, test := range []struct {
+		name       string
+		cleanupErr error
+	}{
+		{name: "verified cleanup"},
+		{name: "failed cleanup", cleanupErr: errors.New("worktree is busy")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &directLandingCleanupBackend{
+				landingBackend: landingBackend{
+					Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+					result:  workspace.LandResult{MergeSHA: merged, BaseRef: "main"},
+				},
+				cleanupErr: test.cleanupErr,
+			}
+			execution := &landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{
+				ChangeID: "change_example", VersionID: "version_example", HeadSHA: head,
+				BaseRef: "main", Method: "squash", Repository: "https://github.com/example-org/example-project",
+			}}}
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", State: "Merging"}, Mode: RunModeMerge, Execution: execution, DeferExecutionFinish: true})
+			wantRetired := test.cleanupErr == nil
+			if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || backend.cleanupCalls != 1 || result.NativeLanding.WorkspaceRetired != wantRetired {
+				t.Fatalf("result cleanup: landing=%+v calls=%d error=%v", result.NativeLanding, backend.cleanupCalls, err)
+			}
+			if len(execution.landingObservations) != 1 || execution.landingObservations[0].WorkspaceRetired != wantRetired {
+				t.Fatalf("cleanup observation = %+v, want retired=%t", execution.landingObservations, wantRetired)
+			}
+		})
+	}
+}
+
 func (b *validationLandingBackend) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
 	return b.Backend.(workspace.RecoveryStateProvider).RecoveryState(ctx, info, issue)
 }
