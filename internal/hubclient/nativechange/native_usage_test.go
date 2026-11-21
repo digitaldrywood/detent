@@ -256,24 +256,24 @@ func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
 						t.Fatalf("usage callback cancelled the live turn: %v", err)
 					}
 				}
-				count, batchSize := int64(1), int64(1)
-				if batched {
-					count, batchSize = 50, 8
-				}
+				const count int64 = 50
 				for revision := int64(1); revision <= count; revision++ {
 					update(revision)
-					if batched && revision < 8 && len(requests) != 0 {
-						t.Fatal("changed usage bypassed observation batching")
-					}
 				}
-				if len(requests) != int(count/batchSize)+1 || !bytes.Equal(requests[0], requests[1]) || len(accepted) != int(count/batchSize) {
+				if len(requests) != 0 {
+					t.Fatalf("%d usage updates made %d writes before an authoritative event", count, len(requests))
+				}
+				if err := execution.FlushRuntime(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if len(requests) != 2 || !bytes.Equal(requests[0], requests[1]) || len(accepted) != 1 {
 					t.Fatalf("budget retry changed event identity or sent extra writes: requests=%d accepted=%d", len(requests), len(accepted))
 				}
 				if time.Since(now) != time.Minute || ctx.Err() != nil || execution.data.Outcome != "" {
 					t.Fatalf("budget refusal ended the live turn: elapsed=%s cause=%v", time.Since(now), context.Cause(ctx))
 				}
-				if len(accepted[0].PriorEvents) != int(batchSize)-1 || accepted[0].Data.Usage[0].Input != batchSize*10 || execution.data.Usage[0].Input != count*10 {
-					t.Fatalf("batch lost cumulative usage: %+v", accepted[0])
+				if accepted[0].Data.Usage[0].Input != count*10 || execution.data.Usage[0].Input != count*10 {
+					t.Fatalf("heartbeat lost cumulative usage: %+v", accepted[0])
 				}
 				update(count + 1)
 				execution.storedSeq = execution.data.Sequence + 1

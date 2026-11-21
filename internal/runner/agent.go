@@ -1234,8 +1234,6 @@ func (r *Runner) runAgentTurn(
 	var finishObservations func() error
 	updates := runRequest
 	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
-	var offerIdentity func(store.SessionProviderIdentity)
-	var finishIdentity func()
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
@@ -1258,18 +1256,7 @@ func (r *Runner) runAgentTurn(
 			}
 		}
 	}
-	if providerStore, ok := r.store.(sessionProviderStore); observe != nil && ok && detentSessionID > 0 {
-		var retryIdentity func()
-		offerIdentity, retryIdentity, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
-			return providerStore.UpdateSessionProviderIdentity(ctx, detentSessionID, identity)
-		}, func(err error) {
-			r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", detentSessionID, "error", err)
-		})
-		if activityProfile != nil {
-			activityProfile.providerIdentityRetry.Store(&retryIdentity)
-			defer activityProfile.providerIdentityRetry.Store(nil)
-		}
-	}
+
 	var liveDiff atomic.Pointer[liveDiffSnapshot]
 	if observe != nil && runRequest.OnUsageUpdate != nil {
 		var diffProgress agentRunProgress
@@ -1347,33 +1334,19 @@ func (r *Runner) runAgentTurn(
 				providerResume.SessionID = strings.TrimSpace(update.ProviderSessionID)
 			}
 		}
-		if observe == nil {
+		if runRequest.Execution == nil {
 			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
-		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
-			offerIdentity(store.SessionProviderIdentity{ThreadID: providerResume.ThreadID, SessionID: providerResume.SessionID})
 		}
 		if err := publishAgentActivity(updates, detentSessionID, update, eventAt); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
-		if update.Type == AgentUpdateTokenUsage {
-			report := func(ctx context.Context, sample RunResult) error {
-				return usageReport.report(ctx, runRequest.Execution, sample, sessionModel, backendKind, r.usageCostUSD, false)
-			}
-			if observe != nil {
-				sample := result
-				observe(func(ctx context.Context) error { return report(ctx, sample) })
-			} else if err := report(updateCtx, result); err != nil {
-				return err
-			}
-		}
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
-			identity := result.RuntimeIdentity
-			if observe != nil {
-				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, detentSessionID, identity) })
-			} else if err := r.persistSessionIdentity(updateCtx, detentSessionID, identity); err != nil {
-				return err
+			if runRequest.Execution == nil {
+				if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+					return err
+				}
 			}
 			if result.RuntimeIdentity.HasRuntimeValues() {
 				r.logRuntimeIdentity(runRequest, detentSessionID, update, previousIdentity, result.RuntimeIdentity)
@@ -1410,9 +1383,6 @@ func (r *Runner) runAgentTurn(
 		}
 		return nil
 	}), r.turnLimit)
-	if finishIdentity != nil {
-		finishIdentity()
-	}
 	if finishObservations != nil {
 		turnErr = errors.Join(turnErr, finishObservations())
 	}
@@ -4370,7 +4340,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		return gate.ValidatorResult{}, err
 	}
 	runReq.StartedAt = startedAt
-	activityProfile := r.startActivityProfile(ctx, runReq, sessionID, info.Path, workflow, "validation")
+	profileRequest := runReq
+	profileRequest.Execution = req.usageExecution
+	activityProfile := r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, "validation")
 	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
 	sessionCtx, cancelSession := r.sessionLimit(
@@ -4425,19 +4397,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	turnCtx := sessionCtx
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
-	var offerIdentity func(store.SessionProviderIdentity)
-	var finishIdentity func()
 	if req.NativeVersion != nil && backendConfig.Kind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(sessionCtx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", req.Issue.ID, "error", err)
 		})
-		if providerStore, ok := r.store.(sessionProviderStore); ok && sessionID > 0 {
-			offerIdentity, _, finishIdentity = runobserve.KeepProviderIdentity(turnCtx, func(ctx context.Context, identity store.SessionProviderIdentity) error {
-				return providerStore.UpdateSessionProviderIdentity(ctx, sessionID, identity)
-			}, func(err error) {
-				r.logger.Warn("agent session provider identity persistence deferred", "detent_session_id", sessionID, "error", err)
-			})
-		}
+
 		if peer := req.observationPeer; peer != nil && runReq.OnUsageUpdate != nil {
 			var diffProgress agentRunProgress
 			runReq.turnUsageUpdate = func(usage UsageUpdate, at time.Time) error {
@@ -4490,10 +4454,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
 			return err
 		}
-		if observe == nil {
+		if req.NativeVersion == nil {
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
-		} else if offerIdentity != nil && !update.AuxiliaryTurn && (strings.TrimSpace(update.ThreadID) != "" || strings.TrimSpace(update.ProviderSessionID) != "") {
-			offerIdentity(store.SessionProviderIdentity{ThreadID: strings.TrimSpace(update.ThreadID), SessionID: strings.TrimSpace(update.ProviderSessionID)})
 		}
 		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
 			return err
@@ -4506,23 +4468,11 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if !update.AuxiliaryTurn && (update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "") {
 			runResult.TurnStarted = true
 		}
-		if update.Type == AgentUpdateTokenUsage {
-			sample := runResult
-			report := func(ctx context.Context) error {
-				return usageReport.report(ctx, req.usageExecution, sample, sessionModel, backendConfig.Kind, r.usageCostUSD, false)
-			}
-			if observe != nil {
-				observe(report)
-			} else if err := report(updateCtx); err != nil {
-				return err
-			}
-		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-			identity := runResult.RuntimeIdentity
-			if observe != nil {
-				observe(func(ctx context.Context) error { return r.persistSessionIdentity(ctx, sessionID, identity) })
-			} else if err := r.persistSessionIdentity(updateCtx, sessionID, identity); err != nil {
-				return err
+			if req.NativeVersion == nil {
+				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+					return err
+				}
 			}
 			if runResult.RuntimeIdentity.HasRuntimeValues() {
 				r.logRuntimeIdentity(runReq, sessionID, update, previousIdentity, runResult.RuntimeIdentity)
@@ -4540,9 +4490,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		return nil
 	}, r.turnLimit)
-	if finishIdentity != nil {
-		finishIdentity()
-	}
 	if finishObservations != nil {
 		turnErr = errors.Join(turnErr, finishObservations())
 	}
@@ -5315,7 +5262,13 @@ func (r *Runner) finishSession(
 	usageModel, actualCostUSD := finalization.Usage.Model, finalization.Usage.CostUSD
 	projectedCostUSD, projectionOvershootUSD := finalization.Usage.ProjectedCostUSD, finalization.Usage.ProjectionOvershootUSD
 
-	if err := r.store.FinishSession(ctx, sessionID, finalization.Finish); err != nil {
+	owner, atomic := r.store.(sessionFinalizationStore)
+	atomic = atomic && finalization.Phase != nil && workspace.AttemptWorkspaceFromContext(ctx).Key() != ""
+	if atomic {
+		if err := owner.ReconcileSessionFinalization(ctx, sessionID, finalization); err != nil {
+			return fmt.Errorf("finish agent session: %w", err)
+		}
+	} else if err := r.store.FinishSession(ctx, sessionID, finalization.Finish); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
 	attrs := []any{
@@ -5340,6 +5293,9 @@ func (r *Runner) finishSession(
 			"actual_cost_usd", actualCostUSD,
 			"projection_overshoot_usd", projectionOvershootUSD,
 		)
+	}
+	if atomic {
+		return nil
 	}
 	if _, err := r.store.RecordUsageEvent(ctx, finalization.Usage); err != nil {
 		return fmt.Errorf("record usage event: %w", err)

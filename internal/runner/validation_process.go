@@ -24,11 +24,11 @@ type workerRegistrationStore interface {
 }
 
 type hostValidationProcess struct {
-	store      workerRegistrationStore
-	sessionID  int64
-	root       string
-	scratch    string
-	registered bool
+	store     workerRegistrationStore
+	sessionID int64
+	start     store.SessionStart
+	root      string
+	scratch   string
 }
 
 func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector.Issue, attemptID int64) context.Context {
@@ -52,26 +52,11 @@ func withValidationProcessOwner(ctx context.Context, sessions SessionStore, proj
 		if identifier == "" {
 			identifier = observedIssue.Identifier
 		}
-		sessionID, err := owner.StartSession(ctx, store.SessionStart{
+		start := store.SessionStart{
 			ProjectID: project, IssueID: issueID, Identifier: identifier, IssueURL: issue.URL,
 			WorkAttemptID: attemptID, StartedAt: time.Now().UTC(), AgentBackendKind: "host", AgentRole: store.WorkerProcessRoleHostValidation,
-		})
-		if err != nil {
-			return nil, err
 		}
-		if sessionID <= 0 {
-			return nil, ErrExecutionAuthorityUnavailable
-		}
-		process := &hostValidationProcess{store: owner, sessionID: sessionID, root: info.Path, scratch: scratch}
-		if info.Path != "" && scratch != "" {
-			if err := owner.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{CleanupRoot: info.Path, CleanupPath: scratch}); err != nil {
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-				defer cancel()
-				return nil, errors.Join(err, owner.FinishSession(cleanup, sessionID, store.SessionFinish{CompletedAt: time.Now().UTC(), FinalState: FinalStateFailed}))
-			}
-			process.registered = true
-		}
-		return process, nil
+		return &hostValidationProcess{store: owner, start: start, root: info.Path, scratch: scratch}, nil
 	})
 }
 
@@ -80,33 +65,41 @@ func (p *hostValidationProcess) Started(ctx context.Context, identity procgroup.
 	if err != nil {
 		return err
 	}
-	err = p.store.UpdateSessionWorkerProcess(ctx, p.sessionID, store.WorkerProcessRegistration{
+	p.start.Worker = &store.WorkerProcessRegistration{
 		WorkerProcessIdentity: worker,
 		CleanupRoot:           p.root, CleanupPath: p.scratch,
-	})
-	p.registered = p.registered || err == nil
+	}
+	p.sessionID, err = p.store.StartSession(ctx, p.start)
+	if err == nil && p.sessionID <= 0 {
+		return ErrExecutionAuthorityUnavailable
+	}
 	return err
 }
 
 func (p *hostValidationProcess) Finished(ctx context.Context, result gate.CommandResult, cleanupErr error) error {
+	if p.sessionID <= 0 {
+		return nil
+	}
 	now := time.Now().UTC()
-	var reapErr error
-	if cleanupErr == nil && p.registered {
-		reapErr = p.store.MarkSessionWorkerProcessReaped(ctx, p.sessionID, store.WorkerProcessReap{
+	finish := store.SessionFinish{
+		CompletedAt: now, FinalState: FinalStateFailed, RuntimeSeconds: int64(time.Duration(result.DurationNS) / time.Second),
+	}
+	if cleanupErr == nil {
+		finish.Reap = &store.WorkerProcessReap{
 			ReapedAt: now, Outcome: string(procgroup.TerminationOutcomeAlreadyExited), Reason: store.WorkerProcessRoleHostValidation,
-		})
+		}
+		if result.ExitCode == 0 {
+			finish.FinalState = FinalStateCompleted
+		}
 	}
-	state := FinalStateFailed
-	if result.ExitCode == 0 && cleanupErr == nil {
-		state = FinalStateCompleted
-	}
-	return errors.Join(reapErr, p.store.FinishSession(ctx, p.sessionID, store.SessionFinish{
-		CompletedAt: now, FinalState: state, RuntimeSeconds: int64(time.Duration(result.DurationNS) / time.Second),
-	}))
+	return p.store.FinishSession(ctx, p.sessionID, finish)
 }
 
 func (r *Runner) reserveSessionWorkerScratch(sessionID int64, root, cleanupPath string) func(context.Context, string) error {
 	return func(ctx context.Context, scratch string) error {
+		if workspace.AttemptWorkspaceFromContext(ctx).Key() != "" {
+			return nil
+		}
 		owner, ok := r.store.(sessionWorkerProcessStore)
 		if !ok || sessionID <= 0 {
 			return nil

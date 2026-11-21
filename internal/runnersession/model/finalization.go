@@ -13,7 +13,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
+type WorkerProcessReap struct {
+	ReapedAt time.Time
+	Outcome  string
+	Reason   string
+}
+
 type SessionFinish struct {
+	Reap                  *WorkerProcessReap `json:",omitempty"`
 	TurnStartRefused      bool
 	CompletedAt           time.Time
 	Turns                 int64

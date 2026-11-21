@@ -75,166 +75,190 @@ func testRunnerSessionFinalizationRecovery(t *testing.T, f, other hubfixture.Lea
 			t.Fatalf("activity profile hid complete legacy finalization: %v", err)
 		}
 	})
-	for _, operation := range []string{"finish", "usage", "phase"} {
-		for _, committed := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/runner_%d/%s/committed_%t", f.Organization, index, operation, committed), func(t *testing.T) {
-				native, ctx := f.Client(t, index)
-				started := time.Now()
-				sessions := api.NewRunnerSessions(native)
-				id, err := sessions.StartSession(ctx, store.SessionStart{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), StartedAt: started, RequestedModel: string(f.Organization), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"})
-				if err != nil {
-					t.Fatal(err)
-				}
-				value := &sessionmodel.Finalization{SessionID: id,
-					Finish: store.SessionFinish{CompletedAt: started.Add(time.Second), Turns: 1, InputTokens: 100, OutputTokens: 10, TotalTokens: 110, FinalState: "completed", Model: string(f.Organization)},
-					Usage:  store.UsageEvent{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: started.Add(time.Second), InputTokens: 100, OutputTokens: 10, TotalTokens: 110, Outcome: "completed", Model: string(f.Organization)},
-					Phase:  &store.WorkflowPhaseEvent{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: started.Add(time.Second), PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed", Turns: 1, InputTokens: 100, OutputTokens: 10, TotalTokens: 110},
-				}
-				var failed atomic.Bool
-				fault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					selected := false
-					if r.Method == http.MethodPost {
-						raw, err := io.ReadAll(r.Body)
-						if err != nil {
-							t.Error(err)
-							return
-						}
-						if err := r.Body.Close(); err != nil {
-							t.Error(err)
-							return
-						}
-						r.Body = io.NopCloser(bytes.NewReader(raw))
-						var mutation runnersession.Mutation
-						if err := json.Unmarshal(raw, &mutation); err != nil {
-							t.Error(err)
-							return
-						}
-						selected = mutation.SessionID == id && (operation == "finish" && mutation.Finish != nil || operation == "usage" && mutation.Usage != nil || operation == "phase" && mutation.Phase != nil) && failed.CompareAndSwap(false, true)
-					}
-					if !selected {
-						f.Hub.Handler().ServeHTTP(w, r)
-						return
-					}
-					if !committed {
-						w.Header().Set("Content-Type", "application/json")
-						w.WriteHeader(http.StatusServiceUnavailable)
-						if _, err := w.Write([]byte(`{"code":"unavailable"}`)); err != nil {
-							t.Error(err)
-						}
-						return
-					}
-					response := httptest.NewRecorder()
-					f.Hub.Handler().ServeHTTP(response, r)
-					if response.Code != http.StatusOK {
-						t.Errorf("finalization did not commit before response loss: status=%d", response.Code)
-					}
-					w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
-					w.WriteHeader(response.Code)
-					if _, err := w.Write(response.Body.Bytes()); err != nil {
-						t.Error(err)
-					}
-				}))
-				t.Cleanup(fault.Close)
-				transport, err := api.New(api.Config{URL: fault.URL, TokenSource: func() string { return f.Tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				uncertain, err := transport.Native(f.Organization, "prj_runner")
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := api.NewRunnerSessions(uncertain).ReconcileSessionFinalization(ctx, id, value); err == nil || !failed.Load() {
-					t.Fatalf("finalization failure not reported: error=%v fault=%t", err, failed.Load())
-				}
-				readHistory := func() []runnersession.History {
-					t.Helper()
-					var history []runnersession.History
-					if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-						var err error
-						history, err = r.(runnersession.Reader).RunnerSessionHistory(t.Context(), "prj_runner", id, 0, 8)
-						return err
-					}); err != nil {
-						t.Fatal(err)
-					}
-					return history
-				}
-				wantBefore := map[string]int{"finish": 1, "usage": 2, "phase": 3}[operation]
-				if committed {
-					wantBefore++
-				}
-				if history := readHistory(); len(history) != wantBefore {
-					t.Fatalf("wrong durable prefix after failure: entries=%d want=%d", len(history), wantBefore)
-				}
-				restarted, restartedCtx := f.Client(t, index)
-				if err := api.NewRunnerSessions(restarted).ReconcileSessionFinalization(restartedCtx, id, value); err != nil {
-					t.Fatal(err)
-				}
-				var snapshot runnersession.Snapshot
-				if err := restarted.Transport().Request(restartedCtx, http.MethodGet, restarted.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &snapshot); err != nil {
-					t.Fatal(err)
-				}
-				if snapshot.Finalization == nil || !snapshot.Finalization.Finished || !snapshot.Finalization.UsageRecorded || !snapshot.Finalization.PhaseRecorded || snapshot.Finish == nil || snapshot.ID != id || snapshot.Finalization.Input.SessionID != id || snapshot.Start.RequestedModel != string(f.Organization) {
-					t.Fatalf("restarted finalization lost immutable identity or durable stages: %+v", snapshot)
-				}
-				counts := map[string]int{}
-				saved := map[string]runnersession.Mutation{}
-				for _, entry := range readHistory() {
-					raw, err := f.Hub.Config.RunDetails.ReadDetail(t.Context(), string(f.Organization), entry.Reference)
+	for _, committed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("%s/runner_%d/finalization_committed_%t", f.Organization, index, committed), func(t *testing.T) {
+			native, ctx := f.Client(t, index)
+			started := time.Now()
+			sessions := api.NewRunnerSessions(native)
+			id, err := sessions.StartSession(ctx, store.SessionStart{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), StartedAt: started, RequestedModel: string(f.Organization), AgentBackendID: "example", AgentBackendKind: "example", AgentRole: "code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			value := &sessionmodel.Finalization{SessionID: id,
+				Finish: store.SessionFinish{CompletedAt: started.Add(time.Second), Turns: 1, InputTokens: 100, OutputTokens: 10, TotalTokens: 110, FinalState: "completed", Model: string(f.Organization)},
+				Usage:  store.UsageEvent{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: started.Add(time.Second), InputTokens: 100, OutputTokens: 10, TotalTokens: 110, Outcome: "completed", Model: string(f.Organization)},
+				Phase:  &store.WorkflowPhaseEvent{ProjectID: "local-project", IssueID: string(f.Leases[index].WorkItemID), SessionID: id, StartedAt: started, FinishedAt: started.Add(time.Second), PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed", Turns: 1, InputTokens: 100, OutputTokens: 10, TotalTokens: 110},
+			}
+			var failed atomic.Bool
+			fault := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				selected := false
+				if r.Method == http.MethodPost {
+					raw, err := io.ReadAll(r.Body)
 					if err != nil {
-						t.Fatal(err)
+						t.Error(err)
+						return
 					}
+					if err := r.Body.Close(); err != nil {
+						t.Error(err)
+						return
+					}
+					r.Body = io.NopCloser(bytes.NewReader(raw))
 					var mutation runnersession.Mutation
 					if err := json.Unmarshal(raw, &mutation); err != nil {
-						t.Fatal(err)
+						t.Error(err)
+						return
 					}
-					switch {
-					case mutation.Start != nil:
-						counts["start"]++
-					case mutation.Finish != nil:
-						counts["finish"]++
-						saved["finish"] = mutation
-					case mutation.Usage != nil:
-						counts["usage"]++
-						saved["usage"] = mutation
-					case mutation.Phase != nil:
-						counts["phase"]++
-						saved["phase"] = mutation
+					selected = mutation.SessionID == id && failed.CompareAndSwap(false, true)
+					if selected && (mutation.Finish == nil || mutation.Usage == nil || mutation.Phase == nil) {
+						t.Error("finalization did not carry finish, usage and phase together")
 					}
 				}
-				for _, stage := range []string{"start", "finish", "usage", "phase"} {
-					if counts[stage] != 1 {
-						t.Fatalf("duplicate or missing durable %s: %v", stage, counts)
+				if !selected {
+					f.Hub.Handler().ServeHTTP(w, r)
+					return
+				}
+				if !committed {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					if _, err := w.Write([]byte(`{"code":"unavailable"}`)); err != nil {
+						t.Error(err)
 					}
+					return
 				}
-				for _, stage := range []string{"finish", "usage", "phase"} {
-					mutation := saved[stage]
-					mutation.SessionID, mutation.Finalization, mutation.ExpectedRevision = id, value, snapshot.Revision
-					mutation.LeaseID, mutation.FencingToken = f.Leases[index].ID, f.Leases[index].FencingToken
-					var replay runnersession.Snapshot
-					if err := restarted.Transport().Request(restartedCtx, http.MethodPost, restarted.Scope()+"/runner-sessions", mutation, &replay); err != nil {
-						t.Fatal(err)
-					}
-					if replay.Revision != snapshot.Revision {
-						t.Fatalf("committed replay wrote another revision: got=%d want=%d", replay.Revision, snapshot.Revision)
-					}
+				response := httptest.NewRecorder()
+				f.Hub.Handler().ServeHTTP(response, r)
+				if response.Code != http.StatusOK {
+					t.Errorf("finalization did not commit before response loss: status=%d", response.Code)
 				}
-				conflict := runnersession.Mutation{SessionID: id, Finalization: value, Usage: &value.Usage, ExpectedRevision: snapshot.Revision, LeaseID: f.Leases[index].ID, FencingToken: f.Leases[index].FencingToken, Key: saved["finish"].Key}
-				if err := restarted.Transport().Request(restartedCtx, http.MethodPost, restarted.Scope()+"/runner-sessions", conflict, nil); err == nil {
-					t.Fatal("finalization replay bypassed mutation hash conflict")
+				w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
+				w.WriteHeader(response.Code)
+				if _, err := w.Write(response.Body.Bytes()); err != nil {
+					t.Error(err)
 				}
-				changed := *value
-				changed.Usage.InputTokens++
-				if err := api.NewRunnerSessions(restarted).ReconcileSessionFinalization(restartedCtx, id, &changed); err == nil {
-					t.Fatal("changed immutable finalization was accepted")
+			}))
+			t.Cleanup(fault.Close)
+			transport, err := api.New(api.Config{URL: fault.URL, TokenSource: func() string { return f.Tokens[index] }, HTTPClient: &http.Client{Transport: &http.Transport{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			uncertain, err := transport.Native(f.Organization, "prj_runner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := api.NewRunnerSessions(uncertain).ReconcileSessionFinalization(ctx, id, value); err == nil || !failed.Load() {
+				t.Fatalf("finalization failure not reported: error=%v fault=%t", err, failed.Load())
+			}
+			readHistory := func() []runnersession.History {
+				t.Helper()
+				var history []runnersession.History
+				if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					history, err = r.(runnersession.Reader).RunnerSessionHistory(t.Context(), "prj_runner", id, 0, 8)
+					return err
+				}); err != nil {
+					t.Fatal(err)
 				}
-				otherNative, otherCtx := other.Client(t, index)
-				if err := api.NewRunnerSessions(otherNative).ReconcileSessionFinalization(otherCtx, id, value); err == nil {
-					t.Fatal("foreign tenant reconciled session finalization")
-				}
-				if history := readHistory(); len(history) != 4 {
-					t.Fatalf("reconciliation duplicated durable effects: %d", len(history))
-				}
-			})
+				return history
+			}
+			wantBefore := 1
+			if committed {
+				wantBefore++
+			}
+			if history := readHistory(); len(history) != wantBefore {
+				t.Fatalf("wrong durable prefix after failure: entries=%d want=%d", len(history), wantBefore)
+			}
+			restarted, restartedCtx := f.Client(t, index)
+			if err := api.NewRunnerSessions(restarted).ReconcileSessionFinalization(restartedCtx, id, value); err != nil {
+				t.Fatal(err)
+			}
+			var snapshot runnersession.Snapshot
+			if err := restarted.Transport().Request(restartedCtx, http.MethodGet, restarted.Scope()+"/runner-sessions/"+strconv.FormatInt(id, 10), nil, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Finalization == nil || !snapshot.Finalization.Finished || !snapshot.Finalization.UsageRecorded || !snapshot.Finalization.PhaseRecorded || snapshot.Finish == nil || snapshot.ID != id || snapshot.Finalization.Input.SessionID != id || snapshot.Start.RequestedModel != string(f.Organization) {
+				t.Fatalf("restarted finalization lost immutable identity or durable stages: %+v", snapshot)
+			}
+			history := readHistory()
+			if len(history) != 2 {
+				t.Fatalf("start and finalization wrote %d revisions, want 2", len(history))
+			}
+			raw, err := f.Hub.Config.RunDetails.ReadDetail(t.Context(), string(f.Organization), history[1].Reference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mutation runnersession.Mutation
+			if err := json.Unmarshal(raw, &mutation); err != nil {
+				t.Fatal(err)
+			}
+			if mutation.Finish == nil || mutation.Usage == nil || mutation.Phase == nil || !mutation.Finalization.Equal(*value) {
+				t.Fatal("one finalization revision did not retain the immutable inputs")
+			}
+			mutation.ExpectedRevision = snapshot.Revision
+			var replay runnersession.Snapshot
+			if err := restarted.Transport().Request(restartedCtx, http.MethodPost, restarted.Scope()+"/runner-sessions", mutation, &replay); err != nil {
+				t.Fatal(err)
+			}
+			if replay.Revision != snapshot.Revision {
+				t.Fatalf("committed replay wrote another revision: got=%d want=%d", replay.Revision, snapshot.Revision)
+			}
+			conflict := runnersession.Mutation{SessionID: id, Finalization: value, Usage: &value.Usage, ExpectedRevision: snapshot.Revision, LeaseID: f.Leases[index].ID, FencingToken: f.Leases[index].FencingToken, Key: mutation.Key}
+			if err := restarted.Transport().Request(restartedCtx, http.MethodPost, restarted.Scope()+"/runner-sessions", conflict, nil); err == nil {
+				t.Fatal("finalization replay bypassed mutation hash conflict")
+			}
+			changed := *value
+			changed.Usage.InputTokens++
+			if err := api.NewRunnerSessions(restarted).ReconcileSessionFinalization(restartedCtx, id, &changed); err == nil {
+				t.Fatal("changed immutable finalization was accepted")
+			}
+			otherNative, otherCtx := other.Client(t, index)
+			if err := api.NewRunnerSessions(otherNative).ReconcileSessionFinalization(otherCtx, id, value); err == nil {
+				t.Fatal("foreign tenant reconciled session finalization")
+			}
+			if history := readHistory(); len(history) != 2 {
+				t.Fatalf("reconciliation duplicated durable effects: %d", len(history))
+			}
+		})
+	}
+}
+
+func TestPostgresHostSessionRecordsOnlyBoundaries(t *testing.T) {
+	f := hubfixture.NewLeasedRunners(t)
+	for index, lease := range f.Leases {
+		client, ctx := f.Client(t, index)
+		sessions := api.NewRunnerSessions(client)
+		started := time.Now().UTC()
+		worker := store.WorkerProcessRegistration{
+			WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 10000 + index, GroupID: 10000 + index, StartedAt: started, StartKey: "example-identity"},
+			CleanupRoot:           t.TempDir(),
+		}
+		id, err := sessions.StartSession(ctx, store.SessionStart{
+			IssueID: string(lease.WorkItemID), StartedAt: started, AgentBackendKind: "host",
+			AgentRole: store.WorkerProcessRoleHostValidation, Worker: &worker,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := client.Scope() + "/runner-sessions/" + strconv.FormatInt(id, 10)
+		var running runnersession.Snapshot
+		if err := client.Transport().Request(ctx, http.MethodGet, path, nil, &running); err != nil {
+			t.Fatal(err)
+		}
+		if running.Revision != 1 || running.Worker == nil || running.Worker.PID != worker.PID || running.Reaped != nil {
+			t.Fatalf("start did not record its fenced process at the first revision: %+v", running)
+		}
+		finish := time.Now().UTC()
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{
+			CompletedAt: finish, FinalState: "completed",
+			Reap: &store.WorkerProcessReap{ReapedAt: finish, Outcome: "already_exited", Reason: "host_validation"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var stopped runnersession.Snapshot
+		if err := client.Transport().Request(ctx, http.MethodGet, path, nil, &stopped); err != nil {
+			t.Fatal(err)
+		}
+		if stopped.Revision != 2 || stopped.Finish == nil || stopped.Reaped == nil || !stopped.Reaped.ReapedAt.Equal(finish) {
+			t.Fatalf("finish did not retain reap evidence in the second revision: %+v", stopped)
 		}
 	}
 }

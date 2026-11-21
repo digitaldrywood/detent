@@ -57,15 +57,14 @@ type activityObservation struct {
 }
 
 type activityRecorder struct {
-	mu                    sync.Mutex
-	runtimeMu             sync.Mutex
-	cacheWait             string
-	checkTails            map[string]string
-	queue                 chan activityObservation
-	wake                  chan struct{}
-	dropped               atomic.Uint64
-	providerIdentityRetry atomic.Pointer[func()]
-	done                  chan struct{}
+	mu         sync.Mutex
+	runtimeMu  sync.Mutex
+	cacheWait  string
+	checkTails map[string]string
+	queue      chan activityObservation
+	wake       chan struct{}
+	dropped    atomic.Uint64
+	done       chan struct{}
 }
 
 // observe never waits for persistence, file reads, classification or queries.
@@ -260,12 +259,14 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 					r.logger.Warn("native activity observation unavailable", "session_id", sessionID, "error", err)
 				}
 			}
-			next, err := backend.SaveWorkflowActivityProfile(ctx, id, event, profile)
-			if err != nil {
-				r.logger.Warn("activity telemetry checkpoint unavailable", "session_id", sessionID, "error", err)
-				return
+			if request.Execution == nil {
+				next, err := backend.SaveWorkflowActivityProfile(ctx, id, event, profile)
+				if err != nil {
+					r.logger.Warn("activity telemetry checkpoint unavailable", "session_id", sessionID, "error", err)
+					return
+				}
+				id = next
 			}
-			id = next
 			savedProfile = signature
 			dirty = false
 		}
@@ -278,9 +279,6 @@ func (r *Runner) startActivityProfile(ctx context.Context, request RunRequest, s
 			select {
 			case <-recorder.wake:
 			case <-ticker.C:
-				if retry := recorder.providerIdentityRetry.Load(); retry != nil {
-					(*retry)()
-				}
 			}
 			draining := true
 			for draining {

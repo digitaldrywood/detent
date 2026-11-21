@@ -374,7 +374,7 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 			time.Sleep(5 * time.Second)
 			synctest.Wait()
 		}
-		if len(probe.profiles) != 1 || len(execution.observations) != 1 {
+		if len(probe.profiles) != 0 || len(execution.observations) != 1 {
 			t.Fatalf("idle writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
 		}
 		gateAt := time.Now()
@@ -401,7 +401,7 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 			recorder.observe(test.update, time.Now(), "", time.Time{})
 			time.Sleep(5 * time.Second)
 			synctest.Wait()
-			if len(probe.profiles) != test.writes || len(execution.observations) != test.writes {
+			if len(probe.profiles) != 0 || len(execution.observations) != test.writes {
 				t.Fatalf("%s writes: local=%d native=%d, want %d", test.name, len(probe.profiles), len(execution.observations), test.writes)
 			}
 			phase := "implementation"
@@ -413,14 +413,12 @@ func TestActivityRecorderSkipsUnchangedCheckpoints(t *testing.T) {
 			}
 		}
 		recorder.finish()
-		if len(probe.profiles) != 7 || len(execution.observations) != 7 {
+		if len(probe.profiles) != 0 || len(execution.observations) != 7 {
 			t.Fatalf("final writes: local=%d native=%d", len(probe.profiles), len(execution.observations))
 		}
-		var final workflowmetrics.ActivityProfile
-		for len(probe.profiles) > 0 {
-			if err := json.Unmarshal([]byte((<-probe.profiles).MetadataJSON), &final); err != nil {
-				t.Fatal(err)
-			}
+		final := execution.observations[len(execution.observations)-1].Activity
+		if final == nil {
+			t.Fatal("native runtime did not retain the final profile")
 		}
 		if final.Summary == nil || final.Summary.Breakdown.ByKind["local_validation"] != 15 || final.Summary.Breakdown.ConcurrentSeconds != 0 {
 			t.Fatalf("gate receipt attribution missing or double counted: %+v", final.Summary)

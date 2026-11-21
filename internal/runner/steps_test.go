@@ -226,8 +226,8 @@ func TestNativeReviewPublicationRetry(t *testing.T) {
 						}
 					}
 					observeUsage = func() {
-						if len(first.usage) == 0 || first.usage[0].CostEstimate <= 0 {
-							t.Fatalf("running provider turn has no priced usage: %+v", first.usage)
+						if len(first.usage) != 0 {
+							t.Fatalf("running provider turn wrote usage: %+v", first.usage)
 						}
 					}
 					publications := 0
@@ -250,6 +250,9 @@ func TestNativeReviewPublicationRetry(t *testing.T) {
 						if terminal := nativeTerminalFailure(err, time.Now(), false); terminal.Stage != step+"_publication" {
 							t.Fatalf("failure = %+v", terminal)
 						}
+					}
+					if len(first.usage) != 1 || first.usage[0].CostEstimate <= 0 {
+						t.Fatalf("provider completion did not coalesce priced usage: %+v", first.usage)
 					}
 					if failure.operation != "" && publications != 0 {
 						t.Fatal("failed finalization published")

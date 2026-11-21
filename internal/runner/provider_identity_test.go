@@ -171,7 +171,7 @@ func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context
 }
 
 func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
-	for _, blocked := range []string{"runtime", "runtime identity", "artifact", "usage", "activity", "live diff"} {
+	for _, blocked := range []string{"runtime", "artifact", "usage", "activity", "live diff"} {
 		t.Run(blocked, func(t *testing.T) { testCodexTurnWhileObservationBlocked(t, blocked) })
 	}
 }
@@ -204,10 +204,7 @@ func testCodexTurnWhileObservationBlocked(t *testing.T, blocked string) {
 			backend.blockAfter = AgentUpdateMessageDelta
 		}
 		var sessions SessionStore = &fakeSessionStore{sessionID: 42}
-		if blocked == "runtime identity" {
-			backend.blockAfter = AgentUpdateRuntimeIdentity
-			sessions = &materialIdentityObservationStore{fakeSessionStore: &fakeSessionStore{sessionID: 42}, execution: execution}
-		}
+
 		r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: backend})
 		if err != nil {
 			t.Fatal(err)
@@ -313,15 +310,6 @@ type blockedLiveDiff struct {
 
 func (w *blockedLiveDiff) DiffStat(ctx context.Context, _ workspace.Info, _ workspace.Issue) (workspace.DiffStat, error) {
 	return workspace.DiffStat{}, w.execution.block(ctx)
-}
-
-type materialIdentityObservationStore struct {
-	*fakeSessionStore
-	execution *slowTurnObservation
-}
-
-func (s *materialIdentityObservationStore) UpdateSessionIdentity(ctx context.Context, _ int64, _ agentidentity.Identity) error {
-	return s.execution.block(ctx)
 }
 
 type completionWithPendingTool struct {
