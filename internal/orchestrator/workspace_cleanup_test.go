@@ -114,7 +114,7 @@ func TestStoragePressureReclaimsBeforeClaim(t *testing.T) {
 						t.Fatalf("capacity log did not use storage after cleanup: %s", logs.String())
 					}
 				}}
-				if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+				if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state, now); err != nil {
 					t.Fatal(err)
 				}
 				o.stopWorkspaceCleanup()

@@ -166,7 +166,7 @@ func TestHostCacheReclaimsBeforeTrackerCleanup(t *testing.T) {
 					t.Fatalf("free=%d reserve=%d busy=%v", measuredFree(), reserve, busy)
 				}
 			}}
-			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+			if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 			if !checked {

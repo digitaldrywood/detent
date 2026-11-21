@@ -554,6 +554,25 @@ func (c admissionCapacityController) CapacityScope(request runpkg.RunRequest) (b
 	return c.backendCapacityTestController.CapacityScope(request)
 }
 
+func TestTickAdmissionWaitsForRetryDueAtDispatchTime(t *testing.T) {
+	tickAt := time.Now()
+	dueAt := tickAt.Add(time.Second)
+	issue := dispatchTestIssue("retry-candidate", "In Progress")
+	source := &hubSchedulingSource{issue: issue, filterKnownWait: true}
+	cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
+	o := Orchestrator{cfg: cfg, connector: &nativeHubSchedulingConnector{&hubSchedulingConnector{}}, scheduling: source, now: func() time.Time { return dueAt }}
+	state := newState(cfg)
+	state.Retry[issue.ID] = Retry{Issue: issue, DueAt: dueAt, Attempt: 2}
+	fetched, ok := o.fetchTickIssues(t.Context(), &state, tickAt, githubBudgetReserveDecision{}, nil)
+	if !ok || len(fetched.candidates) != 0 {
+		t.Fatalf("candidate fetched before the dispatch clock reached the retry due time: %v, %t", fetched.candidates, ok)
+	}
+	fetched, ok = o.fetchTickIssues(t.Context(), &state, dueAt, githubBudgetReserveDecision{}, nil)
+	if !ok || len(fetched.candidates) != 1 {
+		t.Fatalf("candidate was not fetched when the retry became due: %v, %t", fetched.candidates, ok)
+	}
+}
+
 func (s *hubSchedulingSource) ObserveNativeAdmission(_ string, current tracker.NativeAdmissionContext) {
 	s.admission = current
 }
@@ -869,7 +888,7 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			beforeRetry, hadRetry := state.Retry[issue.ID]
 			beforeBlocked, hadBlocked := state.Blocked[issue.ID]
 			beforeRunning := len(state.Running)
-			candidates, err := o.fetchCandidateIssuesForTick(t.Context(), &state)
+			candidates, err := o.fetchCandidateIssuesForTick(t.Context(), &state, now)
 			if err != nil {
 				t.Fatal(err)
 			}
