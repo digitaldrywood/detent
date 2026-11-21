@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import socket
 import time
 
@@ -53,18 +54,27 @@ class Fault:
         return None
 
     def active_validator(self, attempt):
-        try:
-            session = self.project.request("/runner-sessions/find", "POST", {
-                "Lookup": {"IssueID": self.item_path.rsplit("/", 1)[-1], "NativeAttemptID": attempt,
-                           "AgentRole": "validator"}
-            })
-        except stack.Failure as error:
-            if "HTTP 404" not in str(error):
-                raise
-            return None
-        if session.get("Finish") is None:
-            return (session.get("Provider") or {}).get("ThreadID")
-        return None
+        organization, _ = stack.current()
+        sql = """
+BEGIN READ ONLY;
+SELECT COALESCE((
+    SELECT row_to_json(s) FROM (
+        SELECT id AS session_id, attempt_id, role, started_at, provider_thread_id AS thread,
+               transaction_timestamp() AS observed_at
+        FROM runner_sessions
+        WHERE organization_id=:'organization' AND project_id=:'project' AND attempt_id=:'attempt'
+          AND role='validator' AND final_state='running' AND completed_at IS NULL
+          AND started_at<=transaction_timestamp()
+        ORDER BY started_at DESC,id DESC LIMIT 1
+    ) s
+), 'null'::json);
+ROLLBACK;
+"""
+        result = stack.command([stack.PG / "psql", "-X", "-qAt", "-v", "ON_ERROR_STOP=1",
+                                "-h", stack.SOCKETS, "-p", stack.available_ports()["postgres"],
+                                "-U", "postgres", "-d", "detent", "-v", f"organization={organization}",
+                                "-v", f"project={self.project.id}", "-v", f"attempt={attempt}"], data=sql)
+        return json.loads(result)
 
     def poll(self, item, attempts):
         board = {}
@@ -89,13 +99,12 @@ class Fault:
 
     def inject(self, active):
         attempt_id = active["attempt_id"]
-        turns = self.operator.running_turns(stack, attempt_id, self.since)
         if self.action == "kill_worker":
             detail = self.project.request(self.item_path + "/attempts/" + attempt_id)
             runtime = detail.get("runtime") or {}
             if runtime.get("phase") != "implementation" or not runtime.get("worker_launch"):
                 return
-            turn = next(turns, None)
+            turn = next(self.operator.running_turns(stack, attempt_id, self.since), None)
             if not turn:
                 return
             launch = runtime["worker_launch"]
@@ -104,15 +113,14 @@ class Fault:
                 return
             proof = {"at": at, "worker": launch, **turn}
         elif self.action == "restart_hub":
-            validator = self.active_validator(attempt_id)
-            turn = next((turn for turn in turns if turn["thread"] == validator), None) if validator else None
-            if not turn:
+            review_session = self.active_validator(attempt_id)
+            if not review_session:
                 return
             stack.stop("hub")
             at = self.operator.timestamp()
             time.sleep(self.definition["down_seconds"])
             stack.start_hub()
-            proof = {"at": at, "ready_at": self.operator.timestamp(), **turn}
+            proof = {"at": at, "ready_at": self.operator.timestamp(), "review_session": review_session}
         else:
             raise stack.Failure(f"unknown fault action {self.action!r}")
         self.observation = {"action": self.action, "attempt_id": attempt_id, "lease_id": active["lease_id"], **proof}

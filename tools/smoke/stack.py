@@ -490,14 +490,19 @@ def start_hub():
     wait_for("Hub readiness", lambda: request("/health", token=admin))
 
 
-def up(capacity=1, clock=None):
+def up(capacity=1, clock=None, scripted_codex=False):
     check_ports()
     for directory in (ROOT / "bin", LOGS, STATE, SANDBOX_HOME, CODEX, SOCKETS, WORKSPACES, ROOT / "tmp"):
         directory.mkdir(exist_ok=True)
     os.link(os.environ["DETENT_SMOKE_BUILD_BINARY"], BINARY)
     shutil.copyfile(Path(__file__).parent / "bin/git", ROOT / "bin/git")
     (ROOT / "bin/git").chmod(0o700)
-    shutil.copyfile(os.environ["DETENT_SMOKE_AUTH"], CODEX / "auth.json")
+    if scripted_codex:
+        scripted = ROOT / "bin/codex"
+        shutil.copyfile(Path(__file__).parent / "bin/codex-scripted", scripted)
+        scripted.chmod(0o700)
+    else:
+        shutil.copyfile(os.environ["DETENT_SMOKE_AUTH"], CODEX / "auth.json")
 
     cfg = credentials()
     database(cfg)

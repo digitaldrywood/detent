@@ -72,8 +72,12 @@ overlay("internal/cli/local_worker.go", [
 		cmd.Stderr = os.Stderr
 	}'''),
 ])
+worker_sessions = "\tvar sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}"
+if "\tsessions := boot.sessionStore(peer)" in (source / "internal/cli/ssh_runner.go").read_text():
+    worker_sessions = "\tsessions := boot.sessionStore(peer)"
+
 overlay("internal/cli/ssh_runner.go", [
-    ("	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}",
+    (worker_sessions,
      '''	if marker := os.Getenv("DETENT_LOCAL_STARTUP_REFUSAL"); boot.Local && operation == "run" && marker != "" {
 		if raw, err := os.ReadFile(marker); err == nil {
 			port, err := strconv.Atoi(strings.TrimSpace(string(raw)))
@@ -92,7 +96,7 @@ overlay("internal/cli/ssh_runner.go", [
 			return nil, errors.New("local startup fault endpoint unexpectedly accepted a connection")
 		}
 	}
-	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}'''),
+''' + worker_sessions),
 ])
 overlay("internal/workspace/merge.go", [
     ("\tcmd := commandshell.Command(ctx, command, l.hooks.Shell)\n\tcmd.Dir = commandInfo.Path",
