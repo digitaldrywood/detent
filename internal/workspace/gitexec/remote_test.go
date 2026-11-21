@@ -74,7 +74,7 @@ func TestLocalGitInspectionSkipsCommandRegistration(t *testing.T) {
 		}
 	}
 	want := []string{
-		"init", "config user.name Local Test", "add -- .",
+		"init -- " + checkout, "config user.name Local Test", "add -- .",
 		"config filter.fixture.clean cat; printf x >> filter.log", "add -- .gitattributes tracked.txt",
 		"status --porcelain --untracked-files=no", "diff --no-ext-diff --stat -- .",
 	}
