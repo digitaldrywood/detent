@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -57,6 +58,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		audited      string
 	}{
 		{name: "plain git by default"},
+		{name: "failed checklist row is report only", refusal: "report_only_checklist"},
 		{name: "audited landing under the implementation lease", audited: "held"},
 		{name: "retained landing cleans up after a phase receipt error", audited: "cleanup_epilogue"},
 		{name: "audited clean landing after publisher reclaim", audited: "clean"},
@@ -542,6 +544,10 @@ func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, factories Constructors, outage func(*testing.T, *LandingSetup), refusalKinds ...string) {
 	t.Helper()
+	reportOnlyChecklist := len(refusalKinds) > 0 && refusalKinds[0] == "report_only_checklist"
+	if reportOnlyChecklist {
+		refusalKinds = nil
+	}
 	caseEquivalentBinding := len(refusalKinds) > 0 && refusalKinds[0] == "case_equivalent_binding"
 	if caseEquivalentBinding {
 		refusalKinds = nil
@@ -682,6 +688,41 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	sourceValidation := gate.CommandResult{Attribution: "unknown", Command: "go test -short ./...", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: int64(time.Second)}
 	if staleAudit {
 		sourceValidation.Command, sourceValidation.ReceiptID, sourceValidation.Execution = "make pr-gate", "timing_example", "executed"
+	}
+	var checklistAttempt string
+	if reportOnlyChecklist {
+		resolved, err := config.ResolveNativePolicy(h.descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow, err := resolved.Workflow()
+		if err != nil {
+			t.Fatal(err)
+		}
+		workflow.Config.Policy = h.descriptor
+		list, err := progresscheck.FreezeChecklist(issue.Description, workflow.Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := work.(*ownedExecution).FreezeExecutionChecklist(guarded, list); err != nil {
+			t.Fatal(err)
+		}
+		checklistAttempt = work.(*ownedExecution).CompletionData().AttemptID
+		sourceValidation.Command = gate.Effective(workflow.Config.Gate).Run
+		failure := sourceValidation
+		failure.ExitCode, failure.Stage = 1, gate.StageSourceFinalization
+		failure.StartedAt = time.Now().UTC().Add(-time.Second)
+		failure.FinishedAt = failure.StartedAt.Add(time.Second)
+		failure.ReceiptID = failure.PipelineTiming("finalization").ID()
+		if err := work.(runner.SourceValidationExecution).RecordSourceValidation(guarded, failure); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := h.admin.ExecutionChecklist(guarded, item, checklistAttempt)
+		if err != nil || stored == nil || stored.Revision != list.Revision || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckProjectGate && check.Status == tracker.CheckFailed && check.Receipt == failure.ReceiptID && check.Head == head
+		}) {
+			t.Fatalf("frozen checklist did not report the failed gate: %+v, error = %v", stored, err)
+		}
 	}
 	if err := work.(runner.SourceValidationExecution).RecordSourceValidation(guarded, sourceValidation); err != nil {
 		t.Fatal(err)
@@ -1273,6 +1314,14 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	landingClient.Store(transport)
 	if err := execution.RecordLanding(guarded, landed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
+	}
+	if reportOnlyChecklist {
+		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
+		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckProjectGate && check.Status == tracker.CheckFailed
+		}) {
+			t.Fatalf("landed item no longer reports its failed checklist row: %+v, error = %v", stored, err)
+		}
 	}
 	if state := h.state(t, issue.ID); state != "Done" {
 		t.Fatalf("after recording landing the item is in %s, want Done", state)

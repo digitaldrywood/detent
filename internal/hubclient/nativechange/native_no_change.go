@@ -10,7 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/nochange"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -58,28 +57,6 @@ func (e *nativeExecution) noChangeValidation(ctx context.Context, stage string) 
 func (e *nativeExecution) noChangeResultMatches(result gate.ValidatorResult) bool {
 	v := e.noChangeVersion()
 	return result.VersionID == v.ID && result.HeadSHA == v.HeadSHA && result.BaseSHA == v.BaseSHA && result.Repository == v.Repository && result.SessionID > 0 && result.Submitted
-}
-
-func (e *nativeExecution) refreshNoChangeChecklist(ctx context.Context) error {
-	frozen := e.frozenChecklist.Load()
-	if frozen == nil {
-		return nil
-	}
-	client := e.claim.source.NativeClient()
-	item := e.claim.lease.WorkItemID
-	list, err := client.ExecutionChecklist(ctx, item, frozen.AttemptID)
-	if err != nil {
-		return err
-	}
-	issue, err := client.Issue(ctx, item)
-	if err != nil {
-		return err
-	}
-	if list == nil || list.Revision != frozen.Revision || list.Revision != progresscheck.ChecklistRevision(issue.Body, list.PolicyID) {
-		return progresscheck.ErrChecklistSuperseded
-	}
-	e.frozenChecklist.Store(list)
-	return nil
 }
 
 func (e *nativeExecution) PrepareNoChange(ctx context.Context, base string) (string, bool, error) {

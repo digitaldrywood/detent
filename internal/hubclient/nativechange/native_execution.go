@@ -952,9 +952,6 @@ func (e *nativeExecution) NativeChange() *runner.NativeChange {
 		return nil
 	}
 	change := *e.change
-	if change.NoChange != nil {
-		change.Checklist = e.frozenChecklist.Load()
-	}
 	return &change
 }
 
