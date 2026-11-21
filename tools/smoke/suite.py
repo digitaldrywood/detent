@@ -223,7 +223,9 @@ def main():
     elif set(selected) - cases.keys() or len(set(selected)) != len(selected):
         raise Failure("Select all or unique scenario names from --list")
     auth = Path(os.environ.get("DETENT_SMOKE_CODEX_AUTH", str(Path.home() / ".codex/auth.json"))).resolve()
-    if not auth.is_file():
+    uses_live_codex = any(not (cases[name] / "scenario.json").is_file()
+                          or not read(cases[name] / "scenario.json").get("scripted_codex") for name in selected)
+    if uses_live_codex and not auth.is_file():
         raise Failure("Codex authentication is missing. Set DETENT_SMOKE_CODEX_AUTH to an existing credential file")
     pg = os.environ.get("DETENT_SMOKE_POSTGRES") or command("pg_config", "--bindir")
     if not (Path(pg) / "initdb").is_file():

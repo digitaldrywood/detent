@@ -272,24 +272,48 @@ def phase_events(attempt, receipt_phases, reviews, command, interrupted_at=None)
     return [label for _, label in sorted(events)]
 
 
-def check_tool_loop(checklists, attempt, expected):
+def check_tool_loop(checklists, attempt, expected=None):
+    if expected is None and checklists == [None]:
+        return False
     expect("recorded execution checklist", True, len(checklists) == 1 and bool(checklists[0]))
     checklist, = checklists
     assert_binding(checklist, attempt, ("attempt_id", "policy_id"), "checklist")
-    interventions = sorted(checklist.get("interventions", []), key=lambda event: time_key(event["observed_at"]))
-    fields = ("action", "period", "repeats")
-    expect("confirmed tool-loop interventions", expected,
-           [{field: event[field] for field in fields} for event in interventions])
-    first, stop = interventions
-    assert_binding(stop, first, ("thread_id", "turn_id", "fingerprint"), "loop stop")
+    interventions = sorted(checklist.get("interventions") or [], key=lambda event: time_key(event["observed_at"]))
+    if expected is not None:
+        fields = ("action", "period", "repeats")
+        expect("confirmed tool-loop interventions", expected,
+               [{field: event[field] for field in fields} for event in interventions])
+    steers = {}
+    stopped = False
     for event in interventions:
         expect("loop intervention checklist revision", checklist["revision"], event.get("revision"))
         expect("loop intervention identifies the provider decision", True,
                bool(event["thread_id"] and event["turn_id"] and event["fingerprint"] and event["sequence"] > 0))
         expect("loop intervention recorded while claim held", True,
                time_key(attempt["started_at"]) <= time_key(event["observed_at"]) <= time_key(attempt["claim_released_at"]))
-    expect("loop stop follows acknowledged steer", True,
-           first["sequence"] < stop["sequence"] and time_key(first["observed_at"]) < time_key(stop["observed_at"]))
+        scope = (event["thread_id"], event["turn_id"], event["fingerprint"])
+        if event["action"] == "steer":
+            steers[scope] = event
+        elif event["action"] == "stop":
+            steer = steers.get(scope)
+            expect("loop stop follows acknowledged steer", True, bool(
+                steer and steer["sequence"] < event["sequence"]
+                and time_key(steer["observed_at"]) < time_key(event["observed_at"])))
+            stopped = True
+    return stopped
+
+
+def check_loop_outcome(evidence, attempt, stopped):
+    transitions = [event["data"] for event in evidence["history"] if event["type"] == "workflow.transitioned"]
+    for transition in transitions:
+        source, target = transition["from_state"], transition["to_state"]
+        if source in {"In Progress", "Blocked"} and (source, target) != ("In Progress", "Blocked"):
+            raise stack.Failure(f"loop-bait left its execution lane {source} -> {target}")
+    questions = [verdict.get("human_action", "").strip() for verdict in evidence["rounds"]
+                 if verdict["action"] == "human_action"]
+    typed_question = (evidence["item"]["state"] == "Blocked" and bool((attempt.get("disposition") or {}).get("human_action"))
+                      and len(questions) == 1 and questions[0].endswith("?"))
+    expect("one typed human question or a confirmed detector stop", True, typed_question or stopped)
 
 
 def check_round_verdicts(actions, expected):
@@ -301,7 +325,9 @@ def check_round_verdicts(actions, expected):
 
 def compare(project, policy, evidence, expected, definition, advanced):
     item, claims, runs = (evidence[field] for field in ("item", "attempts", "details"))
-    expect("final lane", expected["final_lane"], item["state"])
+    loop_outcome = expected.get("loop_outcome", False)
+    if not loop_outcome:
+        expect("final lane", expected["final_lane"], item["state"])
     runs = sorted(runs, key=lambda run: time_key(run["started_at"]))
     admission_restore = evidence.get("pre_provider_retry", False)
     counts = expected["fault"]["released_retry"] if admission_restore else expected
@@ -314,8 +340,14 @@ def compare(project, policy, evidence, expected, definition, advanced):
     fence = ("attempt_id", "lease_id", "fencing_token", "policy_id")
     assert_binding(next(run for run in claims if run["attempt_id"] == attempt["attempt_id"]), attempt, fence, "claim")
     expect("approved policy", policy["policy_id"], attempt["policy_id"])
-    if "tool_loop" in expected:
-        check_tool_loop(evidence.get("checklists", []), attempt, expected["tool_loop"])
+    if loop_outcome or "tool_loop" in expected:
+        stopped = check_tool_loop(evidence.get("checklists", []), attempt, expected.get("tool_loop"))
+        if loop_outcome:
+            for verdict in evidence["rounds"]:
+                assert_binding(verdict, attempt, fence, "round")
+            check_loop_outcome(evidence, attempt, stopped)
+            print(f"Verified {attempt['attempt_id']} with {len(claims)} claim and loop-bait outcome", flush=True)
+            return
     retained = expected.get("workspace_disposition") == "retained"
     expect("cleanup acknowledgement", expected.get("cleanup_acknowledged", not retained), bool(attempt.get("cleanup_acknowledged_at")))
     if attempt.get("cleanup_acknowledged_at"):
@@ -378,7 +410,7 @@ def compare(project, policy, evidence, expected, definition, advanced):
         phases = phase_events(attempt, evidence["phases"], reviews, command, evidence.get("interrupted_implementation_at"))
         if definition.get("retained_service"):
             phases = ["hook:accepted", *phases, "hook:retired"]
-        if actions == ["no_progress"]:
+        if actions[-1:] == ["no_progress"]:
             phases.append("no_progress")
         expect("ordered phase evidence", labels, phases)
     print(f"Verified {attempt['attempt_id']} with {len(claims)} claim and {expected['worktrees']} worktree", flush=True)

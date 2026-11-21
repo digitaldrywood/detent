@@ -243,7 +243,8 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
     })
     org, admin = stack.current()
     expected = stack.read(case / "expected.json")
-    include_checklists = "tool_loop" in expected
+    loop_outcome = expected.get("loop_outcome", False)
+    include_checklists = loop_outcome or "tool_loop" in expected
     fault = Fault(FIXTURE, project, key, definition, expected["fault"]) if "fault" in expected else None
     service = None
     try:
@@ -262,10 +263,10 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
                 moved = advance_when_staged(project, operator, original, advanced)
             current = project.request(key)
             is_stopping = current["state"] in {"Done", "Blocked", "Cancelled", "Human Review"}
-            attempts = page(project, key, "/attempts") if fault or is_stopping else []
+            attempts = page(project, key, "/attempts") if fault or is_stopping or loop_outcome else []
             if fault:
                 fault.poll(current, attempts)
-            if is_stopping and attempts and all(attempt.get("claim_released_at") for attempt in attempts):
+            if (is_stopping or loop_outcome) and attempts and all(attempt.get("claim_released_at") for attempt in attempts):
                 break
             time.sleep(1)
         else:
@@ -380,7 +381,7 @@ def execute(profile, case):
                  "lease_ttl_seconds": scenario["lease_ttl_seconds"]}
     if action == "restart_runner":
         clock = {"heartbeat_interval_seconds": 5, "lease_ttl_seconds": 75}
-    stack.up(capacity, clock)
+    stack.up(capacity, clock, scripted_codex=scenario.get("scripted_codex", False))
     org, admin = stack.current()
     configure_models(org, admin)
     profile_policy = stack.read(FIXTURE / f"smoke/profiles/{profile}.json")["policy"]

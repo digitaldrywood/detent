@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+import json
+import os
+import signal
+import sys
+from uuid import uuid4
+
+
+QUESTION = "Should the empty list output be [] followed by a newline or zero bytes?"
+ASSESSMENT = {"action": "human_action", "reason": "The two output contracts conflict.",
+              "human_action": QUESTION}
+
+
+def send(**message):
+    print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
+
+
+def respond(request, **result):
+    send(id=request["id"], result=result)
+
+
+def notification(method, **params):
+    send(method=method, params=params)
+
+
+def complete(scope, status, text=None):
+    signal.alarm(0)
+    if text is not None:
+        notification("item/agentMessage/delta", itemId="answer", delta=text, **scope)
+    notification("turn/completed", threadId=scope["threadId"],
+                 turn={"id": scope["turnId"], "status": status})
+
+
+def emit_probes(scope, cwd, ordinals):
+    for ordinal in ordinals:
+        call = f"call-{ordinal}"
+        notification("item/started", item={"id": f"reason-{ordinal}", "type": "reasoning"}, **scope)
+        item = {"id": call, "type": "commandExecution", "source": "agent",
+                "command": "go run . list | wc -c", "cwd": cwd}
+        notification("item/started", item=item | {"status": "inProgress"}, **scope)
+        notification("rawResponseItem/completed", item={"type": "function_call", "call_id": call}, **scope)
+        notification("rawResponse/completed", responseId=f"response-{ordinal}", **scope)
+        notification("item/completed", item=item | {"status": "completed", "exitCode": 0,
+                                                    "aggregatedOutput": "3\n"}, **scope)
+
+
+def run():
+    thread = str(uuid4())
+    scope = {}
+    pending = None
+    cwd = os.getcwd()
+    raw = False
+    text_only = False
+
+    def missed_control(_signum, _frame):
+        nonlocal pending
+        print(f"scripted provider did not receive {pending}", file=sys.stderr, flush=True)
+        pending = None
+        complete(scope, "completed", "The two output contracts conflict.\n\n"
+                 "```detent-status\n" + json.dumps({"status": "blocked", "human_action": QUESTION}) + "\n```")
+
+    signal.signal(signal.SIGALRM, missed_control)
+    for line in sys.stdin:
+        request = json.loads(line)
+        method = request["method"]
+        params = request.get("params", {})
+        if method == "initialize":
+            respond(request, userAgent="scripted smoke provider")
+        elif method == "initialized":
+            continue
+        elif method == "account/read":
+            respond(request, account={"type": "chatgpt", "planType": "plus"}, requiresOpenaiAuth=False)
+        elif method == "config/read":
+            text_only = True
+            respond(request, config={})
+        elif method == "model/list":
+            respond(request, data=[{"id": "gpt-6.2-sol", "model": "gpt-6.2-sol", "isDefault": True,
+                                    "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}], nextCursor=None)
+        elif method == "thread/start":
+            raw = params.get("experimentalRawEvents", False)
+            cwd = params.get("cwd", cwd)
+            respond(request, thread={"id": thread}, model=params.get("model") or "gpt-6.2-sol")
+        elif method == "turn/start":
+            scope = {"threadId": thread, "turnId": str(uuid4())}
+            respond(request, turn={"id": scope["turnId"], "status": "inProgress"})
+            prompt = " ".join(item.get("text", "") for item in params.get("input", []))
+            if raw or (not text_only and "Match both empty-list export contracts" in prompt):
+                pending = "turn/steer"
+                emit_probes(scope, cwd, range(1, 4))
+                signal.alarm(20)
+            else:
+                complete(scope, "completed", json.dumps(ASSESSMENT))
+        elif method == "turn/steer" and pending == method:
+            assert params["threadId"] == thread and params["expectedTurnId"] == scope["turnId"]
+            signal.alarm(0)
+            respond(request, turnId=scope["turnId"])
+            pending = "turn/interrupt"
+            emit_probes(scope, cwd, range(4, 7))
+            signal.alarm(20)
+        elif method == "turn/interrupt" and pending == method:
+            assert params["threadId"] == thread and params["turnId"] == scope["turnId"]
+            pending = None
+            respond(request)
+            complete(scope, "interrupted")
+        else:
+            send(id=request["id"], error={"code": -32601, "message": f"unexpected method {method}"})
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--version"]:
+        print("codex-cli 0.171.0")
+    elif sys.argv[1:] == ["login", "status"]:
+        print("Logged in with ChatGPT")
+    elif "sandbox" in sys.argv[1:] and sys.argv[-2:-1] == ["probe"]:
+        sys.exit(0)
+    elif sys.argv[1:2] == ["app-server"]:
+        run()
+    else:
+        sys.exit(f"unsupported scripted Codex arguments: {sys.argv[1:]}")
