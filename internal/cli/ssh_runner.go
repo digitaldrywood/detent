@@ -320,7 +320,7 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 		result, err := runSSHBootstrap(ctx, peer, bootstrap, logger, method, func(cleanup func() error) { cleanups = append(cleanups, cleanup) })
 		if method == "run" {
 			if err != nil {
-				outcome := runnerpkg.RunResult{}
+				outcome := runnerpkg.RunResult{TurnStartRefused: true}
 				if response, ok := result.(runnerpkg.SSHRunResponse); ok {
 					outcome = response.Result
 					err = errors.Join(response.Err(), err)
