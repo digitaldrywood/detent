@@ -385,7 +385,8 @@ type planPolicyHost struct {
 
 func (planPolicyHost) PinnedExecutionPolicy(string) policy.Descriptor {
 	var pinned policy.Descriptor
-	pinned.Gates.PlanEnabled = true
+	pinned.ID = "policy_plan"
+	pinned.Gates.PlanEnabled, pinned.Gates.PlanReview = true, "automated"
 	return pinned
 }
 

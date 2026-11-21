@@ -29,13 +29,14 @@ type NativePhaseContinuation struct {
 }
 
 type NativePlanState struct {
-	InputDigest   string `json:"input_digest,omitempty"`
-	ReviewPending bool   `json:"review_pending,omitempty"`
-	Findings      string `json:"findings,omitempty"`
-	Draft         string `json:"draft,omitempty"`
-	Answer        string `json:"answer,omitempty"`
-	AnswerID      string `json:"answer_id,omitempty"`
-	Accepted      bool   `json:"accepted,omitempty"`
+	InputDigest     string `json:"input_digest,omitempty"`
+	ReviewPending   bool   `json:"review_pending,omitempty"`
+	Findings        string `json:"findings,omitempty"`
+	Draft           string `json:"draft,omitempty"`
+	Answer          string `json:"answer,omitempty"`
+	AnswerAttemptID string `json:"answer_attempt_id,omitempty"`
+	AnswerID        string `json:"answer_id,omitempty"`
+	Accepted        bool   `json:"accepted,omitempty"`
 }
 
 func (p *NativePlanState) NeedsProvider() bool {

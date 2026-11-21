@@ -68,7 +68,7 @@ func (revisionSource) PushItemPhase(context.Context, workspace.Info, workspace.I
 
 func TestPlanQuestionOwnsTheDraft(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"replacement question", "draft contains status", "draft contains unfinished status", "review turn limit"} {
+	for _, name := range []string{"replacement question", "draft contains status", "draft contains unfinished status", "long human draft", "review turn limit", "automated approval followed by human review"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			const draft = "Add a README example."
@@ -84,17 +84,23 @@ func TestPlanQuestionOwnsTheDraft(t *testing.T) {
 			if name == "draft contains unfinished status" {
 				output = draft + "\n\n```detent-status\nstatus: blocked"
 			}
+			if name == "long human draft" {
+				output = strings.Repeat(draft+" ", workpad.MaxFinalSummaryBytes/len(draft))
+			}
 			publication := &planPublication{}
 			turns := 0
 			request := Request{
 				Execution: publication, Backend: revisionSource{}, Now: time.Now,
 				Continuation: &tracker.NativePhaseContinuation{Plan: plan},
-				HumanReview:  true, AutomatedReview: name == "review turn limit",
+				HumanReview:  true, AutomatedReview: name == "review turn limit" || name == "automated approval followed by human review",
 				Prompt: func() (string, error) { return "Draft the plan.", nil },
 				OpenAgent: func() (func(context.Context, string) (string, error), error) {
 					return func(context.Context, string) (string, error) {
 						turns++
 						if turns > 1 {
+							if name == "automated approval followed by human review" {
+								return "APPROVED", nil
+							}
 							return "", stop
 						}
 						return output, nil
@@ -116,7 +122,7 @@ func TestPlanQuestionOwnsTheDraft(t *testing.T) {
 					}, nil
 				}
 				approved, question, err := Run(t.Context(), request)
-				if err != nil || question != "" || approved != draft || publication.phase != "plan" {
+				if err != nil || question == "" || approved != "" || publication.phase != "plan_draft" {
 					t.Fatalf("replacement did not finish review: %q, %q, %q, %v", approved, question, publication.phase, err)
 				}
 				return
@@ -124,6 +130,13 @@ func TestPlanQuestionOwnsTheDraft(t *testing.T) {
 			signal, ok := workpad.SignalFromComment(question, "", "")
 			if err != nil || !ok || signal.Invalid != nil || signal.HumanAction != tracker.PlanApprovalQuestion {
 				t.Fatalf("completion did not ask the runner-owned question: %q, %v", question, err)
+			}
+			if name == "long human draft" {
+				if publication.phase != "plan_draft" || publication.plan.CompletionBody != workpad.PlainSummary(question) ||
+					len(publication.plan.CompletionBody) >= len(output) {
+					t.Fatal("the published plan differs from the draft shown to the human")
+				}
+				return
 			}
 			if publication.phase != "plan_draft" || publication.plan.CompletionBody != draft {
 				t.Fatalf("question lacks its own draft binding: phase=%q draft=%q", publication.phase, publication.plan.CompletionBody)

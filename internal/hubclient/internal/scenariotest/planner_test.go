@@ -260,7 +260,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if err != nil || len(receipts) != 0 {
 			t.Fatalf("legacy attempt unexpectedly has phase receipts: %v, %v", receipts, err)
 		}
-		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor.ID, receipts)
+		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor, receipts)
 		if err != nil || resolved == nil || *resolved != (tracker.NativePlanState{}) {
 			t.Fatalf("legacy %s checkpoint must request a fresh plan: %+v, %v", legacyCheckpoint, resolved, err)
 		}
@@ -609,7 +609,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if err != nil {
 			t.Fatal(err)
 		}
-		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor.ID, receipts)
+		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor, receipts)
 		if err != nil || resolved == nil || resolved.Answer != "Approve plan" {
 			t.Fatalf("recorded answer did not resolve: %+v, %v", resolved, err)
 		}

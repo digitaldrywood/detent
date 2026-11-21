@@ -11,6 +11,9 @@ import (
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -130,7 +133,7 @@ func (e *nativeLaneEntries) store(id tracker.NativeWorkItemID, entry nativeLaneE
 	e.entries[id] = entry
 }
 
-func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeRecovery, policyID string, receipts []tracker.NativePhaseReceipt) (*tracker.NativePlanState, error) {
+func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeRecovery, pinnedPolicy policy.Descriptor, receipts []tracker.NativePhaseReceipt) (*tracker.NativePlanState, error) {
 	item := recovery.Issue.WorkItemID
 	if len(receipts) == 0 {
 		if recovery.Change != nil {
@@ -151,34 +154,35 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 	}
 	pinned := receipts[index]
 	result := &tracker.NativePlanState{}
-	if pinned.PolicyID != policyID {
+	if pinned.PolicyID != pinnedPolicy.ID {
 		return result, nil
 	}
-	var owner tracker.NativeAttempt
-	for _, attempt := range recovery.Attempts {
-		if attempt.AttemptID == pinned.AttemptID {
-			owner = attempt
-			break
-		}
+	owner, err := c.planAttempt(ctx, recovery, pinned.AttemptID, pinned.Phase == "plan_draft")
+	if err != nil {
+		return nil, err
 	}
-	if len(owner.Steps) == 0 || pinned.Phase == "plan_draft" && owner.CompletionBody == "" {
-		var err error
-		owner, err = c.NativeAttempt(ctx, item, pinned.AttemptID)
-		if err != nil {
-			return nil, fmt.Errorf("read plan receipt attempt: %w", err)
-		}
-	}
-	if owner.AttemptID != pinned.AttemptID || owner.LeaseID != pinned.LeaseID || owner.FencingToken != pinned.FencingToken || owner.PolicyID != pinned.PolicyID {
+	if owner.LeaseID != pinned.LeaseID || owner.FencingToken != pinned.FencingToken || owner.PolicyID != pinned.PolicyID {
 		return nil, errors.New("plan receipt does not match its attempt")
 	}
+	direction := tracker.PlanIssueDigest(recovery)
 	for _, step := range owner.Steps {
 		if step.Step != "plan" || step.Source.HeadSHA != pinned.HeadSHA || step.Source.WorkspaceDigest != pinned.TreeSHA ||
-			step.PolicyID != policyID || step.ReviewState != tracker.PlanIssueDigest(recovery) || step.CompletionBody == "" ||
+			step.PolicyID != pinned.PolicyID || step.ReviewState != direction || step.CompletionBody == "" ||
 			tracker.PlanPhaseDigest(pinned, step) != pinned.InputDigest {
 			continue
 		}
 		if pinned.Phase == "plan" {
-			if step.PlanApproval != "" {
+			var accepted bool
+			switch pinnedPolicy.Gates.PlanReview {
+			case gate.PlanReviewAutomated:
+				accepted = strings.HasPrefix(step.PlanApproval, "automated:")
+			case gate.PlanReviewHuman, gate.PlanReviewBoth:
+				accepted, err = c.hasHumanPlanApproval(ctx, recovery, pinned, step, receipts[index+1:])
+				if err != nil {
+					return nil, err
+				}
+			}
+			if accepted {
 				result.Draft, result.InputDigest, result.Accepted = step.CompletionBody, pinned.InputDigest, true
 			}
 			return result, nil
@@ -188,16 +192,92 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 			result.ReviewPending, result.Findings = true, step.PlanApproval
 			return result, nil
 		}
-		signal, ok := workpad.SignalFromComment(owner.CompletionBody, "", "")
-		if owner.Status != "succeeded" || !ok || signal.Invalid != nil || signal.HumanAction != tracker.PlanApprovalQuestion {
+		if step.PlanApproval != "" || pinnedPolicy.Gates.PlanReview != gate.PlanReviewHuman && pinnedPolicy.Gates.PlanReview != gate.PlanReviewBoth {
+			return &tracker.NativePlanState{}, nil
+		}
+		if owner.CompletionBody == "" {
 			return result, nil
+		}
+		if !isPlanApprovalQuestion(owner, step.CompletionBody) {
+			return &tracker.NativePlanState{}, nil
 		}
 		answer, err := c.planAnswer(ctx, item, owner.AttemptID)
 		if err != nil {
 			return nil, fmt.Errorf("read plan approval answer: %w", err)
 		}
-		result.Answer, result.AnswerID = strings.TrimSpace(answer.Data.ReasonDetail), answer.ID
+		if answer.ID != "" {
+			result.Answer, result.AnswerID, result.AnswerAttemptID = strings.TrimSpace(answer.Data.ReasonDetail), answer.ID, owner.AttemptID
+		}
 		return result, nil
 	}
 	return result, nil
+}
+
+func (c *NativeClient) planAttempt(ctx context.Context, recovery tracker.NativeRecovery, attemptID string, completion bool) (tracker.NativeAttempt, error) {
+	for _, attempt := range recovery.Attempts {
+		if attempt.AttemptID == attemptID && len(attempt.Steps) != 0 && (!completion || attempt.CompletionBody != "") {
+			return attempt, nil
+		}
+	}
+	attempt, err := c.NativeAttempt(ctx, recovery.Issue.WorkItemID, attemptID)
+	if err != nil {
+		return tracker.NativeAttempt{}, fmt.Errorf("read plan receipt attempt: %w", err)
+	}
+	if attempt.AttemptID != attemptID {
+		return tracker.NativeAttempt{}, errors.New("plan receipt does not match its attempt")
+	}
+	return attempt, nil
+}
+
+func isPlanApprovalQuestion(attempt tracker.NativeAttempt, plan string) bool {
+	return attempt.Status == "succeeded" &&
+		attempt.CompletionBody == workpad.QuestionDetail(plan, tracker.PlanApprovalQuestion) &&
+		workpad.PlainSummary(attempt.CompletionBody) == plan
+}
+
+func (c *NativeClient) hasHumanPlanApproval(ctx context.Context, recovery tracker.NativeRecovery, pinned tracker.NativePhaseReceipt, step tracker.NativeStepReceipt, earlier []tracker.NativePhaseReceipt) (bool, error) {
+	provenance, ok := strings.CutPrefix(step.PlanApproval, "human:")
+	attemptID, answerID, found := strings.Cut(provenance, ":")
+	if !ok || !found || attemptID == "" || answerID == "" {
+		return false, nil
+	}
+	legacy := strings.EqualFold(answerID, "approve plan")
+	draftStep := step
+	draftStep.PlanApproval = ""
+	var receipt tracker.NativePhaseReceipt
+	if legacy {
+		answerID, attemptID = attemptID, ""
+		for _, candidate := range earlier {
+			if candidate.Phase == "plan_draft" && candidate.HeadSHA == pinned.HeadSHA && candidate.TreeSHA == pinned.TreeSHA &&
+				candidate.PolicyID == pinned.PolicyID && candidate.InputDigest == tracker.PlanPhaseDigest(candidate, draftStep) {
+				receipt, attemptID = candidate, candidate.AttemptID
+				break
+			}
+		}
+	}
+	if attemptID == "" {
+		return false, nil
+	}
+	draft, err := c.planAttempt(ctx, recovery, attemptID, true)
+	if err != nil {
+		var refusal *APIError
+		if errors.Is(err, operatortool.ErrInvalidArguments) || errors.As(err, &refusal) && refusal.Status == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	if draft.PolicyID != pinned.PolicyID || !isPlanApprovalQuestion(draft, step.CompletionBody) ||
+		legacy && (draft.LeaseID != receipt.LeaseID || draft.FencingToken != receipt.FencingToken) ||
+		!slices.ContainsFunc(draft.Steps, func(candidate tracker.NativeStepReceipt) bool {
+			return candidate.Step == draftStep.Step && candidate.Source.HeadSHA == draftStep.Source.HeadSHA &&
+				candidate.Source.WorkspaceDigest == draftStep.Source.WorkspaceDigest && candidate.PolicyID == draftStep.PolicyID &&
+				candidate.ReviewState == draftStep.ReviewState && candidate.CompletionBody == draftStep.CompletionBody && candidate.PlanApproval == ""
+		}) {
+		return false, nil
+	}
+	answer, err := c.planAnswer(ctx, recovery.Issue.WorkItemID, draft.AttemptID)
+	if err != nil {
+		return false, fmt.Errorf("read plan approval answer: %w", err)
+	}
+	return answer.ID == answerID && strings.EqualFold(strings.TrimSpace(answer.Data.ReasonDetail), "approve plan"), nil
 }
