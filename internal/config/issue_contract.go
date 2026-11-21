@@ -182,10 +182,6 @@ func (c IssueContract) AcceptanceCriteria(body string) []string {
 	return issueChecklistEntries(issueContractSectionBodies(body)[section])
 }
 
-func VerificationCriteria(body string) []string {
-	return issueChecklistEntries(issueContractSectionBodies(body)["how we know it worked"])
-}
-
 func issueChecklistEntries(text string) []string {
 	indent := -1
 	inFence := false

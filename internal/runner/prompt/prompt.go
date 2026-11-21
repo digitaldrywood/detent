@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -499,12 +498,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		return b.String()
 	}
 	b.WriteString("Acceptance criteria to map (use each exact criterion once, in this order):\n")
-	criteria := contract.AcceptanceCriteria(issue.Description)
-	acceptanceCount := len(criteria)
-	if opts.VersionID != "" {
-		criteria = progresscheck.NativeReviewCriteria(criteria, issue.Description, gate.Effective(workflow.Config.Gate).Run)
-	}
-	for _, criterion := range criteria {
+	for _, criterion := range contract.AcceptanceCriteria(issue.Description) {
 		fmt.Fprintf(&b, "- %q\n", criterion)
 	}
 	fmt.Fprintf(&b, "Unverified criterion policy: %s\n", validator.UnverifiedCriteria)
@@ -516,9 +510,6 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
 	b.WriteString("- Map every acceptance criterion to receipt, test, attachment, or not_verified. For receipt evidence, copy one or more exact host receipt_id values into receipt_ids and describe the selected commands in reference. Every selected receipt must pass for the authoritative reviewed head and expected tree; the host derives head_sha and tree_sha from the selected receipts, so omit those redundant hashes. Never combine command strings to identify separate receipts. For a legacy receipt without an ID, omit receipt_ids, use its single exact command as reference, and include its head_sha and tree_sha. Missing, failed, mismatched, or no-op commands are not evidence. Explain which observed result proves the criterion in behavior.\n")
-	if len(criteria) > acceptanceCount {
-		b.WriteString("- For a verification criterion that combines the project gate with another assertion, cite a separate host receipt that demonstrates that assertion on the reviewed source. For a diff inspection, run the pinned base-to-head diff with the host command tool and cite its receipt.\n")
-	}
 	if opts.VersionID != "" {
 		b.WriteString("- For a criterion about normative documentation, use the existing receipt kind for a host command that reads the relevant files or diff from the pinned reviewed commits. Independently assess the observed contract against the criterion and its supplied review case; explain the resulting permitted and refused behavior in behavior. Successful source reading alone proves neither correctness nor runtime acceptance. Required candidate regressions and gates still need their own applicable passing evidence; source inspection does not waive them, approve policy rollout, or change another project's selected contract.\n")
 	}

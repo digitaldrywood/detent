@@ -3,58 +3,55 @@ package progresscheck
 import (
 	"context"
 	"errors"
-	"slices"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestFreezeChecklist(t *testing.T) {
 	cfg := config.Default()
 	cfg.Policy.ID = "test-policy"
-	cfg.Gate.Run = "make check"
-	cfg.Gate.SecurityAudit.Enabled = false
+	cfg.Gate.Validator.Enabled = true
+	cfg.Gate.SecurityAudit.Enabled = true
+	cfg.Gate.RequiredStatusChecks = []string{"ci"}
+	const body = "## Acceptance criteria\n\n- Same text\n- Same text\n\n## How we know it worked\n\nRun `make check`. Inspect the report.\n"
 	for _, test := range []struct {
-		name, verification string
-		kinds              []tracker.ExecutionCheckKind
+		name, command string
+		want          []tracker.ExecutionCheckKind
 	}{
-		{name: "deduplicate policy reference", verification: "Run `make check`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate}},
-		{name: "bare command only", verification: "make check", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate}},
-		{name: "retains compound verification with a single command", verification: "Run `make check` and confirm the exported report contains both tenants.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
-		{name: "retains additional named verification", verification: "Run `make check` and confirm `TestRecovery` fails on the old version.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
-		{name: "unmapped command is review only", verification: "Run `make other`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
+		{name: "with project gate", command: "make check", want: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate, tracker.CheckStatusGate, tracker.CheckIndependentReview, tracker.CheckSecurityAudit}},
+		{name: "without project gate", want: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckStatusGate, tracker.CheckIndependentReview, tracker.CheckSecurityAudit}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := "## Acceptance criteria\n\n- Same text\n- Same text\n\n## How we know it worked\n\n" + test.verification
+			cfg := cfg
+			cfg.Gate.Run = test.command
+			if test.command == "" {
+				cfg.Gate.Kind = gate.KindHumanReview
+			}
 			list, err := FreezeChecklist(body, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list.Checks) != len(test.kinds) {
-				t.Fatalf("checks=%+v, want kinds %v", list.Checks, test.kinds)
-			}
-			criteria := NativeReviewCriteria([]string{"Same text", "Same text"}, body, cfg.Gate.Run)
-			if slices.Contains(criteria, test.verification) != slices.Contains(test.kinds, tracker.CheckVerification) {
-				t.Fatalf("native review criteria do not match the checklist: %v", criteria)
+			if len(list.Checks) != len(test.want) {
+				t.Fatalf("checks = %+v, want kinds %v", list.Checks, test.want)
 			}
 			for i, check := range list.Checks {
-				if check.Ordinal != i+1 || check.Kind != test.kinds[i] {
-					t.Fatalf("check[%d]=%+v; want kind %s", i, check, test.kinds[i])
+				if check.Ordinal != i+1 || check.Kind != test.want[i] {
+					t.Fatalf("check %d = %+v, want kind %s", i, check, test.want[i])
 				}
-				if check.Kind == tracker.CheckProjectGate {
-					if check.CheckDigest == "" || check.Status != tracker.CheckUnverified {
-						t.Fatalf("project gate lacks its trusted binding: %+v", check)
+				switch check.Kind {
+				case tracker.CheckAcceptance:
+					if check.Text != "Same text" || check.Status != tracker.CheckNeedsReview || check.CheckDigest != "" {
+						t.Fatalf("acceptance row = %+v", check)
 					}
-				} else if check.CheckDigest != "" || check.Status != tracker.CheckNeedsReview {
-					t.Fatalf("unmapped criterion acquired execution authority: %+v", check)
-				}
-				if check.Kind == tracker.CheckVerification {
-					if check.Text != test.verification {
-						t.Fatalf("verification text = %q, want %q", check.Text, test.verification)
+				case tracker.CheckProjectGate:
+					if check.CheckDigest != policy.Digest([]byte(test.command)) || check.Status != tracker.CheckUnverified {
+						t.Fatalf("project gate row = %+v", check)
 					}
-					assertIndependentVerification(t, list, check)
 				}
 			}
 			changed, err := FreezeChecklist(body+" changed", cfg)
@@ -65,27 +62,110 @@ func TestFreezeChecklist(t *testing.T) {
 	}
 }
 
-func assertIndependentVerification(t *testing.T, list tracker.ExecutionChecklist, check tracker.ExecutionCheck) {
-	t.Helper()
-	list.Checks = slices.Clone(list.Checks)
-	command := gate.CommandResult{Command: "make check", ReceiptID: "gate", HeadSHA: "head", TreeSHA: "tree"}
-	verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: command.HeadSHA, TreeSHA: command.TreeSHA}, PolicyID: list.PolicyID}
-	changes := ChecklistChanges(list.Checks, verdict, &command, nil)
-	ApplyChecklistChanges(list.Checks, changes)
-	if len(changes) != 1 || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != command.ReceiptID || list.Checks[check.Ordinal-1].Status != tracker.CheckNeedsReview {
-		t.Fatalf("generic gate changed independent verification: %+v", list.Checks)
+func TestProjectGateChecklistSameSourceRetry(t *testing.T) {
+	cfg := config.Default()
+	cfg.Policy.ID = "policy"
+	cfg.Gate.Run = "make check"
+	cfg.Gate.SecurityAudit.Enabled = false
+	for _, test := range []struct {
+		name   string
+		prior  tracker.ExecutionCheckStatus
+		exit   int
+		failed tracker.ExecutionCheckStatus
+	}{
+		{name: "temporary failure followed by pass", prior: tracker.CheckUnverified, exit: gate.TemporaryFailureExitCode, failed: tracker.CheckUnverified},
+		{name: "temporary failure after a pass", prior: tracker.CheckPassed, exit: gate.TemporaryFailureExitCode, failed: tracker.CheckPassed},
+		{name: "code failure followed by pass", prior: tracker.CheckUnverified, exit: 1, failed: tracker.CheckFailed},
+		{name: "code failure after a pass", prior: tracker.CheckPassed, exit: 1, failed: tracker.CheckFailed},
+		{name: "pass recovers previously recorded flake", prior: tracker.CheckFlaky, exit: gate.TemporaryFailureExitCode, failed: tracker.CheckFlaky},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			list, err := FreezeChecklist("", cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := &list.Checks[0]
+			check.Status = test.prior
+			if test.prior != tracker.CheckUnverified {
+				check.Head, check.Tree, check.Receipt = "head", "tree", "prior"
+			}
+			verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: "head", TreeSHA: "tree"}, PolicyID: list.PolicyID}
+			failure := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "head", TreeSHA: "tree", ReceiptID: "failed", ExitCode: test.exit}
+			gate.NormalizeCommandAttribution("base", failure.HeadSHA, &failure)
+			changes := ChecklistChanges(list.Checks, verdict, &failure, nil)
+			ApplyChecklistChanges(list.Checks, changes)
+			if check.Status != test.failed || test.exit == gate.TemporaryFailureExitCode && len(changes) != 0 {
+				t.Errorf("after failure: status = %s, updates = %+v, want %s", check.Status, changes, test.failed)
+			}
+			if _, ready := evaluateChecklist(&list, checklistEvidence{head: "head", tree: "tree", command: &failure}, false); ready {
+				t.Error("completion accepted a failed receipt")
+			}
+			pass := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "head", TreeSHA: "tree", ReceiptID: "passed"}
+			changes, ready := evaluateChecklist(&list, checklistEvidence{head: "head", tree: "tree", command: &pass}, false)
+			ApplyChecklistChanges(list.Checks, changes)
+			wantReceipt := pass.ReceiptID
+			if test.failed == tracker.CheckPassed {
+				wantReceipt = "prior"
+			}
+			if !ready || check.Status != tracker.CheckPassed || check.Receipt != wantReceipt {
+				t.Errorf("same-source pass: ready = %v, check = %+v, want passed receipt", ready, check)
+			}
+		})
 	}
-	proof := gate.CommandResult{Command: "verify exported tenant report", ReceiptID: "report-proof", HeadSHA: "head", TreeSHA: "tree"}
-	criterion := gate.CriterionEvidence{Criterion: check.Text, Kind: gate.EvidenceReceipt, HeadSHA: "head", TreeSHA: "tree", ReceiptIDs: []string{command.ReceiptID}, Behavior: "verified required result"}
-	validator := &gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, HeadSHA: "head", CriteriaEvidence: []gate.CriterionEvidence{criterion}, Commands: []gate.CommandResult{command, proof}}
-	steps := []tracker.NativeStepReceipt{{Step: "validator", PolicyID: list.PolicyID, Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Change: tracker.NativeChangeReference{HeadSHA: "head"}, Validator: validator}}
-	if changes = ChecklistChanges(list.Checks, verdict, &command, steps); len(changes) != 0 {
-		t.Fatalf("verifier citing only the generic gate changed the criterion: %+v", changes)
-	}
-	validator.CriteriaEvidence[0].ReceiptIDs = []string{proof.ReceiptID}
-	changes = ChecklistChanges(list.Checks, verdict, &command, steps)
-	if len(changes) != 1 || changes[0].Ordinal != check.Ordinal || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != proof.ReceiptID {
-		t.Fatalf("independent evidence must pass its own verification row: %+v", changes)
+}
+
+func TestProjectGateChecklistAfterRepair(t *testing.T) {
+	cfg := config.Default()
+	cfg.Policy.ID = "policy"
+	cfg.Gate.Run = "make check"
+	cfg.Gate.SecurityAudit.Enabled = false
+	const guidance = "Once the gate fails, fix the check and rerun the project gate."
+	for _, test := range []struct {
+		name, verification string
+		legacy             bool
+	}{
+		{name: "paraphrased repair", verification: guidance},
+		{name: "multi-step guidance", verification: "Stage a failing candidate, then repair it and run `make check`."},
+		{name: "legacy verification row", verification: guidance, legacy: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := "## How we know it worked\n\n" + test.verification
+			list, err := FreezeChecklist(body, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Checks) != 1 || list.Checks[0].Kind != tracker.CheckProjectGate {
+				t.Fatalf("verification guidance changed the frozen checklist: %+v", list.Checks)
+			}
+			legacy := tracker.ExecutionCheck{Ordinal: 1, Kind: tracker.CheckVerification, Text: test.verification, Status: tracker.CheckFailed, Head: "A", Tree: "tree-A", Receipt: "old-review"}
+			if test.legacy {
+				list.Checks[0].Ordinal = 2
+				list.Checks = append([]tracker.ExecutionCheck{legacy}, list.Checks...)
+			}
+			failure := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "A", TreeSHA: "tree-A", ReceiptID: "failed-A", ExitCode: 1}
+			verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: "A", TreeSHA: "tree-A"}, PolicyID: list.PolicyID}
+			ApplyChecklistChanges(list.Checks, ChecklistChanges(list.Checks, verdict, &failure, nil))
+			if check := list.Checks[len(list.Checks)-1]; check.Status != tracker.CheckFailed || check.Receipt != failure.ReceiptID {
+				t.Fatalf("first gate = %+v, want recorded failure on A", check)
+			}
+			pass := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "B", TreeSHA: "tree-B", ReceiptID: "passed-B"}
+			for _, stale := range []checklistEvidence{
+				{head: "B", tree: "tree-B", command: &failure},
+				{head: "B", tree: "other-tree", command: &pass},
+			} {
+				if _, ready := evaluateChecklist(&list, stale, false); ready {
+					t.Fatal("completion accepted a receipt for different source")
+				}
+			}
+			changes, ready := evaluateChecklist(&list, checklistEvidence{head: "B", tree: "tree-B", command: &pass}, false)
+			ApplyChecklistChanges(list.Checks, changes)
+			if !ready || len(changes) != 1 || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != pass.ReceiptID {
+				t.Fatalf("current gate: ready = %v, changes = %+v, want current gate pass", ready, changes)
+			}
+			if test.legacy && list.Checks[0] != legacy {
+				t.Fatalf("legacy verification row changed: %+v", list.Checks[0])
+			}
+		})
 	}
 }
 
@@ -178,5 +258,22 @@ func TestRunChecklistEvidenceOnlyProjectsNewReceipts(t *testing.T) {
 				t.Fatalf("selected receipt %q, want %q", receipt, test.want)
 			}
 		})
+	}
+}
+
+func TestRoundPromptPreservesActiveChecklistOrdinals(t *testing.T) {
+	list := &tracker.ExecutionChecklist{Revision: "revision", Checks: []tracker.ExecutionCheck{
+		{Ordinal: 1, Kind: tracker.CheckVerification, Text: "legacy failure evidence", Receipt: "legacy-receipt"},
+		{Ordinal: 2, Kind: tracker.CheckAcceptance, Text: "current criterion"},
+	}}
+	_, input, err := AssessRound(t.Context(), RoundEvidence{Phase: "implement", Checklist: list},
+		RoundAssessment{Action: RoundContinue, NextPhase: "implement"}, false, false, func(_ context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "legacy failure evidence") || strings.Contains(prompt, "legacy-receipt") || !strings.Contains(prompt, `"ordinal":2`) || !strings.Contains(prompt, "current criterion") {
+				t.Fatalf("round checklist = %s", prompt)
+			}
+			return `{"action":"continue","next_phase":"implement","reason":"continue"}`, nil
+		})
+	if err != nil || input.ChecklistRevision != list.Revision || len(list.Checks) != 2 || list.Checks[0].Receipt != "legacy-receipt" {
+		t.Fatalf("legacy checklist was changed: input = %+v, checklist = %+v, error = %v", input, list, err)
 	}
 }

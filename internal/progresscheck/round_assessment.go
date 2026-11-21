@@ -59,7 +59,11 @@ func AssessRound(ctx context.Context, e RoundEvidence, fallback RoundAssessment,
 		prompt += "\n\nHuman discussion (newest first). Consider it when deciding whether the prior question was answered.\n" + discussion
 	}
 	if e.Checklist != nil {
-		frozen, err := json.Marshal(e.Checklist)
+		checklist := *e.Checklist
+		checklist.Checks = slices.DeleteFunc(slices.Clone(checklist.Checks), func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckVerification
+		})
+		frozen, err := json.Marshal(checklist)
 		if err != nil {
 			return RoundAssessment{}, RoundInput{}, err
 		}
