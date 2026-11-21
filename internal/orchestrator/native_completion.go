@@ -50,7 +50,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
 	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
 	mergeSourceCompletion := change != nil && (change.MergeResolution || change.NoChange != nil) && mode == runpkg.RunModeMerge
-	if !mergeSourceCompletion && (mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement) {
+	if !mergeSourceCompletion && (event.Request.NativeLandingRework == nil && mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement) {
 		return false
 	}
 	if finalState == "" {
