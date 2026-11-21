@@ -145,7 +145,7 @@ func legacyTurnCompletion(message Message, thread, turn string) *legacyTaskCompl
 	body := firstNonBlank(compactNonNullJSON(event.Msg.Error), compactNonNullJSON(event.Msg.Turn.Error), compactNonNullJSON(event.Error), compactNonNullJSON(event.Turn.Error))
 	status := firstNonBlank(event.Msg.Turn.Status, turnCompletedTopLevelStatus(event.Msg.Status, nil, ""), event.Turn.Status, turnCompletedTopLevelStatus(event.Status, nil, ""), "completed")
 	code := firstNonBlank(turnErrorCode(json.RawMessage(body)), decodeTurnErrorCode(event.Msg.Code), decodeTurnErrorCode(event.Code))
-	if status != "interrupted" && (status != "completed" || code != "" || body != "") {
+	if code != "" || (status != "interrupted" && (status != "completed" || body != "")) {
 		code = firstNonBlank(code, "other")
 		return &legacyTaskCompletion{failure: &TurnFailedError{Status: "failed", ProviderCode: code, Operation: "turn/start", Message: code}}
 	}
