@@ -17,15 +17,13 @@ import (
 const workAttemptRetryIntentPhase = "operator_retry_intent"
 
 type workAttemptRetryIntent struct {
-	Schema           int                                  `json:"schema"`
-	Request          WorkAttemptRecoveryRequest           `json:"request"`
-	IssueID          string                               `json:"issue_id"`
-	TrackerUpdatedAt *time.Time                           `json:"tracker_updated_at,omitempty"`
-	Configuration    bool                                 `json:"configuration"`
-	Park             *workflowLaneBlockedRecoveryMetadata `json:"park,omitempty"`
-	ParkedAt         time.Time                            `json:"parked_at,omitempty"`
-	RecordedAt       time.Time                            `json:"recorded_at"`
-	ResumeState      *WorkAttemptResumeState              `json:"resume_state,omitempty"`
+	Schema           int                        `json:"schema"`
+	Request          WorkAttemptRecoveryRequest `json:"request"`
+	IssueID          string                     `json:"issue_id"`
+	TrackerUpdatedAt *time.Time                 `json:"tracker_updated_at,omitempty"`
+	Configuration    bool                       `json:"configuration"`
+	RecordedAt       time.Time                  `json:"recorded_at"`
+	ResumeState      *WorkAttemptResumeState    `json:"resume_state,omitempty"`
 }
 
 func (o *Orchestrator) latestWorkAttemptRetryIntent(ctx context.Context, issue connector.Issue) (workAttemptRetryIntent, bool, error) {
@@ -122,10 +120,6 @@ func (o *Orchestrator) prepareWorkAttemptRetryIntent(ctx context.Context, issue 
 		Configuration: issueConfigurationFailure(nil, receipt.Attempt.ErrorClass, receipt.Attempt.ErrorMessage)}
 	if request.Action == WorkAttemptRecoveryRetryResume {
 		intent.ResumeState = receipt.ResumeState
-	}
-	if park, ok := o.currentBlockedRecoveryPark(ctx, nil, issue); ok {
-		intent.Park = &park
-		intent.ParkedAt, _ = o.currentBlockedRecoveryParkedAt(ctx, nil, issue)
 	}
 	data, err := json.Marshal(intent)
 	if err != nil {

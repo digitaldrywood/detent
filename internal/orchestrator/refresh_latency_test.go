@@ -335,12 +335,6 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				if err != nil || len(blockers) != 1 || blockers[0].Ref != ref || !dependencyBlockerReady(blockers[0], normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock), cfg.TerminalStates) {
 					t.Fatalf("inline authority changed: %+v, error %v", blockers, err)
 				}
-				if mode == "id-only" {
-					evidence := orch.resolveBlockedRecoveryDependencies(t.Context(), nil, []connector.Issue{issue})[issue.ID]
-					if evidence == nil || len(evidence.blockers) != 1 || evidence.blockers[0].Ref != ref {
-						t.Fatalf("ID-only phase authority changed: %+v", evidence)
-					}
-				}
 				if len(tracker.fetchIdentifiers) != 0 {
 					t.Fatalf("inline authority queried references: %v", tracker.fetchIdentifiers)
 				}
@@ -441,4 +435,36 @@ type phaseReferenceConnector struct {
 func (c *phaseReferenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
 	c.fetchIdentifiers = append(c.fetchIdentifiers, append([]string(nil), refs...))
 	return c.resolve(ctx, refs)
+}
+
+type zeroCapacityScheduling struct {
+	*hubSchedulingSource
+}
+
+func (zeroCapacityScheduling) ProjectAtZeroCapacity(project string) bool {
+	return project == "paused"
+}
+
+func TestZeroCapacityRefreshPreservesOutstandingExecution(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		retained bool
+	}{
+		{name: "idle"},
+		{name: "held claim", retained: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "paused"}})
+			orch := &Orchestrator{cfg: cfg, connector: &autoPromoteTickConnector{}, scheduling: zeroCapacityScheduling{&hubSchedulingSource{}}, logger: slog.New(slog.DiscardHandler)}
+			state := newState(cfg)
+			if test.retained {
+				state.Claimed["retained"] = Claimed{Issue: connector.Issue{ID: "retained"}}
+			}
+			now := time.Now()
+			orch.tick(t.Context(), &state, now)
+			if state.NextRefreshAt.IsZero() == test.retained {
+				t.Fatalf("next refresh = %s, want refresh = %t", state.NextRefreshAt, test.retained)
+			}
+		})
+	}
 }

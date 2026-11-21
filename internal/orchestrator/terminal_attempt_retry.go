@@ -24,23 +24,18 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 	state *State,
 	issue connector.Issue,
 	workProductPushed bool,
-	retryCause string,
-	durable bool,
-	runMode string,
-	diffStats DiffStats,
 	at time.Time,
-	currentAttempts ...telemetry.WorkAttempt,
-) (connector.Issue, bool, bool) {
-	if o == nil || o.connector == nil ||
+) (connector.Issue, bool) {
+	if o == nil || o.connector == nil || o.scheduling != nil && o.nativeWorkflow() ||
 		normalizeState(issue.State) != normalizeState(planImplementationState) ||
 		terminalAttemptHasWorkProduct(issue, workProductPushed) ||
 		pullRequestHydrationBlocksProgress(issue.PullRequest) ||
 		o.terminalAttemptClaimBlocksDemotion(ctx, issue, at) {
-		return issue, false, false
+		return issue, false
 	}
 	targetState := terminalAttemptTodoState(o.cfg.ActiveStates)
 	if targetState == "" {
-		return issue, false, false
+		return issue, false
 	}
 	if err := o.updateIssueState(ctx, state, issue, targetState, at, terminalAttemptWithoutWorkProductReason); err != nil {
 		if o.logger != nil {
@@ -58,7 +53,7 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 			Event:   "terminal_attempt_retry_demotion_failed",
 			Message: "failed to move " + issueLabel(issue) + " to " + targetState + " after a terminal attempt without pushed work",
 		})
-		return issue, false, false
+		return issue, false
 	}
 
 	fromState := issue.State
@@ -86,29 +81,7 @@ func (o *Orchestrator) demoteTerminalAttemptRetry(
 			"reason", terminalAttemptWithoutWorkProductReason,
 		)
 	}
-	return issue, true, false
-}
-
-func terminalAttemptFailureEvidence(running Running, terminalState store.WorkAttemptTerminalState, errorClass, errorMessage string, at time.Time) telemetry.WorkAttempt {
-	return telemetry.WorkAttempt{
-		AttemptID:          running.WorkAttemptID,
-		AttemptNumber:      running.Attempt,
-		IssueID:            running.Issue.ID,
-		Identifier:         running.Issue.Identifier,
-		Status:             string(store.WorkAttemptStatusTerminal),
-		TerminalState:      string(terminalState),
-		ErrorClass:         errorClass,
-		ErrorMessage:       errorMessage,
-		CompletedAt:        &at,
-		WorkerMetadataJSON: runningWorkAttemptMetadataJSON(running, nil),
-	}
-}
-
-func retryCycleCauseForAttempt(attempt telemetry.WorkAttempt) string {
-	if strings.TrimSpace(attempt.ErrorClass) == workAttemptErrorWorkspace {
-		return workAttemptErrorWorkspace
-	}
-	return workAttemptErrorRunner
+	return issue, true
 }
 
 func (o *Orchestrator) releaseTerminalAttemptClaim(ctx context.Context, state *State, issue connector.Issue, at time.Time) {
@@ -131,7 +104,7 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 	issues []connector.Issue,
 	now time.Time,
 ) []connector.Issue {
-	if state == nil || len(issues) == 0 || len(state.WorkAttempts) == 0 {
+	if state == nil || len(issues) == 0 || len(state.WorkAttempts) == 0 || o.scheduling != nil && o.nativeWorkflow() {
 		return nil
 	}
 	latestByIssue := latestTerminalAttemptsByIssue(state.WorkAttempts)
@@ -188,17 +161,7 @@ func (o *Orchestrator) reconcileTerminalAttemptRetryStates(
 		}) || !terminalAttemptRetryableFailure(attempt) {
 			continue
 		}
-		updated, changed, _ := o.demoteTerminalAttemptRetry(
-			ctx,
-			state,
-			issue,
-			workAttemptHasPushedProduct(attempt),
-			retryCycleCauseForAttempt(attempt),
-			true,
-			workAttemptRunMode(attempt),
-			DiffStats{},
-			now,
-		)
+		updated, changed := o.demoteTerminalAttemptRetry(ctx, state, issue, workAttemptHasPushedProduct(attempt), now)
 		if changed {
 			transitions = append(transitions, updated)
 		}

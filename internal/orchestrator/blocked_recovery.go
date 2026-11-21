@@ -2,12 +2,10 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -52,15 +50,6 @@ type BlockedRecoveryDecision struct {
 	Reason      BlockedRecoveryReason
 	TargetState string
 	Detail      string
-}
-
-type reworkBreakerPark struct {
-	Event     store.WorkflowPhaseEvent
-	Reason    AutoPromoteReason
-	PRNumber  int64
-	HeadSHA   string
-	Signature string
-	Timeline  store.WorkflowTimeline
 }
 
 func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
@@ -187,64 +176,6 @@ func (o *Orchestrator) recoverBlockedIssues(
 	return transitioned
 }
 
-func (o *Orchestrator) resolveBlockedRecoveryDependencies(ctx context.Context, state *State, issues []connector.Issue) map[string]*blockedRecoveryDependencyEvidence {
-	if _, ok := o.connector.(connector.IssueReferenceResolver); !ok {
-		return nil
-	}
-	cohort := make(map[string]*blockedRecoveryDependencyEvidence)
-	var refs []connector.BlockedRef
-	for _, issue := range issues {
-		if strings.TrimSpace(issue.ID) == "" || normalizeState(issue.State) != normalizeState(blockedStatusState) || o.currentBlockedOperatorStop(ctx, state, issue) {
-			continue
-		}
-		original := issue
-		issue, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
-		cohort[issue.ID] = &blockedRecoveryDependencyEvidence{issue: issue, workpadRefs: workpadRefs, workpadCurrent: current}
-		refs = append(refs, issue.BlockedBy...)
-		if signal, _ := rawIssueWorkpadSignal(issue); signal != nil && signal.Invalid == nil && signal.Status == workpad.StatusBlocked && (original.WorkpadSignal == nil || len(original.WorkpadSignal.Blockers) == 0 || current) {
-			authority := issue
-			authority.WorkpadSignal = signal
-			for _, blocker := range authority.WithNativeWorkpadAuthority().WorkpadSignal.Blockers {
-				if blocker.Predicate != nil && normalizedIssueIdentifier(blocker.Predicate.Identifier) != normalizedIssueIdentifier(issue.Identifier) {
-					refs = append(refs, connector.BlockedRef{Identifier: blocker.Predicate.Identifier})
-				}
-			}
-		}
-	}
-	pending := connector.Issue{}
-	for _, ref := range refs {
-		if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
-			pending.BlockedBy = append(pending.BlockedBy, connector.BlockedRef{Identifier: identifier})
-		}
-	}
-	resolved, err := o.resolveDependencyBlockersWithError(ctx, pending)
-	if err != nil {
-		return nil
-	}
-	var fresh []connector.Issue
-	references := make(map[string]connector.Issue)
-	for _, blocker := range resolved {
-		if blocker.Resolved {
-			fresh = append(fresh, blocker.Issue)
-			references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
-		}
-	}
-	for _, evidence := range cohort {
-		evidence.references = references
-		for _, ref := range evidence.issue.BlockedBy {
-			ref.Identifier = strings.TrimSpace(ref.Identifier)
-			ref.ID = strings.TrimSpace(ref.ID)
-			ref.State = strings.TrimSpace(ref.State)
-			if strings.TrimSpace(ref.Identifier) == "" && strings.TrimSpace(ref.ID) == "" {
-				continue
-			}
-			evidence.blockers = append(evidence.blockers, dependencyBlocker{Ref: ref})
-		}
-		evidence.blockers = dependencyBlockersWithIssues(evidence.blockers, fresh)
-	}
-	return cohort
-}
-
 func blockedRecoveryReasonAllowed(cfg BlockedRecoveryConfig, reasonCode string) bool {
 	reasonCode = normalizeBlockedRecoveryReasonCode(reasonCode)
 	for _, allowed := range cfg.ReasonCodes {
@@ -292,101 +223,6 @@ func evaluateStructuredBlockedRecovery(
 	return decision, reasonCode, true
 }
 
-func (o *Orchestrator) latestReworkBreakerPark(ctx context.Context, issue connector.Issue) (reworkBreakerPark, bool) {
-	timeline, ok := o.issueWorkflowTimeline(ctx, issue)
-	if !ok {
-		return reworkBreakerPark{}, false
-	}
-	for index := len(timeline.Events) - 1; index >= 0; index-- {
-		event := timeline.Events[index]
-		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
-			continue
-		}
-		if normalizeState(event.PhaseName) != normalizeState(blockedStatusState) || !strings.EqualFold(strings.TrimSpace(event.Reason), "rework_limit") {
-			return reworkBreakerPark{}, false
-		}
-		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok || metadata.PullRequest == nil {
-			return reworkBreakerPark{}, false
-		}
-		reason, ok := reworkBreakerParkReason(timeline.Events, index, metadata)
-		if !ok {
-			return reworkBreakerPark{}, false
-		}
-		prNumber := metadata.PullRequest.Number
-		headSHA := strings.TrimSpace(metadata.PullRequest.HeadSHA)
-		if prNumber <= 0 || headSHA == "" {
-			return reworkBreakerPark{}, false
-		}
-		return reworkBreakerPark{
-			Event:     event,
-			Reason:    reason,
-			PRNumber:  prNumber,
-			HeadSHA:   headSHA,
-			Signature: fmt.Sprintf("pr=%d;head=%s", prNumber, headSHA),
-			Timeline:  timeline,
-		}, true
-	}
-	return reworkBreakerPark{}, false
-}
-
-func reworkBreakerParkReason(
-	events []store.WorkflowPhaseEvent,
-	parkIndex int,
-	parkMetadata workflowLaneMetadata,
-) (AutoPromoteReason, bool) {
-	if parkMetadata.ReworkBreaker != nil {
-		reason := AutoPromoteReason(strings.TrimSpace(parkMetadata.ReworkBreaker.Reason))
-		return reason, reworkBreakerReasonEligible(reason)
-	}
-	for index := parkIndex - 1; index >= 0; index-- {
-		event := events[index]
-		if event.PhaseType != store.WorkflowPhaseTypeLane || !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
-			continue
-		}
-		if normalizeState(event.PhaseName) == normalizeState(blockedStatusState) {
-			return "", false
-		}
-		if normalizeState(event.PhaseName) != normalizeState(autoPromoteReworkState) {
-			continue
-		}
-		reason := AutoPromoteReason(strings.TrimSpace(event.Reason))
-		if !reworkBreakerReasonEligible(reason) {
-			continue
-		}
-		metadata, ok := workflowLaneMetadataFromJSON(event.MetadataJSON)
-		if !ok || !reworkBreakerPullRequestMetadataEqual(metadata.PullRequest, parkMetadata.PullRequest) {
-			continue
-		}
-		return reason, true
-	}
-	return "", false
-}
-
-func reworkBreakerReasonEligible(reason AutoPromoteReason) bool {
-	switch reason {
-	case AutoPromoteReasonCINotGreen, AutoPromoteReasonMergeConflicts:
-		return true
-	default:
-		return false
-	}
-}
-
-func reworkBreakerPullRequestMetadataEqual(left, right *workflowLanePullRequestMetadata) bool {
-	return left != nil && right != nil &&
-		left.Number > 0 && left.Number == right.Number &&
-		strings.TrimSpace(left.HeadSHA) != "" && strings.TrimSpace(left.HeadSHA) == strings.TrimSpace(right.HeadSHA)
-}
-
-func reworkBreakerIssueHeld(issue connector.Issue, terminalStates []string) bool {
-	issue = issueWithoutSelfDependencies(issue.WithNativeWorkpadAuthority())
-	if blockedRefsUnresolved(issue.BlockedBy, terminalStates) || blockedRecoveryHumanOnly(issue) {
-		return true
-	}
-	signal := issue.WorkpadSignal
-	return signal != nil && (signal.Invalid != nil || strings.TrimSpace(signal.HumanAction) != "" || len(signal.Blockers) > 0)
-}
-
 func blockedRefsUnresolved(refs []connector.BlockedRef, terminalStates []string) bool {
 	for _, ref := range refs {
 		switch strings.ToLower(strings.TrimSpace(ref.TrackerState)) {
@@ -402,26 +238,6 @@ func blockedRefsUnresolved(refs []connector.BlockedRef, terminalStates []string)
 	return false
 }
 
-func blockedRecoverySignature(issue connector.Issue) (string, bool) {
-	prNumber := 0
-	fingerprint := ""
-	baseSHA := ""
-	if issue.PRNumber != nil {
-		prNumber = *issue.PRNumber
-	}
-	if pr := issue.PullRequest; pr != nil {
-		if pr.Number > 0 {
-			prNumber = pr.Number
-		}
-		fingerprint = strings.TrimSpace(pr.DiffFingerprint)
-		baseSHA = strings.TrimSpace(pr.BaseSHA)
-	}
-	if prNumber <= 0 || fingerprint == "" || baseSHA == "" {
-		return "", false
-	}
-	return fmt.Sprintf("pr=%d;fingerprint=%s;base=%s", prNumber, fingerprint, baseSHA), true
-}
-
 func blockedRecoveryHumanOnly(issue connector.Issue) bool {
 	return BlockedRecoveryHumanHoldReason(issue, "") == "human_action" || issue.WorkpadSignal != nil && issue.WorkpadSignal.ReasonCode == "permission_wait"
 }
@@ -431,12 +247,4 @@ func blockedRecoveryNoCurrentHeadCI(pr *connector.PullRequest) bool {
 		return false
 	}
 	return pr.CheckRunCount == 0 && pr.StatusContextCount == 0
-}
-
-type blockedRecoveryDependencyEvidence struct {
-	issue          connector.Issue
-	workpadRefs    []connector.BlockedRef
-	workpadCurrent bool
-	blockers       []dependencyBlocker
-	references     map[string]connector.Issue
 }

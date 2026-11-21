@@ -19,6 +19,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+var errRetainedLandingSetup = errors.New("retained landing setup is unavailable")
+
 type RoundVerdictExecution interface {
 	LatestRoundVerdict(context.Context) (*progresscheck.RoundVerdict, error)
 	RecordRoundVerdict(context.Context, progresscheck.RoundInput) error
@@ -59,6 +61,16 @@ func (r *Runner) roundRetry(ctx context.Context, req RunRequest, phase string, t
 		}
 		return deadlines.Wait(ctx, retryDelay)
 	}
+}
+
+func (r *Runner) waitForSourceCorrection(ctx context.Context, req RunRequest, deadlines *progresscheck.RoundDeadlines, assessment progresscheck.RoundAssessment, retryDelay func(int) time.Duration) error {
+	if assessment.Action != progresscheck.RoundContinue || assessment.NextPhase != RunModeImplement {
+		return errors.New("round did not authorize a source correction")
+	}
+	if err := deadlines.WaitForSource(ctx, assessment.SourceTree, retryDelay); err != nil {
+		return err
+	}
+	return req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx)
 }
 
 func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecution, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, feedback string, result RunResult, runErr error, canReimplement bool) (progresscheck.RoundAssessment, progresscheck.RoundInput, error) {

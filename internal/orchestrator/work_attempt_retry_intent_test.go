@@ -283,7 +283,15 @@ func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 			issue := recoveryTestIssue()
 			now := time.Now().UTC().Truncate(time.Second)
 			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "same-fingerprint"}
-			intent := workAttemptRetryIntent{Schema: 1, IssueID: issue.ID, Request: WorkAttemptRecoveryRequest{AttemptID: 1, Action: WorkAttemptRecoveryRetryFresh}, Configuration: true, Park: &oldPark, ParkedAt: now.Add(-time.Hour), RecordedAt: now}
+			intent := struct {
+				workAttemptRetryIntent
+				Park     workflowLaneBlockedRecoveryMetadata `json:"park"`
+				ParkedAt time.Time                           `json:"parked_at"`
+			}{
+				workAttemptRetryIntent: workAttemptRetryIntent{Schema: 1, IssueID: issue.ID, Request: WorkAttemptRecoveryRequest{AttemptID: 1, Action: WorkAttemptRecoveryRetryFresh}, Configuration: true, RecordedAt: now},
+				Park:                   oldPark,
+				ParkedAt:               now.Add(-time.Hour),
+			}
 			data, err := json.Marshal(intent)
 			if err != nil {
 				t.Fatal(err)

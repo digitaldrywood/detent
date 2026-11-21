@@ -457,7 +457,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			phase = "blocked"
 			statusMessage = "session stopped at its projected budget ceiling"
 		}
-		attemptCompleted := o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, phase, statusMessage, mergeWorkAttemptMetadata(
 			progressMetadata,
 			deliverableCommandEvidenceMetadata(event.Result),
 		))
@@ -496,22 +496,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 				}
 			}
 			if terminalAttemptStateRetryDemotable(terminalState) && !errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) {
-				var parked bool
-				running.Issue, _, parked = o.demoteTerminalAttemptRetry(
-					ctx,
-					state,
-					running.Issue,
-					running.WorkProductPushed,
-					workAttemptErrorRunner,
-					attemptCompleted,
-					running.Mode,
-					running.DiffStats,
-					event.CompletedAt,
-					terminalAttemptFailureEvidence(running, terminalState, errorClass, errorMessage, event.CompletedAt),
-				)
-				if parked {
-					return
-				}
+				running.Issue, _ = o.demoteTerminalAttemptRetry(ctx, state, running.Issue, running.WorkProductPushed, event.CompletedAt)
 			}
 		}
 		if !interrupted && terminalState != store.WorkAttemptTerminalCancelled {

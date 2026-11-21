@@ -17,6 +17,7 @@ var ErrRoundVerdictRejected = errors.New("round verdict publication rejected")
 
 type RoundDeadlines struct {
 	attempts int
+	source   string
 	filed    map[sessiontimeout.Kind]bool
 	recent   []string
 	current  string
@@ -62,6 +63,16 @@ func (d *RoundDeadlines) Continue(ctx, sessionCtx context.Context, timeout *sess
 		d.recent = d.recent[1:]
 	}
 	return assessment, nil
+}
+
+func (d *RoundDeadlines) WaitForSource(ctx context.Context, tree string, retryDelay func(int) time.Duration) error {
+	if tree != "" {
+		if d.source != "" && d.source != tree {
+			d.attempts = 0
+		}
+		d.source = tree
+	}
+	return d.Wait(ctx, retryDelay)
 }
 
 func (d *RoundDeadlines) Wait(ctx context.Context, retryDelay func(int) time.Duration) error {

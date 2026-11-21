@@ -16,6 +16,7 @@ import (
 )
 
 type RoundAssessment struct {
+	SourceTree  string `json:"-"`
 	Action      string `json:"action"`
 	NextPhase   string `json:"next_phase"`
 	Reason      string `json:"reason"`
@@ -67,6 +68,7 @@ func AssessRound(ctx context.Context, e RoundEvidence, fallback RoundAssessment,
 		assessment = fallback
 		assessment.Reason = rejection
 	}
+	assessment.SourceTree = e.Tree
 	input := RoundInput{
 		RoundID: uuid.NewString(), Phase: e.Phase, Action: assessment.Action, HeadSHA: e.Head, TreeSHA: e.Tree,
 		Reason: assessment.Reason, NextPhase: assessment.NextPhase, FailureSignature: e.Signature, HumanAction: assessment.HumanAction,

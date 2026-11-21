@@ -83,9 +83,6 @@ func TestNativeAuthorityIgnoresWorkpadPredicates(t *testing.T) {
 				t.Fatalf("blockers = %+v, want %d", signal.Blockers, want)
 			}
 			issue.WorkpadSignal = signal
-			if !native && reworkBreakerIssueHeld(issue, []string{"Done"}) {
-				t.Fatal("empty historical status held native-empty issue")
-			}
 			o := &Orchestrator{}
 			result := o.evaluateRecordedBlockers(t.Context(), nil, issue, nil, time.Now())
 			if !native && result.Holds {

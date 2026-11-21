@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
@@ -425,7 +426,24 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			runErr = fmt.Errorf("%w: native review continuation is unavailable", ErrNativeRecoveryRequired)
 		}
 	} else {
-		result, runErr = r.run(guarded, req)
+		retryDelay := roundRetryDelay(workflow.Config.Agent.MaxRetryBackoffMS)
+		var retries progresscheck.RoundDeadlines
+		for {
+			result, runErr = r.run(guarded, req)
+			if !req.phaseReceipts || !errors.Is(runErr, errRetainedLandingSetup) || StopProviderSupervision(req.Execution, runErr) ||
+				errors.Is(runErr, ErrWorkerProcessReap) || errors.Is(runErr, ErrExecutionAuthorityUnavailable) || cooperativeStopError(runErr) {
+				break
+			}
+			r.logWorkerEvent(req.Issue, "worker_retained_landing_setup_retry", "error", runErr)
+			err := retries.Wait(guarded, retryDelay)
+			if err == nil {
+				err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(guarded)
+			}
+			if err != nil {
+				runErr = errors.Join(runErr, err)
+				break
+			}
+		}
 	}
 	if StopProviderSupervision(req.Execution, runErr) {
 		return result, runErr

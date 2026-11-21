@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -1099,5 +1100,82 @@ func TestNativeLandingDoesNotRepublishValidationEvidence(t *testing.T) {
 	}
 	if len(execution.recorded) != 1 || execution.validationCalls != 0 || execution.checkpoint == nil || !workspaceBackend.afterRun {
 		t.Fatalf("landing epilogue: receipts=%d screenshot calls=%d checkpoint=%#v cleanup=%t", len(execution.recorded), execution.validationCalls, execution.checkpoint, workspaceBackend.afterRun)
+	}
+}
+
+type retainedLandingSetupExecution struct {
+	completionLandingExecution
+	loseFence bool
+	checks    int
+}
+
+func (*retainedLandingSetupExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
+	return &tracker.NativePhaseContinuation{}, nil
+}
+
+func (e *retainedLandingSetupExecution) VerifyPhaseAuthority(context.Context) error {
+	e.checks++
+	if e.loseFence {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return nil
+}
+
+func (*retainedLandingSetupExecution) RecordPhaseReceipt(context.Context, string, string, string, string, string) error {
+	return errors.New("a refused landing cannot publish a phase")
+}
+
+type retainedLandingSetupWorkspace struct {
+	deadlineRoundWorkspace
+	targets []string
+}
+
+func (w *retainedLandingSetupWorkspace) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
+	w.targets = append(w.targets, issue.Landing.HeadSHA)
+	if len(w.targets) == 1 {
+		return workspace.Info{}, errors.New("temporary setup failure")
+	}
+	return workspace.Info{}, &workspace.LandRefusal{Kind: workspace.LandRefusalProtected, Reason: "base protection"}
+}
+
+func TestRetainedLandingSetupRetriesTheReviewedHead(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		loseFence bool
+	}{
+		{name: "same head"},
+		{name: "lost fence stops retry", loseFence: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				head := strings.Repeat("a", 40)
+				target := NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Repository: "https://github.com/example/repo", Method: "squash"}
+				execution := &retainedLandingSetupExecution{
+					completionLandingExecution: completionLandingExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: target}}},
+					loseFence:                  test.loseFence,
+				}
+				backend := &retainedLandingSetupWorkspace{}
+				runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: backend, AgentBackend: &fakeCodexClient{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				runner.sleepInhibitor = nil
+				result, err := runner.Run(t.Context(), RunRequest{
+					Issue: connector.Issue{ID: "native", State: "Merging"}, Mode: RunModeMerge, Execution: execution,
+					RetainItemWorkspace: true, DeferExecutionFinish: true,
+				})
+				if test.loseFence {
+					if !errors.Is(err, ErrExecutionAuthorityUnavailable) || len(backend.targets) != 1 {
+						t.Fatalf("lost authority: err=%v setup heads=%v", err, backend.targets)
+					}
+				} else if err != nil || result.NativeLanding == nil || result.NativeLanding.HeadSHA != head ||
+					result.NativeLanding.VersionID != target.VersionID || !slices.Equal(backend.targets, []string{head, head}) {
+					t.Fatalf("err=%v landing=%+v setup heads=%v", err, result.NativeLanding, backend.targets)
+				}
+				if execution.checks != 1 || execution.finish != "" {
+					t.Fatalf("authority checks=%d finish=%q", execution.checks, execution.finish)
+				}
+			})
+		})
 	}
 }
