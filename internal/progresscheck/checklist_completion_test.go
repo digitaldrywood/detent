@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -134,6 +135,93 @@ func TestNoChangeChecklistCompletion(t *testing.T) {
 func checklistValidator(version, repo, base, head string) *gate.ValidatorResult {
 	return &gate.ValidatorResult{VersionID: version, Repository: repo, BaseSHA: base, HeadSHA: head, Submitted: true, SessionID: 1, Verdict: gate.ValidatorVerdictPass,
 		Commands: []gate.CommandResult{{Command: "inspect source", HeadSHA: head, TreeSHA: "tree", ReceiptID: "inspection"}},
-		CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, Behavior: "independent behavior",
+		CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, Reference: "source inspection", Behavior: "independent behavior",
 			HeadSHA: head, TreeSHA: "tree", ReceiptIDs: []string{"inspection"}}}}
+}
+
+func TestChecklistReviewRejectionThenApproval(t *testing.T) {
+	const body = "## Acceptance criteria\n\n- criterion"
+	v := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{
+		AttemptID: "attempt", Repository: "example", HeadSHA: "head", BaseSHA: "base", PolicyID: "policy",
+	}}
+	for _, test := range []struct {
+		name string
+		exit int
+		red  bool
+	}{
+		{name: "genuine review rejection then approval", exit: 1, red: true},
+		{name: "instance failure then approval", exit: gate.TemporaryFailureExitCode},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			list := &tracker.ExecutionChecklist{AttemptID: v.AttemptID, Revision: ChecklistRevision(body, v.PolicyID), PolicyID: v.PolicyID,
+				Checks: []tracker.ExecutionCheck{
+					{Ordinal: 1, Kind: tracker.CheckAcceptance, Text: "criterion", Status: tracker.CheckNeedsReview},
+					{Ordinal: 2, Kind: tracker.CheckIndependentReview, Status: tracker.CheckUnverified},
+				}}
+			rejected := checklistValidator(v.ID, v.Repository, v.BaseSHA, v.HeadSHA)
+			rejected.Verdict = gate.ValidatorVerdictRework
+			rejected.Commands[0].ExitCode = test.exit
+			gate.NormalizeAttribution(rejected)
+			rejected.CriteriaEvidence[0].Kind = gate.EvidenceNotVerified
+			verdict := RoundVerdict{PolicyID: v.PolicyID, RoundInput: RoundInput{HeadSHA: v.HeadSHA, TreeSHA: "tree"}}
+			step := tracker.NativeStepReceipt{Step: "validator", PolicyID: v.PolicyID, Source: tracker.NativeCheckpoint{HeadSHA: v.HeadSHA},
+				Change: tracker.NativeChangeReference{VersionID: v.ID, HeadSHA: v.HeadSHA}, Validator: rejected}
+			changes := ChecklistChanges(list.Checks, verdict, nil, []tracker.NativeStepReceipt{step})
+			ApplyChecklistChanges(list.Checks, changes)
+			if test.red {
+				for _, check := range list.Checks {
+					if check.Status != tracker.CheckFailed {
+						t.Errorf("genuine rejection projected %+v, want failed", check)
+					}
+				}
+			} else if len(changes) != 0 {
+				t.Errorf("instance failure changed the checklist: %+v", changes)
+			}
+			detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: v.ID}, Summary: tracker.ChangeSummary{Status: "reviewed"},
+				Reviews: []tracker.ChangeReview{{VersionID: v.ID, Actor: tracker.Actor{Kind: "runner"}, Decision: "changes_requested", Validator: rejected}}}
+			if _, ready := ReviewedChecklist(list, body, detail, v, nil, false); ready {
+				t.Fatal("completion accepted the current rejection")
+			}
+			approved := checklistValidator(v.ID, v.Repository, v.BaseSHA, v.HeadSHA)
+			detail.Reviews = append(detail.Reviews, tracker.ChangeReview{VersionID: v.ID, Actor: tracker.Actor{Kind: "runner"}, Decision: "approved", Validator: approved})
+			changes, ready := ReviewedChecklist(list, body, detail, v, nil, false)
+			if !ready || len(changes) != 2 || changes[0].Status != tracker.CheckPassed || changes[1].Status != tracker.CheckPassed {
+				t.Fatalf("approved re-review = %v, updates = %+v, want both rows passed", ready, changes)
+			}
+		})
+	}
+}
+
+func TestChecklistPolicyRowsFollowCurrentEvidence(t *testing.T) {
+	const head, tree = "head", "tree"
+	for _, kind := range []tracker.ExecutionCheckKind{tracker.CheckSecurityAudit, tracker.CheckStatusGate} {
+		t.Run(string(kind), func(t *testing.T) {
+			list := &tracker.ExecutionChecklist{Checks: []tracker.ExecutionCheck{{Ordinal: 1, Kind: kind, Text: "required", Head: head, Tree: tree, Status: tracker.CheckFlaky}}}
+			audit := &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{Attribution: "instance"}}
+			evidence := checklistEvidence{head: head, tree: tree}
+			if kind == tracker.CheckSecurityAudit {
+				evidence.audit = &tracker.NativeStepReceipt{SecurityAudit: audit}
+				if changes, ready := evaluateChecklist(list, evidence, false); ready || len(changes) != 0 {
+					t.Errorf("instance failure: ready = %v, updates = %+v", ready, changes)
+				}
+				audit.Run.Attribution = "change"
+			} else {
+				evidence.ci = &tracker.NativeLandingCIReceipt{HeadSHA: head, PullRequest: 1, RequiredChecks: []string{"required"}, FailedChecks: []string{"required"}}
+			}
+			changes, ready := evaluateChecklist(list, evidence, false)
+			if ready || len(changes) != 1 || changes[0].Status != tracker.CheckFailed {
+				t.Errorf("current failure: ready = %v, updates = %+v", ready, changes)
+			}
+			ApplyChecklistChanges(list.Checks, changes)
+			if kind == tracker.CheckSecurityAudit {
+				audit.Verdict = "pass"
+			} else {
+				evidence.ci.State, evidence.ci.FailedChecks = "success", nil
+			}
+			changes, ready = evaluateChecklist(list, evidence, false)
+			if !ready || len(changes) != 1 || changes[0].Status != tracker.CheckPassed {
+				t.Fatalf("current pass: ready = %v, updates = %+v", ready, changes)
+			}
+		})
+	}
 }
