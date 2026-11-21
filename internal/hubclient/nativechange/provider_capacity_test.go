@@ -381,12 +381,13 @@ func TestRecordedAttemptChecksProviderBeforeRestart(t *testing.T) {
 
 type planPolicyHost struct {
 	executioncontract.ExecutionHost
+	review string
 }
 
-func (planPolicyHost) PinnedExecutionPolicy(string) policy.Descriptor {
+func (h planPolicyHost) PinnedExecutionPolicy(string) policy.Descriptor {
 	var pinned policy.Descriptor
 	pinned.ID = "policy_plan"
-	pinned.Gates.PlanEnabled, pinned.Gates.PlanReview = true, "automated"
+	pinned.Gates.PlanEnabled, pinned.Gates.PlanReview = true, h.review
 	return pinned
 }
 
@@ -429,12 +430,92 @@ func TestLivePlanContinuationKeepsSameAttemptReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution := &nativeExecution{scheduler: &executionAuthority{host: planPolicyHost{}}, claim: nativeClaim{source: source, lease: lease, recovery: recovery}, data: data, reconnecting: true}
+	execution := &nativeExecution{scheduler: &executionAuthority{host: planPolicyHost{review: gate.PlanReviewAutomated}}, claim: nativeClaim{source: source, lease: lease, recovery: recovery}, data: data, reconnecting: true}
 	continuation, err := execution.PhaseReceipts(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if continuation.LastPushed == nil || *continuation.LastPushed != receipt || continuation.Plan == nil || !continuation.Plan.Accepted || continuation.NextPhase != runner.RunModeImplement {
 		t.Fatalf("live attempt discarded its approved plan: %+v", continuation)
+	}
+}
+
+func TestHumanPlanContinuationWaitsForMissingApproval(t *testing.T) {
+	t.Parallel()
+	for _, review := range []string{gate.PlanReviewHuman, gate.PlanReviewBoth} {
+		for _, test := range []struct {
+			name       string
+			receipt    bool
+			checkpoint string
+			change     bool
+		}{
+			{name: "implementation receipt", receipt: true},
+			{name: "preserved code checkpoint", checkpoint: runner.RoleCode},
+			{name: "preserved rework checkpoint", checkpoint: runner.RoleRework},
+			{name: "existing Change", change: true},
+		} {
+			t.Run(review+"/"+test.name, func(t *testing.T) {
+				t.Parallel()
+				lease := tracker.NativeLease{ID: "lease_plan", WorkItemID: "wi_plan", FencingToken: 3, PolicyID: "policy_plan"}
+				recovery := tracker.NativeRecovery{Lease: lease}
+				recovery.Issue.WorkItemID = lease.WorkItemID
+				if test.checkpoint != "" {
+					recovery.Attempts = []tracker.NativeAttempt{{
+						NativeRunData: tracker.NativeRunData{AttemptID: "attempt_prior", Identity: &tracker.NativeExecutionIdentity{Role: test.checkpoint}},
+						Checkpoint:    &tracker.NativeCheckpoint{HeadSHA: "head", Resume: "resume_session", WorktreeState: "clean"},
+					}}
+				}
+				if test.change {
+					recovery.Change = &tracker.NativeChangeReference{HeadSHA: "head"}
+				}
+				receipts := []tracker.NativePhaseReceipt{}
+				continuation := tracker.NativePhaseContinuation{NextPhase: runner.RunModeImplement}
+				if test.receipt {
+					receipts = append(receipts, tracker.NativePhaseReceipt{
+						Phase: "implement", AttemptID: "attempt_prior", HeadSHA: "head", TreeSHA: "tree", PolicyID: lease.PolicyID,
+					})
+					continuation.LastPushed = &receipts[0]
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					var payload any = tracker.NativeProject{}
+					if strings.HasSuffix(req.URL.Path, "/phases") {
+						payload = receipts
+						if req.URL.Query().Has("phase") {
+							payload = continuation
+						}
+					}
+					if err := json.NewEncoder(w).Encode(payload); err != nil {
+						t.Error(err)
+					}
+				}))
+				defer server.Close()
+				client, err := api.New(api.Config{URL: server.URL, TokenSource: func() string { return "test-token" }, HTTPClient: server.Client()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				source, err := api.NewNativeConnector(native)
+				if err != nil {
+					t.Fatal(err)
+				}
+				execution := &nativeExecution{
+					scheduler: &executionAuthority{host: planPolicyHost{review: review}},
+					claim:     nativeClaim{source: source, lease: lease, recovery: recovery},
+				}
+				resolved, err := execution.PhaseReceipts(t.Context(), "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if resolved.Plan == nil || !resolved.Plan.NeedsProvider() || resolved.NextPhase != runner.RunModePlan {
+					t.Fatalf("recovery did not wait for plan approval: %+v", resolved)
+				}
+				if test.receipt && (resolved.LastPushed == nil || *resolved.LastPushed != receipts[0]) {
+					t.Fatalf("recovery lost the published source: %+v", resolved.LastPushed)
+				}
+			})
+		}
 	}
 }

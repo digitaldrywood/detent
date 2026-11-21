@@ -135,8 +135,14 @@ func (e *nativeLaneEntries) store(id tracker.NativeWorkItemID, entry nativeLaneE
 
 func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeRecovery, pinnedPolicy policy.Descriptor, receipts []tracker.NativePhaseReceipt) (*tracker.NativePlanState, error) {
 	item := recovery.Issue.WorkItemID
-	if len(receipts) == 0 {
-		if recovery.Change != nil {
+	result := &tracker.NativePlanState{}
+	humanReview := pinnedPolicy.Gates.PlanReview == gate.PlanReviewHuman || pinnedPolicy.Gates.PlanReview == gate.PlanReviewBoth
+	index := slices.IndexFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool { return tracker.IsPlanPhase(receipt.Phase) })
+	if index < 0 {
+		if humanReview {
+			return result, nil
+		}
+		if len(receipts) != 0 || recovery.Change != nil {
 			return nil, nil
 		}
 		if source := recovery.SourceAttempt(); source != nil && source.Checkpoint.PreservesSource() && source.Identity != nil {
@@ -145,15 +151,9 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 				return nil, nil
 			}
 		}
-		return &tracker.NativePlanState{}, nil
-	}
-
-	index := slices.IndexFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool { return tracker.IsPlanPhase(receipt.Phase) })
-	if index < 0 {
-		return nil, nil
+		return result, nil
 	}
 	pinned := receipts[index]
-	result := &tracker.NativePlanState{}
 	if pinned.PolicyID != pinnedPolicy.ID {
 		return result, nil
 	}
@@ -192,7 +192,7 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 			result.ReviewPending, result.Findings = true, step.PlanApproval
 			return result, nil
 		}
-		if step.PlanApproval != "" || pinnedPolicy.Gates.PlanReview != gate.PlanReviewHuman && pinnedPolicy.Gates.PlanReview != gate.PlanReviewBoth {
+		if step.PlanApproval != "" || !humanReview {
 			return &tracker.NativePlanState{}, nil
 		}
 		if owner.CompletionBody == "" {

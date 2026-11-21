@@ -131,7 +131,11 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 			return nil, err
 		}
 	}
+	planPending := continuation.Plan != nil && !continuation.Plan.Accepted
 	if len(receipts) == 0 {
+		if planPending {
+			continuation.NextPhase = runner.RunModePlan
+		}
 		return &continuation, nil
 	}
 	pinned := receipts[0]
@@ -149,8 +153,8 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 		continuation.LastPushed = &pinned
 		return &continuation, nil
 	}
-	if continuation.Plan != nil && !continuation.Plan.Accepted {
-		continuation.LastPushed, continuation.NextPhase = &pinned, "plan"
+	if planPending {
+		continuation.LastPushed, continuation.NextPhase = &pinned, runner.RunModePlan
 		return &continuation, nil
 	}
 	var phases []tracker.NativePhaseReceipt
