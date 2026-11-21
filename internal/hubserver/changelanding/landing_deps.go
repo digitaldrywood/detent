@@ -29,7 +29,7 @@ type LandingDeps struct {
 	NativeAPIError          func(c echo.Context, err error, attributes ...any) error
 	InvalidAPIRequest       func(c echo.Context, err error) error
 	AuthorizeAccessScope    func(ctx context.Context, r accessstore.Reader, scope hubscope.NativeScope, write bool) error
-	ChangeRecordReceipt     func(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) (json.RawMessage, bool, error)
+	ChangeRecordReceipt     func(ctx context.Context, scope hubscope.NativeScope, operation, key string, hashes ...string) (json.RawMessage, bool, error)
 	ReadChangeRecord        func(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.ChangeRequest, error)
 	ReadChangeVersionRecord func(ctx context.Context, organization tracker.OrganizationID, changeID, versionID string) (eventstore.Version, error)
 	ReadWorkItemRecord      func(ctx context.Context, scope hubscope.NativeScope, id string) (corestore.WorkItem, eventstore.CollaborationVersion, error)

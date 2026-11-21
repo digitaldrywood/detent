@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -817,6 +818,20 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatalf("human approval did not report the expected frozen acceptance status: %+v, error = %v", stored, err)
 		}
 		if editedChecklist {
+			current, err := h.admin.Issue(t.Context(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := issue.Description
+			if _, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Body: &body}); err != nil {
+				t.Fatal(err)
+			}
+			restored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
+			if err != nil || restored == nil || !slices.ContainsFunc(restored.Checks, func(check tracker.ExecutionCheck) bool {
+				return check.Kind == tracker.CheckAcceptance && check.Status == tracker.CheckNeedsReview && check.Receipt == ""
+			}) {
+				t.Fatalf("restoring the original criteria reused approval of edited criteria: %+v, error = %v", restored, err)
+			}
 			return
 		}
 	}
@@ -1396,6 +1411,45 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			return check.Kind == tracker.CheckStatusGate && check.Text == "Full CI" && check.Status == tracker.CheckPassed && check.Head == head && check.Receipt != ""
 		}) {
 			t.Fatalf("source checklist did not report successful landing CI: %+v, error = %v", stored, err)
+		}
+		detail, err := h.admin.RuntimeChange(t.Context(), item, landed.ChangeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacy := tracker.LandChangeVersion{
+			Mutation: api.NativeMutationKey(), MergeSHA: landed.MergeSHA, BaseRef: landed.BaseRef, Method: landed.Method, Rebased: landed.Rebased,
+			Receipt: &tracker.NativeLandingReceipt{ChangeID: landed.ChangeID, VersionID: landed.VersionID, HeadSHA: landed.HeadSHA,
+				MergeSHA: landed.MergeSHA, BaseRef: landed.BaseRef, Method: landed.Method, Rebased: landed.Rebased, Landed: true, Gate: landed.Gate, CI: landed.CI},
+		}
+		hash, err := hubapi.CommandHash(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := json.Marshal(detail.Change)
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := http.MethodPost + " " + h.admin.Scope() + "/work-items/" + string(item) + "/changes/" + landed.ChangeID + "/versions/" + landed.VersionID + "/landing"
+		receipt, err := eventstore.NewContent(h.config.RunDetails).PrepareReceipt(t.Context(), eventstore.Receipt{
+			OrganizationID: h.organization, ActorID: "example_admin", Operation: operation, CommandKey: legacy.IdempotencyKey, RequestHash: hash, CreatedAt: h.clock(),
+		}, response)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.seed(func(w tenantstore.Writer) error {
+			_, err := w.PutReceipt(t.Context(), receipt)
+			return err
+		})
+		got, err := h.admin.LandChangeVersion(t.Context(), item, landed.ChangeID, landed.VersionID, legacy)
+		if err != nil || !reflect.DeepEqual(got.Landed, detail.Change.Landed) {
+			t.Fatalf("retry of committed develop-format landing lost its receipt: %v", err)
+		}
+		legacy.MergeSHA = strings.Repeat("f", 40)
+		legacy.Receipt.MergeSHA = legacy.MergeSHA
+		_, err = h.admin.LandChangeVersion(t.Context(), item, landed.ChangeID, landed.VersionID, legacy)
+		var conflict *api.APIError
+		if !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
+			t.Fatalf("changed merge SHA replay = %v, want conflict", err)
 		}
 	}
 	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {

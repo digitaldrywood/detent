@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -15,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *RecordReceipts) ChangeRecordReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key, hash string) (json.RawMessage, bool, error) {
+func (s *RecordReceipts) ChangeRecordReceipt(ctx context.Context, scope hubscope.NativeScope, operation, key string, hashes ...string) (json.RawMessage, bool, error) {
 	var receipt eventstore.Receipt
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error
@@ -28,7 +29,7 @@ func (s *RecordReceipts) ChangeRecordReceipt(ctx context.Context, scope hubscope
 	if err != nil {
 		return nil, false, hubapi.ProjectRecordError(err)
 	}
-	if receipt.RequestHash != hash {
+	if !slices.Contains(hashes, receipt.RequestHash) {
 		return nil, false, hubapi.NativeConflict(0)
 	}
 	value, err := eventstore.NewContent(s.deps.RunDetailStore()).Receipt(ctx, receipt)

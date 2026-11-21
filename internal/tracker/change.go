@@ -163,6 +163,7 @@ type SecurityAuditReview struct {
 }
 
 type ChangeReview struct {
+	IssueEventID         string                `json:"issue_event_id,omitempty"`
 	RepairDependencies   []NativeWorkItemID    `json:"repair_dependencies,omitempty"`
 	RepairRefusal        string                `json:"repair_refusal,omitempty"`
 	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`

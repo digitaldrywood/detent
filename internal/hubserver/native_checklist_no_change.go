@@ -51,30 +51,12 @@ func (s *Service) reportNoChangeChecklistGate(ctx context.Context, scope hubscop
 }
 
 func (s *Service) readChecklistReviewStep(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, attempt *tracker.NativeAttempt, step tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
-	if step.PayloadArtifact == nil && step.PayloadAttachment == nil {
+	if step.PayloadAttachment == nil || step.PayloadArtifact != nil {
 		return step, nil
 	}
-	var raw []byte
-	var err error
-	if ref := step.PayloadArtifact; ref != nil {
-		if step.PayloadAttachment != nil || ref.Validate() != nil || ref.OrganizationID != string(scope.Organization) || ref.ProjectID != string(scope.Project) ||
-			ref.WorkItemID != string(item) || ref.AttemptID != attempt.AttemptID || ref.RunID != attempt.RunID ||
-			ref.Kind != "log" || ref.State != "complete" || ref.Availability != "available" {
-			return step, artifact.ErrIntegrity
-		}
-		grant, err := s.artifactReadGrantTenant(ctx, scope, string(item), ref.ArtifactID, ref.Revision, s.config.Clock().UTC())
-		if err != nil {
-			return step, err
-		}
-		raw, err = artifact.ReadPayload(ctx, grant, *ref)
-		if err != nil {
-			return step, err
-		}
-	} else {
-		raw, err = s.readChecklistReviewAttachment(ctx, scope, item, attempt.AttemptID, *step.PayloadAttachment)
-		if err != nil {
-			return step, err
-		}
+	raw, err := s.readChecklistReviewAttachment(ctx, scope, item, attempt.AttemptID, *step.PayloadAttachment)
+	if err != nil {
+		return step, err
 	}
 	return tracker.DecodeNativeStepPayload(raw, step)
 }

@@ -126,6 +126,11 @@ prepareReview:
 		}
 	}
 	review := tracker.ChangeReview{SessionMachineID: sessionMachine, ImplementationReview: request.ImplementationReview, Validator: request.Validator, SecurityAudit: request.SecurityAudit, ID: hubcontent.PayloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
+	reviewEventID := hubcontent.PayloadNativeID(ctx, "evt")
+	if review.Decision == "approved" && review.Actor.Kind == "human" && scope.Credential.Scope != hubapi.APIScopeWorker &&
+		review.ImplementationReview == nil && review.Validator == nil && review.SecurityAudit == nil {
+		review.IssueEventID = reviewEventID
+	}
 	var independent *PreparedRepairs
 	if request.Decision == "changes_requested" && review.VersionID == change.CurrentVersion {
 		independent, err = s.deps.PrepareRepairs(ctx, scope, change.WorkItemID, review.IndependentFailures(), change.ID+"/"+review.ID, now)
@@ -183,7 +188,7 @@ prepareReview:
 	if err != nil {
 		return nil, err
 	}
-	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: hubcontent.PayloadNativeID(ctx, "evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
+	eventRaw, err := json.Marshal(tracker.CollaborationEvent{ID: reviewEventID, OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: change.WorkItemID, Type: "change.review", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: review.CreatedAt, Data: tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: versionID}}})
 	if err != nil {
 		return nil, err
 	}
@@ -362,6 +367,13 @@ prepareReview:
 			}
 			if _, err := w.AppendEvidence(ctx, evidence); err != nil {
 				return fmt.Errorf("append review evidence: %w", err)
+			}
+			if review.IssueEventID != "" {
+				item, err := w.WorkItem(ctx, scope.Project, change.WorkItemID)
+				if err != nil {
+					return err
+				}
+				event.EventRevision = item.Revision
 			}
 			if _, err := w.AppendEvent(ctx, event); err != nil {
 				return fmt.Errorf("append review event: %w", err)

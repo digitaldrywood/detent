@@ -52,17 +52,23 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("Landing receipt must attest a completed landing"))
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	command := request
-	if request.Receipt != nil && request.Receipt.CI != nil {
-		receipt := *request.Receipt
-		receipt.CI = nil
-		command.Receipt = &receipt
-	}
-	hash, err := hubapi.CommandHash(command)
+	hash, err := hubapi.CommandHash(request)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
 	}
-	replay, found, err := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+	replayHashes := []string{hash}
+	if request.Receipt != nil && request.Receipt.CI != nil {
+		command := request
+		receipt := *request.Receipt
+		receipt.CI = nil
+		command.Receipt = &receipt
+		hash, err = hubapi.CommandHash(command)
+		if err != nil {
+			return s.deps.NativeAPIError(c, err)
+		}
+		replayHashes = append(replayHashes, hash)
+	}
+	replay, found, err := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, replayHashes...)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
 	}
@@ -266,7 +272,7 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 				return err
 			}
 			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
-				if prior.RequestHash != hash {
+				if !slices.Contains(replayHashes, prior.RequestHash) {
 					return hubapi.NativeConflict(change.Revision - 1)
 				}
 				return corestore.ErrSerializationFailure
@@ -358,7 +364,7 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 			return err
 		})
 		if errors.Is(err, corestore.ErrSerializationFailure) || errors.Is(err, corestore.ErrUniqueViolation) {
-			replay, found, readErr := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, hash)
+			replay, found, readErr := s.deps.ChangeRecordReceipt(ctx, scope, operation, request.IdempotencyKey, replayHashes...)
 			if readErr != nil {
 				return s.deps.NativeAPIError(c, readErr)
 			}

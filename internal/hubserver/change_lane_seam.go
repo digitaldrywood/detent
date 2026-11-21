@@ -248,7 +248,7 @@ func (s *Service) changeLanding() *changelanding.Landing {
 		NativeAPIError:          s.nativeAPIError,
 		InvalidAPIRequest:       s.invalidAPIRequest,
 		AuthorizeAccessScope:    s.authorizeAccessScope,
-		ChangeRecordReceipt:     s.changeRecordReceipt,
+		ChangeRecordReceipt:     s.changeRecordReceipts().ChangeRecordReceipt,
 		ReadChangeRecord:        s.readChangeRecord,
 		ReadChangeVersionRecord: s.readChangeVersionRecord,
 		ReadWorkItemRecord:      s.readWorkItemRecord,

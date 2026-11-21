@@ -201,7 +201,25 @@ func checklistGateMatches(check tracker.ExecutionCheck, command *gate.CommandRes
 
 func NoChangeChecklistGate(check tracker.ExecutionCheck, completion tracker.NativeNoChangeCompletion, step tracker.NativeStepReceipt) *gate.CommandResult {
 	head := completion.VerifiedSHA
-	if !noChangeChecklistReview(&step, completion.PolicyID, head) || step.Change.VersionID != completion.VersionID() || step.Validator.Repository != completion.Repository {
+	if step.Change.VersionID != completion.VersionID() || step.Change.ChangeID != "" || step.PolicyID != completion.PolicyID ||
+		step.Source.HeadSHA != head || step.Change.HeadSHA != head || (step.Step != "review" && step.Step != "validator") {
+		return nil
+	}
+	if step.Validator == nil && step.PayloadArtifact != nil && step.PayloadAttachment == nil {
+		command := step.Validation
+		if command == nil || command.ExitCode != 0 {
+			return nil
+		}
+		tree := command.TreeSHA
+		if observed := checklistTree(head, completion.Validation, nil); observed != "" {
+			tree = observed
+		}
+		if checklistGateMatches(check, command, head, tree) {
+			return command
+		}
+		return nil
+	}
+	if !noChangeChecklistReview(&step, completion.PolicyID, head) || step.Validator.Repository != completion.Repository {
 		return nil
 	}
 	return passingReviewGate(check, step.Validator, head, checklistTree(head, completion.Validation, step.Validator))

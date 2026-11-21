@@ -37,8 +37,6 @@ func (s *Service) readExecutionChecklistReport(ctx context.Context, scope hubsco
 	}
 	var version eventstore.Version
 	var approval eventstore.Evidence
-	var issueRow corestore.WorkItem
-	var issueVersion eventstore.CollaborationVersion
 	var committedLanding eventstore.LandingReceipt
 	var landedAt time.Time
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
@@ -70,16 +68,6 @@ func (s *Service) readExecutionChecklistReport(ctx context.Context, scope hubsco
 				return err
 			}
 		}
-		if approval.Sequence > 0 {
-			issueRow, err = r.WorkItem(ctx, scope.Project, item)
-			if err != nil {
-				return err
-			}
-			issueVersion, err = r.CollaborationVersion(ctx, string(item), issueRow.Revision)
-			if err != nil {
-				return err
-			}
-		}
 		if statusChecks && change.LandedVersionID != nil && *change.LandedVersionID == version.ID {
 			landed, err := eventstore.VersionLandingFromChange(change)
 			if err != nil {
@@ -103,19 +91,20 @@ func (s *Service) readExecutionChecklistReport(ctx context.Context, scope hubsco
 	content := eventstore.NewContent(s.runDetailStoreFor(ctx))
 	var review tracker.ChangeReview
 	if approval.Sequence > 0 && !approval.CreatedAt.Before(list.FrozenAt) {
-		issue, err := s.hydrateCanonicalWorkItemRecord(ctx, issueRow, issueVersion)
+		raw, err := content.Evidence(ctx, approval)
 		if err != nil {
 			return nil, err
 		}
-		if list.Revision == progresscheck.ChecklistRevision(issue.Body, list.PolicyID) {
-			raw, err := content.Evidence(ctx, approval)
-			if err != nil {
-				return nil, err
-			}
-			review, err = eventstore.DecodeChangeReview(approval, raw)
-			if err != nil {
-				return nil, err
-			}
+		review, err = eventstore.DecodeChangeReview(approval, raw)
+		if err != nil {
+			return nil, err
+		}
+		applies, err := s.checklistApprovalMatches(ctx, scope, item, version, review, list, content)
+		if err != nil {
+			return nil, err
+		}
+		if !applies {
+			review = tracker.ChangeReview{}
 		}
 	}
 	var landing *tracker.NativeLandingReceipt
@@ -156,4 +145,38 @@ func (s *Service) readExecutionChecklistReport(ctx context.Context, scope hubsco
 		}
 	}
 	return list, nil
+}
+
+func (s *Service) checklistApprovalMatches(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, version eventstore.Version, review tracker.ChangeReview, list *tracker.ExecutionChecklist, content *eventstore.Content) (bool, error) {
+	if review.IssueEventID == "" {
+		return false, nil
+	}
+	var snapshot eventstore.CollaborationVersion
+	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		event, err := r.RunEvent(ctx, scope.Project, item, review.IssueEventID)
+		if err != nil {
+			return err
+		}
+		if event.Type != "change.review" || event.ChangeID != version.ChangeID || event.VersionID != version.ID ||
+			event.ActorKind != review.Actor.Kind || event.ActorPrincipalID != review.Actor.PrincipalID || event.EventRevision <= 0 {
+			return corestore.ErrNotFound
+		}
+		snapshot, err = r.CollaborationVersion(ctx, string(item), event.EventRevision)
+		return err
+	})
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if snapshot.OrganizationID != scope.Organization || snapshot.ProjectID != scope.Project || snapshot.WorkItemID != item {
+		return false, corestore.ErrTenantMismatch
+	}
+	raw, err := content.CollaborationVersion(ctx, snapshot)
+	if err != nil {
+		return false, err
+	}
+	issue, err := eventstore.DecodeCollaborationIssue(snapshot, raw)
+	return err == nil && list.Revision == progresscheck.ChecklistRevision(issue.Body, list.PolicyID), err
 }
