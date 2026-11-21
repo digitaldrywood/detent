@@ -83,18 +83,19 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 					if err != nil {
 						return leases, err
 					}
+					var recovery tracker.NativeRecovery
 					if len(receipts) == 0 || slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool { return tracker.IsPlanPhase(receipt.Phase) }) {
-						recovery, err := client.Recovery(discoveryCtx, issue.WorkItemID)
+						recovery, err = client.Recovery(discoveryCtx, issue.WorkItemID)
 						if err != nil {
 							return leases, err
 						}
-						plan, err := client.ResolvePlan(discoveryCtx, recovery, request.Policy, receipts)
-						if err != nil {
-							return leases, err
-						}
-						if plan.NeedsProvider() {
-							resolve = request.PlanProviderRequirement
-						}
+					}
+					plan, err := client.ResolvePlan(discoveryCtx, recovery, request.Policy, receipts)
+					if err != nil {
+						return leases, err
+					}
+					if plan.NeedsProvider() {
+						resolve = request.PlanProviderRequirement
 					}
 				}
 				requirement, err := resolve(discoveryCtx, candidate, reports)
