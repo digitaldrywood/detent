@@ -602,7 +602,7 @@ func (o *Orchestrator) fetchTickIssues(
 	}
 
 	timing.step("fetch_candidates")
-	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
+	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state, now)
 	defer func(claimCtx context.Context) {
 		if !ok {
 			o.releaseDeferredSchedulingClaims(claimCtx, state, candidateIssues)
@@ -785,7 +785,7 @@ func (o *Orchestrator) fetchObservedIssuesByStates(ctx context.Context, states [
 	return o.connector.FetchIssuesByStates(ctx, states)
 }
 
-func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State) ([]connector.Issue, error) {
+func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State, dispatchAt time.Time) ([]connector.Issue, error) {
 	states := o.candidateFetchStatesForTick(state)
 	if len(states) == 0 {
 		return []connector.Issue{}, nil
@@ -837,7 +837,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				return true
 			}
 			o.trackCandidateBlockedStatusIssues(ctx, state, []connector.Issue{issue}, now)
-			if reason := knownDispatchWaitReason(issue, state, dueRetriesByIssue(state, now), o.cfg.TerminalStates); reason != "" {
+			if reason := knownDispatchWaitReason(issue, state, dueRetriesByIssue(state, dispatchAt), o.cfg.TerminalStates); reason != "" {
 				o.recordLocalAdmission(ctx, state, issue, now, false, reason, reason, nil)
 				return true
 			}
@@ -923,11 +923,11 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				delete(preview.Blocked, issue.ID)
 			}
 			if retry, ok := preview.Retry[issue.ID]; ok {
-				if retry.DueAt.After(now) {
+				if retry.DueAt.After(dispatchAt) {
 					observedReason, observedPredicate = dispatchSkipRetryPending, "retry_not_due"
 					return false
 				}
-				_, ready, reason := planner.retryAction(&preview, issue, retry, now)
+				_, ready, reason := planner.retryAction(&preview, issue, retry, dispatchAt)
 				observedReason, observedPredicate = reason, reason
 				return ready
 			}
