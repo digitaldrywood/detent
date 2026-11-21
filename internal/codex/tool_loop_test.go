@@ -29,7 +29,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		ackAfter                                    []int
 		sequences                                   []uint64
 		stop                                        bool
-		lateAck                                     bool
+		lateAck, rejectFirstSteer                   bool
 		freshThird, sealFirst                       bool
 		customTool, nestedSibling                   bool
 		missingResponse, unavailableSourceProbe     bool
@@ -49,6 +49,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
 		{name: "source probe expires after acknowledged steer", unavailableSourceProbe: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
+		{name: "rejected steer retries after the decision window", rejectFirstSteer: true, ackAfter: []int{3 + progresscheck.ToolLoopWindow}, sequences: []uint64{67, 70}, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/steer", "turn/interrupt"}, stop: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
 		{name: "terminal completion won race", steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/interrupt"}},
 		{name: "parallel siblings", parallel: true, terminalStatus: "completed"},
@@ -96,11 +97,17 @@ func TestStreamToolLoopControl(t *testing.T) {
 			if test.wrongScope {
 				turn = "other"
 			}
-			stopRepeats := 6
+			steerRepeats, stopRepeats := 3, 6
+			confirmedControls := len(test.methods)
 			if test.lateAck {
 				stopRepeats = 7
 			}
 			calls := stopRepeats
+			if test.rejectFirstSteer {
+				calls += progresscheck.ToolLoopWindow
+				steerRepeats, stopRepeats = progresscheck.ToolLoopWindow, progresscheck.ToolLoopWindow
+				confirmedControls--
+			}
 			if test.freshThird {
 				calls = 3
 			}
@@ -171,6 +178,9 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if test.customTool {
 					messages = append(messages, notificationMessage(t, "rawResponseItem/completed", fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"custom_tool_call_output","call_id":"call-%d"}}`, turn, ordinal)))
 				}
+				if test.rejectFirstSteer && ordinal == 3 {
+					messages = append(messages, Message{ID: requestID(loopSteerRequestID), Error: &RPCError{Code: -32000, Message: "steer rejected"}})
+				}
 				if len(test.ackAfter) == 0 && ordinal == 3 && !test.lateAck && test.steerResult != "" {
 					messages = append(messages, responseMessage(t, loopSteerRequestID, test.steerResult))
 				}
@@ -221,11 +231,11 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != stopRepeats || stopped.Evidence.Period != 1 {
 					t.Fatalf("stop = %v, evidence %+v", err, stopped)
 				}
-				if len(recorded) != len(test.methods) {
+				if len(recorded) != confirmedControls {
 					t.Fatalf("confirmed interventions = %+v", recorded)
 				}
 				steer, stop := recorded[len(recorded)-2], recorded[len(recorded)-1]
-				if steer.Action != "steer" || steer.Repeats != 3 || stop.Action != "stop" || stop.Repeats != stopRepeats ||
+				if steer.Action != "steer" || steer.Repeats != steerRepeats || stop.Action != "stop" || stop.Repeats != stopRepeats ||
 					steer.Fingerprint == "" || steer.Fingerprint != stop.Fingerprint {
 					t.Fatalf("confirmed interventions = %+v", recorded)
 				}
