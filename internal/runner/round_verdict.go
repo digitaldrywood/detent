@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -180,11 +181,27 @@ func (r *Runner) assessRound(ctx context.Context, execution RoundVerdictExecutio
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(config)
 	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progresscheck.MaxDuration}
 	generate := r.textGenerator(agent, request, req.Execution, config.Kind, progresscheck.MaxOutputBytes, "Assess the recorded round evidence. Do not call tools or read files.")
+	var discussion strings.Builder
+	for _, comment := range slices.Backward(req.Execution.Recovery().Discussion) {
+		humanAuthor := comment.Actor.Kind == "human" && comment.Actor.PrincipalID != ""
+		humanEditor := comment.EditedBy != nil && comment.EditedBy.Kind == "human" && comment.EditedBy.PrincipalID != ""
+		if comment.Deleted || !humanAuthor && !humanEditor {
+			continue
+		}
+		note, _ := runtimeoutput.Diagnostic(comment.Body, 2<<10)
+		if note != "" {
+			discussion.WriteString(note)
+			discussion.WriteString("\n\n")
+		}
+		if discussion.Len() >= 8<<10 {
+			break
+		}
+	}
 	verdictCtx := context.WithValue(ctx, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: 1})
 	return progresscheck.AssessRound(verdictCtx, progresscheck.RoundEvidence{
 		Phase: phase, Head: head, Tree: tree, Signature: signature,
 		Issue: req.Issue.Description, Findings: findings, Feedback: feedback, Completion: completion,
-		Criteria: criteria, Previous: previous, Checklist: checklist, ProviderBoundary: providerBoundary, ProviderError: runErr,
+		HumanDiscussion: discussion.String(), Criteria: criteria, Previous: previous, Checklist: checklist, ProviderBoundary: providerBoundary, ProviderError: runErr,
 	}, fallback, canReimplement, canAskHuman, generate)
 }
 
