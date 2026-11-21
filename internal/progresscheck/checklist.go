@@ -190,7 +190,12 @@ func checklistDeltas(checks []tracker.ExecutionCheck, updates []tracker.Executio
 	changes := updates[:0:0]
 	for _, update := range updates {
 		i := slices.IndexFunc(checks, func(check tracker.ExecutionCheck) bool { return check.Ordinal == update.Ordinal })
-		if i >= 0 && (checks[i].Status != update.Status || checks[i].Head != update.Head || checks[i].Tree != update.Tree) {
+		if i < 0 {
+			continue
+		}
+		check := checks[i]
+		newGateFailure := check.Kind == tracker.CheckProjectGate && update.Status == tracker.CheckFailed && check.Receipt != update.Receipt
+		if check.Status != update.Status || check.Head != update.Head || check.Tree != update.Tree || newGateFailure {
 			changes = append(changes, update)
 		}
 	}

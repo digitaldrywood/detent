@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -85,26 +88,65 @@ func TestValidatorPromptIncludesSameSourceGateFailure(t *testing.T) {
 		exitCode         int
 		wantFailure      bool
 	}{
-		{name: "instance exit followed by pass", head: "B", tree: "tree-B", exitCode: gate.TemporaryFailureExitCode},
-		{name: "code failure followed by same-source pass", head: "B", tree: "tree-B", exitCode: 1, wantFailure: true},
-		{name: "code failure on superseded head", head: "A", tree: "tree-A", exitCode: 1},
-		{name: "code failure on different tree", head: "B", tree: "tree-A", exitCode: 1},
+		{name: "instance exits followed by pass", head: "B", tree: "tree-B", exitCode: gate.TemporaryFailureExitCode},
+		{name: "two genuine failures followed by same-source pass", head: "B", tree: "tree-B", exitCode: 1, wantFailure: true},
+		{name: "code failures on superseded head", head: "A", tree: "tree-A", exitCode: 1},
+		{name: "code failures on different tree", head: "B", tree: "tree-A", exitCode: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			failure := gate.CommandResult{Command: pass.Command, HeadSHA: test.head, TreeSHA: test.tree, ReceiptID: "gate-fail", ExitCode: test.exitCode, Output: "TestReport: missing tenant"}
-			gate.NormalizeCommandAttribution("base", failure.HeadSHA, &failure)
+			prior := gate.CommandResult{Command: pass.Command, HeadSHA: test.head, TreeSHA: test.tree, ReceiptID: "gate-fail-base", ExitCode: test.exitCode, Output: "TestExisting: failed"}
+			changed := prior
+			changed.ReceiptID, changed.Output = "gate-fail-changed", "TestChanged: missing tenant"
+			gate.NormalizeCommandAttribution("base", prior.HeadSHA, &prior)
+			gate.NormalizeCommandAttribution("base", changed.HeadSHA, &changed)
 			commands := validatorCommands{issue: workspace.Issue{PullRequestHeadSHA: pass.HeadSHA}}
 			commands.reuse(pass.TreeSHA, []gate.CommandResult{pass})
-			commands.includeGateFailure(pass.Command, []gate.CommandResult{failure})
+			commands.includeGateFailures(pass.Command, []gate.CommandResult{prior, changed}, []gate.CommandResult{prior})
 			receipts, err := commands.evidence()
 			if err != nil || len(receipts) == 0 || receipts[len(receipts)-1].ReceiptID != pass.ReceiptID {
 				t.Fatalf("passing receipt unavailable: %v, %+v", err, receipts)
 			}
 			out := BuildValidatorPrompt(config.Workflow{Config: config.Default()}, connector.Issue{}, ValidatorPromptOptions{VersionID: "version", Commands: receipts})
-			if !strings.Contains(out, `receipt_id="gate-pass"`) || strings.Contains(out, `receipt_id="gate-fail"`) != test.wantFailure ||
-				strings.Contains(out, failure.Output) != test.wantFailure {
-				t.Fatalf("review input is missing a source-bound receipt or exposes an unrelated failure: %s", out)
+			if !strings.Contains(out, `receipt_id="gate-pass"`) {
+				t.Fatal("review input lacks the passing receipt")
+			}
+			for _, failure := range []gate.CommandResult{prior, changed} {
+				idCount := strings.Count(out, `receipt_id="`+failure.ReceiptID+`"`)
+				if test.wantFailure && idCount != 1 || !test.wantFailure && idCount != 0 || strings.Contains(out, failure.Output) != test.wantFailure {
+					t.Fatalf("review input contains receipt %s %d times, want failure=%v", failure.ReceiptID, idCount, test.wantFailure)
+				}
 			}
 		})
+	}
+}
+
+func TestValidatorGateFailureContinuation(t *testing.T) {
+	pass := gate.CommandResult{Command: "make check", HeadSHA: "head", TreeSHA: "tree", ReceiptID: "pass", DurationNS: 1}
+	old, added := pass, pass
+	old.ReceiptID, old.ExitCode, old.Output = "old", 1, "TestExisting failed"
+	added.ReceiptID, added.ExitCode, added.Output = "new", 1, "TestChanged failed"
+	command := validatorCommands{issue: workspace.Issue{PullRequestHeadSHA: pass.HeadSHA}}
+	command.reuse(pass.TreeSHA, []gate.CommandResult{pass})
+	command.includeGateFailures(pass.Command, []gate.CommandResult{old})
+	cursor := &tracker.NativeAttemptEvidenceCursor{AttemptID: "attempt_example", After: "gate:opaque"}
+	prompt := BuildValidatorPrompt(config.Workflow{}, connector.Issue{ID: "wi_example"}, ValidatorPromptOptions{VersionID: "version", GateFailureContinuation: cursor})
+	if !strings.Contains(prompt, "failure history is incomplete") || !strings.Contains(prompt, "work_attempt_receipt") || !strings.Contains(prompt, cursor.After) {
+		t.Fatal("review input lacks the continuation instructions")
+	}
+	result := operatortool.WorkReadResult[tracker.ProjectGateFailurePage]{Data: tracker.ProjectGateFailurePage{Failures: []gate.CommandResult{old, added}, NextCursor: "gate:next", Incomplete: true}}
+	reader := validatorAttachments{item: "wi_example", gateContinuation: cursor, commands: &command, gateCommand: pass.Command, handle: func(_ context.Context, _ AgentToolCall) (AgentToolResult, error) {
+		value, err := json.Marshal(result)
+		return AgentToolResult{Content: string(value), Success: err == nil}, err
+	}}
+	args := json.RawMessage(`{"project_id":"prj_example","reference":"wi_example","native_attempt_id":"attempt_example","cursor":"gate:opaque"}`)
+	seen, err := reader.call(t.Context(), AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: args})
+	var page operatortool.WorkReadResult[tracker.ProjectGateFailurePage]
+	if err != nil || json.Unmarshal([]byte(seen.Content), &page) != nil || !page.Data.Incomplete || page.Data.NextCursor != "gate:next" ||
+		len(page.Data.Failures) != 1 || page.Data.Failures[0].ReceiptID != "new" {
+		t.Fatalf("review page = %s, err = %v", seen.Content, err)
+	}
+	receipts, err := command.evidence()
+	if err != nil || len(receipts) != 3 {
+		t.Fatalf("validator retained %+v, err = %v", receipts, err)
 	}
 }

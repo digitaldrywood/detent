@@ -1,6 +1,8 @@
 package operatortool
 
 import (
+	"strings"
+
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -28,6 +30,11 @@ func NativeRuntimeResult(name string, request WorkReadRequest, evidence tracker.
 		return Result{}, explain.ErrNotFound
 	}
 	if name == WorkAttemptReceipt && request.Cursor != "" {
+		if strings.HasPrefix(request.Cursor, tracker.ProjectGateFailureCursorPrefix) {
+			return nativeRuntimeEnvelope(request, evidence, tracker.ProjectGateFailurePage{
+				Failures: evidence.ProjectGateFailures, NextCursor: evidence.ProjectGateFailureCursor, Incomplete: evidence.ProjectGateHistoryIncomplete,
+			})
+		}
 		return nativeRuntimeEnvelope(request, evidence, struct {
 			AttemptID  string                   `json:"native_attempt_id"`
 			Evidence   []tracker.NativeEvidence `json:"evidence"`

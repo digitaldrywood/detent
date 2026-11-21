@@ -238,12 +238,17 @@ func (d RuntimeDeps) GetNativeRuntime(c echo.Context) error {
 	}
 	if c.QueryParams().Has("evidence_after") {
 		after := c.QueryParam("evidence_after")
-		if after != "" && after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
+		gatePage := strings.HasPrefix(after, tracker.ProjectGateFailureCursorPrefix) && len(after) <= 4096
+		if after != "" && after != "start" && !hubapi.ValidID(after, "att") && !gatePage || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
 			return d.HTTPError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
 		}
 		ctx, cancel := context.WithTimeout(d.RequestDetails(d.DetailContext(c.Request().Context())), hubapi.ReadTimeout)
 		defer cancel()
-		evidence, _, _, err := d.ReadSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), RuntimeAttemptSelector{AttemptID: selector, EvidenceAfter: after, FirstEvidencePage: after == ""})
+		input := RuntimeAttemptSelector{AttemptID: selector, EvidenceAfter: after, FirstEvidencePage: after == ""}
+		if gatePage {
+			input.EvidenceAfter, input.GateFailureAfter = "", after
+		}
+		evidence, _, _, err := d.ReadSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), input)
 		if err != nil {
 			return d.HTTPError(c, err)
 		}

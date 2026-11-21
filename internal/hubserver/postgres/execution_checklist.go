@@ -86,8 +86,12 @@ ORDER BY observed_at DESC LIMIT 64`, s.organization, project, attempt, list.Revi
 	return &list, interventions.Err()
 }
 
-func (s *session) ProjectGateFailureEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, itemID int64, policyID, digest, head, tree string) ([]leasestore.ProjectGateFailureEvent, error) {
-	rows, err := s.db.Query(ctx, `SELECT t.round_id, t.receipt_id
+func (s *session) ProjectGateFailureEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, itemID int64, policyID, digest, head, tree string, after leasestore.ProjectGateFailurePosition) ([]leasestore.ProjectGateFailureEvent, error) {
+	var checkedAt *time.Time
+	if !after.CheckedAt.IsZero() {
+		checkedAt = &after.CheckedAt
+	}
+	rows, err := s.db.Query(ctx, `SELECT t.round_id, t.receipt_id, t.checked_at
 FROM native_execution_check_transitions AS t
 JOIN native_execution_checks AS c USING (organization_id, project_id, attempt_id, revision, ordinal)
 JOIN native_execution_checklists AS l USING (organization_id, project_id, attempt_id, revision)
@@ -95,16 +99,21 @@ JOIN native_attempts AS a ON a.organization_id = t.organization_id AND a.id = t.
 WHERE t.organization_id = $1 AND t.project_id = $2 AND a.issue_id = $3 AND l.policy_id = $4
   AND c.kind = 'project_gate' AND c.check_digest = $5 AND t.head_sha = $6 AND t.tree_sha = $7
   AND t.status IN ('failed', 'flaky') AND t.round_id LIKE 'evidence:%'
+  AND t.checked_at <= COALESCE($8::timestamptz, 'infinity'::timestamptz)
+  AND ($8 IS NULL OR t.checked_at < $8 OR t.receipt_id > $9)
 ORDER BY t.checked_at DESC, t.receipt_id
-LIMIT 8`, s.organization, project, itemID, policyID, digest, head, tree)
+LIMIT $10`, s.organization, project, itemID, policyID, digest, head, tree, checkedAt, after.ReceiptID, leasestore.ProjectGateFailurePageSize+1)
 	if err != nil {
 		return nil, err
 	}
-	type reference struct{ event, receipt string }
+	type reference struct {
+		event string
+		leasestore.ProjectGateFailurePosition
+	}
 	var refs []reference
 	for rows.Next() {
 		var ref reference
-		if err := rows.Scan(&ref.event, &ref.receipt); err != nil {
+		if err := rows.Scan(&ref.event, &ref.ReceiptID, &ref.CheckedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -120,7 +129,7 @@ LIMIT 8`, s.organization, project, itemID, policyID, digest, head, tree)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, leasestore.ProjectGateFailureEvent{Event: event, ReceiptID: ref.receipt})
+		result = append(result, leasestore.ProjectGateFailureEvent{Event: event, ProjectGateFailurePosition: ref.ProjectGateFailurePosition})
 	}
 	return result, nil
 }
@@ -147,7 +156,8 @@ UPDATE native_execution_checks AS c
 SET status = delta.status, head_sha = delta.head, tree_sha = delta.tree, receipt_id = delta.receipt, checked_at = $5
 FROM unnest($7::integer[], $8::text[], $9::text[], $10::text[], $11::text[]) AS delta(ordinal, status, head, tree, receipt)
 WHERE c.organization_id = $1 AND c.project_id = $2 AND c.attempt_id = $3 AND c.revision = $4 AND c.ordinal = delta.ordinal
-  AND (c.status, c.head_sha, c.tree_sha) IS DISTINCT FROM (delta.status, delta.head, delta.tree)
+  AND ((c.status, c.head_sha, c.tree_sha) IS DISTINCT FROM (delta.status, delta.head, delta.tree)
+       OR (c.kind = 'project_gate' AND delta.status = 'failed' AND c.receipt_id <> delta.receipt))
 RETURNING c.organization_id, c.project_id, c.attempt_id, c.revision, c.ordinal, c.status, c.head_sha, c.tree_sha, c.receipt_id, c.checked_at
 ) INSERT INTO native_execution_check_transitions (organization_id, project_id, attempt_id, revision, ordinal, round_id, status, head_sha, tree_sha, receipt_id, checked_at)
 SELECT organization_id, project_id, attempt_id, revision, ordinal, $6, status, head_sha, tree_sha, receipt_id, checked_at FROM changed`,

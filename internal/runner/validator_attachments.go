@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -19,14 +20,17 @@ import (
 )
 
 type validatorAttachments struct {
-	mu           sync.Mutex
-	reads        []gate.AttachmentRead
-	head         string
-	tree         string
-	images       bool
-	continuation *tracker.NativeAttemptEvidenceCursor
-	item         string
-	handle       AgentToolHandler
+	mu               sync.Mutex
+	reads            []gate.AttachmentRead
+	head             string
+	tree             string
+	images           bool
+	continuation     *tracker.NativeAttemptEvidenceCursor
+	gateContinuation *tracker.NativeAttemptEvidenceCursor
+	commands         *validatorCommands
+	gateCommand      string
+	item             string
+	handle           AgentToolHandler
 }
 
 type validatorAttachmentResult struct {
@@ -58,10 +62,33 @@ func validatorEvidenceTools(tools []AgentTool, paged bool) []AgentTool {
 func (v *validatorAttachments) call(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
 	if call.Name == operatortool.WorkAttemptReceipt {
 		args, err := operatortool.DecodeWorkRead(call.Name, call.Arguments)
-		if err != nil || v.continuation == nil || args.NativeAttemptID != v.continuation.AttemptID || args.Reference != v.item || args.Cursor == "" {
+		if err != nil {
 			return AgentToolResult{}, operatortool.ErrInvalidArguments
 		}
+		continuation := v.continuation
+		gatePage := strings.HasPrefix(args.Cursor, tracker.ProjectGateFailureCursorPrefix)
+		if gatePage {
+			continuation = v.gateContinuation
+		}
+		if continuation == nil || args.NativeAttemptID != continuation.AttemptID || args.Reference != v.item || args.Cursor == "" {
+			return AgentToolResult{}, operatortool.ErrInvalidArguments
+		}
+		if gatePage {
+			result, err := v.handle(ctx, call)
+			if err != nil || !result.Success {
+				return result, err
+			}
+			var page operatortool.WorkReadResult[tracker.ProjectGateFailurePage]
+			if err := json.Unmarshal([]byte(result.Content), &page); err != nil {
+				return AgentToolResult{}, err
+			}
+			page.Data.Failures = v.commands.includeGateFailures(v.gateCommand, page.Data.Failures)
+			data, err := json.Marshal(page)
+			result.Content = string(data)
+			return result, err
+		}
 	}
+
 	result, err := v.handle(ctx, call)
 	if err != nil || !result.Success || call.Name != operatortool.ReadAttachment {
 		return result, err

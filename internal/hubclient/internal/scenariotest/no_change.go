@@ -2,12 +2,15 @@ package scenariotest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -23,6 +27,132 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func RunNoChangeGateFailureHistory(t *testing.T, factories Constructors) {
+	for _, test := range []struct {
+		name     string
+		failures int
+	}{
+		{name: "two failures then pass", failures: 2},
+		{name: "failure history requires continuation", failures: 9},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
+			issue := h.createInProgress(t, "Verify existing behavior")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
+			e.SetRepository(nativeChangeRepository)
+			ctx := t.Context()
+			base, tree := nativeChangeFixtureHead("b"), strings.Repeat("d", 40)
+			e.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: base}, true
+			})
+			if err := e.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: base, ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := config.ResolveNativePolicy(h.descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow, err := resolved.Workflow()
+			if err != nil {
+				t.Fatal(err)
+			}
+			workflow.Config.Policy = h.descriptor
+			expected, err := progresscheck.FreezeChecklist(issue.Description, workflow.Config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := gate.Effective(workflow.Config.Gate).Run
+			if command == "" {
+				t.Fatal("fixture needs a project gate")
+			}
+			legacy := expected
+			legacy.Checks = slices.Clone(expected.Checks)
+			gateIndex := slices.IndexFunc(legacy.Checks, func(check tracker.ExecutionCheck) bool { return check.Kind == tracker.CheckProjectGate })
+			legacy.Checks[gateIndex].Text = "Run `" + command + "`."
+			legacy.Checks = slices.Insert(legacy.Checks, gateIndex, tracker.ExecutionCheck{Kind: tracker.CheckVerification, Text: "Run the project checks.", Status: tracker.CheckNeedsReview})
+			for i := range legacy.Checks {
+				legacy.Checks[i].Ordinal = i + 1
+			}
+			freezer := e.Lifecycle.(interface {
+				FreezeExecutionChecklist(context.Context, tracker.ExecutionChecklist) error
+			})
+			if err := freezer.FreezeExecutionChecklist(ctx, legacy); err != nil {
+				t.Fatalf("Hub rejected older runner's checklist shape: %v", err)
+			}
+			attemptID := e.CompletionData().AttemptID
+			item := tracker.NativeWorkItemID(issue.ID)
+			stored, err := h.native.ExecutionChecklist(ctx, item, attemptID)
+			if err != nil || stored == nil || stored.Revision != expected.Revision || !slices.Equal(stored.Checks, expected.Checks) {
+				t.Fatalf("Hub checklist = %+v, want canonical rows %+v, error = %v", stored, expected.Checks, err)
+			}
+
+			receipt := gate.CommandResult{Command: command, HeadSHA: base, TreeSHA: tree, ExitCode: 1, Stage: gate.StageSourceFinalization, DurationNS: int64(time.Millisecond)}
+			started := time.Now().UTC().Add(-time.Minute)
+			record := func(index int) {
+				t.Helper()
+				receipt.StartedAt = started.Add(time.Duration(index) * time.Second)
+				receipt.FinishedAt = receipt.StartedAt.Add(time.Millisecond)
+				receipt.ReceiptID = receipt.PipelineTiming("finalization").ID()
+				if err := e.RecordSourceValidation(ctx, receipt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := make(map[string]string)
+			for attempt := 0; attempt < test.failures; attempt++ {
+				receipt.Output = fmt.Sprintf("TestReport%02d failed", attempt)
+				record(attempt)
+				want[receipt.ReceiptID] = receipt.Output
+			}
+			receipt.ExitCode, receipt.Output = 0, "PASS"
+			record(test.failures)
+			message := "```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_kind: no_change_needed\n  completion_verified_sha: " + base + "\n  completion_evidence: Target regression passed\n```"
+			if err := e.PrepareFinish(ctx, "succeeded", message, nil); err != nil {
+				t.Fatal(err)
+			}
+			for _, read := range []func(context.Context) (runner.NativeValidation, error){e.ReviewVersion, e.ValidatorVersion} {
+				input, err := read(ctx)
+				if err != nil || input.NoChange == nil || input.Version == nil || input.Version.Validation == nil || input.Version.Validation.ReceiptID != receipt.ReceiptID || len(input.Commands) != 0 {
+					t.Fatalf("first no-change review input = %+v, error = %v", input, err)
+				}
+				got := slices.Clone(input.ProjectGateFailures)
+				continuation := input.GateFailureContinuation
+				if (continuation != nil) != (test.failures > 8) {
+					t.Fatalf("initial failure history has %d receipts, continuation = %+v", len(got), continuation)
+				}
+				if continuation != nil {
+					args, err := json.Marshal(operatortool.WorkReadRequest{ProjectID: string(h.native.ProjectID()), Reference: issue.ID, NativeAttemptID: continuation.AttemptID, Cursor: continuation.After})
+					if err != nil {
+						t.Fatal(err)
+					}
+					result, err := h.native.ReadAgentTool(ctx, runner.AgentToolCall{Name: operatortool.WorkAttemptReceipt, Arguments: args}, time.Now())
+					var page operatortool.WorkReadResult[tracker.ProjectGateFailurePage]
+					if err != nil || json.Unmarshal(result.Content, &page) != nil || page.Data.Incomplete || page.Data.NextCursor != "" || len(page.Data.Failures) != 1 {
+						t.Fatalf("continuation returned %s, error = %v", result.Content, err)
+					}
+					got = append(got, page.Data.Failures...)
+				}
+				if len(got) != len(want) {
+					t.Fatalf("received %d failed receipts, want %d", len(got), len(want))
+				}
+				seen := map[string]bool{}
+				for _, failure := range got {
+					if failure.Output != want[failure.ReceiptID] || seen[failure.ReceiptID] {
+						t.Fatalf("failure evidence = %+v", failure)
+					}
+					seen[failure.ReceiptID] = true
+				}
+			}
+			if changes, err := h.admin.Changes(ctx, item); err != nil || len(changes) != 0 {
+				t.Fatalf("history review required a published Change: %+v, error = %v", changes, err)
+			}
+		})
+	}
+}
 
 func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })

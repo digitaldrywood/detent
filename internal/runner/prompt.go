@@ -37,6 +37,8 @@ type ValidatorPromptOptions struct {
 	DiffTruncated        bool
 	DiffError            string
 	MaxInlineDiffBytes   int
+
+	GateFailureContinuation *tracker.NativeAttemptEvidenceCursor
 }
 
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
@@ -101,5 +103,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		DiffTruncated:        opts.DiffTruncated,
 		DiffError:            opts.DiffError,
 		MaxInlineDiffBytes:   opts.MaxInlineDiffBytes,
+
+		GateFailureContinuation: opts.GateFailureContinuation,
 	})
 }

@@ -4263,7 +4263,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 					return gate.ValidatorResult{}, err
 				}
 			}
-			commands.includeGateFailure(configured.Run, req.ProjectGateFailures, req.Commands)
+			commands.includeGateFailures(configured.Run, req.ProjectGateFailures, req.Commands)
 		}
 		validationTools, validationHandler = commands.tools()
 	}
@@ -4271,6 +4271,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	promptOptions := validatorPromptOptionsForPR(info, *req.Diff, validatorMaxInlineDiffBytes(validator))
 	promptOptions.Evidence = req.Evidence
 	promptOptions.EvidenceContinuation = req.EvidenceContinuation
+	promptOptions.GateFailureContinuation = req.GateFailureContinuation
 	promptOptions.SecurityAudit = req.SecurityAudit
 	promptOptions.implementationReview = req.implementationReview
 	promptOptions.Discussion = req.Discussion
@@ -4296,8 +4297,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		if req.NativeVersion.Validation != nil {
 			tree = req.NativeVersion.Validation.TreeSHA
 		}
-		attachments = &validatorAttachments{continuation: req.EvidenceContinuation, item: req.Issue.ID, head: req.NativeVersion.HeadSHA, tree: tree, images: backendConfig.Kind == config.AgentBackendCodex, handle: req.EvidenceHandler}
-		reads := validatorEvidenceTools(req.EvidenceTools, req.EvidenceContinuation != nil)
+		attachments = &validatorAttachments{continuation: req.EvidenceContinuation, gateContinuation: req.GateFailureContinuation, commands: commands, gateCommand: gate.Effective(workflow.Config.Gate).Run, item: req.Issue.ID, head: req.NativeVersion.HeadSHA, tree: tree, images: backendConfig.Kind == config.AgentBackendCodex, handle: req.EvidenceHandler}
+		reads := validatorEvidenceTools(req.EvidenceTools, req.EvidenceContinuation != nil || req.GateFailureContinuation != nil)
 		validationTools = append(validationTools, reads...)
 		commandHandler := validationHandler
 		validationHandler = func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {

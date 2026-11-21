@@ -13,6 +13,9 @@ func TestMain(m *testing.M) { os.Exit(testsupport.RunMain(m)) }
 func TestNoChangeCompletionSuppliesCurrentBaseToRequiredGates(t *testing.T) {
 	scenariotest.RunNoChangeCompletion(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
+func TestNoChangeGateFailureHistory(t *testing.T) {
+	scenariotest.RunNoChangeGateFailureHistory(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+}
 func TestNoChangeRunnerExecutesIndependentRequiredGates(t *testing.T) {
 	scenariotest.RunNoChangeRequiredGates(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }

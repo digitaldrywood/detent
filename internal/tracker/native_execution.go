@@ -67,6 +67,14 @@ type NativeChangeReference struct {
 	HeadSHA   string `json:"head_sha"`
 }
 
+const ProjectGateFailureCursorPrefix = "gate:"
+
+type ProjectGateFailurePage struct {
+	Failures   []gate.CommandResult `json:"project_gate_failures"`
+	NextCursor string               `json:"next_cursor,omitempty"`
+	Incomplete bool                 `json:"incomplete"`
+}
+
 type NativeAttemptEvidenceCursor struct {
 	AttemptID string `json:"native_attempt_id"`
 	After     string `json:"cursor"`
@@ -396,6 +404,16 @@ type NativeRuntimeEvidence struct {
 	Change                   *ChangeDetail                `json:"change,omitempty"`
 	ObservedAt               time.Time                    `json:"observed_at"`
 	Unavailable              []string                     `json:"unavailable"`
+
+	ProjectGateHistoryIncomplete bool   `json:"project_gate_history_incomplete,omitempty"`
+	ProjectGateFailureCursor     string `json:"project_gate_failure_cursor,omitempty"`
+}
+
+func (e NativeRuntimeEvidence) GateFailureContinuation() *NativeAttemptEvidenceCursor {
+	if e.Attempt == nil || e.ProjectGateFailureCursor == "" {
+		return nil
+	}
+	return &NativeAttemptEvidenceCursor{AttemptID: e.Attempt.AttemptID, After: e.ProjectGateFailureCursor}
 }
 
 type NativeChangeVersionEvidence struct {

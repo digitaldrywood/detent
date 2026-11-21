@@ -59,22 +59,31 @@ func (v *validatorCommands) reuse(tree string, receipts []gate.CommandResult) {
 	}
 }
 
-func (v *validatorCommands) includeGateFailure(command string, histories ...[]gate.CommandResult) {
+func (v *validatorCommands) includeGateFailures(command string, histories ...[]gate.CommandResult) []gate.CommandResult {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	for _, pass := range slices.Backward(v.results) {
 		if !workspace.ValidationCoversHead(&pass, command, v.issue.PullRequestHeadSHA) || pass.ReceiptID == "" || pass.TreeSHA == "" {
 			continue
 		}
+		seen := make(map[string]bool, len(v.results))
+		for _, result := range v.results {
+			seen[result.ReceiptID] = true
+		}
+		var failures []gate.CommandResult
 		for _, history := range histories {
-			for _, failure := range slices.Backward(history) {
-				if failure.ExitCode != 0 && !failure.InstanceFailure() && failure.ReceiptID != "" && failure.ReceiptID != pass.ReceiptID &&
+			for _, failure := range history {
+				if failure.ExitCode != 0 && !failure.InstanceFailure() && failure.ReceiptID != "" && !seen[failure.ReceiptID] &&
 					failure.Command == pass.Command && failure.HeadSHA == pass.HeadSHA && failure.TreeSHA == pass.TreeSHA {
-					v.results = slices.Insert(v.results, 0, failure)
-					return
+					failures = append(failures, failure)
+					seen[failure.ReceiptID] = true
 				}
 			}
 		}
-		return
+		v.results = slices.Insert(v.results, 0, failures...)
+		return failures
 	}
+	return nil
 }
 
 func (v *validatorCommands) canReuse(ctx context.Context, receipt gate.CommandResult) bool {

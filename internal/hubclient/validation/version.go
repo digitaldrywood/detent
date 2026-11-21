@@ -140,7 +140,7 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 		if runtime.Attempt.NextEvidenceAfter != "" {
 			continuation = &tracker.NativeAttemptEvidenceCursor{AttemptID: runtime.Attempt.AttemptID, After: runtime.Attempt.NextEvidenceAfter}
 		}
-		return runner.NativeValidation{EvidenceContinuation: continuation, SecurityAudit: reviewevidence.AcceptedSecurityAudit(detail, version), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands, ProjectGateFailures: runtime.ProjectGateFailures}, nil
+		return runner.NativeValidation{EvidenceContinuation: continuation, SecurityAudit: reviewevidence.AcceptedSecurityAudit(detail, version), Discussion: discussion, Version: &version, Diff: diff, Evidence: runtime.Attempt.Evidence, Commands: commands, ProjectGateFailures: runtime.ProjectGateFailures, GateFailureContinuation: runtime.GateFailureContinuation()}, nil
 	}
 	return runner.NativeValidation{}, errors.New("native validator version is no longer current")
 }

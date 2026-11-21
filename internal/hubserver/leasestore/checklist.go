@@ -12,13 +12,20 @@ type ChecklistReader interface {
 	ExecutionChecklist(context.Context, tracker.ProjectID, string) (*tracker.ExecutionChecklist, error)
 }
 
-type ProjectGateFailureEvent struct {
-	Event     eventstore.Event
+const ProjectGateFailurePageSize = 8
+
+type ProjectGateFailurePosition struct {
+	CheckedAt time.Time
 	ReceiptID string
 }
 
+type ProjectGateFailureEvent struct {
+	Event eventstore.Event
+	ProjectGateFailurePosition
+}
+
 type ProjectGateFailureReader interface {
-	ProjectGateFailureEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, string, string, string, string) ([]ProjectGateFailureEvent, error)
+	ProjectGateFailureEvents(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64, string, string, string, string, ProjectGateFailurePosition) ([]ProjectGateFailureEvent, error)
 }
 
 type ChecklistWriter interface {

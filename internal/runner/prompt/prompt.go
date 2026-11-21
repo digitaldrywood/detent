@@ -86,6 +86,8 @@ type ValidatorPromptOptions struct {
 	DiffTruncated        bool
 	DiffError            string
 	MaxInlineDiffBytes   int
+
+	GateFailureContinuation *tracker.NativeAttemptEvidenceCursor
 }
 
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
@@ -465,6 +467,9 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		}
 	}
 
+	if page := opts.GateFailureContinuation; page != nil {
+		fmt.Fprintf(&b, "Project-gate failure history is incomplete. Before deciding the verdict, call work_attempt_receipt with project_id=%q, reference=%q, native_attempt_id=%q and cursor=%q. Read next_cursor pages until incomplete is false. Assess every distinct failing receipt against the passing gate and the reviewed source.\n\n", issue.Metadata["hub_project_id"], issue.ID, page.AttemptID, page.After)
+	}
 	if page := opts.EvidenceContinuation; page != nil {
 		fmt.Fprintf(&b, "More current-attempt uploads are available. Call work_attempt_receipt with project_id=%q, reference=%q, native_attempt_id=%q and cursor=%q. Use next_cursor to read another page when needed.\n\n", issue.Metadata["hub_project_id"], issue.ID, page.AttemptID, page.After)
 	}

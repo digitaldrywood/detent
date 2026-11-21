@@ -2,8 +2,11 @@ package executionapi
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 
@@ -77,6 +80,7 @@ func (d RuntimeDeps) ReadNativeRuntimeTenant(ctx context.Context, scope hubscope
 
 type RuntimeAttemptSelector struct {
 	FirstEvidencePage bool
+	GateFailureAfter  string
 	EvidenceAfter     string
 	AttemptID         string
 	Latest            bool
@@ -219,22 +223,24 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
 		snapshot.leasePolicy = leasePolicy
-		snapshot.attempt.EvidencePage = selector.FirstEvidencePage || selector.EvidenceAfter != ""
-		if selector.EvidenceAfter == "" || selector.EvidenceAfter == "start" {
-			err = ReadTenantAttemptEvidence(ctx, r, &snapshot.attempt)
-		} else {
-			anchor, readErr := r.Attachment(ctx, scope.Project, selector.EvidenceAfter)
-			if readErr != nil {
-				return readErr
+		if selector.GateFailureAfter == "" {
+			snapshot.attempt.EvidencePage = selector.FirstEvidencePage || selector.EvidenceAfter != ""
+			if selector.EvidenceAfter == "" || selector.EvidenceAfter == "start" {
+				err = ReadTenantAttemptEvidence(ctx, r, &snapshot.attempt)
+			} else {
+				anchor, readErr := r.Attachment(ctx, scope.Project, selector.EvidenceAfter)
+				if readErr != nil {
+					return readErr
+				}
+				if anchor.Metadata.WorkItemID != string(row.NativeID) || anchor.EvidenceAttemptID != attempt.ID {
+					return corestore.ErrNotFound
+				}
+				snapshot.attempt.Evidence = true
+				snapshot.attempt.EvidenceRows, err = r.AttachmentEvidenceAfter(ctx, scope.Project, row.NativeID, attempt.ID, anchor.Metadata.CreatedAt, anchor.Metadata.ID, 201)
 			}
-			if anchor.Metadata.WorkItemID != string(row.NativeID) || anchor.EvidenceAttemptID != attempt.ID {
-				return corestore.ErrNotFound
+			if err != nil {
+				return err
 			}
-			snapshot.attempt.Evidence = true
-			snapshot.attempt.EvidenceRows, err = r.AttachmentEvidenceAfter(ctx, scope.Project, row.NativeID, attempt.ID, anchor.Metadata.CreatedAt, anchor.Metadata.ID, 201)
-		}
-		if err != nil {
-			return err
 		}
 		if selector.EvidenceAfter != "" {
 			return nil
@@ -393,19 +399,28 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		result.LatestDecision = &decision
 	}
+	var pass *gate.CommandResult
+	if attempt.Runtime != nil && isProjectGatePass(attempt.Runtime.Validation) {
+		pass = attempt.Runtime.Validation
+	}
 	if snapshot.changeRecord.ID != "" {
 		detail, err := d.HydrateChange(ctx, scope, issue.WorkItemID, snapshot.changeRecord, snapshot.changeVersion, snapshot.changePolicy, now)
 		if err != nil {
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
-		d.AttachChange(&result, detail)
-		if selector.FirstEvidencePage && result.CurrentVersion != nil {
-			result.ProjectGateFailures, err = d.readProjectGateFailures(ctx, scope, snapshot.item, attempt.PolicyID, result.CurrentVersion.Validation)
-			if err != nil {
-				return tracker.NativeRuntimeEvidence{}, 0, false, err
-			}
+		if pass == nil && len(detail.Versions) != 0 && detail.Versions[0].PolicyID == attempt.PolicyID {
+			pass = detail.Versions[0].Validation
 		}
+		d.AttachChange(&result, detail)
 	}
+	if selector.FirstEvidencePage || selector.GateFailureAfter != "" {
+		page, err := d.readProjectGateFailures(ctx, scope, snapshot.item, attempt.AttemptID, attempt.PolicyID, pass, selector.GateFailureAfter)
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, 0, false, err
+		}
+		result.ProjectGateFailures, result.ProjectGateFailureCursor, result.ProjectGateHistoryIncomplete = page.Failures, page.NextCursor, page.Incomplete
+	}
+
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
 	}
@@ -494,9 +509,33 @@ func runtimeLandingTarget(runtime *tracker.NativeRuntimeObservation, attempt, tr
 	return &derived
 }
 
-func (d RuntimeDeps) readProjectGateFailures(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, policyID string, pass *gate.CommandResult) ([]gate.CommandResult, error) {
-	if pass == nil || pass.ExitCode != 0 || pass.Command == "" || pass.ReceiptID == "" || pass.HeadSHA == "" || pass.TreeSHA == "" {
-		return nil, nil
+type projectGateFailureCursor struct {
+	AttemptID string
+	PassID    string
+	Position  leasestore.ProjectGateFailurePosition
+}
+
+func isProjectGatePass(pass *gate.CommandResult) bool {
+	return pass != nil && pass.ExitCode == 0 && pass.Command != "" && pass.ReceiptID != "" && pass.HeadSHA != "" && pass.TreeSHA != ""
+}
+
+func (d RuntimeDeps) readProjectGateFailures(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, attemptID, policyID string, pass *gate.CommandResult, after string) (tracker.ProjectGateFailurePage, error) {
+	var page tracker.ProjectGateFailurePage
+	if !isProjectGatePass(pass) {
+		if after != "" {
+			return page, hubapi.NativeStaleExecution("The verified project gate receipt changed")
+		}
+		return page, nil
+	}
+	var cursor projectGateFailureCursor
+	if after != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(after, tracker.ProjectGateFailureCursorPrefix))
+		if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor.Position.CheckedAt.IsZero() || cursor.Position.ReceiptID == "" {
+			return page, hubapi.NativePublicInvalid("Invalid project-gate failure cursor")
+		}
+		if cursor.PassID != pass.ReceiptID || cursor.AttemptID != attemptID {
+			return page, hubapi.NativeStaleExecution("The verified project gate receipt changed")
+		}
 	}
 	var events []leasestore.ProjectGateFailureEvent
 	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -505,27 +544,41 @@ func (d RuntimeDeps) readProjectGateFailures(ctx context.Context, scope hubscope
 		}
 		if history, ok := r.(leasestore.ProjectGateFailureReader); ok {
 			var err error
-			events, err = history.ProjectGateFailureEvents(ctx, scope.Project, item.NativeID, item.ID, policyID, policy.Digest([]byte(pass.Command)), pass.HeadSHA, pass.TreeSHA)
+			events, err = history.ProjectGateFailureEvents(ctx, scope.Project, item.NativeID, item.ID, policyID, policy.Digest([]byte(pass.Command)), pass.HeadSHA, pass.TreeSHA, cursor.Position)
 			return err
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, hubapi.ProjectRecordError(err)
+		return page, hubapi.ProjectRecordError(err)
+	}
+	if len(events) > leasestore.ProjectGateFailurePageSize {
+		events = events[:leasestore.ProjectGateFailurePageSize]
+		raw, err := json.Marshal(projectGateFailureCursor{AttemptID: attemptID, PassID: pass.ReceiptID, Position: events[len(events)-1].ProjectGateFailurePosition})
+		if err != nil {
+			return page, err
+		}
+		page.NextCursor = tracker.ProjectGateFailureCursorPrefix + base64.RawURLEncoding.EncodeToString(raw)
+		page.Incomplete = true
 	}
 	content := eventstore.NewContent(d.DetailsFor(ctx))
+	seen := make(map[string]bool, len(events))
 	for _, entry := range events {
+		if seen[entry.ReceiptID] {
+			continue
+		}
 		event, err := content.Event(ctx, entry.Event)
 		if err != nil {
-			return nil, err
+			return page, err
 		}
-		if run := event.Data.Run; run != nil && run.Runtime != nil {
+		if run := event.Data.Run; run != nil && run.PolicyID == policyID && run.Runtime != nil {
 			failure := run.Runtime.Validation
 			if failure != nil && failure.ReceiptID == entry.ReceiptID && failure.ExitCode != 0 && !failure.InstanceFailure() &&
 				failure.Command == pass.Command && failure.HeadSHA == pass.HeadSHA && failure.TreeSHA == pass.TreeSHA {
-				return []gate.CommandResult{tracker.PublicGateResult(*failure)}, nil
+				page.Failures = append(page.Failures, tracker.PublicGateResult(*failure))
+				seen[entry.ReceiptID] = true
 			}
 		}
 	}
-	return nil, nil
+	return page, nil
 }

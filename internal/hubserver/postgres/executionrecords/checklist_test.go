@@ -131,19 +131,22 @@ func TestProjectGateFailureHistorySurvivesPassingRetry(t *testing.T) {
 	claim.LeaseID, claim.SessionID = "lease_retry", "session_retry"
 	writeObservation(pgstoretest.ClaimLease(t, r, org, claim), "passed", 0)
 	for _, test := range []struct {
-		name, head, tree, command string
-		want                      bool
+		name, head, tree, command, policy string
+		itemID                            int64
+		want                              bool
 	}{
-		{name: "failure from prior fenced attempt", head: head, tree: tree, command: command, want: true},
-		{name: "different head", head: strings.Repeat("d", 40), tree: tree, command: command},
-		{name: "different tree", head: head, tree: strings.Repeat("d", 40), command: command},
-		{name: "different command", head: head, tree: tree, command: "make other"},
+		{name: "failure from prior fenced attempt", head: head, tree: tree, command: command, policy: policyID, itemID: 1, want: true},
+		{name: "different head", head: strings.Repeat("d", 40), tree: tree, command: command, policy: policyID, itemID: 1},
+		{name: "different tree", head: head, tree: strings.Repeat("d", 40), command: command, policy: policyID, itemID: 1},
+		{name: "different command", head: head, tree: tree, command: "make other", policy: policyID, itemID: 1},
+		{name: "different policy", head: head, tree: tree, command: command, policy: "other-policy", itemID: 1},
+		{name: "different item", head: head, tree: tree, command: command, policy: policyID, itemID: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var failures []leasestore.ProjectGateFailureEvent
 			err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
 				var err error
-				failures, err = reader.(leasestore.ProjectGateFailureReader).ProjectGateFailureEvents(t.Context(), project, item, 1, policyID, policy.Digest([]byte(test.command)), test.head, test.tree)
+				failures, err = reader.(leasestore.ProjectGateFailureReader).ProjectGateFailureEvents(t.Context(), project, item, test.itemID, test.policy, policy.Digest([]byte(test.command)), test.head, test.tree, leasestore.ProjectGateFailurePosition{})
 				return err
 			})
 			if err != nil || test.want && (len(failures) != 1 || failures[0].ReceiptID != "failed") || !test.want && len(failures) != 0 {

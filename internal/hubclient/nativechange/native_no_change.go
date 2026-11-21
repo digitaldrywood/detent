@@ -52,7 +52,22 @@ func (e *nativeExecution) noChangeValidation(ctx context.Context, stage string) 
 			commands = append(commands, result.Commands...)
 		}
 	}
-	return runner.NativeValidation{SecurityAudit: auditEvidence, NoChange: e.change.NoChange, Version: &version, Diff: &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: policy.Digest([]byte("[]"))}, Evidence: e.data.Evidence, Commands: commands, Discussion: runner.NativeReviewDiscussionForVersion(e.claim.recovery.Discussion, nil, "")}, nil
+	input := runner.NativeValidation{SecurityAudit: auditEvidence, NoChange: e.change.NoChange, Version: &version, Diff: &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: policy.Digest([]byte("[]"))}, Evidence: e.data.Evidence, Commands: commands, Discussion: runner.NativeReviewDiscussionForVersion(e.claim.recovery.Discussion, nil, "")}
+	pass := version.Validation
+	if stage != "security_audit" && pass != nil && pass.ExitCode == 0 && pass.ReceiptID != "" && pass.HeadSHA == version.HeadSHA && pass.TreeSHA != "" {
+		client, lease := e.claim.source.NativeClient(), e.claim.lease
+		runtime, err := client.ValidatorEvidence(ctx, lease.WorkItemID, e.data.AttemptID)
+		if err != nil {
+			return runner.NativeValidation{}, err
+		}
+		attempt := runtime.Attempt
+		if runtime.Issue.OrganizationID != client.OrganizationID() || runtime.Issue.ProjectID != client.ProjectID() || runtime.Issue.WorkItemID != lease.WorkItemID ||
+			attempt == nil || attempt.AttemptID != e.data.AttemptID || attempt.LeaseID != lease.ID || attempt.FencingToken != lease.FencingToken || attempt.PolicyID != version.PolicyID {
+			return runner.NativeValidation{}, errors.New("no-change validator evidence differs from the current attempt")
+		}
+		input.ProjectGateFailures, input.GateFailureContinuation = runtime.ProjectGateFailures, runtime.GateFailureContinuation()
+	}
+	return input, nil
 }
 
 func (e *nativeExecution) noChangeResultMatches(result gate.ValidatorResult) bool {

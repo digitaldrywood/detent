@@ -774,6 +774,8 @@ type ValidatorRequest struct {
 	SelectorContext      selector.Context
 	OnUsageUpdate        UsageUpdateHandler
 	OnActivityUpdate     AgentActivityUpdateHandler
+
+	GateFailureContinuation *tracker.NativeAttemptEvidenceCursor
 }
 
 type SecurityAuditRequest struct {

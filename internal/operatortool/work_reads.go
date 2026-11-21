@@ -334,7 +334,7 @@ func DecodeWorkRead(name string, raw json.RawMessage) (WorkReadRequest, error) {
 	if len(request.NativeAttemptID) > 128 || request.NativeAttemptID != "" && !strings.HasPrefix(request.NativeAttemptID, "attempt_") || request.AttemptID != 0 && request.NativeAttemptID != "" || name == WorkAttemptReceipt && request.AttemptID <= 0 && request.NativeAttemptID == "" {
 		return request, invalidWorkRead("give exactly one of attempt_id or native_attempt_id; native_attempt_id starts with attempt_")
 	}
-	if name == WorkAttemptReceipt && request.Cursor != "" && (request.NativeAttemptID == "" || request.Cursor != "start" && (len(request.Cursor) != 36 || !strings.HasPrefix(request.Cursor, "att_"))) {
+	if name == WorkAttemptReceipt && request.Cursor != "" && (request.NativeAttemptID == "" || request.Cursor != "start" && !strings.HasPrefix(request.Cursor, tracker.ProjectGateFailureCursorPrefix) && (len(request.Cursor) != 36 || !strings.HasPrefix(request.Cursor, "att_"))) {
 		return request, invalidWorkRead("attempt evidence requires a native attempt and a returned cursor")
 	}
 	return request, nil

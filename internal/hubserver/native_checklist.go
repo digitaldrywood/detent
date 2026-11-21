@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"math"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -74,7 +73,7 @@ func (s *Service) freezeNativeChecklist(ctx context.Context, scope hubscope.Nati
 	if err != nil {
 		return tracker.ExecutionChecklist{}, err
 	}
-	if list.Revision != input.Checklist.Revision || list.PolicyID != input.PolicyID || !slices.Equal(list.Checks, input.Checklist.Checks) {
+	if list.Revision != input.Checklist.Revision || list.PolicyID != input.PolicyID {
 		return tracker.ExecutionChecklist{}, hubapi.NativePublicInvalid("Checklist differs from the current issue contract and pinned project policy")
 	}
 	list.AttemptID, list.FrozenAt = input.AttemptID, s.config.Clock().UTC()
