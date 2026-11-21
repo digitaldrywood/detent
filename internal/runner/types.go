@@ -847,7 +847,6 @@ type RunResult struct {
 	budgetProjection           *dispatchBudgetProjection
 	terminalFailure            *tracker.NativeTerminalFailure
 	reusedDispositionAttemptID string
-	landingCleanup             func(context.Context) error
 }
 
 // NativeLandingTarget is the reviewed version a landing run puts on the
