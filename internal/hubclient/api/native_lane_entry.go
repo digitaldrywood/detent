@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -135,8 +136,11 @@ func (c *NativeClient) ResolvePlan(ctx context.Context, recovery tracker.NativeR
 		if recovery.Change != nil {
 			return nil, nil
 		}
-		if source := recovery.SourceAttempt(); source != nil && source.Checkpoint.PreservesSource() {
-			return nil, nil
+		if source := recovery.SourceAttempt(); source != nil && source.Checkpoint.PreservesSource() && source.Identity != nil {
+			switch source.Identity.Role {
+			case runner.RoleCode, runner.RoleRework:
+				return nil, nil
+			}
 		}
 		return &tracker.NativePlanState{}, nil
 	}
