@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 )
 
 func requestTurnSnapshot(ctx context.Context, transport Transport, thread string) error {
@@ -86,55 +84,4 @@ func finishProviderTurn(ctx context.Context, update Update, toolLoop *turnToolLo
 		}
 	}
 	return &TurnFailedError{Status: update.Status, Message: update.BackendErrorMessage, Body: update.BackendErrorBody}
-}
-
-type turnReceive struct {
-	message Message
-	err     error
-}
-
-func readTurnStream(ctx context.Context, transport Transport, thread, turn string, terminal func()) (func(context.Context) (Message, error), func()) {
-	readCtx, cancel := context.WithCancel(ctx)
-	messages := make(chan turnReceive, progresscheck.ToolLoopWindow)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			message, err := transport.Receive(readCtx)
-			if err != nil || confirmedTerminalMessage(message, thread, turn) {
-				terminal()
-			}
-			select {
-			case messages <- turnReceive{message: message, err: err}:
-			case <-readCtx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	return func(ctx context.Context) (Message, error) {
-			select {
-			case result := <-messages:
-				return result.message, result.err
-			case <-ctx.Done():
-				return Message{}, context.Cause(ctx)
-			}
-		}, func() {
-			cancel()
-			<-done
-		}
-}
-
-func confirmedTerminalMessage(message Message, thread, turn string) bool {
-	if message.Method == "turn/completed" {
-		update, _, err := updateFromMessage(message)
-		return err == nil && update.ThreadID == thread && update.TurnID == turn && update.Status != "" && update.Status != "inProgress"
-	}
-	if message.Method == "" && requestIDMatches(message.ID, threadReadRequestID) {
-		_, confirmed := terminalTurnSnapshot(message.Result, thread, turn)
-		return confirmed
-	}
-	return false
 }

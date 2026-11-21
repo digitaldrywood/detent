@@ -5,26 +5,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
 		name, steerResult, terminalStatus           string
 		toolType, pollResult                        string
-		parallel, wrongScope, changedSource         bool
+		parallel, wrongScope, changedOutput         bool
 		serializedSiblings, operator, freshEvidence bool
 		methods                                     []string
 		stop                                        bool
 		lateAck                                     bool
 		freshThird, sealFirst                       bool
 		customTool, nestedSibling                   bool
-		missingResponse                             bool
+		missingResponse, unavailableSourceProbe     bool
 	}{
 		{name: "custom tool output joins its native execution without reasoning markers", sealFirst: true, customTool: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
@@ -38,7 +43,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "completed MCP job", toolType: "mcpToolCall", pollResult: `"result":{"content":[],"structuredContent":{"job_id":"build-1","status":"completed"}}`, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "missing dynamic job", toolType: "dynamicToolCall", pollResult: `"contentItems":[{"type":"inputText","text":"{\"job_id\":\"build-1\",\"status\":\"not_found\"}"}]`, customTool: true, sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
-		{name: "acknowledged steer then stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "source probe expires after acknowledged steer", unavailableSourceProbe: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
 		{name: "terminal completion won race", steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/interrupt"}},
@@ -47,9 +52,36 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "fresh sibling evidence each decision", freshEvidence: true, terminalStatus: "completed"},
 		{name: "operator calls", operator: true, terminalStatus: "completed"},
 		{name: "another provider turn", wrongScope: true, terminalStatus: "completed"},
-		{name: "changed source after steer", changedSource: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/steer"}},
+		{name: "changed output after steer", changedOutput: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "completed", methods: []string{"turn/steer", "turn/steer"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			ctx := t.Context()
+			root := "/workspace"
+			var terminalReady chan struct{}
+			if test.unavailableSourceProbe {
+				root = t.TempDir()
+				if err := os.WriteFile(filepath.Join(root, "tracked"), []byte("source"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				for _, args := range [][]string{{"init", "--quiet"}, {"add", "--", "tracked"}} {
+					cmd := exec.CommandContext(ctx, "git", args...)
+					cmd.Dir = root
+					if output, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("prepare fixture with git %v: %v: %s", args, err, output)
+					}
+				}
+				diffs := 0
+				ctx = shell.WithCommandStarter(ctx, func(_ context.Context, cmd *exec.Cmd) (func() error, error) {
+					if slices.Contains(cmd.Args, "diff") {
+						diffs++
+						if diffs == 4 {
+							return nil, context.DeadlineExceeded
+						}
+					}
+					return cmd.Wait, cmd.Start()
+				})
+				terminalReady = make(chan struct{})
+			}
 			var messages []Message
 			turn := "turn"
 			if test.wrongScope {
@@ -74,7 +106,11 @@ func TestStreamToolLoopControl(t *testing.T) {
 				if test.operator {
 					source = "userShell"
 				}
-				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":"/workspace","status":"completed","exitCode":1,"aggregatedOutput":"failed"}}`, turn, ordinal, source)
+				output := "failed"
+				if test.changedOutput && ordinal > 3 {
+					output = "failed differently"
+				}
+				item := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"commandExecution","id":"tool-%d","source":%q,"command":"go test ./...","cwd":%q,"status":"completed","exitCode":1,"aggregatedOutput":%q}}`, turn, ordinal, source, root, output)
 				if test.toolType != "" {
 					item = fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":%q,"id":"tool-%d","server":"builder","namespace":"tools","tool":"job_status","status":"completed","arguments":{"job_id":"build-1"},%s}}`, turn, test.toolType, ordinal, test.pollResult)
 				}
@@ -130,26 +166,39 @@ func TestStreamToolLoopControl(t *testing.T) {
 			messages = append(messages, notificationMessage(t, "item/started", marker))
 			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"other","status":"interrupted"}}`), notificationMessage(t, "turn/completed", fmt.Sprintf(`{"threadId":"thread","turn":{"id":"turn","status":%q}}`, test.terminalStatus)))
 			transport := &fakeAppServerTransport{received: messages}
+			if terminalReady != nil {
+				transport.pending = map[string]chan struct{}{"terminal": terminalReady}
+			}
 			server, err := NewAppServer(staticTransportFactory{transport: transport})
 			if err != nil {
 				t.Fatal(err)
 			}
-			loop := newTurnToolLoop(RunTurnRequest{DetectToolLoops: true, Workspace: "/workspace"}, "thread", "turn", server.logger)
-			samples := 0
-			loop.source = func(context.Context, string) string {
-				samples++
-				if test.changedSource && samples > 3 {
-					return "changed"
-				}
-				return "unchanged"
-			}
-			lifetime := sessiontimeout.Start(t.Context(), 0, time.Minute, nil)
+			var recorded []tracker.ExecutionLoopIntervention
+			loop := newTurnToolLoop(RunTurnRequest{
+				DetectToolLoops: true,
+				Workspace:       root,
+				RecordLoopIntervention: func(event tracker.ExecutionLoopIntervention) {
+					recorded = append(recorded, event)
+				},
+			}, "thread", "turn", server.logger)
+			lifetime := sessiontimeout.Start(ctx, 0, time.Minute, nil)
 			defer lifetime.Close()
-			err = server.streamTurn(t.Context(), lifetime, transport, "thread", "turn", nil, nil, nil, loop)
+			err = server.streamTurn(ctx, lifetime, transport, "thread", "turn", nil, nil, func(update Update) error {
+				if terminalReady != nil && update.Type == UpdateToolCompleted && update.ItemID == "tool-6" {
+					close(terminalReady)
+					terminalReady = nil
+				}
+				return nil
+			}, loop)
 			var stopped *progresscheck.NoProgressError
 			if test.stop {
 				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != repeats || stopped.Evidence.Period != 1 {
 					t.Fatalf("stop = %v, evidence %+v", err, stopped)
+				}
+				if len(recorded) != 2 || recorded[0].Action != "steer" || recorded[0].Repeats != 3 ||
+					recorded[1].Action != "stop" || recorded[1].Repeats != repeats ||
+					recorded[0].Fingerprint == "" || recorded[0].Fingerprint != recorded[1].Fingerprint {
+					t.Fatalf("confirmed interventions = %+v", recorded)
 				}
 			} else if err != nil {
 				t.Fatal(err)
