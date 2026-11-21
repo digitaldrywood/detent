@@ -16,20 +16,21 @@ import (
 const HistoryLimit = 200
 
 type Snapshot struct {
-	Finalization *Finalization `json:",omitempty"`
-	ReceiptID    int64
-	ID           int64
-	Revision     int64
-	Start        store.SessionStart
-	Finish       *store.SessionFinish
-	Identity     agentidentity.Identity
-	Provider     store.SessionProviderIdentity
-	Resume       store.SessionResumeState
-	Progress     *store.SessionProgress
-	Policy       policy.Descriptor
-	Worker       *store.WorkerProcessRegistration
-	Reaped       *store.WorkerProcessReap
-	Authority    string
+	AuditPredecessor *int64        `json:",omitempty"`
+	Finalization     *Finalization `json:",omitempty"`
+	ReceiptID        int64
+	ID               int64
+	Revision         int64
+	Start            store.SessionStart
+	Finish           *store.SessionFinish
+	Identity         agentidentity.Identity
+	Provider         store.SessionProviderIdentity
+	Resume           store.SessionResumeState
+	Progress         *store.SessionProgress
+	Policy           policy.Descriptor
+	Worker           *store.WorkerProcessRegistration
+	Reaped           *store.WorkerProcessReap
+	Authority        string
 }
 
 type Finalization struct {

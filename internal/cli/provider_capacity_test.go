@@ -95,7 +95,7 @@ func TestRunnerProviderReports(t *testing.T) {
 				if test.fail {
 					return nil, catalogFailure
 				}
-				return []runner.AgentModel{{ID: "sol", Model: "sol"}, {ID: "astra", Model: "astra"}}, nil
+				return []runner.AgentModel{{ID: "sol-identifier", Model: "sol"}, {ID: "astra", Model: "astra"}}, nil
 			}, billing, usage)
 			for range 6 {
 				reports, err := source()
@@ -125,8 +125,11 @@ func TestRunnerProviderReports(t *testing.T) {
 					}
 				} else {
 					report := reports[0]
-					if report.Provider != "openai" || report.Backend != "codex" || report.AccountAlias != test.alias || report.MaxConcurrent != 0 || report.Availability != "unknown" || !report.ObservedAt.Equal(now) || !reflect.DeepEqual(report.Models, []string{"sol", "astra", "provider_default"}) {
+					if report.Provider != "openai" || report.Backend != "codex" || report.AccountAlias != test.alias || report.MaxConcurrent != 0 || report.Availability != "unknown" || !report.ObservedAt.Equal(now) || !reflect.DeepEqual(report.Models, []string{"sol-identifier", "sol", "astra", "provider_default"}) {
 						t.Fatalf("default report=%+v", report)
+					}
+					if !report.MatchesModel("sol", "sol-identifier") || report.MatchesModel("sol", "astra") {
+						t.Fatalf("reported catalog lost model aliases: %+v", report.ModelDetails)
 					}
 					raw, err := json.Marshal(report)
 					if err != nil || strings.Contains(string(raw), "max_concurrent") {

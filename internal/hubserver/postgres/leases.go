@@ -632,7 +632,7 @@ func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.Lease
 			report.Models = append(report.Models, row.ModelID)
 			if row.HasDetail {
 				details[row.ModelID] = len(report.ModelDetails)
-				report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: row.ModelID, Label: row.Label, Provider: row.ModelProvider, Default: row.IsDefault, DefaultReasoningEffort: row.DefaultReasoningEffort, Legacy: row.Legacy})
+				report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: row.ModelID, Label: row.Label, Provider: row.ModelProvider, Default: row.IsDefault, DefaultReasoningEffort: row.DefaultReasoningEffort, Legacy: row.Legacy, CanonicalModel: row.CanonicalModel})
 			}
 		case 2:
 			index, found := details[row.ModelID]
@@ -661,7 +661,11 @@ func (s *session) LeaseMutationReservation(ctx context.Context, id tracker.Lease
 	if providercapacity.Validate([]providercapacity.Report{report}) != nil || !report.Supports(reservation.Requirement) {
 		return claimstore.ProviderReservation{}, corestore.ErrInvalidPage
 	}
-	return claimstore.ProviderReservation{OrganizationID: h.OrganizationID, LeaseID: tracker.LeaseID(h.LeaseID), Reservation: reservation}, nil
+	var auditPredecessor *int64
+	if h.AuditPredecessor.Valid {
+		auditPredecessor = &h.AuditPredecessor.Int64
+	}
+	return claimstore.ProviderReservation{OrganizationID: h.OrganizationID, LeaseID: tracker.LeaseID(h.LeaseID), AuditPredecessor: auditPredecessor, Reservation: reservation}, nil
 }
 
 func (s *session) LeaseMutationPolicies(ctx context.Context, project tracker.ProjectID, lease tracker.LeaseID) (policystore.LeasePolicy, []billingstore.MonthlyPolicy, error) {

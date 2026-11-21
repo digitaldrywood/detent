@@ -165,9 +165,10 @@ func (e *QueueEntry) Touch(at time.Time) {
 }
 
 type ProviderReservation struct {
-	OrganizationID tracker.OrganizationID
-	LeaseID        tracker.LeaseID
-	Reservation    providercapacity.Reservation
+	AuditPredecessor *int64
+	OrganizationID   tracker.OrganizationID
+	LeaseID          tracker.LeaseID
+	Reservation      providercapacity.Reservation
 }
 
 type LandingCapacityUsage struct {

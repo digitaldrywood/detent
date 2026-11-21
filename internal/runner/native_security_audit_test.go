@@ -321,14 +321,14 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 
 func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 	for _, test := range []struct {
-		name                            string
-		models                          []string
-		verify, refuse, providerDefault bool
-		wrongModel                      bool
+		name                              string
+		models                            []string
+		verify, refuse, providerDefault   bool
+		wrongModel, requireCatalogScratch bool
 	}{
 		{name: "separate audit backend and configured model"},
 		{name: "provider default ignores the issue model", providerDefault: true, models: []string{"selected-by-provider"}},
-		{name: "catalog alias matches the reserved model", models: []string{"audit-alias"}},
+		{name: "catalog alias keeps its spelling and uses live scratch", models: []string{"audit-alias"}, requireCatalogScratch: true},
 		{name: "verification binds the configured complex model", verify: true},
 		{name: "verification using a different model cannot approve", verify: true, models: []string{"audit-model", "different-model"}, wrongModel: true},
 		{name: "full audit account receives no diff", refuse: true},
@@ -390,6 +390,7 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			merge := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
 			audit := &verificationAuditBackend{t: t, outputs: []string{`{"verdict":"pass","summary":"No findings","findings":[]}`}}
 			audit.observedModels = test.models
+			audit.requireCatalogScratch = test.requireCatalogScratch
 			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}, {ID: "audit-alias", Model: "audit-model"}}
 			if test.verify {
 				audit.outputs = []string{
@@ -438,8 +439,8 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			if err != nil || len(audit.requests) != len(want) || result.RuntimeIdentity.BackendID != "audit" || (result.Verification != nil) != test.verify {
 				t.Fatalf("audit did not run with the configured identity: turns=%d result=%+v error=%v", len(audit.requests), result, err)
 			}
-			if len(test.models) != 0 && !test.providerDefault && result.RuntimeIdentity.ResolvedModel.Value != model {
-				t.Fatalf("recorded model = %q, want reserved equivalent %q", result.RuntimeIdentity.ResolvedModel.Value, model)
+			if len(test.models) != 0 && result.RuntimeIdentity.ResolvedModel.Value != test.models[len(test.models)-1] {
+				t.Fatalf("recorded model = %q, want provider spelling %q", result.RuntimeIdentity.ResolvedModel.Value, test.models[len(test.models)-1])
 			}
 		})
 	}
@@ -454,13 +455,23 @@ func (s *verificationAuditSessionStore) StartSession(ctx context.Context, attrs 
 
 type verificationAuditBackend struct {
 	fakeCodexClient
-	t                *testing.T
-	outputs          []string
-	observedModels   []string
-	requests         []AgentTurnRequest
-	deadline         time.Time
-	failVerification bool
-	checkProvider    func(AgentTurnRequest) error
+	t                     *testing.T
+	outputs               []string
+	observedModels        []string
+	requests              []AgentTurnRequest
+	deadline              time.Time
+	failVerification      bool
+	requireCatalogScratch bool
+	checkProvider         func(AgentTurnRequest) error
+}
+
+func (b *verificationAuditBackend) ListModels(ctx context.Context, process AgentProcessRequest) ([]AgentModel, error) {
+	if b.requireCatalogScratch {
+		if err := os.WriteFile(filepath.Join(process.TempDir, "catalog"), nil, 0o600); err != nil {
+			return nil, err
+		}
+	}
+	return b.fakeCodexClient.ListModels(ctx, process)
 }
 
 func (b *verificationAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {

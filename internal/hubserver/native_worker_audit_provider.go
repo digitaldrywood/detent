@@ -6,7 +6,7 @@ import (
 	"errors"
 	"reflect"
 
-	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -14,16 +14,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type nativeAuditProviderPlan struct {
 	event            *eventstore.Event
+	observation      attachment.ArchiveReference
+	predecessor      *runnersession.Record
 	policyID         string
 	requirement      providercapacity.Requirement
 	primary          providercapacity.Requirement
@@ -78,6 +83,21 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 			return err
 		}
 		settings = project.Settings
+		plan.observation, err = landingAuditRouteObservation(ctx, r, scope)
+		if err != nil {
+			return err
+		}
+		if phase.AuditPredecessor > 0 {
+			reader, ok := r.(runnersession.Reader)
+			if !ok {
+				return hubapi.NativeRunEventStorageUnavailable()
+			}
+			session, err := reader.RunnerSession(ctx, scope.Project, phase.AuditPredecessor)
+			if err != nil {
+				return err
+			}
+			plan.predecessor = &session
+		}
 		orgModels, err = r.OrganizationModels(ctx)
 		if errors.Is(err, corestore.ErrNotFound) {
 			return nil
@@ -118,11 +138,31 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	workflow.Config.Agents.ModelSelection = models.Effective
-	backend := cmp.Or(workflow.Config.LandingAuditBackend(), config.DefaultAgentBackendID)
-	plan.primary = providercapacity.Requirement{Role: runner.RoleSecurityAudit, Backend: backend, Model: cmp.Or(workflow.Config.LandingAuditModel(false), "provider_default")}
+	var route policy.AuditRoute
+	if plan.observation.Key != "" {
+		var observed runnerauth.ProjectConfiguration
+		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.observation, &observed); err != nil {
+			return nil, err
+		}
+		if observed.ProjectID == string(scope.Project) && observed.RuntimeRegistered && observed.LandingAuditRoute != nil {
+			route = *observed.LandingAuditRoute
+		}
+	}
+	if route.Backend == "" && models.Effective.Stages[runner.RoleSecurityAudit].Backend == nil {
+		return nil, hubapi.PolicyMismatch("The runner's configured audit route has not been observed")
+	}
+	primary := workflow.Config.LandingAuditIdentity(route, false)
+	plan.primary = providercapacity.Requirement{Role: runner.RoleSecurityAudit, Backend: primary.Backend, Model: cmp.Or(primary.Model, "provider_default")}
 	plan.requirement = plan.primary
-	if phase.AuditPredecessor > 0 {
-		plan.requirement.Model = workflow.Config.LandingAuditModel(true)
+	if plan.predecessor != nil {
+		snapshot, err := s.readRunnerSessionPayload(ctx, *plan.predecessor)
+		if err != nil {
+			return nil, err
+		}
+		if snapshot.AuditPredecessor == nil || *snapshot.AuditPredecessor != 0 {
+			return nil, hubapi.PolicyMismatch("Audit verification requires a primary audit session admitted under this attempt")
+		}
+		plan.requirement.Model = workflow.Config.LandingAuditIdentity(route, true).Model
 	}
 	plan.modelRevision, plan.orgModelRevision = settings.ModelRevision, orgModels.Revision
 	return &plan, nil
@@ -152,7 +192,14 @@ func (p *nativeAuditProviderPlan) authorize(ctx context.Context, w tenantstore.W
 	if err := w.RequireOrganizationModels(ctx, p.orgModelRevision); err != nil {
 		return err
 	}
-	if phase.AuditPredecessor == 0 {
+	observation, err := landingAuditRouteObservation(ctx, w, scope)
+	if err != nil {
+		return err
+	}
+	if observation != p.observation {
+		return corestore.ErrRevisionConflict
+	}
+	if p.predecessor == nil {
 		return nil
 	}
 	reader, ok := w.(runnersession.Reader)
@@ -163,10 +210,25 @@ func (p *nativeAuditProviderPlan) authorize(ctx context.Context, w tenantstore.W
 	if err != nil {
 		return err
 	}
+	if !reflect.DeepEqual(session, *p.predecessor) {
+		return corestore.ErrRevisionConflict
+	}
 	if session.AttemptID != attempt.ID || session.PolicyID != pinned.PolicyID || session.CompletedAt == nil ||
 		session.FinalState != "completed" || session.Role != p.primary.Role || session.BackendID != p.primary.Backend ||
 		cmp.Or(session.Model, "provider_default") != p.primary.Model {
 		return hubapi.PolicyMismatch("Audit verification requires a completed primary audit on this attempt")
 	}
 	return nil
+}
+
+func landingAuditRouteObservation(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope) (attachment.ArchiveReference, error) {
+	owner, ok := r.(postgres.ConfigurationReader)
+	if !ok {
+		return attachment.ArchiveReference{}, hubapi.ErrProjectServiceUnavailable
+	}
+	command, err := owner.ConfigurationCommand(ctx, scope.Credential.Runner.RunnerID, scope.Project)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return attachment.ArchiveReference{}, nil
+	}
+	return command.Observation, err
 }

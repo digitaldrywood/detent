@@ -150,7 +150,7 @@ func (s *session) runnerProviderReportRows(runnerID string, reports []providerca
 		}
 		for position, model := range report.Models {
 			detail, hasDetail := details[model]
-			modelRows = append(modelRows, []any{s.organization, runnerID, report.Backend, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy})
+			modelRows = append(modelRows, []any{s.organization, runnerID, report.Backend, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy, detail.CanonicalModel})
 			for effortPosition, effort := range detail.ReasoningEfforts {
 				effortRows = append(effortRows, []any{s.organization, runnerID, report.Backend, model, effortPosition, effort})
 			}
@@ -173,7 +173,7 @@ func (s *session) runnerProviderReportRows(runnerID string, reports []providerca
 
 	return []runnerReportRows{
 		{"runner_provider_reports", "organization_id,runner_id,backend,provider,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at", "text,text,text,text,text,text,text,integer,text,timestamptz,timestamptz", reportRows},
-		{"runner_provider_report_models", "organization_id,runner_id,backend,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy", "text,text,text,integer,text,boolean,text,text,boolean,text,boolean", modelRows},
+		{"runner_provider_report_models", "organization_id,runner_id,backend,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy,canonical_model", "text,text,text,integer,text,boolean,text,text,boolean,text,boolean,text", modelRows},
 		{"runner_provider_model_efforts", "organization_id,runner_id,backend,model_id,position,effort", "text,text,text,text,integer,text", effortRows},
 		{"runner_provider_usage_windows", "organization_id,runner_id,backend,position,kind,percent_used,reset_at,observed_at", "text,text,text,integer,text,double precision,timestamptz,timestamptz", windowRows},
 	}

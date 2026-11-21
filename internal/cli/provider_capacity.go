@@ -74,6 +74,11 @@ func runnerProviderReports(ctx context.Context, configuration func() globalconfi
 				continue
 			}
 			for _, model := range catalog {
+				if model.ID != "" && model.Model != "" && model.ID != model.Model {
+					if index := slices.IndexFunc(report.ModelDetails, func(detail providercapacity.ModelDetail) bool { return detail.ID == model.ID }); index < 0 {
+						report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: model.ID, CanonicalModel: model.Model})
+					}
+				}
 				for _, id := range []string{model.ID, model.Model} {
 					if id != "" && !slices.Contains(report.Models, id) {
 						report.Models = append(report.Models, id)

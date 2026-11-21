@@ -1,12 +1,14 @@
 package runnerauth
 
 import (
+	"cmp"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 )
 
 type ProjectConfigurationRequest struct {
@@ -40,6 +42,7 @@ type ProjectConfigurationReceipt struct {
 }
 
 type ProjectConfiguration struct {
+	LandingAuditRoute       *policy.AuditRoute  `json:"landing_audit_route,omitempty"`
 	Diagnostics             *ProjectDiagnostics `json:"diagnostics,omitempty"`
 	LocalIntakeEnabled      bool                `json:"local_intake_enabled"`
 	LocalIntakeRemaining    []string            `json:"local_intake_remaining"`
@@ -82,6 +85,12 @@ func (c ProjectConfiguration) MarshalJSON() ([]byte, error) {
 }
 
 func (c ProjectConfiguration) Validate() error {
+	if route := c.LandingAuditRoute; route != nil {
+		requirement := providercapacity.Requirement{Role: "security_audit", Backend: route.Backend, Model: cmp.Or(route.Model, "provider_default")}
+		if err := requirement.Validate(); err != nil {
+			return err
+		}
+	}
 	if err := c.Diagnostics.Validate(); err != nil {
 		return err
 	}

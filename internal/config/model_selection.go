@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -9,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -375,28 +377,41 @@ func (a Agents) ModelSelectionWarnings() []string {
 	return []string{"agents.model_selection is ignored; configure model selection in Cloud organization or project settings; remove it before the next release, which will reject it"}
 }
 
-func (c Config) LandingAuditBackend() string {
-	return selectionString(c.EffectiveModelSelection().Stages["security_audit"].Backend)
+func (c Config) ConfiguredLandingAuditRoute() policy.AuditRoute {
+	routes := c.AgentRouteConfigs()
+	for _, route := range routes {
+		if !route.Default && !route.Disabled && normalizeAgentRouteRole(route.Role) == "security_audit" && route.ModelField == "" && route.Selector.IsZero() {
+			return policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
+		}
+	}
+	for _, role := range []string{"security_audit", "code"} {
+		for _, route := range routes {
+			if route.Default && !route.Disabled && normalizeAgentRouteRole(route.Role) == role {
+				return policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
+			}
+		}
+	}
+	return policy.AuditRoute{Backend: DefaultAgentBackendID}
 }
 
-func (c Config) LandingAuditModel(verification bool) string {
-	policy := c.EffectiveModelSelection()
+func (c Config) LandingAuditIdentity(route policy.AuditRoute, verification bool) policy.AuditRoute {
+	models := c.EffectiveModelSelection()
+	stage := models.Stages["security_audit"]
+	if backend := selectionString(stage.Backend); backend != "" && backend != route.Backend {
+		route = policy.AuditRoute{Backend: backend}
+	}
+	route.Backend = cmp.Or(route.Backend, DefaultAgentBackendID)
 	if verification {
-		return policy.Model("complex")
+		route.Model = models.Model("complex")
+		return route
 	}
-	if model := strings.TrimSpace(c.Gate.SecurityAudit.Model); model != "" {
-		return model
+	if model := cmp.Or(strings.TrimSpace(c.Gate.SecurityAudit.Model), models.Model(selectionString(stage.Model)), route.Model); model != "" {
+		route.Model = model
+		return route
 	}
-	stage := policy.Stages["security_audit"]
-	if model := selectionString(stage.Model); model != "" {
-		return policy.Model(model)
+	if models.Active() {
+		level := cmp.Or(selectionString(stage.Level), selectionString(models.DefaultLevel))
+		route.Model = models.Model(selectionString(models.Levels[level].Model))
 	}
-	if !policy.Active() {
-		return ""
-	}
-	level := selectionString(stage.Level)
-	if level == "" {
-		level = selectionString(policy.DefaultLevel)
-	}
-	return policy.Model(selectionString(policy.Levels[level].Model))
+	return route
 }

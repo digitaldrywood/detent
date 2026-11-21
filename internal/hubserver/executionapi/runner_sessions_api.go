@@ -1,6 +1,7 @@
 package executionapi
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -24,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -303,6 +305,9 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 		}
 		var err error
 		attempt, approved, err = d.RunnerSessionFence(ctx, r, scope, request, record.IssueID, false)
+		if err == nil && request.Start != nil {
+			snapshot.AuditPredecessor, err = landingAuditSessionAdmission(ctx, r, request)
+		}
 		return err
 	})
 	if err != nil {
@@ -466,6 +471,13 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if request.Start != nil {
+			admission, err := landingAuditSessionAdmission(ctx, w, request)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(admission, snapshot.AuditPredecessor) {
+				return corestore.ErrRevisionConflict
+			}
 			record, err = writer.CreateRunnerSession(ctx, record, runnersession.History{Key: request.Key, Reference: historyRef})
 		} else {
 			record.ReceiptID, err = writer.UpdateRunnerSession(ctx, record, runnersession.History{SessionID: record.ID, Revision: record.Revision, Key: request.Key, Reference: historyRef})
@@ -481,6 +493,25 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 	snapshot.ID, snapshot.Revision = record.ID, record.Revision
 	snapshot.ReceiptID = record.ReceiptID
 	return c.JSON(http.StatusOK, snapshot)
+}
+
+func landingAuditSessionAdmission(ctx context.Context, r tenantstore.Reader, request runnersession.Mutation) (*int64, error) {
+	start := request.Start
+	if start.AgentRole != "security_audit" {
+		return nil, nil
+	}
+	reserved, err := r.ProviderReservation(ctx, request.LeaseID)
+	if errors.Is(err, corestore.ErrNotFound) || err == nil && reserved.Reservation.Role != "security_audit" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	want := providercapacity.Requirement{Role: start.AgentRole, Backend: start.AgentBackendID, Model: cmp.Or(start.RequestedModel, start.Model, "provider_default")}
+	if reserved.AuditPredecessor == nil || reserved.Reservation.Requirement != want {
+		return nil, hubapi.PolicyMismatch("Landing audit session differs from its phase admission")
+	}
+	return reserved.AuditPredecessor, nil
 }
 
 func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {

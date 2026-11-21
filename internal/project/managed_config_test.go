@@ -288,9 +288,12 @@ func TestHubConfigurationAppliesRuntimeWithoutLocalState(t *testing.T) {
 			}
 			descriptor := policy.Descriptor{SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")), Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"}}.WithID()
 			desired := runnerauth.ProjectConfiguration{ProjectID: id, Authority: "hub_configuration", ConfigRevision: strings.Repeat("b", 64), Registered: true, Paused: true, Source: "cloud_workflow", EffectivePolicy: &descriptor, SelectedPolicy: &descriptor, ObservedAt: time.Now().UTC()}
+			audit := policy.AuditRoute{Backend: id + "-audit", Model: id + "-model"}
 			for range 2 {
 				events := hub.New[Event]()
-				p := &Project{id: ID(id), cfg: globalconfig.Project{ID: id}, workflow: workflowconfig.Workflow{Config: workflowconfig.Config{Policy: descriptor}}, events: events}
+				cfg := workflowconfig.Config{Policy: descriptor}
+				cfg.Agents.Routes = []workflowconfig.AgentRoute{{Role: "security_audit", Backend: audit.Backend, Model: audit.Model, Default: true}}
+				p := &Project{id: ID(id), cfg: globalconfig.Project{ID: id}, workflow: workflowconfig.Workflow{Config: cfg}, events: events}
 				registry := NewRegistry()
 				if err := registry.Set(p); err != nil {
 					t.Fatal(err)
@@ -300,6 +303,9 @@ func TestHubConfigurationAppliesRuntimeWithoutLocalState(t *testing.T) {
 				events.Close()
 				if !result.Applied || !result.Saved || !p.Paused() || result.Constraint != "" || result.ConfigRevision != desired.ConfigRevision {
 					t.Fatalf("Hub runtime application=%+v paused=%v", result, p.Paused())
+				}
+				if result.LandingAuditRoute == nil || *result.LandingAuditRoute != audit {
+					t.Fatalf("runtime configuration lost the existing audit route: %+v", result.LandingAuditRoute)
 				}
 				stored, err := os.ReadFile(path)
 				if err != nil {

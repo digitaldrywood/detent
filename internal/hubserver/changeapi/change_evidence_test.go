@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -21,6 +22,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -95,7 +99,8 @@ type landingAuditEvidenceWriter struct {
 	runnersession.Reader
 	eventstore.AuditDispositionReader
 	session     runnersession.Record
-	reservation providercapacity.Requirement
+	reservation providercapacity.Reservation
+	predecessor *int64
 }
 
 func (w landingAuditEvidenceWriter) RunnerSession(context.Context, tracker.ProjectID, int64) (runnersession.Record, error) {
@@ -103,10 +108,10 @@ func (w landingAuditEvidenceWriter) RunnerSession(context.Context, tracker.Proje
 }
 
 func (w landingAuditEvidenceWriter) ProviderReservation(_ context.Context, lease tracker.LeaseID) (claimstore.ProviderReservation, error) {
-	if lease != "lease_example" || w.reservation == (providercapacity.Requirement{}) {
+	if lease != "lease_example" || w.reservation.Requirement == (providercapacity.Requirement{}) {
 		return claimstore.ProviderReservation{}, corestore.ErrNotFound
 	}
-	return claimstore.ProviderReservation{LeaseID: lease, Reservation: providercapacity.Reservation{Requirement: w.reservation}}, nil
+	return claimstore.ProviderReservation{LeaseID: lease, Reservation: w.reservation, AuditPredecessor: w.predecessor}, nil
 }
 
 func (landingAuditEvidenceWriter) AuditDispositions(context.Context, tracker.ProjectID, int64) ([]eventstore.AuditDisposition, error) {
@@ -127,22 +132,36 @@ func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
 	providerDefault := match
 	providerDefault.Model = "provider_default"
 	for _, test := range []struct {
-		name        string
-		reservation providercapacity.Requirement
-		requested   string
-		reported    string
-		observed    string
-		finalized   string
-		want        error
+		name          string
+		reservation   providercapacity.Requirement
+		requested     string
+		reported      string
+		observed      string
+		finalized     string
+		finalIdentity string
+		verification  int64
+		admission     int64
+		sessionPhase  int64
+		legacy        bool
+		alias         bool
+		want          error
 	}{
 		{name: "matching session", reservation: match, reported: match.Model},
+		{name: "verification verdict cannot use primary admission", reservation: match, reported: match.Model, verification: 73, want: refused},
+		{name: "verification binds predecessor even when models agree", reservation: match, reported: match.Model, verification: 73, admission: 73, sessionPhase: 73},
+		{name: "primary session cannot publish against a later verification", reservation: match, reported: match.Model, verification: 73, admission: 73, want: refused},
+		{name: "verification cannot replace its predecessor", reservation: match, reported: match.Model, verification: 75, admission: 73, sessionPhase: 73, want: refused},
+		{name: "verifier cannot publish as a primary session", reservation: match, reported: match.Model, admission: 73, sessionPhase: 73, want: refused},
+		{name: "recorded catalog alias", reservation: match, reported: match.Model, observed: "audit-alias", finalized: "audit-alias", finalIdentity: "audit-alias", alias: true},
 		{name: "missing reservation", reported: match.Model, want: refused},
 		{name: "merge reservation", reservation: providercapacity.Requirement{Role: "merge", Backend: match.Backend, Model: match.Model}, reported: match.Model, want: refused},
 		{name: "different backend", reservation: providercapacity.Requirement{Role: match.Role, Backend: "other", Model: match.Model}, reported: match.Model, want: refused},
 		{name: "different model", reservation: providercapacity.Requirement{Role: match.Role, Backend: match.Backend, Model: "other"}, reported: match.Model, want: refused},
 		{name: "misattributed verdict", reservation: match, reported: "other", want: refused},
 		{name: "runtime model differs", reservation: match, reported: match.Model, observed: "other", want: refused},
-		{name: "finalized runtime model differs", reservation: match, reported: match.Model, finalized: "other", want: refused},
+		{name: "immutable finish model differs after mutable identity was changed", reservation: match, reported: match.Model, observed: match.Model, finalized: "other", finalIdentity: match.Model, want: refused},
+		{name: "immutable finish identity differs after mutable identity was changed", reservation: match, reported: match.Model, observed: match.Model, finalized: match.Model, finalIdentity: "other", want: refused},
+		{name: "legacy finish differs after mutable identity was changed", reservation: match, reported: match.Model, observed: match.Model, finalized: "other", legacy: true, want: refused},
 		{name: "provider default accepts observed model", reservation: providerDefault, requested: "provider_default", observed: "chosen-model", finalized: "chosen-model"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -151,11 +170,26 @@ func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
 				model = test.requested
 			}
 			session := runnersession.Record{ID: 1, Role: match.Role, BackendID: match.Backend, Model: model}
-			writer := landingAuditEvidenceWriter{session: session, reservation: test.reservation}
+			report := providercapacity.Report{}
+			if test.alias {
+				report.Models = []string{"audit-model", "audit-alias"}
+				report.ModelDetails = []providercapacity.ModelDetail{{ID: "audit-alias", CanonicalModel: "audit-model"}}
+			}
+			writer := landingAuditEvidenceWriter{session: session, predecessor: new(test.admission), reservation: providercapacity.Reservation{Requirement: test.reservation, Report: report}}
 			request := tracker.ReviewChange{Mutation: tracker.Mutation{LeaseID: "lease_example", FencingToken: 1}, SecurityAudit: &tracker.SecurityAuditReview{
 				Landing: true, SessionID: session.ID, Identity: agentidentity.Identity{Role: match.Role, BackendID: match.Backend, RequestedModel: agentidentity.NewValue(test.reported, agentidentity.ProvenanceConfigured), ResolvedModel: agentidentity.NewValue(test.observed, agentidentity.ProvenanceRuntime)},
 			}}
-			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, &preparedValidatorReview{session: session, observedModel: test.finalized}, runnerstore.Identity{}, eventstore.Change{})
+			if test.verification != 0 {
+				request.SecurityAudit.Run.Verification = &securityaudit.Verification{InitialSessionID: test.verification}
+			}
+			finish := store.SessionFinish{Model: test.finalized, RuntimeIdentity: agentidentity.RuntimeUpdate(test.finalIdentity, "", "", "", time.Time{})}
+			snapshot := runnersession.Snapshot{Identity: agentidentity.RuntimeUpdate(model, "", "", "", time.Time{}), Finish: &finish}
+			if !test.legacy {
+				snapshot.Finish = &store.SessionFinish{Model: model}
+				snapshot.Finalization = &runnersession.Finalization{Input: sessionmodel.Finalization{Finish: finish}}
+			}
+			prepared := &preparedValidatorReview{session: session, auditPredecessor: new(test.sessionPhase), auditObservedModels: auditFinishModels(snapshot)}
+			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, prepared, runnerstore.Identity{}, eventstore.Change{})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("landing verdict error = %v, want %v", err, test.want)
 			}

@@ -65,7 +65,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (SecurityA
 			return nil
 		}
 		verification.complete = func(ctx context.Context, final SecurityAuditExecution) error {
-			final.Verification = &securityaudit.Verification{Initial: first.Result, Final: final.Result}
+			final.Verification = &securityaudit.Verification{InitialSessionID: first.SessionID, Initial: first.Result, Final: final.Result}
 			raw, err := json.Marshal(struct {
 				Initial string `json:"initial_output"`
 				Final   string `json:"verification_output"`
@@ -111,11 +111,16 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		selectionIssue.ModelOverride = ""
 		selectionIssue.Fields = nil
 	}
-	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(selectionIssue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
+	var selection RouteSelection
+	var backend AgentBackend
+	var backendConfig config.AgentBackend
+	var landingModel string
 	if req.landing {
-		if configured := workflow.Config.LandingAuditBackend(); configured != "" {
-			selection, backend, backendConfig, err = agentRuntime.backendForSelection(RouteSelection{BackendID: configured})
-		}
+		audit := workflow.Config.LandingAuditIdentity(workflow.Config.ConfiguredLandingAuditRoute(), verification)
+		landingModel = audit.Model
+		selection, backend, backendConfig, err = agentRuntime.backendForSelection(RouteSelection{BackendID: audit.Backend, Model: audit.Model})
+	} else {
+		selection, backend, backendConfig, err = agentRuntime.selectBackendForRole(selectionIssue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
 	}
 	if err != nil {
 		return execution, err
@@ -153,10 +158,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	execution.StartedAt = startedAt
 	baseModel := effectiveModel(selection.Model, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	if req.landing {
-		baseModel = effectiveModel(workflow.Config.LandingAuditModel(verification), baseModel)
+		baseModel = landingModel
 	}
 	if verification {
-		baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
+		if !req.landing {
+			baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
+		}
 		if baseModel == "" {
 			return execution, errors.New("security audit complex model is not configured")
 		}
@@ -334,20 +341,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
 		}
 		if turnErr == nil && req.landing && selectedModel != "" {
-			observed := runResult.RuntimeIdentity.ResolvedModel
-			if observed.Value != "" && observed.Value != selectedModel {
-				if catalog, ok := backend.(AgentModelCatalogProvider); ok {
-					models, lookupErr := catalog.ListModels(ctx, processRequest)
-					requested, requestedOK := findAgentModel(models, selectedModel)
-					actual, actualOK := findAgentModel(models, observed.Value)
-					if lookupErr == nil && requestedOK && actualOK && canonicalAgentModel(requested, selectedModel) == canonicalAgentModel(actual, observed.Value) {
-						observed.Value = selectedModel
-						runResult.RuntimeIdentity.ResolvedModel = observed
-					}
-				}
-				if observed.Value != selectedModel {
-					turnErr = errors.New("landing security audit used a different model than reserved")
-				}
+			observed := runResult.RuntimeIdentity.ResolvedModel.Value
+			if observed != "" && observed != selectedModel {
+				turnErr = matchLandingAuditModel(ctx, backend, AgentProcessRequest{Workspace: auditWorkspace, Environment: baseEnvironment}, selectedModel, observed)
 			}
 		}
 		turnResult = currentTurn
@@ -406,6 +402,28 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		return execution, errors.Join(err, finishErr)
 	}
 	return execution, finishErr
+}
+
+func matchLandingAuditModel(ctx context.Context, backend AgentBackend, process AgentProcessRequest, requested, observed string) error {
+	mismatch := errors.New("landing security audit used a different model than reserved")
+	catalog, ok := backend.(AgentModelCatalogProvider)
+	if !ok {
+		return mismatch
+	}
+	process, cleanup, err := prepareAgentProcessRequest(ctx, process, workerGitHubPolicy{})
+	if err != nil {
+		return errors.Join(mismatch, err)
+	}
+	models, err := catalog.ListModels(ctx, process)
+	if err = errors.Join(err, cleanup()); err != nil {
+		return errors.Join(mismatch, err)
+	}
+	want, wantOK := findAgentModel(models, requested)
+	got, gotOK := findAgentModel(models, observed)
+	if !wantOK || !gotOK || canonicalAgentModel(want, requested) != canonicalAgentModel(got, observed) {
+		return mismatch
+	}
+	return nil
 }
 
 func (r *Runner) prepareSecurityAuditWorkspace() (string, error) {

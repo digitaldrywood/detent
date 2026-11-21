@@ -26,7 +26,8 @@ type preparedValidatorReview struct {
 	attempt              leasestore.Attempt
 	event                eventstore.Event
 	session              runnersession.Record
-	observedModel        string
+	auditPredecessor     *int64
+	auditObservedModels  [2]string
 	change               eventstore.Change
 	issue                corestore.WorkItem
 	evidence             changerules.ValidatorReviewEvidence
@@ -132,7 +133,8 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 		}
 		return nil, "", err
 	}
-	p.observedModel = session.Identity.ResolvedModel.Value
+	p.auditPredecessor = session.AuditPredecessor
+	p.auditObservedModels = auditFinishModels(session)
 	p.evidence.Issue, err = s.deps.HydrateWorkItemRecord(ctx, p.issue, itemVersion)
 	if err != nil {
 		return nil, "", err
@@ -210,15 +212,35 @@ func (s *validator) lockValidatorReviewRecord(ctx context.Context, w tenantstore
 			if errors.Is(err, corestore.ErrNotFound) || reserved.Reservation.Requirement != want || reported != want {
 				return s.deps.SecurityAuditRejection("landing security audit session requires the matching provider reservation", "execution_session")
 			}
-			if want.Model != "provider_default" {
-				for _, observed := range []string{p.observedModel, audit.Identity.ResolvedModel.Value} {
-					if observed != "" && observed != want.Model {
-						return s.deps.SecurityAuditRejection("landing security audit used a different model than reserved", "execution_session")
-					}
+			predecessor := int64(0)
+			if verify := audit.Run.Verification; verify != nil {
+				predecessor = verify.InitialSessionID
+				if predecessor <= 0 || predecessor == session.ID {
+					return s.deps.SecurityAuditRejection("landing audit verification requires its admitted primary session", "execution_session")
+				}
+			}
+			if reserved.AuditPredecessor == nil || p.auditPredecessor == nil ||
+				*reserved.AuditPredecessor != predecessor || *p.auditPredecessor != predecessor {
+				return s.deps.SecurityAuditRejection("landing audit verdict differs from its admitted audit phase", "execution_session")
+			}
+			for _, observed := range []string{p.auditObservedModels[0], p.auditObservedModels[1], audit.Identity.ResolvedModel.Value} {
+				if !reserved.Reservation.Report.MatchesModel(want.Model, observed) {
+					return s.deps.SecurityAuditRejection("landing security audit used a different model than reserved", "execution_session")
 				}
 			}
 		}
 		return releaseaudits.LockValidatorAuditDispositions(ctx, w, scope, audit.Run.ID, p.auditDispositionRows)
 	}
 	return nil
+}
+
+func auditFinishModels(session runnersession.Snapshot) [2]string {
+	finish := session.Finish
+	if session.Finalization != nil {
+		finish = &session.Finalization.Input.Finish
+	}
+	if finish == nil {
+		return [2]string{}
+	}
+	return [2]string{finish.Model, finish.RuntimeIdentity.ResolvedModel.Value}
 }

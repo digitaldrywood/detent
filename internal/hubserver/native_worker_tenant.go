@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 
 	"github.com/labstack/echo/v4"
@@ -330,7 +331,11 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	if active.Role == "security_audit" && providerPlan == nil {
 		return hubapi.PolicyMismatch("The audit phase requires its authorized successor")
 	}
-	if active == requirement {
+	var predecessor *int64
+	if requirement.Role == "security_audit" {
+		predecessor = &phase.AuditPredecessor
+	}
+	if active == requirement && reflect.DeepEqual(current.AuditPredecessor, predecessor) {
 		return nil
 	}
 	if active != phase.Expected {
@@ -343,7 +348,7 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	if err != nil {
 		return err
 	}
-	return w.CreateProviderReservation(ctx, claimstore.ProviderReservation{OrganizationID: scope.Organization, LeaseID: id, Reservation: reservation})
+	return w.CreateProviderReservation(ctx, claimstore.ProviderReservation{OrganizationID: scope.Organization, LeaseID: id, Reservation: reservation, AuditPredecessor: predecessor})
 }
 
 func (s *Service) renewNativeLeaseWrite(ctx context.Context, scope hubscope.NativeScope, leaseID tracker.LeaseID, write func(legacySelectorChecked bool) error) error {

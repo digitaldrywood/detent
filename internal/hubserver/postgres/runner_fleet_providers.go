@@ -37,16 +37,16 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return err
 	}
-	rows, err = s.db.Query(ctx, `SELECT runner_id,backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, ids)
+	rows, err = s.db.Query(ctx, `SELECT runner_id,backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy,canonical_model FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=ANY($2) ORDER BY runner_id, backend,position`, s.organization, ids)
 	if err != nil {
 		return mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var runnerID string
-		var backend, id, label, provider, defaultEffort string
+		var backend, id, label, provider, defaultEffort, canonicalModel string
 		var hasDetail, isDefault, legacy bool
-		if err := rows.Scan(&runnerID, &backend, &id, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy); err != nil {
+		if err := rows.Scan(&runnerID, &backend, &id, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy, &canonicalModel); err != nil {
 			return mapError(ctx, err)
 		}
 		index, ok := indices[[2]string{runnerID, backend}]
@@ -56,7 +56,7 @@ func (s *session) fleetProviderRecords(ctx context.Context, records []runnerstor
 		report := &reports[runnerID][index]
 		report.Models = append(report.Models, id)
 		if hasDetail {
-			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: id, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy})
+			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: id, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy, CanonicalModel: canonicalModel})
 		}
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {

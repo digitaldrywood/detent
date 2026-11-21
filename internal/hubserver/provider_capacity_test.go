@@ -27,8 +27,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -1280,7 +1282,8 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		report := capacityReport(now)
 		planner := report
 		planner.Backend, planner.AccountAlias, planner.SharedAccountAlias = "planner", "planning", "planning"
-		planner.Models = []string{"test-model", "verification-model"}
+		planner.Models = []string{"test-model", "verification-model", "test-alias"}
+		planner.ModelDetails = []providercapacity.ModelDetail{{ID: "test-alias", CanonicalModel: "test-model"}}
 		publishCapacity(t, f, r, report, planner)
 		issue := f.create(t, session)
 		request := providerClaim(r, issue, session)
@@ -1398,6 +1401,9 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
 		t.Fatalf("audit failed to acquire its provider on the original fence: %+v", renewed)
 	}
+	if !renewed.ProviderReservation.Report.MatchesModel(audit.Model, "test-alias") {
+		t.Fatal("phase reservation lost the provider's catalog alias")
+	}
 	verification := audit
 	verification.Model = "verification-model"
 	requireNativeStatus(t, swap(project, landing.lease, landing.runner, audit, verification, landing.sequence), http.StatusConflict)
@@ -1429,11 +1435,56 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != verification {
 		t.Fatalf("verification failed to bind the complex model on the original fence: %+v", renewed)
 	}
+	verifier, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(landing.lease.WorkItemID), StartedAt: now,
+		AgentRole: verification.Role, AgentBackendID: verification.Backend, RequestedModel: verification.Model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record runnersession.Record
+	if err := service.config.TenantRepository.ReadTenant(t.Context(), project.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		var err error
+		record, err = r.(runnersession.Reader).RunnerSession(t.Context(), project.project.ID, verifier)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	storedVerifier, err := service.readRunnerSessionPayload(t.Context(), record)
+	if err != nil || storedVerifier.AuditPredecessor == nil || *storedVerifier.AuditPredecessor != primary {
+		t.Fatalf("verifier session lost the admitted predecessor: got %v, want %d, error %v", storedVerifier.AuditPredecessor, primary, err)
+	}
 	requireNativeStatus(t, swap(project, landing.lease, landing.runner, verification, occupied, landing.sequence), http.StatusConflict)
 	response = swap(project, landing.lease, landing.runner, verification, original, landing.sequence)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
 	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != original {
 		t.Fatalf("conflict resolution did not restore its original provider: %+v", renewed)
+	}
+
+	modelSettings = cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: "use-configured-route"}, ExpectedRevision: currentModel.Revision + 1,
+		Selection: &config.ModelSelection{Enabled: new(false)}}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, modelPath, testHubAdminToken, modelSettings), http.StatusOK)
+	unobserved := original
+	unobserved.Role, unobserved.Model = "security_audit", "provider_default"
+	response = swap(project, landing.lease, landing.runner, original, unobserved, landing.sequence)
+	requireNativeStatus(t, response, http.StatusConflict)
+	if !strings.Contains(response.Body.String(), "configured audit route has not been observed") {
+		t.Fatalf("missing route authority did not explain the refusal: %s", response.Body.String())
+	}
+	observed := runnerauth.ProjectConfiguration{
+		ProjectID: string(project.project.ID), Authority: "hub_configuration", Registered: true, RuntimeRegistered: true,
+		Source: "cloud_workflow", ObservedAt: now, ConfigRevision: strings.Repeat("a", 64),
+		EffectivePolicy: &pinned, SelectedPolicy: &pinned, LandingAuditRoute: &policy.AuditRoute{Backend: audit.Backend, Model: audit.Model},
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost,
+		project.base+"/machines/"+string(landing.runner.binding.MachineID)+"/heartbeat", landing.runner.redemption.Credential,
+		map[string]any{"backend_isolation": landing.runner.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "project_configuration": observed}), http.StatusOK)
+	substituted = original
+	substituted.Role = "security_audit"
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, original, substituted, landing.sequence), http.StatusConflict)
+	response = swap(project, landing.lease, landing.runner, original, audit, landing.sequence)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
+		t.Fatalf("unset operator override lost the configured audit route: %+v", renewed)
 	}
 }

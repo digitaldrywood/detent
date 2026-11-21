@@ -287,6 +287,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	workflow := p.Workflow()
 	view.AllowLocalBinding = workflow.Config.Worker.EffectiveAllowLocalBinding()
+	view.LandingAuditRoute = new(workflow.Config.ConfiguredLandingAuditRoute())
 	view.EffectivePolicy = &workflow.Config.Policy
 	if workflow.Config.Policy.ID == "" {
 		descriptor, err := ResolvePolicy(current, workflow)
@@ -460,6 +461,7 @@ func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconf
 
 func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 	view := desired
+	view.LandingAuditRoute = nil
 	view.Authority = "hub_configuration"
 	view.Pending = false
 	view.Applied = false
@@ -469,7 +471,9 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 	fail := func(message string) runnerauth.ProjectConfiguration {
 		view.Constraint = message
 		if p != nil {
-			actual := p.Workflow().Config.Policy
+			cfg := p.Workflow().Config
+			actual := cfg.Policy
+			view.LandingAuditRoute = new(cfg.ConfiguredLandingAuditRoute())
 			view.EffectivePolicy = &actual
 			view.SelectedPolicy, view.Source = p.reportedPolicy(actual, view.Source)
 			view.Paused = p.Paused()
@@ -523,6 +527,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 			return fail("The runtime project could not be detached.")
 		}
 		view = desired
+		view.LandingAuditRoute = nil
 		view.RuntimeRegistered = false
 		view.Applied = true
 		view.Saved = true
@@ -574,7 +579,9 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 	view.SelectedPolicy, view.Source = p.reportedPolicy(*desired.EffectivePolicy, desired.Source)
 	view.RuntimeRegistered = true
 	view.Paused = p.Paused()
-	view.AllowLocalBinding = p.Workflow().Config.Worker.EffectiveAllowLocalBinding()
+	cfg := p.Workflow().Config
+	view.AllowLocalBinding = cfg.Worker.EffectiveAllowLocalBinding()
+	view.LandingAuditRoute = new(cfg.ConfiguredLandingAuditRoute())
 	view.Pending = false
 	view.ObservedAt = time.Now().UTC()
 	if orch := p.Orchestrator(); orch != nil && p.Running() {

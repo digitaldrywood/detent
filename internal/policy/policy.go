@@ -48,6 +48,11 @@ type Gates struct {
 	GitHubCIDigest       string `json:"github_ci_digest,omitempty"`
 }
 
+type AuditRoute struct {
+	Backend string `json:"backend"`
+	Model   string `json:"model,omitempty"`
+}
+
 type Descriptor struct {
 	Authored       *Authored      `json:"authored,omitempty"`
 	Schema         int            `json:"schema"`

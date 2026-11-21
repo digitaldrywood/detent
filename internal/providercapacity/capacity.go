@@ -36,8 +36,9 @@ type Requirement struct {
 // keeps reading it. Detail is advisory: it never widens Models, so a model
 // named here that Models does not carry is a malformed report.
 type ModelDetail struct {
-	ID    string `json:"id"`
-	Label string `json:"label,omitempty"`
+	ID             string `json:"id"`
+	CanonicalModel string `json:"canonical_model,omitempty"`
+	Label          string `json:"label,omitempty"`
 	// Provider names the vendor behind the model, e.g. "openai". Empty when
 	// the backend does not say and the report's own provider is the answer.
 	Provider string `json:"provider,omitempty"`
@@ -159,6 +160,9 @@ func validateModelDetails(r Report) error {
 		if !token.MatchString(detail.ID) || !slices.Contains(r.Models, detail.ID) {
 			return errors.New("provider model details must describe only the reported models")
 		}
+		if detail.CanonicalModel != "" && (detail.ID == "provider_default" || detail.CanonicalModel == "provider_default" || !slices.Contains(r.Models, detail.CanonicalModel)) {
+			return errors.New("provider model aliases must reference an explicit reported model")
+		}
 		if seen[detail.ID] {
 			return errors.New("each reported model may carry at most one detail entry")
 		}
@@ -228,6 +232,19 @@ func (r Report) State(now time.Time) string {
 		return "unknown"
 	}
 	return r.Availability
+}
+
+func (r Report) MatchesModel(requested, observed string) bool {
+	if requested == observed || observed == "" || requested == "provider_default" {
+		return true
+	}
+	canonical := func(model string) string {
+		if detail, ok := r.Detail(model); ok && detail.CanonicalModel != "" {
+			return detail.CanonicalModel
+		}
+		return model
+	}
+	return canonical(requested) == canonical(observed)
 }
 
 func (r Report) Supports(requirement Requirement) bool {

@@ -76,8 +76,9 @@ type Result struct {
 }
 
 type Verification struct {
-	Initial Result `json:"initial"`
-	Final   Result `json:"final"`
+	InitialSessionID int64  `json:"initial_session_id,omitempty"`
+	Initial          Result `json:"initial"`
+	Final            Result `json:"final"`
 }
 
 type Run struct {

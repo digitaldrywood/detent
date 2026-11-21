@@ -1057,15 +1057,15 @@ func (s *session) RunnerProviderReports(ctx context.Context, runnerID string) ([
 	if err := mapError(ctx, rows.Err()); err != nil {
 		return nil, err
 	}
-	rows, err = s.db.Query(ctx, `SELECT backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=$2 ORDER BY backend,position`, s.organization, runnerID)
+	rows, err = s.db.Query(ctx, `SELECT backend,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy,canonical_model FROM runner_provider_report_models WHERE organization_id=$1 AND runner_id=$2 ORDER BY backend,position`, s.organization, runnerID)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var backend, id, label, provider, defaultEffort string
+		var backend, id, label, provider, defaultEffort, canonicalModel string
 		var hasDetail, isDefault, legacy bool
-		if err := rows.Scan(&backend, &id, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy); err != nil {
+		if err := rows.Scan(&backend, &id, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy, &canonicalModel); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		index, ok := indices[backend]
@@ -1075,7 +1075,7 @@ func (s *session) RunnerProviderReports(ctx context.Context, runnerID string) ([
 		report := &reports[index]
 		report.Models = append(report.Models, id)
 		if hasDetail {
-			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: id, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy})
+			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: id, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy, CanonicalModel: canonicalModel})
 		}
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {

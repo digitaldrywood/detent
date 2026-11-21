@@ -1338,20 +1338,20 @@ func (q *Queries) LeaseMutationFacts(ctx context.Context, arg LeaseMutationFacts
 }
 
 const leaseMutationReservation = `-- name: LeaseMutationReservation :many
-SELECT r.organization_id, r.lease_id, r.requirement_role, r.requirement_backend, r.requirement_model, r.provider, r.backend, r.account_alias, r.shared_account_alias, r.billing, r.max_concurrent, r.availability, r.observed_at, r.reset_at, r.reason,c.kind, c.position, c.model_id, c.has_detail, c.label, c.model_provider, c.is_default, c.default_reasoning_effort, c.legacy, c.effort, c.window_kind, c.percent_used, c.window_reset_at, c.window_observed_at
+SELECT r.organization_id, r.lease_id, r.requirement_role, r.requirement_backend, r.requirement_model, r.provider, r.backend, r.account_alias, r.shared_account_alias, r.billing, r.max_concurrent, r.availability, r.observed_at, r.reset_at, r.reason, r.audit_predecessor,c.kind, c.position, c.model_id, c.has_detail, c.label, c.model_provider, c.is_default, c.default_reasoning_effort, c.legacy, c.canonical_model, c.effort, c.window_kind, c.percent_used, c.window_reset_at, c.window_observed_at
 FROM provider_reservations r
 CROSS JOIN LATERAL (
  SELECT 0::integer AS kind,0::integer AS position,''::text AS model_id,false AS has_detail,
- ''::text AS label,''::text AS model_provider,false AS is_default,''::text AS default_reasoning_effort,false AS legacy,
+ ''::text AS label,''::text AS model_provider,false AS is_default,''::text AS default_reasoning_effort,false AS legacy,''::text AS canonical_model,
  ''::text AS effort,''::text AS window_kind,NULL::double precision AS percent_used,NULL::timestamptz AS window_reset_at,NULL::timestamptz AS window_observed_at
  UNION ALL
- SELECT 1,m.position,m.model_id,m.has_detail,m.label,m.model_provider,m.is_default,m.default_reasoning_effort,m.legacy,'','',NULL,NULL,NULL
+ SELECT 1,m.position,m.model_id,m.has_detail,m.label,m.model_provider,m.is_default,m.default_reasoning_effort,m.legacy,m.canonical_model,'','',NULL,NULL,NULL
  FROM provider_reservation_models m WHERE m.organization_id=r.organization_id AND m.lease_id=r.lease_id
  UNION ALL
- SELECT 2,e.position,e.model_id,false,'','',false,'',false,e.effort,'',NULL,NULL,NULL
+ SELECT 2,e.position,e.model_id,false,'','',false,'',false,'',e.effort,'',NULL,NULL,NULL
  FROM provider_reservation_model_efforts e WHERE e.organization_id=r.organization_id AND e.lease_id=r.lease_id
  UNION ALL
- SELECT 3,w.position,'',false,'','',false,'',false,'',w.kind,w.percent_used,w.reset_at,w.observed_at
+ SELECT 3,w.position,'',false,'','',false,'',false,'','',w.kind,w.percent_used,w.reset_at,w.observed_at
  FROM provider_reservation_usage_windows w WHERE w.organization_id=r.organization_id AND w.lease_id=r.lease_id
 ) c
 WHERE r.organization_id=$1 AND r.lease_id=$2
@@ -1374,6 +1374,7 @@ type LeaseMutationReservationRow struct {
 	IsDefault              bool
 	DefaultReasoningEffort string
 	Legacy                 bool
+	CanonicalModel         string
 	Effort                 string
 	WindowKind             string
 	PercentUsed            pgtype.Float8
@@ -1406,6 +1407,7 @@ func (q *Queries) LeaseMutationReservation(ctx context.Context, arg LeaseMutatio
 			&i.ProviderReservation.ObservedAt,
 			&i.ProviderReservation.ResetAt,
 			&i.ProviderReservation.Reason,
+			&i.ProviderReservation.AuditPredecessor,
 			&i.Kind,
 			&i.Position,
 			&i.ModelID,
@@ -1415,6 +1417,7 @@ func (q *Queries) LeaseMutationReservation(ctx context.Context, arg LeaseMutatio
 			&i.IsDefault,
 			&i.DefaultReasoningEffort,
 			&i.Legacy,
+			&i.CanonicalModel,
 			&i.Effort,
 			&i.WindowKind,
 			&i.PercentUsed,

@@ -16,8 +16,8 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 	var row claimstore.ProviderReservation
 	var report providercapacity.Report
 	var resetAt pgtype.Timestamptz
-	err := s.db.QueryRow(ctx, `SELECT organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason
-		FROM provider_reservations WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).Scan(&row.OrganizationID, &row.LeaseID, &row.Reservation.Role, &row.Reservation.Backend, &row.Reservation.Model, &report.Provider, &report.Backend, &report.AccountAlias, &report.SharedAccountAlias, &report.Billing, &report.MaxConcurrent, &report.Availability, &report.ObservedAt, &resetAt, &row.Reservation.Reason)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason,audit_predecessor
+		FROM provider_reservations WHERE organization_id=$1 AND lease_id=$2`, s.organization, lease).Scan(&row.OrganizationID, &row.LeaseID, &row.Reservation.Role, &row.Reservation.Backend, &row.Reservation.Model, &report.Provider, &report.Backend, &report.AccountAlias, &report.SharedAccountAlias, &report.Billing, &report.MaxConcurrent, &report.Availability, &report.ObservedAt, &resetAt, &row.Reservation.Reason, &row.AuditPredecessor)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
 	}
@@ -27,7 +27,7 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 	report.Models = []string{}
 	report.ModelDetails = []providercapacity.ModelDetail{}
 	report.UsageWindows = []providercapacity.UsageWindow{}
-	rows, err := s.db.Query(ctx, `SELECT position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy
+	rows, err := s.db.Query(ctx, `SELECT position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy,canonical_model
 		FROM provider_reservation_models WHERE organization_id=$1 AND lease_id=$2 ORDER BY position`, s.organization, lease)
 	if err != nil {
 		return claimstore.ProviderReservation{}, mapError(ctx, err)
@@ -38,8 +38,8 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 		var position int
 		var model string
 		var hasDetail, isDefault, legacy bool
-		var label, provider, defaultEffort string
-		if err := rows.Scan(&position, &model, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy); err != nil {
+		var label, provider, defaultEffort, canonicalModel string
+		if err := rows.Scan(&position, &model, &hasDetail, &label, &provider, &isDefault, &defaultEffort, &legacy, &canonicalModel); err != nil {
 			rows.Close()
 			return claimstore.ProviderReservation{}, mapError(ctx, err)
 		}
@@ -50,7 +50,7 @@ func (s *session) ProviderReservation(ctx context.Context, lease tracker.LeaseID
 		report.Models = append(report.Models, model)
 		if hasDetail {
 			modelDetails[model] = len(report.ModelDetails)
-			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: model, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy})
+			report.ModelDetails = append(report.ModelDetails, providercapacity.ModelDetail{ID: model, Label: label, Provider: provider, Default: isDefault, DefaultReasoningEffort: defaultEffort, Legacy: legacy, CanonicalModel: canonicalModel})
 		}
 	}
 	if err := mapError(ctx, rows.Err()); err != nil {
@@ -159,8 +159,8 @@ func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.
 		resetAt = report.ResetAt
 	}
 	_, err := s.db.Exec(ctx, `INSERT INTO provider_reservations
-		(organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, s.organization, row.LeaseID, row.Reservation.Role, row.Reservation.Backend, row.Reservation.Model, report.Provider, report.Backend, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt, row.Reservation.Reason)
+		(organization_id,lease_id,requirement_role,requirement_backend,requirement_model,provider,backend,account_alias,shared_account_alias,billing,max_concurrent,availability,observed_at,reset_at,reason,audit_predecessor)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, s.organization, row.LeaseID, row.Reservation.Role, row.Reservation.Backend, row.Reservation.Model, report.Provider, report.Backend, report.AccountAlias, report.SharedAccountAlias, report.Billing, report.MaxConcurrent, report.Availability, report.ObservedAt, resetAt, row.Reservation.Reason, row.AuditPredecessor)
 	if err != nil {
 		return mapError(ctx, err)
 	}
@@ -171,8 +171,8 @@ func (s *session) CreateProviderReservation(ctx context.Context, row claimstore.
 	for position, model := range report.Models {
 		detail, hasDetail := details[model]
 		if _, err := s.db.Exec(ctx, `INSERT INTO provider_reservation_models
-			(organization_id,lease_id,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, s.organization, row.LeaseID, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy); err != nil {
+			(organization_id,lease_id,position,model_id,has_detail,label,model_provider,is_default,default_reasoning_effort,legacy,canonical_model)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, s.organization, row.LeaseID, position, model, hasDetail, detail.Label, detail.Provider, detail.Default, detail.DefaultReasoningEffort, detail.Legacy, detail.CanonicalModel); err != nil {
 			return mapError(ctx, err)
 		}
 		for effortPosition, effort := range detail.ReasoningEfforts {
