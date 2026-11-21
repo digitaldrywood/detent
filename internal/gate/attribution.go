@@ -6,6 +6,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 )
 
+const TemporaryFailureExitCode = 75
+
 func CommandObservation(result CommandResult) failureattribution.Observation {
 	return failureattribution.Observation{Command: result.Command, HeadSHA: result.HeadSHA, ExitCode: result.ExitCode, Output: result.Output, Complete: !result.OutputTruncated && !result.FinishedAt.IsZero()}
 }
@@ -49,6 +51,10 @@ func NormalizeAttribution(result *ValidatorResult) {
 }
 
 func NormalizeCommandAttribution(base, head string, result *CommandResult) {
+	if result.ExitCode == TemporaryFailureExitCode {
+		result.Attribution = "instance"
+		return
+	}
 	if len(result.Findings) == 0 && result.ExitCode != 0 {
 		diagnostic := ""
 		if result.BaseReproduction != nil && result.BaseReproduction.Complete && !result.OutputTruncated {
