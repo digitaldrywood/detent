@@ -72,4 +72,26 @@ overlay("internal/cli/local_worker.go", [
 		cmd.Stderr = os.Stderr
 	}'''),
 ])
+overlay("internal/cli/ssh_runner.go", [
+    ("	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}",
+     '''	if marker := os.Getenv("DETENT_LOCAL_STARTUP_REFUSAL"); boot.Local && operation == "run" && marker != "" {
+		if raw, err := os.ReadFile(marker); err == nil {
+			port, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil || port < 1024 || port > 65535 {
+				return nil, errors.New("invalid local startup fault endpoint")
+			}
+			if err := os.Rename(marker, marker+".used"); err != nil {
+				return nil, err
+			}
+			logger.Info("injected local worker startup refusal", "pid", os.Getpid(), "observed_at", time.Now().UTC())
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
+			if err != nil {
+				return nil, fmt.Errorf("%w: local startup identity endpoint: %w", runnerpkg.ErrWorkspacePreparation, err)
+			}
+			_ = conn.Close()
+			return nil, errors.New("local startup fault endpoint unexpectedly accepted a connection")
+		}
+	}
+	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}'''),
+])
 (output / "overlay.json").write_text(json.dumps({"Replace": replacements}))

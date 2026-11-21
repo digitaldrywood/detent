@@ -23,8 +23,9 @@ def time_key(value):
     return timestamp.replace(microsecond=0), (fraction[1] if fraction else "").ljust(9, "0")
 
 
-def check_history(evidence):
-    for event in evidence["history"]:
+def check_history(evidence, admission_restore=False):
+    restored = False
+    for event in sorted(evidence["history"], key=lambda row: int(row["aggregate_sequence"])):
         kind = event["type"]
         if event.get("data_omission") and kind not in {"run.checkpointed", "run.observed", "run.finished"}:
             raise stack.Failure(f"history omitted {kind}")
@@ -33,6 +34,9 @@ def check_history(evidence):
         transition = event["data"]
         source, target = transition["from_state"], transition["to_state"]
         if source in {"In Progress", "Rework", "Human Review", "Done"} and target in {"Backlog", "Todo", "Rework"}:
+            if admission_restore and not restored and (source, target) == ("In Progress", "Todo"):
+                restored = True
+                continue
             raise stack.Failure(f"backward lane transition {source} -> {target}")
 
 
@@ -41,7 +45,7 @@ def assert_binding(record, attempt, fields, label):
         expect(f"{label} {field}", attempt[field], record.get(field))
 
 
-def check_workspace(project, evidence, attempt, expected, service):
+def check_workspace(project, evidence, attempt, expected, service, retained):
     item = evidence["item"]
     reference = f"{project.id}#{item['number']}"
     marker = attempt["attempt_id"].removeprefix("attempt_")
@@ -75,10 +79,14 @@ def check_workspace(project, evidence, attempt, expected, service):
         branch = evidence["phases"][-1]["branch"]
         expect("worktree matches phase branch", True, checkout.name.endswith("--" + branch.rsplit("/", 1)[-1]))
     refs = stack.command(["git", "worktree", "list", "--porcelain"], cwd=project.workspace)
-    expect("attempt worktrees still registered", [], [
-        line for line in refs.splitlines() if line.startswith("worktree ") and marker in line
-    ])
-    expect("item worktree still on disk", False, checkout.exists())
+    registered = [Path(line.removeprefix("worktree ")).resolve() for line in refs.splitlines()
+                  if line.startswith("worktree ") and marker in line]
+    expect("item worktree registration", [checkout.resolve()] if retained else [], registered)
+    expect("item worktree present on disk", retained, checkout.exists())
+    if retained:
+        expect("retained source remains on the base", evidence["develop_before"],
+               stack.command(["git", "rev-parse", "HEAD"], cwd=checkout))
+        expect("retained source clean", "", stack.command(["git", "status", "--porcelain"], cwd=checkout))
     expect("recorded execution worker", True, bool(execution_groups))
     expect("recorded provider turns", True, bool(provider_groups))
     live = {int(group) for group in subprocess.check_output(["ps", "-Ao", "pgid="], text=True).split()}
@@ -131,7 +139,7 @@ def check_gate_orders(pipeline, old, new, landed_at, command):
 def phase_expectations(expected, gates):
     labels = list(expected["phases"])
     if gates["automated_review"] == "off":
-        labels = [label for label in labels if label != "review:approved"]
+        labels = expected.get("phases_without_implementation_review", [label for label in labels if not label.startswith("review:")])
     if gates["security_audit"]:
         result = []
         for label in labels:
@@ -249,15 +257,16 @@ def phase_events(attempt, receipt_phases, reviews, command):
     for review in reviews:
         if review.get("implementation_review") and review["decision"] in {"approved", "changes_requested"}:
             add(review["created_at"], f"review:{review['decision']}")
-        if review.get("validator") and review["decision"] == "approved":
-            add(review["created_at"], "validator:pass")
+        if review.get("validator") and review["decision"] in {"approved", "changes_requested"}:
+            label = "pass" if review["decision"] == "approved" else "changes_requested"
+            add(review["created_at"], f"validator:{label}")
         audit = review.get("security_audit") or {}
         if audit.get("verdict") == "pass":
             add(review["created_at"], "landing:audit:pass" if audit.get("landing") else "audit:pass")
     if (runtime.get("landing") or {}).get("landed"):
         add(runtime["landing"]["observed_at"], "landing:landed")
     if (attempt.get("disposition") or {}).get("human_action"):
-        add(attempt["cleanup_acknowledged_at"], "human_action")
+        add(attempt["claim_released_at"], "human_action")
     expect("phase timestamps resolve an order", len(events), len({stamp for stamp, _ in events}))
     return [label for _, label in sorted(events)]
 
@@ -265,24 +274,28 @@ def phase_events(attempt, receipt_phases, reviews, command):
 def compare(project, policy, evidence, expected, definition, advanced):
     item, claims, runs = (evidence[field] for field in ("item", "attempts", "details"))
     expect("final lane", expected["final_lane"], item["state"])
-    expect("attempts", expected["attempts"], len(runs))
-    expect("leases", expected["leases"], len({run["lease_id"] for run in claims}))
-    expect("fenced claims", expected["claims"], len({(run["lease_id"], run["fencing_token"]) for run in claims}))
-    check_history(evidence)
+    runs = sorted(runs, key=lambda run: time_key(run["started_at"]))
+    admission_restore = evidence.get("pre_provider_retry", False)
+    counts = expected["fault"]["released_retry"] if admission_restore else expected
+    expect("attempts", counts["attempts"], len(runs))
+    expect("leases", counts["leases"], len({run["lease_id"] for run in claims}))
+    expect("fenced claims", counts["claims"], len({(run["lease_id"], run["fencing_token"]) for run in claims}))
+    check_history(evidence, admission_restore)
     expect("current lease", None, (evidence["explanation"].get("native_runtime") or {}).get("current_lease"))
-    attempt = runs[0]
+    attempt = runs[-1]
     fence = ("attempt_id", "lease_id", "fencing_token", "policy_id")
-    assert_binding(claims[0], attempt, fence, "claim")
+    assert_binding(next(run for run in claims if run["attempt_id"] == attempt["attempt_id"]), attempt, fence, "claim")
     expect("approved policy", policy["policy_id"], attempt["policy_id"])
-    expect("cleanup acknowledgement", expected.get("cleanup_acknowledged", True), bool(attempt.get("cleanup_acknowledged_at")))
-    expect("cleanup acknowledged before claim release", True,
-           time_key(attempt["cleanup_acknowledged_at"]) <= time_key(attempt["claim_released_at"]))
+    retained = expected.get("workspace_disposition") == "retained"
+    expect("cleanup acknowledgement", expected.get("cleanup_acknowledged", not retained), bool(attempt.get("cleanup_acknowledged_at")))
+    if attempt.get("cleanup_acknowledged_at"):
+        expect("cleanup acknowledged before claim release", True,
+               time_key(attempt["cleanup_acknowledged_at"]) <= time_key(attempt["claim_released_at"]))
     for phase in evidence["phases"]:
         assert_binding(phase, attempt, fence, "phase")
     for verdict in evidence["rounds"]:
         assert_binding(verdict, attempt, fence, "round")
-    actions = [record["action"] for record in evidence["rounds"]
-               if record["phase"] != "acceptance" or record["action"] != "continue"]
+    actions = [record["action"] for record in evidence["rounds"]]
     if actions == ["no_progress"] and "alternative" in expected:
         expected = expected | expected["alternative"]
     expect("round verdicts", expected["verdicts"], actions)
@@ -306,8 +319,23 @@ def compare(project, policy, evidence, expected, definition, advanced):
         if "human_action" in expected["verdicts"]:
             disposition = attempt["disposition"]
             expect("typed human action", True, disposition.get("human_action"))
-            expect("expected question", True, expected["question"].lower() in disposition.get("final_summary", "").lower())
-    check_workspace(project, evidence, attempt, expected["worktrees"], definition.get("retained_service"))
+            questions = {record.get("human_action", "").casefold() for record in evidence["rounds"]
+                         if record["action"] == "human_action"}
+            expect("one recorded typed question", 1, len(questions))
+            terms = expected["question"]
+            if isinstance(terms, str):
+                terms = [terms]
+            question, = questions
+            expect("typed question covers each conflicting requirement", [], [term for term in terms if term.casefold() not in question])
+    check_workspace(project, evidence, attempt, expected["worktrees"], definition.get("retained_service"), retained)
+    if expected.get("rejected_candidate"):
+        rejected = {review["version_id"] for review in reviews if review["decision"] == "changes_requested"
+                    and (review.get("implementation_review") if gates["automated_review"] != "off" else review.get("validator"))}
+        candidates = [version for version in versions if version["version_id"] in rejected and version["version_id"] != landing["version_id"]]
+        expect("rejected source version", 1, len(candidates))
+        for name, needle in expected["rejected_candidate"].items():
+            expect(f"rejected source contains {needle!r}", True,
+                   needle in project.git("show", f"{candidates[0]['head_sha']}:{name}"))
     if advanced:
         check_conflict(project, evidence, labels, versions, reviews, landing, gates, command, advanced)
     else:

@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import stack
 from evidence import compare
+from fault import Fault
 
 FIXTURE = Path(os.environ["DETENT_SMOKE_FIXTURE"])
 REPO = "digitaldrywood/detent-canary-todo"
@@ -234,11 +235,15 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
         "state": "Todo", "reason": "user_requested", "reason_detail": "Local smoke scenario",
     })
     org, admin = stack.current()
-    stack.route(routed, admin, org)
-    stack.stop("runner")
-    stack.start_runner()
+    expected = stack.read(case / "expected.json")
+    fault = Fault(FIXTURE, project, key, definition, expected["fault"]) if "fault" in expected else None
     service = None
     try:
+        if fault:
+            fault.arm()
+        stack.route(routed, admin, org)
+        stack.stop("runner")
+        stack.start_runner()
         deadline = time.monotonic() + TIMEOUT
         operator = definition.get("operator")
         moved = False
@@ -248,15 +253,21 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
             if operator and not moved:
                 moved = advance_when_staged(project, operator, original, advanced)
             current = project.request(key)
-            if current["state"] in {"Done", "Blocked", "Cancelled", "Human Review"}:
-                attempts = page(project, key, "/attempts")
-                if attempts and all(attempt.get("claim_released_at") for attempt in attempts):
-                    break
+            is_stopping = current["state"] in {"Done", "Blocked", "Cancelled", "Human Review"}
+            attempts = page(project, key, "/attempts") if fault or is_stopping else []
+            if fault:
+                fault.poll(current, attempts)
+            if is_stopping and attempts and all(attempt.get("claim_released_at") for attempt in attempts):
+                break
             time.sleep(1)
         else:
             evidence = capture(project, case.name, key, source)
+            if fault:
+                fault.verify(evidence)
             raise stack.Failure(f"replay timed out in {evidence['item']['state']}")
     finally:
+        if fault:
+            fault.close()
         runner = stack.runner_status(admin, org)
         if not (runner.get("used") or runner.get("leases")):
             stack.route([], admin, org)
@@ -267,7 +278,9 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
     if service:
         evidence["service"] = service
     stack.write(stack.ROOT / (case.name + ".evidence.json"), evidence)
-    compare(project, policy, evidence, stack.read(case / "expected.json"), definition, advanced)
+    if fault:
+        fault.verify(evidence)
+    compare(project, policy, evidence, expected, definition, advanced)
     return item, evidence
 
 

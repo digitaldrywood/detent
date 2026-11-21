@@ -307,7 +307,8 @@ def start_runner():
     offset = logfile.stat().st_size if logfile.exists() else 0
     spawn("runner", [BINARY, "--config", STATE / "global.yaml", "--host", "127.0.0.1",
                      "--port", ports["runner"], "--headless", "--log-level", "debug"],
-          git_transport() | {"DETENT_LOCAL_SOURCE_WORKERS": str(ROOT / "cache/workers")})
+          git_transport() | {"DETENT_LOCAL_SOURCE_WORKERS": str(ROOT / "cache/workers"),
+                             "DETENT_LOCAL_STARTUP_REFUSAL": str(STATE / "startup-refusal")})
     def runner_started():
         with logfile.open() as log:
             log.seek(offset)
@@ -447,9 +448,26 @@ def route(projects, admin, org, state="active"):
 
 
 
+def provider_sessions(since):
+    return sorted(path for folder in (CODEX, SANDBOX_HOME, WORKSPACES)
+                  for path in folder.rglob("rollout-*.jsonl") if path.stat().st_mtime >= since)
+
+
 def current():
     org = read(STATE / "hub.json")["organization_id"]
     return org, credentials()["DETENT_HUB_ADMIN_TOKEN"]
+
+
+def start_hub():
+    cfg = credentials()
+    port = available_ports()["hub"]
+    app_key = STATE / "uninstalled-app.pem"
+    spawn("hub", [BINARY, "hub", "serve", "--hosted-config", STATE / "hub.yaml",
+                  "--listen", f"127.0.0.1:{port}", "--log-level", "info"],
+          cfg | {"DETENT_HUB_GITHUB_APP_ID": "1", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": app_key.read_text(),
+                 "HTTPS_PROXY": url("git"), "HTTP_PROXY": url("git")})
+    admin = cfg["DETENT_HUB_ADMIN_TOKEN"]
+    wait_for("Hub readiness", lambda: request("/health", token=admin))
 
 
 def up():
@@ -481,12 +499,8 @@ def up():
     ensure_git_certificate()
     spawn("git", [sys.executable, __file__, "serve-git"])
     wait_for("loopback Git proxy", git_proxy_ready)
-    spawn("hub", [BINARY, "hub", "serve", "--hosted-config", STATE / "hub.yaml",
-                  "--listen", f"127.0.0.1:{port}", "--log-level", "info"],
-          cfg | {"DETENT_HUB_GITHUB_APP_ID": "1", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY": app_key.read_text(),
-                 "HTTPS_PROXY": url("git"), "HTTP_PROXY": url("git")})
+    start_hub()
     admin = cfg["DETENT_HUB_ADMIN_TOKEN"]
-    wait_for("Hub readiness", lambda: request("/health", token=admin))
     org = org_bootstrap(admin)
     runner_enroll(org, admin)
     route([], admin, org)
