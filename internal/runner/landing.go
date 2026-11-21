@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -51,7 +52,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 		return RunResult{}, fmt.Errorf("resolve landing target: %w", err)
 	}
-	landingStarted := false
+	landingStarted := prepared != nil && !prepared.MergeResolution
 	startLanding := func() error {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !landingStarted {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
@@ -118,9 +119,31 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			return r.auditNativeLanding(ctx, req, target, diff)
 		}
 	}
+	var result workspace.LandResult
+	land := func() {
+		if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
+			result, err = lander.LandChange(ctx, info, issue, options)
+		}
+	}
 	needsResolution := target.MergeResolution && !target.GitHubPullRequest
 	resolutionOptions := options
-	if needsResolution {
+	attemptedLanding := !target.GitHubPullRequest && !needsResolution
+	if attemptedLanding {
+		land()
+		var conflict *workspace.LandRefusal
+		if !req.RetainItemWorkspace && landingProviderReservation(req.Execution) != nil &&
+			result.Path == "merge_resolution_pending" && errors.As(err, &conflict) && conflict.Kind == workspace.LandRefusalConflict {
+			needsResolution = true
+			resolutionOptions.ExpectedBaseSHA = result.BaseBefore
+			resolutionOptions.TargetBranch = result.BaseRef
+			err = nil
+			for _, timing := range result.Pipeline {
+				r.recordPipeline(req, timing)
+			}
+			result = workspace.LandResult{}
+		}
+	}
+	if needsResolution && !attemptedLanding {
 		if resolver, ok := backend.(workspace.LandingConflictResolver); ok {
 			var base string
 			var conflicted bool
@@ -137,8 +160,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	if needsResolution && err == nil {
 		resolver, canResolve := backend.(workspace.LandingConflictResolver)
-		publication, canPublish := req.Execution.(MergeResolutionExecution)
-		if canResolve && canPublish {
+		if canResolve {
 			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, resolutionOptions, startLanding)
 			if !turn.TurnStarted {
 				if startErr := startLanding(); startErr != nil {
@@ -159,7 +181,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				return turn, nil
 			}
 			if resolveErr != nil {
-				if ctx.Err() != nil || IsCapacityError(resolveErr) || !turn.TurnStarted {
+				var validation *workspace.ValidationError
+				if ctx.Err() != nil || !turn.TurnStarted || (!errors.Is(resolveErr, workspace.ErrMergeResolutionInvalid) && !errors.As(resolveErr, &validation)) {
 					err = resolveErr
 				} else {
 					refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "merge resolution did not complete; conflict files: "+strings.Join(resolved.ConflictFiles, ", ")+": "+resolveErr.Error())
@@ -169,11 +192,19 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 						refused.NativeLanding.Gate = &resolved.Gate
 						refused.NativeLanding.GateFailed = resolved.Gate.ExitCode != 0
 					}
+					if !req.RetainItemWorkspace && errors.Is(resolveErr, workspace.ErrLandingConflictUnresolved) {
+						action := fmt.Sprintf("How should the reviewed change be combined with the current base in %s?", strings.Join(resolved.ConflictFiles, ", "))
+						refused.FinalMessage = workpad.BlockedDetail(refused.FinalMessage, action)
+					}
 					return refused, nil
 				}
 			}
 			if resolveErr == nil && !resolved.Unchanged {
-				if err := publication.PrepareMergeResolution(); err != nil {
+				publication, ok := req.Execution.(MergeResolutionExecution)
+				if !ok {
+					return turn, fmt.Errorf("%w: merge resolution publication is unavailable", ErrExecutionAuthorityUnavailable)
+				}
+				if err := publication.PrepareMergeResolution(ctx); err != nil {
 					return turn, err
 				}
 				if recorder, ok := req.Execution.(SourceValidationExecution); ok && resolved.Gate.Command != "" {
@@ -193,13 +224,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				options.Resolution = &resolved
 			}
 		} else {
-			refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "bounded merge resolution is unavailable; conflict files: "+strings.Join(target.ConflictFiles, ", "))
-			refused.NativeLanding.ConflictFiles = target.ConflictFiles
-			refused.NativeLanding.Path = "merge_resolution_failed"
-			return refused, nil
+			return RunResult{}, fmt.Errorf("%w: workspace cannot resolve landing conflicts", ErrExecutionAuthorityUnavailable)
 		}
 	}
-	var result workspace.LandResult
 	defer func() {
 		if runResult.NativeLanding != nil {
 			var command *workspace.CommandError
@@ -249,8 +276,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				}()
 			}
 			result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
-		} else if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
-			result, err = lander.LandChange(ctx, info, issue, options)
+		} else if !attemptedLanding || options.Resolution != nil {
+			land()
 		}
 	}
 	if target.MergeResolution && !target.GitHubPullRequest && result.MergeSHA != "" && result.Gate.Command == "" && workspace.ValidationCoversHead(options.Validation, options.ValidationCommand, options.HeadSHA) {

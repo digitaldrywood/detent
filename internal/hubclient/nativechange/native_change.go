@@ -38,7 +38,7 @@ func (e *nativeExecution) ownsChangeCompletion() bool {
 	return (e.ownsIssueCompletion() || e.mergeResolution || e.change != nil && e.change.NoChange != nil) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
 }
 
-func (e *nativeExecution) PrepareMergeResolution() error {
+func (e *nativeExecution) PrepareMergeResolution(context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.executionRole() != runner.RoleMerge || e.recoveredSource == nil {

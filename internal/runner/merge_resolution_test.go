@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -51,7 +52,10 @@ func (e *resolutionExecution) ProviderCapacity() *providercapacity.Reservation {
 	return e.reservation
 }
 
-func (e *resolutionExecution) PrepareMergeResolution() error { e.publication = true; return nil }
+func (e *resolutionExecution) PrepareMergeResolution(context.Context) error {
+	e.publication = true
+	return nil
+}
 func (e *resolutionExecution) RecordSourceValidation(_ context.Context, receipt gate.CommandResult) error {
 	e.validation = receipt
 	return nil
@@ -127,8 +131,11 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 	for _, test := range []struct {
 		name, content, effort                                        string
 		changed, failed, outside, shifted, gateFailure, budgetDenied bool
-		incorporated, reserved                                       bool
+		incorporated, reserved, direct, needsHuman                   bool
 	}{
+		{name: "direct landing resolves conflict under its held reservation", content: "first\nreviewed\nbase\n", reserved: true, direct: true},
+		{name: "direct landing asks one typed question for an unresolved conflict", failed: true, needsHuman: true, reserved: true, direct: true},
+		{name: "direct landing publishes a changed resolution for review", content: "first\nresolved\nbase\n", changed: true, reserved: true, direct: true},
 		{name: "unchanged reviewed diff retains review and lands", content: "first\nreviewed\nbase\n"},
 		{name: "pending conflict incorporated before next attempt lands without provider", content: "first\nreviewed\nthird\n", incorporated: true},
 		{name: "merge identity retains project effort", content: "first\nreviewed\nbase\n", effort: "low"},
@@ -137,7 +144,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
 		{name: "changed diff publishes for review", content: "first\nresolved\nbase\n", changed: true},
 		{name: "budget refusal preserves landing without a provider turn", budgetDenied: true},
-		{name: "unresolved conflict returns to implementation", failed: true},
+		{name: "legacy pending conflict asks a typed question when unresolved", failed: true, needsHuman: true},
 		{name: "failed configured gate returns to implementation", content: "first\ninvalid\nbase\n", failed: true, gateFailure: true},
 		{name: "unrelated edits return to implementation", content: "first\nreviewed\nbase\n", outside: true, failed: true},
 	} {
@@ -221,23 +228,28 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			req := RunRequest{Issue: issue, Mode: RunModeMerge, Execution: execution}
 			permits := 0
 			req.AcquireModelPermit = func(context.Context) error { permits++; return nil }
-			first, err := r.landNativeChange(t.Context(), req, execution, backend, info, work, workerGitHubPolicy{}, nil)
-			if err != nil || first.NativeLanding == nil || first.NativeLanding.Path != "merge_resolution_pending" || first.NativeLanding.RefusalKind != workspace.LandRefusalConflict || provider.calls != 0 {
-				t.Fatalf("initial conflict did not request merge resolution: %#v, %v, calls %d", first, err, provider.calls)
-			}
-			if test.incorporated {
-				write(filepath.Join(source, "feature.txt"), test.content)
-				write(filepath.Join(source, "UPSTREAM.md"), "target-only update\n")
-				runRunnerGit(t, source, "add", "feature.txt", "UPSTREAM.md")
-				runRunnerGit(t, source, "commit", "-am", "incorporate reviewed source")
-				runRunnerGit(t, source, "push", "origin", "main")
-				base = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			}
 			target := execution.target
-			target.RebaseRequired, target.MergeResolution = true, true
-			execution = &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: target}}}
-			req.Execution = execution
+			if !test.direct {
+				first, err := r.landNativeChange(t.Context(), req, execution, backend, info, work, workerGitHubPolicy{}, nil)
+				if err != nil || first.NativeLanding == nil || first.NativeLanding.Path != "merge_resolution_pending" || first.NativeLanding.RefusalKind != workspace.LandRefusalConflict || provider.calls != 0 {
+					t.Fatalf("initial conflict did not request merge resolution: %#v, %v, calls %d", first, err, provider.calls)
+				}
+				if test.incorporated {
+					write(filepath.Join(source, "feature.txt"), test.content)
+					write(filepath.Join(source, "UPSTREAM.md"), "target-only update\n")
+					runRunnerGit(t, source, "add", "feature.txt", "UPSTREAM.md")
+					runRunnerGit(t, source, "commit", "-am", "incorporate reviewed source")
+					runRunnerGit(t, source, "push", "origin", "main")
+					base = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				}
+				target.RebaseRequired, target.MergeResolution = true, true
+				execution = &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: target}}}
+				req.Execution = execution
+			}
 			if test.reserved {
+				if test.direct {
+					reserved.Role = RoleMerge
+				}
 				execution.reservation = &providercapacity.Reservation{Requirement: reserved}
 				execution.identity = tracker.NativeExecutionIdentity{Role: reserved.Role, Backend: reserved.Backend, Model: reserved.Model}
 				req.AcquireModelPermit = func(context.Context) error {
@@ -275,7 +287,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			wantPermits := 1
 			if test.reserved {
 				wantPermits = 0
-				if provider.request.Model != reserved.Model || alternate.calls != 0 || execution.identity.Role != RoleCode ||
+				if provider.request.Model != reserved.Model || alternate.calls != 0 || execution.identity.Role != reserved.Role ||
 					result.RuntimeIdentity.BackendID != reserved.Backend || result.RuntimeIdentity.Role != RoleMerge {
 					t.Fatalf("conflict left its held provider: model=%q alternate turns=%d attempt=%+v runtime=%+v", provider.request.Model, alternate.calls, execution.identity, result.RuntimeIdentity)
 				}
@@ -291,6 +303,14 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			case test.failed:
 				if result.NativeLanding == nil || result.NativeLanding.Path != "merge_resolution_failed" || result.NativeLanding.Landed || !result.NativeLanding.RequiresRework() || !strings.Contains(result.NativeLanding.Refusal, "feature.txt") || remoteHead != base || execution.publication {
 					t.Fatalf("unresolved conflict lost implementation handoff: %#v", result)
+				}
+				signal, ok := workpad.SignalFromComment(result.FinalMessage, "", "")
+				if test.needsHuman {
+					if !ok || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || !strings.Contains(signal.HumanAction, "feature.txt") || strings.Count(result.FinalMessage, "human_action:") != 1 {
+						t.Fatalf("unresolved conflict question = %q", result.FinalMessage)
+					}
+				} else if ok && signal.HumanAction != "" {
+					t.Fatalf("machine failure asked a human question: %q", result.FinalMessage)
 				}
 				if test.gateFailure && (result.NativeLanding.Gate == nil || !result.NativeLanding.GateFailed || result.NativeLanding.Gate.Command != command || result.NativeLanding.Gate.ExitCode == 0) {
 					t.Fatalf("gate failure lost its receipt: %#v", result.NativeLanding)

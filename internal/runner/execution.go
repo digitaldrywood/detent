@@ -223,7 +223,7 @@ type LandingExecution interface {
 }
 
 type MergeResolutionExecution interface {
-	PrepareMergeResolution() error
+	PrepareMergeResolution(context.Context) error
 }
 
 // RepositoryExecution is an Execution that publishes the finished run's
