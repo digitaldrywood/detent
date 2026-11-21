@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -268,7 +270,7 @@ func TestNativeLaneWriteWithoutLeaseIsUnauthorized(t *testing.T) {
 func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	for _, name := range []string{"omitted draft owner", "answer after 50 pages", "changed plan body", "changed draft body", "changed human direction", "changed draft direction", "unbound answer", "changed direction after implementation", "unchanged approval", "unchanged approval after implementation"} {
+	for _, name := range []string{"omitted draft owner", "answer after 50 pages", "changed plan body", "changed draft body", "changed human direction", "changed draft direction", "unbound answer", "human approval", "legacy human approval", "human requested revision", "changed direction after implementation", "unchanged approval", "unchanged approval after implementation"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_plan"}, Title: "Add coverage", Body: "Cover empty input"}}
@@ -295,6 +297,27 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 				answer.Data.BlockerAttemptID = ""
 			}
 			receipts := []tracker.NativePhaseReceipt{receipt}
+			humanApproval := name == "human approval" || name == "legacy human approval" || name == "human requested revision"
+			if humanApproval {
+				draft := receipt
+				draft.Phase = "plan_draft"
+				owner.Steps[0].PlanApproval = ""
+				draft.InputDigest = tracker.PlanPhaseDigest(draft, owner.Steps[0])
+				receipt.AttemptID, receipt.FencingToken = "attempt_resume", 4
+				step.PlanApproval = "human:" + draft.AttemptID + ":" + answer.ID
+				if name == "legacy human approval" {
+					step.PlanApproval = "human:" + answer.ID + ":" + answer.Data.ReasonDetail
+					receipts = append(receipts, draft)
+				}
+				if name == "human requested revision" {
+					answer.Data.ReasonDetail = "Include a case for whitespace input."
+				}
+				receipt.InputDigest = tracker.PlanPhaseDigest(receipt, step)
+				receipts[0] = receipt
+				recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{
+					AttemptID: receipt.AttemptID, LeaseID: receipt.LeaseID, FencingToken: receipt.FencingToken, PolicyID: receipt.PolicyID, Steps: []tracker.NativeStepReceipt{step},
+				}}}
+			}
 			if strings.HasSuffix(name, " after implementation") {
 				receipts = append([]tracker.NativePhaseReceipt{{Phase: "implement", HeadSHA: "implemented", TreeSHA: "implemented-tree", PolicyID: receipt.PolicyID}}, receipts...)
 			}
@@ -330,7 +353,15 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resolved, err := scoped.ResolvePlan(t.Context(), recovery, receipt.PolicyID, receipts)
+			review := gate.PlanReviewAutomated
+			if receipt.Phase == "plan_draft" || humanApproval {
+				review = gate.PlanReviewHuman
+			}
+			if name == "human approval" {
+				review = gate.PlanReviewBoth
+			}
+			pinned := policy.Descriptor{ID: receipt.PolicyID, Gates: policy.Gates{PlanReview: review}}
+			resolved, err := scoped.ResolvePlan(t.Context(), recovery, pinned, receipts)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -343,7 +374,7 @@ func TestPlanContinuationBindsDraftOwnerAndCurrentDirection(t *testing.T) {
 				if resolved == nil || resolved.AnswerID != "" || resolved.Draft == "" {
 					t.Fatalf("accepted an unbound answer: %+v", resolved)
 				}
-			case "unchanged approval", "unchanged approval after implementation":
+			case "unchanged approval", "unchanged approval after implementation", "human approval", "legacy human approval":
 				if resolved == nil || !resolved.Accepted || resolved.NeedsProvider() {
 					t.Fatalf("discarded bound approval: %+v", resolved)
 				}

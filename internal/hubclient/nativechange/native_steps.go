@@ -122,10 +122,11 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	if err != nil {
 		return nil, fmt.Errorf("read phase publication repository: %w", err)
 	}
-	gates := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID)).Gates
+	pinnedPolicy := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID))
+	gates := pinnedPolicy.Gates
 	continuation := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
 	if gates.PlanEnabled {
-		continuation.Plan, err = client.ResolvePlan(ctx, e.Recovery(), lease.PolicyID, receipts)
+		continuation.Plan, err = client.ResolvePlan(ctx, e.Recovery(), pinnedPolicy, receipts)
 		if err != nil {
 			return nil, err
 		}
