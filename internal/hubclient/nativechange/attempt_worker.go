@@ -71,11 +71,16 @@ func (e *nativeExecution) RegisterAttemptWorker(ctx context.Context, worker trac
 			return false, err
 		}
 		identity := tracker.WorkerBootstrapIdentity()
-		if reservation := e.ProviderCapacity(); reservation != nil {
+		reservation := e.ProviderCapacity()
+		if reservation != nil {
 			identity = tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}
 		}
-		if err := e.validateProviderStart(identity); err != nil {
-			return false, err
+		landing := e.claim.recovery.Issue.ListChange
+		providerFreeLanding := observation.Phase == "merging" && landing != nil && landing.LandingPending && landing.HeadSHA != ""
+		if reservation != nil || !providerFreeLanding {
+			if err := e.validateProviderStart(identity); err != nil {
+				return false, err
+			}
 		}
 		if observation.Phase == "implementation" && identity.Role == runner.RolePlan && e.scheduler.host.PinnedExecutionPolicy(string(e.claim.lease.WorkItemID)).Gates.PlanEnabled {
 			observation.Phase = "planning"
