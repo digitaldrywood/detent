@@ -177,6 +177,18 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 	if summary.ChangeSequence != head || summary.GrantVersion != frame.GrantVersion {
 		frame.Gap, frame.Sequence, frame.GrantVersion, frame.Deltas = true, summary.ChangeSequence, summary.GrantVersion, []tracker.NativeBoardDelta{}
 	}
+	var cards []*tracker.NativeBoardCard
+	for _, delta := range frame.Deltas {
+		if delta.Previous != nil {
+			cards = append(cards, delta.Previous)
+		}
+		if delta.Current != nil {
+			cards = append(cards, delta.Current)
+		}
+	}
+	if err := s.readBoardCardLiveness(ctx, scope.Organization, s.config.Clock(), cards); err != nil {
+		return false, err
+	}
 	raw, err := json.Marshal(frame)
 	if err != nil {
 		return false, err

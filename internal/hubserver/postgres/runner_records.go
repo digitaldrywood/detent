@@ -70,6 +70,25 @@ func (s *session) RunnerIdentity(ctx context.Context, id string) (runnerstore.Id
 	return s.runnerIdentity(ctx, `runner_id=$2`, id)
 }
 
+func (s *session) FreshRunnerHeartbeats(ctx context.Context, ids []string, now time.Time) (map[string]bool, error) {
+	rows, err := s.db.Query(ctx, `SELECT runner_id FROM runner_identities
+ WHERE organization_id=$1 AND runner_id=ANY($2::text[]) AND removed_at IS NULL AND expires_at>$3
+ AND last_heartbeat_at<=$3 AND last_heartbeat_at>$4`, s.organization, ids, now, now.Add(-runnerauth.HeartbeatTimeout))
+	if err != nil {
+		return nil, mapError(ctx, err)
+	}
+	defer rows.Close()
+	fresh := make(map[string]bool, len(ids))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapError(ctx, err)
+		}
+		fresh[id] = true
+	}
+	return fresh, mapError(ctx, rows.Err())
+}
+
 func (s *session) RunnerIdentityByCredential(ctx context.Context, id string) (runnerstore.Identity, error) {
 	return s.runnerIdentity(ctx, `token_id=$2`, id)
 }

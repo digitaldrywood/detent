@@ -25,16 +25,17 @@ func ScanAttachmentArchive(row interface{ Scan(...any) error }) (attachment.Arch
 }
 
 type TenantAttemptSnapshot struct {
-	ArtifactsPayload  *attachment.ArchiveReference `json:"-"`
-	CheckpointPayload *attachment.ArchiveReference `json:"-"`
-	RecoverPayload    bool                         `json:"-"`
-	Payload           *attachment.ArchiveReference `json:"-"`
-	Attempt           leasestore.Attempt           `json:"-"`
-	Lease             leasestore.Lease             `json:"-"`
-	Event             eventstore.Event             `json:"-"`
-	EvidencePage      bool                         `json:"-"`
-	Evidence          bool                         `json:"-"`
-	EvidenceRows      []attachmentstore.Record     `json:"-"`
+	ArtifactsPayload     *attachment.ArchiveReference `json:"-"`
+	CheckpointPayload    *attachment.ArchiveReference `json:"-"`
+	RecoverPayload       bool                         `json:"-"`
+	Payload              *attachment.ArchiveReference `json:"-"`
+	Attempt              leasestore.Attempt           `json:"-"`
+	Lease                leasestore.Lease             `json:"-"`
+	Event                eventstore.Event             `json:"-"`
+	RunnerHeartbeatStale bool                         `json:"-"`
+	EvidencePage         bool                         `json:"-"`
+	Evidence             bool                         `json:"-"`
+	EvidenceRows         []attachmentstore.Record     `json:"-"`
 }
 
 type NativeAttemptIdentityValues struct {

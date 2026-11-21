@@ -350,6 +350,10 @@ type ProviderCatalogReader interface {
 	RunnerProviderCatalog(context.Context, []tracker.ProjectID, time.Time) ([]ProviderCatalogModel, error)
 }
 
+type HeartbeatReader interface {
+	FreshRunnerHeartbeats(context.Context, []string, time.Time) (map[string]bool, error)
+}
+
 type Reader interface {
 	RunnerEnrollmentByTokenHash(context.Context, string) (Enrollment, error)
 	RunnerEnrollment(context.Context, string) (Enrollment, error)

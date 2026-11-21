@@ -341,14 +341,15 @@ func (d AttemptDeps) HydrateNativeAttemptTenant(ctx context.Context, snapshot hu
 		result.Finalization = &finalization
 		result.FinalizationAvailability = "available"
 	}
+	live := result.Current && !snapshot.RunnerHeartbeatStale
 	if result.Runtime != nil {
 		result.RuntimeFreshness = "available"
 		heartbeat := result.Runtime.HeartbeatAt
-		if heartbeat.IsZero() || now.Before(heartbeat) || result.Status == "running" && (!result.Current || now.Sub(heartbeat) >= lease.ExpiresAt.Sub(lease.RenewedAt)) {
+		if heartbeat.IsZero() || now.Before(heartbeat) || result.Status == "running" && (!live || now.Sub(heartbeat) >= lease.ExpiresAt.Sub(lease.RenewedAt)) {
 			result.RuntimeFreshness = "expired"
 		}
 	}
-	if result.Status == "running" && !result.Current {
+	if result.Status == "running" && !live {
 		result.Status = "interrupted"
 	}
 	if result.Runtime != nil && result.Runtime.Landing != nil {

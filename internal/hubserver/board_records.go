@@ -487,6 +487,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 			break
 		}
 	}
+	if includeBoard {
+		if err := s.readBoardCardLiveness(ctx, scope.Organization, *selection.WindowAsOf, boardCardPointers(page.Cards)); err != nil {
+			return page, nil, err
+		}
+	}
 	if includeWork {
 		work := snapshot.WorkRecords
 		page.Work.Truncated = len(work) > limit

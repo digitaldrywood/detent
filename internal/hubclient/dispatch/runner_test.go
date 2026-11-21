@@ -591,6 +591,11 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if execution == nil {
 		t.Fatal("claimed issue has no native execution")
 	}
+	if err := execution.(runner.RuntimeExecution).ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{
+		LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: clock().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := execution.Finish(t.Context(), "interrupted"); err != nil {
 		t.Fatal(err)
 	}
@@ -602,7 +607,21 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("interruption released the original lease: %v", err)
 	}
-	resumedScheduler, err := newTestScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
+	recovery, err := native.Recovery(t.Context(), issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := slices.IndexFunc(recovery.Attempts, func(attempt tracker.NativeAttempt) bool {
+		return attempt.LeaseID == retained.ID && attempt.FencingToken == retained.FencingToken
+	})
+	if index < 0 {
+		t.Fatal("recovery omitted the retained attempt")
+	}
+	interrupted := recovery.Attempts[index]
+	if interrupted.Status != "interrupted" || interrupted.Runtime == nil || interrupted.Runtime.LocalAttemptID != 42 || interrupted.Runtime.Generation != 1 {
+		t.Fatal("recovery omitted the interrupted worker runtime")
+	}
+	resumedScheduler, err := newTestScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second, Now: func() time.Time { return clock().Add(35 * time.Second) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,18 +630,31 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if waiting, err := resumedScheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(waiting) != 0 {
 		t.Fatalf("reconnect admitted a lease while the item was waiting: candidates=%+v error=%v", waiting, err)
 	}
-	for _, now := range []time.Time{retained.ExpiresAt.Add(-30 * time.Second), retained.ExpiresAt.Add(5 * time.Second)} {
-		clockOffset.Store(int64(time.Until(now)))
-		if err := resumedScheduler.Heartbeat(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		var owner runnerauth.Runner
-		if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &owner); err != nil {
-			t.Fatal(err)
-		}
-		index := slices.IndexFunc(owner.Leases, func(lease runnerauth.RunnerLease) bool { return lease.ID == retained.ID })
-		if index < 0 || owner.Leases[index].FencingToken != retained.FencingToken || !owner.Leases[index].ExpiresAt.After(retained.ExpiresAt) {
-			t.Fatalf("waiting retry did not renew its original authority at %v: %+v", now, owner.Leases)
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+	}{
+		{"stale_worker_before_original_expiry", retained.ExpiresAt.Add(-30 * time.Second)},
+		{"stale_worker_after_original_expiry", retained.ExpiresAt.Add(5 * time.Second)},
+	} {
+		if !t.Run(tc.name, func(t *testing.T) {
+			clockOffset.Store(int64(time.Until(tc.at)))
+			if age := resumedScheduler.now().Sub(interrupted.Runtime.HeartbeatAt); age < resumedScheduler.leaseTTL {
+				t.Fatalf("worker heartbeat age = %s, want at least %s", age, resumedScheduler.leaseTTL)
+			}
+			if err := resumedScheduler.Heartbeat(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			var owner runnerauth.Runner
+			if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &owner); err != nil {
+				t.Fatal(err)
+			}
+			index := slices.IndexFunc(owner.Leases, func(lease runnerauth.RunnerLease) bool { return lease.ID == retained.ID })
+			if index < 0 || owner.Leases[index].FencingToken != retained.FencingToken || owner.Leases[index].ExpiresAt.Before(tc.at.Add(85*time.Second)) {
+				t.Fatalf("waiting retry did not renew its original authority at %v", tc.at)
+			}
+		}) {
+			return
 		}
 	}
 	if waiting, err := resumedScheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(waiting) != 0 {

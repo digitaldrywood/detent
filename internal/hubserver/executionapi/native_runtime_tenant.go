@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -145,6 +146,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 	if !ok || d.DetailsFor(ctx) == nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
+	now := d.Now().UTC()
 	var snapshot nativeRuntimeTenantSnapshot
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
@@ -235,6 +237,20 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		if selector.EvidenceAfter != "" {
 			return nil
+		}
+		if attempt.Status == "running" && lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt) {
+			snapshot.attempt.RunnerHeartbeatStale = true
+			if lease.RunnerID != nil && *lease.RunnerID != "" {
+				reader, ok := r.(runnerstore.HeartbeatReader)
+				if !ok {
+					return hubapi.NativeRunEventStorageUnavailable()
+				}
+				fresh, err := reader.FreshRunnerHeartbeats(ctx, []string{*lease.RunnerID}, now)
+				if err != nil {
+					return err
+				}
+				snapshot.attempt.RunnerHeartbeatStale = !fresh[*lease.RunnerID]
+			}
 		}
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot.attempt); err != nil {
 			return err
@@ -332,7 +348,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 	}
 	issue.ChangeSequence = snapshot.boardSequence
 	issue = issue.RuntimeReference()
-	attempt, err := d.HydrateAttempt(ctx, snapshot.attempt, d.Now().UTC())
+	attempt, err := d.HydrateAttempt(ctx, snapshot.attempt, now)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
 	}
@@ -355,19 +371,6 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		if err := currentPolicy.Validate(); err != nil {
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
-	}
-	now := d.Now().UTC()
-	attempt.Current = snapshot.attempt.Lease.ReleasedAt == nil && !now.Before(snapshot.attempt.Lease.RenewedAt) && now.Before(snapshot.attempt.Lease.ExpiresAt)
-	if attempt.Runtime != nil {
-		attempt.RuntimeFreshness = "available"
-		heartbeat := attempt.Runtime.HeartbeatAt
-		if heartbeat.IsZero() || now.Before(heartbeat) || snapshot.attempt.Attempt.Status == "running" && (!attempt.Current || now.Sub(heartbeat) >= snapshot.attempt.Lease.ExpiresAt.Sub(snapshot.attempt.Lease.RenewedAt)) {
-			attempt.RuntimeFreshness = "expired"
-		}
-	}
-	attempt.Status = snapshot.attempt.Attempt.Status
-	if attempt.Status == "running" && !attempt.Current {
-		attempt.Status = "interrupted"
 	}
 	attempt.Runtime = runtimeLandingTarget(attempt.Runtime, snapshot.attempt.Event, snapshot.transition)
 	result := tracker.NativeRuntimeEvidence{
