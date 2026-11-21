@@ -93,6 +93,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		phase = "merging"
 	}
 	responseReceived := false
+	workerRegistered := false
 	defer func() {
 		if runErr == nil || responseReceived {
 			return
@@ -106,7 +107,11 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 				Decision: &decision,
 			}
 			runErr = runnerpkg.RestoreFailureDecision(runErr, decision)
-			runErr = errors.Join(runErr, execution.PrepareFinish(finishCtx, "failed", result.FinalMessage, &failure))
+			outcome := "failed"
+			if workerRegistered && request.DeferExecutionFinish {
+				outcome = "interrupted"
+			}
+			runErr = errors.Join(runErr, execution.PrepareFinish(finishCtx, outcome, result.FinalMessage, &failure))
 		}
 	}()
 	workerExecution, fenced := request.Execution.(runnerpkg.AttemptWorkerExecution)
@@ -328,6 +333,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		if err != nil {
 			return result, fmt.Errorf("register execution worker: %w", err)
 		}
+		workerRegistered = true
 		if primary {
 			retireWorker = func(context.Context) error {
 				workerExecution.AttemptWorkerExited(worker)

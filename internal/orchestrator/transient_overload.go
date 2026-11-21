@@ -21,6 +21,14 @@ func (o *Orchestrator) handleTransientOverload(
 	if o.handlePreTurnFailure(ctx, state, event, running) {
 		return
 	}
+	decision, attributed := runpkg.FailureDecision(event.Err)
+	if o.nativeWorkflow() && attributed && decision.Outcome == "instance" {
+		if err := o.abandonClaim(ctx, running.Issue.ID); err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return
+		}
+		delete(state.Claimed, running.Issue.ID)
+	}
 	releaseBackendCapacityProbe(state, running)
 	delay := event.RetryDelay
 	if delay <= 0 {
