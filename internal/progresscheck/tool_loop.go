@@ -112,22 +112,17 @@ func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence
 }
 
 func (l *ToolLoop) Evidence() ToolLoopEvidence {
-	for period := 1; period <= 4; period++ {
+	if period := l.steer.period; period != 0 {
 		repeats := l.repeatedSuffix(period)
-		if repeats < toolLoopSteerAt {
-			continue
-		}
-		key := l.cycleKey(period)
-		evidence := ToolLoopEvidence{Fingerprint: key, Period: period, Repeats: repeats}
-		if key != l.steer.fingerprint {
-			evidence.Action = ToolLoopSteer
-			return evidence
-		}
 		if repeats >= toolLoopStopAt && l.steer.acknowledged != 0 && l.history[len(l.history)-toolLoopSteerAt*period].sequence > l.steer.acknowledged {
-			evidence.Action = ToolLoopStop
-			return evidence
+			return ToolLoopEvidence{Action: ToolLoopStop, Fingerprint: l.steer.fingerprint, Period: period, Repeats: repeats}
 		}
 		return ToolLoopEvidence{}
+	}
+	for period := 1; period <= 4; period++ {
+		if repeats := l.repeatedSuffix(period); repeats >= toolLoopSteerAt {
+			return ToolLoopEvidence{Action: ToolLoopSteer, Fingerprint: l.cycleKey(period), Period: period, Repeats: repeats}
+		}
 	}
 	return ToolLoopEvidence{}
 }

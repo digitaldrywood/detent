@@ -11,10 +11,12 @@ func TestToolLoop(t *testing.T) {
 		calls    string
 		ackDelay int
 		actions  []int
+		stopAt   int
 	}{
 		{name: "exact", calls: "aaaaaa", actions: []int{3, 6}},
 		{name: "alternating", calls: "abababababab", actions: []int{6, 12}},
 		{name: "four calls", calls: "abcdabcdabcdabcdabcdabcd", actions: []int{12, 24}},
+		{name: "four calls with a repeated suffix", calls: "aaabaaabaaabaaabaaabaaab", actions: []int{3, 7, 11, 12, 24}, stopAt: 24},
 		{name: "unacknowledged", calls: "aaaaaaaaaaa", ackDelay: -1, actions: []int{3}},
 		{name: "late acknowledgement", calls: "aaaaaaaaaa", ackDelay: 2, actions: []int{3, 8}},
 		{name: "outcome changed", calls: "aaabbbbbb", actions: []int{3, 6, 9}},
@@ -26,7 +28,7 @@ func TestToolLoop(t *testing.T) {
 			var loop ToolLoop
 			var actions []int
 			var pending string
-			var ackAt int
+			var ackAt, stoppedAt int
 			for i, call := range test.calls {
 				index := i + 1
 				fingerprint := string(call)
@@ -48,11 +50,15 @@ func TestToolLoop(t *testing.T) {
 					t.Fatalf("duplicate at %d produced %+v", index, duplicate)
 				}
 				if evidence.Action == ToolLoopStop {
+					stoppedAt = index
 					break
 				}
 			}
 			if !slices.Equal(actions, test.actions) {
 				t.Fatalf("interventions on calls %v, want %v", actions, test.actions)
+			}
+			if test.stopAt != 0 && stoppedAt != test.stopAt {
+				t.Fatalf("stop at call %d, want call %d", stoppedAt, test.stopAt)
 			}
 		})
 	}
