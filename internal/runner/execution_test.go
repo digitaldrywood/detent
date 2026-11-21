@@ -1249,7 +1249,7 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 				}},
 			}}
 			local := workspace.RecoveryState{HeadSHA: "published-head", WorkspaceFingerprint: "published-digest"}
-			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil); reason != "local_checkpoint_changed" {
+			if _, reason := nativeRecoveryAction(execution.recovery, &local, false, store.AgentResumeState{}, identity, false, nil, ""); reason != "local_checkpoint_changed" {
 				t.Fatalf("fixture did not require rework verification: %s", reason)
 			}
 			validated := false
@@ -1269,6 +1269,50 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 			}
 			if local.HeadSHA != "published-head" || local.WorkspaceFingerprint != "published-digest" {
 				t.Fatalf("missing source changed local recovery state: %+v", local)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryDistinguishesReleasedCheckout(t *testing.T) {
+	t.Parallel()
+	released := time.Now()
+	identity := tracker.NativeExecutionIdentity{Role: RoleCode}
+	for _, test := range []struct {
+		name          string
+		checkout      string
+		releasedAt    *time.Time
+		previousLease tracker.LeaseID
+		digest        string
+		trackedPaths  []string
+		wantAction    string
+		wantReason    string
+	}{
+		{name: "fresh checkout under a replacement lease", checkout: "current", releasedAt: &released, previousLease: "prior-lease", digest: "new-base", wantAction: "fresh_checkout", wantReason: "checkpoint_unavailable"},
+		{name: "retained checkout with changed source", checkout: "prior", releasedAt: &released, previousLease: "prior-lease", digest: "changed", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+		{name: "retained checkout with verified source", checkout: "prior", releasedAt: &released, previousLease: "prior-lease", digest: "checkpoint", wantAction: "resume_session", wantReason: "verified_local_session"},
+		{name: "different checkout without recorded release", checkout: "current", previousLease: "prior-lease", digest: "new-base", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+		{name: "different checkout already has local work", checkout: "current", releasedAt: &released, previousLease: "prior-lease", digest: "new-base", trackedPaths: []string{"staged.go"}, wantAction: "fresh_checkout", wantReason: "local_work_preserved"},
+		{name: "different checkout under the same lease", checkout: "current", previousLease: "current-lease", digest: "new-base", wantAction: "manual_recovery", wantReason: "local_checkpoint_changed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recovery := tracker.NativeRecovery{
+				Lease:           tracker.NativeLease{ID: "current-lease", MachineID: "machine"},
+				SourceAttemptID: "prior",
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData:   tracker.NativeRunData{AttemptID: "prior", LeaseID: test.previousLease, MachineID: "machine", Identity: &identity},
+					Status:          "succeeded",
+					ClaimReleasedAt: test.releasedAt,
+					Checkpoint: &tracker.NativeCheckpoint{
+						Storage: "local_only", Availability: "available", WorktreeState: "dirty", Resume: "resume_session",
+						HeadSHA: "head", WorkspaceDigest: "checkpoint", ExternalEffect: "none", EffectState: "none",
+					},
+				}},
+			}
+			local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: test.digest, TrackedPaths: test.trackedPaths}
+			action, reason := nativeRecoveryAction(recovery, local, true, store.AgentResumeState{}, identity, false, nil, test.checkout)
+			if action != test.wantAction || reason != test.wantReason {
+				t.Fatalf("recovery = %s/%s, want %s/%s", action, reason, test.wantAction, test.wantReason)
 			}
 		})
 	}
@@ -1451,7 +1495,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 					recovery.Attempts[0].Checkpoint.WorkspaceDigest = "obsolete-digest"
 				}
 				test.edit(&recovery, &local, &available)
-				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current)
+				action, reason := nativeRecoveryAction(recovery, local, available, store.AgentResumeState{}, identity, mode == RetryModeFresh, test.current, "")
 				wantAction, wantReason := test.action, test.reason
 				if mode == RetryModeFresh && (wantAction == "resume_session" || wantReason == "session_restart_required") {
 					wantAction, wantReason = "fresh_checkout", "session_restart_required"
@@ -2537,7 +2581,7 @@ func TestNativeRecoveryWipeDerivedHold(t *testing.T) {
 				}
 				recovery := tracker.NativeRecovery{SourceAttemptID: "source", Lease: tracker.NativeLease{MachineID: "runner"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "runner"}, Checkpoint: checkpoint}}}
 				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
-				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil)
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil, "")
 				if action != test.wantAction || reason != test.wantReason {
 					t.Fatalf("resume=%s: decision=%s/%s, want %s/%s", resume, action, reason, test.wantAction, test.wantReason)
 				}
