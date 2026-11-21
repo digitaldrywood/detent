@@ -178,7 +178,7 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 		if _, err := s.readNativeAttemptTenant(ctx, scope, c.Param("item"), attempt); err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		list, err := s.readExecutionChecklist(ctx, scope, attempt)
+		list, err := s.readExecutionChecklistReport(ctx, scope, tracker.NativeWorkItemID(c.Param("item")), attempt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}

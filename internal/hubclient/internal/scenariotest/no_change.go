@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ import (
 
 func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	for _, reported := range []string{"current", "stale", "empty Change already integrated", "restored without verification target"} {
+	for _, reported := range []string{"current", "reviewer-only project gate", "stale", "empty Change already integrated", "restored without verification target"} {
 		t.Run(reported, func(t *testing.T) {
 			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
 			issue := h.createInProgress(t, "Verify existing behavior")
@@ -83,6 +84,39 @@ func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 			input, err := e.ReviewVersion(t.Context())
 			if err != nil {
 				t.Fatal(err)
+			}
+			if reported == "reviewer-only project gate" {
+				cfg := config.Default()
+				cfg.Policy = h.descriptor
+				list, err := progresscheck.FreezeChecklist(issue.Description, cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.FreezeExecutionChecklist(t.Context(), list); err != nil {
+					t.Fatal(err)
+				}
+				command := gate.CommandResult{Command: gate.Effective(cfg.Gate).Run, HeadSHA: base, TreeSHA: strings.Repeat("d", 40), Execution: "executed"}
+				command.StartedAt = time.Now().UTC().Add(-time.Second)
+				command.FinishedAt = command.StartedAt.Add(time.Second)
+				command.ReceiptID = command.PipelineTiming("validator_criteria").ID()
+				result := gate.ValidatorResult{VersionID: input.Version.ID, Repository: input.Version.Repository, BaseSHA: base, HeadSHA: base, Verdict: gate.ValidatorVerdictPass, Score: 1, SessionID: 41, Submitted: true, Summary: "Acceptance criteria hold on the current base", Commands: []gate.CommandResult{command}}
+				if err := e.RecordReview(t.Context(), result); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.RecordStep(t.Context(), tracker.NativeStepReceipt{Step: "review", CompletedAt: command.FinishedAt, Validator: &result,
+					Source: tracker.NativeCheckpoint{HeadSHA: base, WorkspaceDigest: "base"}, Change: tracker.NativeChangeReference{HeadSHA: base, VersionID: input.Version.ID}}); err != nil {
+					t.Fatal(err)
+				}
+				if change.NoChange.Validation != nil || !e.NativeChange().NoChangeAccepted(gate.Config{Run: command.Command, AutomatedReview: gate.AutomatedReviewRequired}) {
+					t.Fatal("no-change completion did not accept the reviewer-only gate receipt")
+				}
+				stored, err := h.admin.ExecutionChecklist(t.Context(), tracker.NativeWorkItemID(issue.ID), e.CompletionData().AttemptID)
+				if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+					return check.Kind == tracker.CheckProjectGate && check.Status == tracker.CheckPassed && check.Receipt == command.ReceiptID && check.Head == base && check.Tree == command.TreeSHA
+				}) {
+					t.Fatalf("no-change checklist did not report the reviewer-only gate receipt: %+v, error = %v", stored, err)
+				}
+				return
 			}
 			if reported == "empty Change already integrated" {
 				result := gate.ValidatorResult{VersionID: input.Version.ID, Repository: input.Version.Repository, BaseSHA: base, HeadSHA: base, Verdict: gate.ValidatorVerdictPass, Score: 1, SessionID: 41, Submitted: true, Summary: "Acceptance criteria hold on the current base"}

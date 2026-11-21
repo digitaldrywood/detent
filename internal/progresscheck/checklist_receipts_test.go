@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -98,6 +99,42 @@ func TestChecklistPolicyRowsFollowCurrentEvidence(t *testing.T) {
 			changes = ChecklistChanges(checks, verdict, runtime, steps)
 			if len(changes) != 1 || changes[0].Status != tracker.CheckPassed {
 				t.Fatalf("current pass updates = %+v", changes)
+			}
+		})
+	}
+}
+
+func TestChecklistProjectsNoChangeReviewerGate(t *testing.T) {
+	const head, tree, version, policyID = "head", "tree", "version", "policy"
+	for _, test := range []struct {
+		name, step, command, receiptTree string
+		exit                             int
+		want                             tracker.ExecutionCheckStatus
+	}{
+		{name: "implementation review passes", step: "review", command: "make check", receiptTree: tree, want: tracker.CheckPassed},
+		{name: "validator passes", step: "validator", command: "make check", receiptTree: tree, want: tracker.CheckPassed},
+		{name: "wrong command", step: "validator", command: "make unrelated", receiptTree: tree},
+		{name: "wrong tree", step: "review", command: "make check", receiptTree: "old-tree"},
+		{name: "instance failure", step: "validator", command: "make check", receiptTree: tree, exit: gate.TemporaryFailureExitCode},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			checks := []tracker.ExecutionCheck{{Ordinal: 1, Kind: tracker.CheckProjectGate, CheckDigest: policy.Digest([]byte("make check")), Status: tracker.CheckUnverified}}
+			review := checklistValidator(version, head, head)
+			review.Commands = []gate.CommandResult{
+				{Command: "inspect source", ReceiptID: "inspection", HeadSHA: head, TreeSHA: tree},
+				{Command: test.command, ReceiptID: "reviewer-gate", HeadSHA: head, TreeSHA: test.receiptTree, ExitCode: test.exit},
+			}
+			step := checklistValidatorStep(policyID, review)
+			step.Step = test.step
+			run := tracker.NativeRunData{PolicyID: policyID, Steps: []tracker.NativeStepReceipt{step}}
+			verdict := RoundVerdict{PolicyID: policyID, RoundInput: RunChecklistEvidence(nil, run)}
+			changes := ChecklistChanges(checks, verdict, nil, run.Steps)
+			if test.want == "" {
+				if len(changes) != 0 {
+					t.Fatalf("unrelated receipt updated the gate row: %+v", changes)
+				}
+			} else if len(changes) != 1 || changes[0].Status != test.want || changes[0].Head != head || changes[0].Tree != tree || changes[0].Receipt != "reviewer-gate" {
+				t.Fatalf("reviewer gate updates = %+v, want %s with source-bound reviewer receipt", changes, test.want)
 			}
 		})
 	}

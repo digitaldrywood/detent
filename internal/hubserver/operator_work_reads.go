@@ -192,7 +192,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 		}
 		if name == operatortool.WorkAttemptReceipt && evidence.Attempt != nil {
-			evidence.Checklist, err = s.readExecutionChecklist(ctx, scope, evidence.Attempt.AttemptID)
+			evidence.Checklist, err = s.readExecutionChecklistReport(ctx, scope, item.WorkItemID, evidence.Attempt.AttemptID)
 			if err != nil {
 				return operatortool.Result{}, hubapi.SafeWorkReadError(err)
 			}

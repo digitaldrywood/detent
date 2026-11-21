@@ -72,6 +72,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "protected base holds for a human and resumes the same version", refusal: "base_protected"},
 		{name: "landing command failure receipt returns to Rework", refusal: "validation"},
 		{name: "approved GitHub PR policy", github: true},
+		{name: "source checklist reports merge attempt CI", github: true, refusal: "checklist_ci"},
 		{name: "case equivalent GitHub binding", github: true, refusal: "case_equivalent_binding"},
 		{name: "landing admission outage preserves claim and retries", github: true, refusal: "admission_unavailable"},
 		{name: "landing capacity refusal preserves claim and retries", github: true, refusal: "admission_refused"},
@@ -545,7 +546,8 @@ func RunLinkedLandingScenarios(t *testing.T, factories Constructors) {
 func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, batch bool, otherMachine string, policyChange func(*policy.Descriptor), wantStale bool, factories Constructors, outage func(*testing.T, *LandingSetup), refusalKinds ...string) {
 	t.Helper()
 	reportOnlyChecklist := len(refusalKinds) > 0 && refusalKinds[0] == "report_only_checklist"
-	if reportOnlyChecklist {
+	checklistCI := len(refusalKinds) > 0 && refusalKinds[0] == "checklist_ci"
+	if reportOnlyChecklist || checklistCI {
 		refusalKinds = nil
 	}
 	caseEquivalentBinding := len(refusalKinds) > 0 && refusalKinds[0] == "case_equivalent_binding"
@@ -604,6 +606,20 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		next := h.descriptor
 		next.Gates.GitHubPullRequest = true
 		next = next.WithID()
+		if checklistCI {
+			cfg := config.Default()
+			cfg.Tracker.Kind, cfg.Tracker.Repository = config.TrackerHubNative, repository
+			cfg.Deliverable.GitHubPullRequest = true
+			cfg.Gate.SecurityAudit.Enabled = false
+			cfg.Gate.AutomatedReview = gate.AutomatedReviewOptional
+			cfg.Gate.RequiredStatusChecks = []string{"Full CI"}
+			cfg.Gate.CITriggerLabel = "run-full-ci"
+			var err error
+			next, err = config.ResolvePolicy(config.Workflow{Config: cfg, Prompt: "Complete the issue"})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 			t.Fatal(err)
 		}
@@ -689,8 +705,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if staleAudit {
 		sourceValidation.Command, sourceValidation.ReceiptID, sourceValidation.Execution = "make pr-gate", "timing_example", "executed"
 	}
-	var checklistAttempt string
-	if reportOnlyChecklist {
+	var checklistAttempt, checklistRevision string
+	if reportOnlyChecklist || checklistCI {
 		resolved, err := config.ResolveNativePolicy(h.descriptor)
 		if err != nil {
 			t.Fatal(err)
@@ -708,7 +724,10 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		checklistAttempt = work.(*ownedExecution).CompletionData().AttemptID
+		checklistRevision = list.Revision
 		sourceValidation.Command = gate.Effective(workflow.Config.Gate).Run
+	}
+	if reportOnlyChecklist {
 		failure := sourceValidation
 		failure.ExitCode, failure.Stage = 1, gate.StageSourceFinalization
 		failure.StartedAt = time.Now().UTC().Add(-time.Second)
@@ -718,7 +737,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		stored, err := h.admin.ExecutionChecklist(guarded, item, checklistAttempt)
-		if err != nil || stored == nil || stored.Revision != list.Revision || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+		if err != nil || stored == nil || stored.Revision != checklistRevision || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
 			return check.Kind == tracker.CheckProjectGate && check.Status == tracker.CheckFailed && check.Receipt == failure.ReceiptID && check.Head == head
 		}) {
 			t.Fatalf("frozen checklist did not report the failed gate: %+v, error = %v", stored, err)
@@ -760,8 +779,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 {
 		t.Fatalf("an unreviewed item was offered for landing: %#v", candidates)
 	}
-	if _, err := h.admin.ReviewChange(t.Context(), item, change.ChangeID, change.VersionID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved", Body: "Ship it."}); err != nil {
+	review, err := h.admin.ReviewChange(t.Context(), item, change.ChangeID, change.VersionID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved", Body: "Ship it."})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if reportOnlyChecklist {
+		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
+		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckAcceptance && check.Status == tracker.CheckManual && check.Receipt == review.ID && check.Head == head
+		}) {
+			t.Errorf("human approval did not update acceptance: %+v, error = %v", stored, err)
+		}
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
 		t.Fatalf("after approval the item is in %s, want Merging", state)
@@ -1358,6 +1386,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, landed.Gate) || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, landed.CI) {
 		t.Fatalf("success lost gate: %#v", evidence.Attempt.Runtime.Landing)
+	}
+	if checklistCI {
+		if mergeExecution.CompletionData().AttemptID == checklistAttempt {
+			t.Fatal("CI fixture reused the source attempt")
+		}
+		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
+		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckStatusGate && check.Text == "Full CI" && check.Status == tracker.CheckPassed && check.Head == head && check.Receipt != ""
+		}) {
+			t.Fatalf("source checklist did not report successful landing CI: %+v, error = %v", stored, err)
+		}
 	}
 	landedReceipt := *evidence.Attempt.Runtime.Landing
 	sequence = evidence.Attempt.Sequence
