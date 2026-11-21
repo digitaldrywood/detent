@@ -33,7 +33,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		freshThird, sealFirst                       bool
 		customTool, nestedSibling                   bool
 		missingResponse, unavailableSourceProbe     bool
-		varyMCPContent                              bool
+		varyMCPContent, legacyTerminal              bool
 	}{
 		{name: "custom tool output joins its native execution without reasoning markers", sealFirst: true, customTool: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "custom tool with two native siblings supplies no repeat", sealFirst: true, customTool: true, nestedSibling: true, terminalStatus: "completed"},
@@ -48,6 +48,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "missing dynamic job", toolType: "dynamicToolCall", pollResult: `"contentItems":[{"type":"inputText","text":"{\"job_id\":\"build-1\",\"status\":\"not_found\"}"}]`, customTool: true, sealFirst: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
 		{name: "source probe expires after acknowledged steer", unavailableSourceProbe: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "legacy interruption confirms stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", legacyTerminal: true, methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "rejected steer retries after the decision window", rejectFirstSteer: true, ackAfter: []int{3 + progresscheck.ToolLoopWindow}, sequences: []uint64{67, 70}, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/steer", "turn/interrupt"}, stop: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
@@ -200,7 +201,12 @@ func TestStreamToolLoopControl(t *testing.T) {
 			}
 			marker := fmt.Sprintf(`{"threadId":"thread","turnId":%q,"item":{"type":"reasoning","id":"reason-next"}}`, turn)
 			messages = append(messages, notificationMessage(t, "item/started", marker))
-			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"other","status":"interrupted"}}`), notificationMessage(t, "turn/completed", fmt.Sprintf(`{"threadId":"thread","turn":{"id":"turn","status":%q}}`, test.terminalStatus)))
+			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"other","status":"interrupted"}}`))
+			if test.legacyTerminal {
+				messages = append(messages, notificationMessage(t, "codex/event/task_complete", fmt.Sprintf(`{"id":"turn","conversationId":"thread","msg":{"type":"task_complete","status":%q,"error":null}}`, test.terminalStatus)))
+			} else {
+				messages = append(messages, notificationMessage(t, "turn/completed", fmt.Sprintf(`{"threadId":"thread","turn":{"id":"turn","status":%q}}`, test.terminalStatus)))
+			}
 			transport := &fakeAppServerTransport{received: messages}
 			if terminalReady != nil {
 				transport.pending = map[string]chan struct{}{"terminal": terminalReady}
