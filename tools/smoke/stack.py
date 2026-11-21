@@ -82,15 +82,17 @@ def log_fields(line):
     return dict(field.split("=", 1) for field in shlex.split(line) if "=" in field)
 
 
-def command(args, cwd=ROOT, env=None, log=None, data=None, timeout=600):
+def command(args, cwd=ROOT, env=None, log=None, data=None, timeout=600, stderr_log=None):
     args = [str(arg) for arg in args]
-    with open(LOGS / log, "ab") if log else contextlib.nullcontext() as stream:
+    with contextlib.ExitStack() as files:
+        stream = files.enter_context((LOGS / log).open("ab")) if log else subprocess.PIPE
+        errors = files.enter_context((LOGS / stderr_log).open("ab")) if stderr_log else stream
         result = subprocess.run(args, cwd=cwd, env=BASE_ENV | (env or {}), input=data,
-                                text=True, stdout=stream or subprocess.PIPE,
-                                stderr=stream or subprocess.PIPE, timeout=timeout)
+                                text=True, stdout=stream, stderr=errors, timeout=timeout)
     if result.returncode:
+        diagnostic = stderr_log or log
         raise Failure(f"{Path(args[0]).name} {args[1]} exited {result.returncode}"
-                      + (f". See {LOGS / log}" if log else ""))
+                      + (f". See {LOGS / diagnostic}" if diagnostic else ""))
     return result.stdout.strip() if result.stdout is not None else ""
 
 
@@ -99,8 +101,8 @@ def process_state(name):
 
 
 def process_info(pid):
-    out = subprocess.run(["ps", "-o", "stat=,lstart=,command=", "-p", str(pid)],
-                         text=True, capture_output=True).stdout.strip()
+    out = subprocess.run(["ps", "-ww", "-o", "stat=,lstart=,command=", "-p", str(pid)],
+                         env=os.environ | {"LC_ALL": "C"}, text=True, capture_output=True).stdout.strip()
     if not out:
         return None
     status, age, month, day, hour, year, args = out.split(maxsplit=6)
@@ -290,7 +292,7 @@ def runner_enroll(org, admin, capacity, clock):
                                  "--url", url(), "--organization", org, "--name", "Local Canary Runner",
                                  "--capacity", str(capacity), "--isolation-tier", "sandbox",
                                  "--config", config, "--workspace-root", WORKSPACES], SOURCE,
-                                data=grant["token"] + "\n"))
+                                data=grant["token"] + "\n", stderr_log="runner-enrollment.log"))
     raw = config.read_text()
     if clock:
         settings = "".join(f"    {key}: {value}\n" for key, value in clock.items())
@@ -337,10 +339,10 @@ def stop_postgres():
 
 
 def down():
-    stop("runner")
-    stop("hub")
-    stop("git")
-    stop_postgres()
+    with contextlib.ExitStack() as cleanup:
+        cleanup.callback(stop_postgres)
+        for name in ("git", "hub", "runner"):
+            cleanup.callback(stop, name)
 
 
 

@@ -88,7 +88,8 @@ def check_workspace(project, evidence, attempt, expected, service, retained):
         expect("retained source clean", "", stack.command(["git", "status", "--porcelain"], cwd=checkout))
     expect("recorded execution worker", True, bool(execution_groups))
     expect("recorded provider turns", True, bool(provider_groups))
-    live = {int(group) for group in subprocess.check_output(["ps", "-Ao", "pgid="], text=True).split()}
+    processes = subprocess.check_output(["ps", "-Ao", "stat=,pgid="], text=True)
+    live = {int(group) for status, group in map(str.split, processes.splitlines()) if not status.startswith("Z")}
     expect("recorded worker groups still active", [], sorted(live & (execution_groups | provider_groups)))
     if service:
         observed = evidence.get("service")
