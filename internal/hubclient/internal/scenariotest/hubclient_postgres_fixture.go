@@ -158,6 +158,13 @@ func hubclientPostgresProject(cfg hubserver.Config) tracker.ProjectID {
 
 func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization tracker.OrganizationID, seed func(tenantstore.Writer) error) {
 	t.Helper()
+	withHubclientPostgres(t, cfg, func(repository *postgres.Repository) error {
+		return repository.WriteTenant(t.Context(), organization, corestore.Serving, seed)
+	})
+}
+
+func withHubclientPostgres(t *testing.T, cfg hubserver.Config, use func(*postgres.Repository) error) {
+	t.Helper()
 	migrations, err := postgres.MigrationFiles()
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +173,7 @@ func hubclientSeedPostgres(t *testing.T, cfg hubserver.Config, organization trac
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = repository.WriteTenant(t.Context(), organization, corestore.Serving, seed)
+	err = use(repository)
 	if err := errors.Join(err, repository.Close()); err != nil {
 		t.Fatal(err)
 	}

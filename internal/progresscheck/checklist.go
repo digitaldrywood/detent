@@ -147,10 +147,8 @@ func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, run
 					if !noChangeChecklistReview(step, verdict.PolicyID, head) {
 						continue
 					}
-					if i := slices.IndexFunc(step.Validator.Commands, func(result gate.CommandResult) bool {
-						return result.ExitCode == 0 && checklistGateMatches(check, &result, head, tree)
-					}); i >= 0 {
-						status, receipt = tracker.CheckPassed, step.Validator.Commands[i].ReceiptID
+					if gate := passingReviewGate(check, step.Validator, head, tree); gate != nil {
+						status, receipt = tracker.CheckPassed, gate.ReceiptID
 						break
 					}
 				}
@@ -199,6 +197,24 @@ func noChangeChecklistReview(step *tracker.NativeStepReceipt, policyID, head str
 func checklistGateMatches(check tracker.ExecutionCheck, command *gate.CommandResult, head, tree string) bool {
 	return command != nil && command.ReceiptID != "" && !command.InstanceFailure() && command.HeadSHA == head &&
 		tree != "" && command.TreeSHA == tree && check.CheckDigest == policy.Digest([]byte(command.Command))
+}
+
+func NoChangeChecklistGate(check tracker.ExecutionCheck, completion tracker.NativeNoChangeCompletion, step tracker.NativeStepReceipt) *gate.CommandResult {
+	head := completion.VerifiedSHA
+	if !noChangeChecklistReview(&step, completion.PolicyID, head) || step.Change.VersionID != completion.VersionID() || step.Validator.Repository != completion.Repository {
+		return nil
+	}
+	return passingReviewGate(check, step.Validator, head, checklistTree(head, completion.Validation, step.Validator))
+}
+
+func passingReviewGate(check tracker.ExecutionCheck, result *gate.ValidatorResult, head, tree string) *gate.CommandResult {
+	for i := range result.Commands {
+		command := &result.Commands[i]
+		if command.ExitCode == 0 && checklistGateMatches(check, command, head, tree) {
+			return command
+		}
+	}
+	return nil
 }
 
 func checklistDeltas(checks []tracker.ExecutionCheck, updates []tracker.ExecutionCheckUpdate) []tracker.ExecutionCheckUpdate {

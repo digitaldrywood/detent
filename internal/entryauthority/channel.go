@@ -301,12 +301,26 @@ func (c *Client) Close() error {
 }
 
 type ContentRequest struct {
+	Attachment   *attachment.RetainedReference
 	Organization string
 	Content      []byte
 	Data         []byte
 	Write        bool
 	Reference    attachment.ArchiveReference
 	Deadline     time.Time
+}
+
+func (r ContentRequest) Validate(organization string) error {
+	if r.Organization != organization {
+		return attachment.ErrInvalid
+	}
+	if r.Attachment != nil {
+		if r.Write || len(r.Data) != 0 || len(r.Content) != 0 || r.Reference != (attachment.ArchiveReference{}) {
+			return attachment.ErrInvalid
+		}
+		return r.Attachment.Validate(organization)
+	}
+	return r.Reference.Validate(organization)
 }
 
 func (s *authorityServer) PublishContent(request ContentRequest, ref *attachment.ArchiveReference) error {
@@ -360,7 +374,7 @@ type ContentHandler func(context.Context, ContentRequest) ([]byte, error)
 
 func (s *authorityServer) Content(request ContentRequest, result *[]byte) error {
 	started := time.Now()
-	if s.content == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Reference.Validate(s.binding.Organization) != nil {
+	if s.content == nil || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Validate(s.binding.Organization) != nil {
 		return cloudassert.ErrInvalid
 	}
 	data, err := s.content(request)

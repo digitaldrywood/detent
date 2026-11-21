@@ -1022,7 +1022,7 @@ func TestTenantContentStorage(t *testing.T) {
 
 func TestTenantContentReadsReleaseAttachmentLock(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"archive content", "run detail"} {
+	for _, path := range []string{"archive content", "run detail", "retained attachment"} {
 		t.Run(path, func(t *testing.T) {
 			f := newEntryFixture(t)
 			ctx := t.Context()
@@ -1041,15 +1041,23 @@ func TestTenantContentReadsReleaseAttachmentLock(t *testing.T) {
 				release: make(chan struct{}),
 				data:    compressed,
 			}
+			if path == "retained attachment" {
+				storage.data = content
+			}
 			f.service.attachments = storage
 			done := make(chan error, 1)
 			go func() {
 				var got, want []byte
 				var err error
-				if path == "archive content" {
+				switch path {
+				case "archive content":
 					want = compressed
 					got, err = f.service.tenantContent(ctx, organization, entryauthority.ContentRequest{Organization: organization.ID, Reference: ref})
-				} else {
+				case "retained attachment":
+					want = content
+					ref := attachment.RetainedReference{ID: "att_" + strings.Repeat("a", 32), SHA256: artifact.Digest(content), Size: int64(len(content))}
+					got, err = f.service.tenantContent(ctx, organization, entryauthority.ContentRequest{Organization: organization.ID, Attachment: &ref})
+				default:
 					want = content
 					store := tenantDetailStore{service: f.service, allocation: organization}
 					got, err = store.ReadDetail(ctx, organization.ID, ref)

@@ -16,7 +16,7 @@ func Record(ctx context.Context, client Writer, lease tracker.NativeLease, attem
 	if !landing.Landed {
 		return errors.New("only a landed version is recorded")
 	}
-	receipt := &tracker.NativeLandingReceipt{Incorporation: landing.Incorporation, ConflictFiles: landing.ConflictFiles, SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased}
+	receipt := &tracker.NativeLandingReceipt{Incorporation: landing.Incorporation, ConflictFiles: landing.ConflictFiles, SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, CI: landing.CI, Landed: true, Rebased: landing.Rebased}
 	var objects []byte
 	if landing.Incorporation != nil {
 		objects = landing.Incorporation.Objects

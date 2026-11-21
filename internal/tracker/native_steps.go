@@ -3,6 +3,7 @@ package tracker
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -88,4 +89,12 @@ func (r NativeStepReceipt) Matches(expected NativeStepReceipt) bool {
 	return r.Step == expected.Step && r.PolicyID == expected.PolicyID && r.ReviewState == expected.ReviewState && r.ReviewEpoch == expected.ReviewEpoch &&
 		r.Change == expected.Change && r.Source.HeadSHA != "" && r.Source.HeadSHA == expected.Source.HeadSHA &&
 		r.Source.WorkspaceDigest != "" && r.Source.WorkspaceDigest == expected.Source.WorkspaceDigest
+}
+
+func DecodeNativeStepPayload(content []byte, receipt NativeStepReceipt) (NativeStepReceipt, error) {
+	var restored NativeStepReceipt
+	if json.Unmarshal(content, &restored) != nil || restored.PayloadArtifact != nil || restored.PayloadAttachment != nil || !restored.Matches(receipt) || !restored.CompletedAt.Equal(receipt.CompletedAt) {
+		return NativeStepReceipt{}, artifact.ErrIntegrity
+	}
+	return restored, nil
 }

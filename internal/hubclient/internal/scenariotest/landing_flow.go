@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/testsupport"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -59,6 +60,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 	}{
 		{name: "plain git by default"},
 		{name: "failed checklist row is report only", refusal: "report_only_checklist"},
+		{name: "human approval leaves edited criteria unresolved", refusal: "edited_checklist_body"},
 		{name: "audited landing under the implementation lease", audited: "held"},
 		{name: "retained landing cleans up after a phase receipt error", audited: "cleanup_epilogue"},
 		{name: "audited clean landing after publisher reclaim", audited: "clean"},
@@ -547,7 +549,8 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	t.Helper()
 	reportOnlyChecklist := len(refusalKinds) > 0 && refusalKinds[0] == "report_only_checklist"
 	checklistCI := len(refusalKinds) > 0 && refusalKinds[0] == "checklist_ci"
-	if reportOnlyChecklist || checklistCI {
+	editedChecklist := len(refusalKinds) > 0 && refusalKinds[0] == "edited_checklist_body"
+	if reportOnlyChecklist || checklistCI || editedChecklist {
 		refusalKinds = nil
 	}
 	caseEquivalentBinding := len(refusalKinds) > 0 && refusalKinds[0] == "case_equivalent_binding"
@@ -706,7 +709,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		sourceValidation.Command, sourceValidation.ReceiptID, sourceValidation.Execution = "make pr-gate", "timing_example", "executed"
 	}
 	var checklistAttempt, checklistRevision string
-	if reportOnlyChecklist || checklistCI {
+	if reportOnlyChecklist || checklistCI || editedChecklist {
 		resolved, err := config.ResolveNativePolicy(h.descriptor)
 		if err != nil {
 			t.Fatal(err)
@@ -779,16 +782,42 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if candidates := h.candidatesIn(t, "Merging"); len(candidates) != 0 {
 		t.Fatalf("an unreviewed item was offered for landing: %#v", candidates)
 	}
+	if editedChecklist {
+		current, err := h.admin.Issue(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.Replace(current.Body, "Complete the requested work.", "Verify the revised behavior.", 1)
+		if body == current.Body {
+			t.Fatal("fixture acceptance criterion was not found")
+		}
+		if _, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Body: &body}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	review, err := h.admin.ReviewChange(t.Context(), item, change.ChangeID, change.VersionID, tracker.ReviewChange{Mutation: api.NativeMutationKey(), Decision: "approved", Body: "Ship it."})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reportOnlyChecklist {
+	if reportOnlyChecklist || editedChecklist {
+		withHubclientPostgres(t, h.config, func(repository *postgres.Repository) error {
+			_, err := repository.BackfillCurrentChangeReviews(t.Context(), h.organization, eventstore.NewContent(h.config.RunDetails), 10)
+			return err
+		})
 		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
 		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
-			return check.Kind == tracker.CheckAcceptance && check.Status == tracker.CheckManual && check.Receipt == review.ID && check.Head == head
+			if check.Kind != tracker.CheckAcceptance {
+				return false
+			}
+			if editedChecklist {
+				return check.Status == tracker.CheckNeedsReview && check.Receipt == "" && check.Text == "Complete the requested work."
+			}
+			return check.Status == tracker.CheckManual && check.Receipt == review.ID && check.Head == head
 		}) {
-			t.Errorf("human approval did not update acceptance: %+v, error = %v", stored, err)
+			t.Fatalf("human approval did not report the expected frozen acceptance status: %+v, error = %v", stored, err)
+		}
+		if editedChecklist {
+			return
 		}
 	}
 	if state := h.state(t, issue.ID); state != "Merging" {
@@ -1340,7 +1369,11 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatal(err)
 	}
 	landingClient.Store(transport)
-	if err := execution.RecordLanding(guarded, landed); err != nil {
+	replayed := landed
+	if checklistCI {
+		replayed.CI = nil
+	}
+	if err := execution.RecordLanding(guarded, replayed); err != nil {
 		t.Fatalf("recording the landing again: %v", err)
 	}
 	if reportOnlyChecklist {
@@ -1353,6 +1386,17 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if state := h.state(t, issue.ID); state != "Done" {
 		t.Fatalf("after recording landing the item is in %s, want Done", state)
+	}
+	if checklistCI {
+		if mergeExecution.CompletionData().AttemptID == checklistAttempt {
+			t.Fatal("CI fixture reused the source attempt")
+		}
+		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
+		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
+			return check.Kind == tracker.CheckStatusGate && check.Text == "Full CI" && check.Status == tracker.CheckPassed && check.Head == head && check.Receipt != ""
+		}) {
+			t.Fatalf("source checklist did not report successful landing CI: %+v, error = %v", stored, err)
+		}
 	}
 	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
 		t.Fatalf("renewing the attempt that landed the terminal item: %v", err)
@@ -1386,17 +1430,6 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	}
 	if !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.Gate, landed.Gate) || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, landed.CI) {
 		t.Fatalf("success lost gate: %#v", evidence.Attempt.Runtime.Landing)
-	}
-	if checklistCI {
-		if mergeExecution.CompletionData().AttemptID == checklistAttempt {
-			t.Fatal("CI fixture reused the source attempt")
-		}
-		stored, err := h.admin.ExecutionChecklist(t.Context(), item, checklistAttempt)
-		if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {
-			return check.Kind == tracker.CheckStatusGate && check.Text == "Full CI" && check.Status == tracker.CheckPassed && check.Head == head && check.Receipt != ""
-		}) {
-			t.Fatalf("source checklist did not report successful landing CI: %+v, error = %v", stored, err)
-		}
 	}
 	landedReceipt := *evidence.Attempt.Runtime.Landing
 	sequence = evidence.Attempt.Sequence

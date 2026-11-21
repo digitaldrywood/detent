@@ -1,7 +1,9 @@
 package scenariotest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -10,12 +12,20 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -27,9 +37,25 @@ import (
 
 func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
-	for _, reported := range []string{"current", "reviewer-only project gate", "stale", "empty Change already integrated", "restored without verification target"} {
+	for _, reported := range []string{"current", "reviewer-only project gate", "completed review before projection", "externally retained review", "stale", "empty Change already integrated", "restored without verification target"} {
 		t.Run(reported, func(t *testing.T) {
-			h := newPlannerHub(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, factories)
+			archived := reported == "externally retained review"
+			historical := reported == "completed review before projection"
+			hubConfig := hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &conversations.ConversationConfig{Enabled: true}}
+			var retained []byte
+			var retainedMu sync.Mutex
+			if archived {
+				archiveContent := newHubContentStore()
+				hubConfig.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+					if request.Attachment == nil {
+						return archiveContent(ctx, request)
+					}
+					retainedMu.Lock()
+					defer retainedMu.Unlock()
+					return bytes.Clone(retained), nil
+				}
+			}
+			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}}, {Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done", "Todo"}}, {Name: "In Review", Transitions: []string{"In Progress", "Done"}}, {Name: "Done", Terminal: true, Transitions: []string{"Todo"}}}, true, false, hubConfig, factories)
 			issue := h.createInProgress(t, "Verify existing behavior")
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*ownedExecution)
@@ -85,21 +111,50 @@ func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reported == "reviewer-only project gate" {
+			if reported == "reviewer-only project gate" || historical || archived {
 				cfg := config.Default()
 				cfg.Policy = h.descriptor
 				list, err := progresscheck.FreezeChecklist(issue.Description, cfg)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := e.FreezeExecutionChecklist(t.Context(), list); err != nil {
-					t.Fatal(err)
+				if !historical {
+					if err := e.FreezeExecutionChecklist(t.Context(), list); err != nil {
+						t.Fatal(err)
+					}
 				}
 				command := gate.CommandResult{Command: gate.Effective(cfg.Gate).Run, HeadSHA: base, TreeSHA: strings.Repeat("d", 40), Execution: "executed"}
 				command.StartedAt = time.Now().UTC().Add(-time.Second)
 				command.FinishedAt = command.StartedAt.Add(time.Second)
 				command.ReceiptID = command.PipelineTiming("validator_criteria").ID()
 				result := gate.ValidatorResult{VersionID: input.Version.ID, Repository: input.Version.Repository, BaseSHA: base, HeadSHA: base, Verdict: gate.ValidatorVerdictPass, Score: 1, SessionID: 41, Submitted: true, Summary: "Acceptance criteria hold on the current base", Commands: []gate.CommandResult{command}}
+				if archived {
+					result.Summary = strings.Repeat("Verified behavior. ", tracker.NativeStepReceiptBytes/10)
+					attempt := e.CompletionData().AttemptID
+					requests := fixtureClient(e.claim.source.NativeClient().Transport()).requests
+					previous := requests.Load()
+					requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/attempts/"+attempt+"/evidence") {
+							return previous.RoundTrip(request)
+						}
+						raw, err := io.ReadAll(request.Body)
+						if err != nil {
+							return nil, err
+						}
+						metadata := attachment.Metadata{ID: "att_" + strings.Repeat("a", 32), ProjectID: string(h.project), WorkItemID: issue.ID,
+							Uploader: "example_admin", Name: "execution-step.json", ContentType: "application/json", SHA256: artifact.Digest(raw), Size: int64(len(raw)), CreatedAt: time.Now().UTC()}
+						metadata.Reference = metadata.Markdown(string(h.organization))
+						h.seed(func(w tenantstore.Writer) error {
+							return w.CreateAttachment(request.Context(), attachmentstore.Record{OrganizationID: h.organization, Metadata: metadata, EvidenceAttemptID: attempt, Kind: "attachment"})
+						})
+						retainedMu.Lock()
+						retained = raw
+						retainedMu.Unlock()
+						encoded, err := json.Marshal(metadata)
+						return &http.Response{StatusCode: http.StatusCreated, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(encoded)), Request: request}, err
+					}))
+					t.Cleanup(func() { requests.Store(previous) })
+				}
 				if err := e.RecordReview(t.Context(), result); err != nil {
 					t.Fatal(err)
 				}
@@ -109,6 +164,22 @@ func RunNoChangeCompletion(t *testing.T, factories Constructors) {
 				}
 				if change.NoChange.Validation != nil || !e.NativeChange().NoChangeAccepted(gate.Config{Run: command.Command, AutomatedReview: gate.AutomatedReviewRequired}) {
 					t.Fatal("no-change completion did not accept the reviewer-only gate receipt")
+				}
+				if historical {
+					if err := e.FreezeExecutionChecklist(t.Context(), list); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if archived && e.CompletionData().Steps[len(e.CompletionData().Steps)-1].PayloadAttachment == nil {
+					t.Fatal("review payload was not retained externally")
+				}
+				if archived || historical {
+					if err := e.Finish(t.Context(), "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if e.CompletionData().Outcome != "succeeded" {
+						t.Fatal("no-change attempt did not finish successfully")
+					}
 				}
 				stored, err := h.admin.ExecutionChecklist(t.Context(), tracker.NativeWorkItemID(issue.ID), e.CompletionData().AttemptID)
 				if err != nil || stored == nil || !slices.ContainsFunc(stored.Checks, func(check tracker.ExecutionCheck) bool {

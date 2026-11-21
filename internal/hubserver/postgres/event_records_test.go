@@ -2213,6 +2213,32 @@ func TestCurrentChangeReviewsBackfillPreservesConcurrentAndLateEvidence(t *testi
 					}
 				})
 			}
+			checklistApproval := func(want int64) {
+				t.Helper()
+				err := repository.ReadRecords(t.Context(), org, corestore.Serving, func(r eventstore.Reader) error {
+					change, err := r.Change(t.Context(), f.Change.ID)
+					if err != nil {
+						return err
+					}
+					approval, err := r.(eventstore.ChecklistApprovalReader).CurrentChecklistApproval(t.Context(), change, f.Version.ID)
+					if err == nil && approval.Sequence != want {
+						t.Errorf("checklist approval sequence = %d, want %d", approval.Sequence, want)
+					}
+					return err
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			checklistApproval(0)
+			if err := appendRow(t.Context(), prepare("review_withdraws_objection", "reviewer_1", "approved", 0, true)); err != nil {
+				t.Fatal(err)
+			}
+			checklistApproval(0)
+			if n, err := repository.BackfillCurrentChangeReviews(t.Context(), org, f.Content, 200); err != nil || n != 1 {
+				t.Fatalf("checklist review projection rows=%d error=%v", n, err)
+			}
+			checklistApproval(801)
 		})
 	}
 }

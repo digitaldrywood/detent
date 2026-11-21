@@ -52,7 +52,13 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("Landing receipt must attest a completed landing"))
 	}
 	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	hash, err := hubapi.CommandHash(request)
+	command := request
+	if request.Receipt != nil && request.Receipt.CI != nil {
+		receipt := *request.Receipt
+		receipt.CI = nil
+		command.Receipt = &receipt
+	}
+	hash, err := hubapi.CommandHash(command)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Service) tenantContent(ctx context.Context, organization Organization, request entryauthority.ContentRequest) ([]byte, error) {
-	if request.Organization != organization.ID || request.Reference.Validate(organization.ID) != nil {
+	if request.Validate(organization.ID) != nil {
 		return nil, attachment.ErrInvalid
 	}
 	unlock := s.attachmentLocks.lock(organization.ID, false)
@@ -16,6 +16,10 @@ func (s *Service) tenantContent(ctx context.Context, organization Organization, 
 	if err != nil || current.Generation != organization.Generation {
 		unlock()
 		return nil, attachment.ErrInvalid
+	}
+	if request.Attachment != nil {
+		unlock()
+		return attachment.ReadRetained(ctx, s.attachments, organization.ID, *request.Attachment)
 	}
 	storage, err := s.archiveStorageForReference(ctx, organization.ID, request.Reference)
 	if err != nil {

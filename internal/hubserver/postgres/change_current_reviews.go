@@ -146,6 +146,37 @@ WHERE organization_id=$1 AND id=$2`, s.organization, row.ChangeID, row.Sequence)
 	return mapError(ctx, err)
 }
 
+func (s *session) CurrentChecklistApproval(ctx context.Context, change eventstore.Change, version string) (eventstore.Evidence, error) {
+	if change.ReviewSummarySequence != change.EvidenceSequence {
+		return eventstore.Evidence{}, nil
+	}
+	sequences, err := s.queries.RecordCurrentChangeReviewSequences(ctx, pgquery.RecordCurrentChangeReviewSequencesParams{
+		OrganizationID: s.organization, ChangeID: change.ID, VersionID: version, Through: change.EvidenceSequence,
+	})
+	if err != nil {
+		return eventstore.Evidence{}, mapError(ctx, err)
+	}
+	rows, err := s.queries.RecordCurrentChangeEvidenceBySequences(ctx, pgquery.RecordCurrentChangeEvidenceBySequencesParams{
+		OrganizationID: string(s.organization), ChangeID: change.ID, Sequences: sequences,
+	})
+	if err != nil {
+		return eventstore.Evidence{}, mapError(ctx, err)
+	}
+	var approval eventstore.Evidence
+	for _, row := range rows {
+		if row.ActorKind != "human" || row.ReviewKind != "human" || row.Sequence > change.EvidenceSequence || row.VersionID == nil || *row.VersionID != version {
+			continue
+		}
+		if row.Decision == "changes_requested" {
+			return eventstore.Evidence{}, nil
+		}
+		if row.Decision == "approved" {
+			approval = evidenceRecord(row)
+		}
+	}
+	return approval, nil
+}
+
 func (s *session) ChangeReviewEvidence(ctx context.Context, change, version string, through int64, checks []string, actor string) ([]eventstore.Evidence, bool, error) {
 	if actor == "" || version == "" || through < 0 || len(checks) > corestore.MaxPageSize {
 		return nil, false, corestore.ErrInvalidPage

@@ -6,9 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -59,7 +57,7 @@ func (e *nativeExecution) restoreStep(ctx context.Context, receipt tracker.Nativ
 		if err != nil {
 			return tracker.NativeStepReceipt{}, err
 		}
-		return decodeStepPayload(raw, receipt)
+		return tracker.DecodeNativeStepPayload(raw, receipt)
 	}
 	ref := receipt.PayloadArtifact
 	if ref == nil {
@@ -73,59 +71,11 @@ func (e *nativeExecution) restoreStep(ctx context.Context, receipt tracker.Nativ
 	if err != nil {
 		return tracker.NativeStepReceipt{}, err
 	}
-	if !artifact.ValidOrigin(grant.Origin) || grant.SHA256 != ref.SHA256 {
-		return tracker.NativeStepReceipt{}, artifact.ErrIntegrity
-	}
-	httpClient := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	read := func(path string, limit int64) ([]byte, error) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, grant.Origin+path, nil)
-		if err != nil {
-			return nil, artifact.ErrInvalid
-		}
-		request.Header.Set("Authorization", "Bearer "+grant.Token)
-		response, err := httpClient.Do(request)
-		if err != nil {
-			return nil, artifact.ErrStorage
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			return nil, artifact.ErrStorage
-		}
-		data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-		if err != nil || int64(len(data)) > limit {
-			return nil, artifact.ErrIntegrity
-		}
-		return data, nil
-	}
-	path := fmt.Sprintf("/v1/artifacts/%s/manifests/%d", ref.ArtifactID, ref.Revision)
-	raw, err := read(path, artifact.MaxManifestBytes)
+	content, err := artifact.ReadPayload(ctx, grant, *ref)
 	if err != nil {
 		return tracker.NativeStepReceipt{}, err
 	}
-	var manifest artifact.Manifest
-	if artifact.Digest(raw) != ref.SHA256 || json.Unmarshal(raw, &manifest) != nil || manifest.Validate() != nil || manifest.Scope != ref.Scope || manifest.ArtifactID != ref.ArtifactID || manifest.Revision != ref.Revision || manifest.Kind != "log" || manifest.State != "complete" || manifest.TotalBytes != ref.Bytes {
-		return tracker.NativeStepReceipt{}, artifact.ErrIntegrity
-	}
-	var content []byte
-	for _, object := range manifest.Objects {
-		data, err := read(path+"/objects/"+object.ID, object.Size)
-		if err != nil {
-			return tracker.NativeStepReceipt{}, err
-		}
-		if int64(len(data)) != object.Size || artifact.Digest(data) != object.SHA256 {
-			return tracker.NativeStepReceipt{}, artifact.ErrIntegrity
-		}
-		content = append(content, data...)
-	}
-	return decodeStepPayload(content, receipt)
-}
-
-func decodeStepPayload(content []byte, receipt tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
-	var restored tracker.NativeStepReceipt
-	if json.Unmarshal(content, &restored) != nil || restored.PayloadArtifact != nil || restored.PayloadAttachment != nil || !restored.Matches(receipt) || !restored.CompletedAt.Equal(receipt.CompletedAt) {
-		return tracker.NativeStepReceipt{}, artifact.ErrIntegrity
-	}
-	return restored, nil
+	return tracker.DecodeNativeStepPayload(content, receipt)
 }
 
 func (e *nativeExecution) retainStepAttachment(ctx context.Context, raw []byte) (tracker.NativeStepAttachment, error) {

@@ -388,6 +388,10 @@ type ChangeGateEvidenceReader interface {
 	CurrentVersionGateEvidence(context.Context, string, string, int64) ([]Evidence, error)
 }
 
+type ChecklistApprovalReader interface {
+	CurrentChecklistApproval(context.Context, Change, string) (Evidence, error)
+}
+
 type ChangeReviewEvidenceReader interface {
 	ChangeReviewEvidence(context.Context, string, string, int64, []string, string) ([]Evidence, bool, error)
 }

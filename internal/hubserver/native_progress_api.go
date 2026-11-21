@@ -175,10 +175,11 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 	}
 	if attempt := c.QueryParam("checklist_attempt"); attempt != "" {
 		ctx := c.Request().Context()
-		if _, err := s.readNativeAttemptTenant(ctx, scope, c.Param("item"), attempt); err != nil {
+		recorded, err := s.readNativeAttemptTenant(ctx, scope, c.Param("item"), attempt)
+		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		list, err := s.readExecutionChecklistReport(ctx, scope, tracker.NativeWorkItemID(c.Param("item")), attempt)
+		list, err := s.readExecutionChecklistReport(ctx, scope, tracker.NativeWorkItemID(c.Param("item")), &recorded)
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
