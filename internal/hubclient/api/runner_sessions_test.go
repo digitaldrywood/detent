@@ -1,14 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -196,13 +200,17 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 type sessionLeaseExecution struct {
 	runner.Execution
 	lease tracker.NativeLease
+	retry func(context.Context, func() error) error
 }
 
 func (e sessionLeaseExecution) Recovery() tracker.NativeRecovery {
 	return tracker.NativeRecovery{Lease: e.lease}
 }
 
-func (e sessionLeaseExecution) RetryPhasePublication(_ context.Context, send func() error) error {
+func (e sessionLeaseExecution) RetryPhasePublication(ctx context.Context, send func() error) error {
+	if e.retry != nil {
+		return e.retry(ctx, send)
+	}
 	return send()
 }
 
@@ -251,4 +259,131 @@ func TestDetachedSessionFinalizationSendsUnderLiveFence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWaitingSessionDoesNotBlockAnotherItemsFinalization(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const firstSession, secondSession = 41, 42
+		firstLease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease_first", FencingToken: 17}
+		secondLease := tracker.NativeLease{WorkItemID: "wi_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ID: "lease_second", FencingToken: 18}
+		waiting, hubReady, heartbeat := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		releaseHeartbeat := sync.OnceFunc(func() { close(heartbeat) })
+		defer releaseHeartbeat()
+		finalization := &sessionmodel.Finalization{SessionID: secondSession, Phase: &workflowmetrics.PhaseEvent{}}
+		var firstWrite []byte
+		var firstPosts, secondPosts int
+		client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+			response := httptest.NewRecorder()
+			var snapshot runnersession.Snapshot
+			if req.Method == http.MethodGet {
+				if _, err := fmt.Sscanf(req.URL.Path[strings.LastIndex(req.URL.Path, "/")+1:], "%d", &snapshot.ID); err != nil {
+					return nil, err
+				}
+				snapshot.Revision = 1
+			} else {
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					return nil, err
+				}
+				var mutation runnersession.Mutation
+				if err := json.Unmarshal(body, &mutation); err != nil {
+					return nil, err
+				}
+				snapshot.ID, snapshot.Revision = mutation.SessionID, mutation.ExpectedRevision+1
+				switch mutation.SessionID {
+				case firstSession:
+					firstPosts++
+					if mutation.LeaseID != firstLease.ID || mutation.FencingToken != firstLease.FencingToken || mutation.Key == "" {
+						t.Errorf("first session lost its fenced mutation: %+v", mutation)
+					}
+					switch firstPosts {
+					case 1:
+						firstWrite = body
+						return nil, io.ErrUnexpectedEOF
+					case 2:
+						if !bytes.Equal(firstWrite, body) || mutation.ExpectedRevision != 1 {
+							t.Errorf("retry changed the original session mutation: %+v", mutation)
+						}
+					case 3:
+						if mutation.ExpectedRevision != 2 || mutation.Resume == nil {
+							t.Errorf("next write did not use the acknowledged revision: %+v", mutation)
+						}
+					}
+				case secondSession:
+					secondPosts++
+					select {
+					case <-hubReady:
+					default:
+						return nil, io.ErrUnexpectedEOF
+					}
+					if mutation.LeaseID != secondLease.ID || mutation.FencingToken != secondLease.FencingToken || mutation.Finalization == nil || !mutation.Finalization.Equal(*finalization) {
+						t.Errorf("second session lost its finalization: %+v", mutation)
+					}
+					snapshot.Finalization = &runnersession.Finalization{Input: *finalization, Finished: true, UsageRecorded: true, PhaseRecorded: true}
+				default:
+					t.Errorf("unexpected session mutation: %+v", mutation)
+				}
+			}
+			if err := json.NewEncoder(response).Encode(snapshot); err != nil {
+				return nil, err
+			}
+			return response.Result(), nil
+		})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessions := NewRunnerSessions(&NativeClient{client: client, organization: "org_example", project: "prj_example"})
+		first := sessions.BindExecution(t.Context(), sessionLeaseExecution{lease: firstLease, retry: func(ctx context.Context, send func() error) error {
+			err := send()
+			if !NativeTransportUnavailable(err) {
+				return err
+			}
+			close(waiting)
+			select {
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			case <-heartbeat:
+				return send()
+			}
+		}})
+		second := sessions.BindExecution(t.Context(), sessionLeaseExecution{lease: secondLease})
+		firstResult, nextResult, secondResult := make(chan error, 1), make(chan error, 1), make(chan error, 1)
+		go func() { firstResult <- sessions.SaveSessionProgress(first, firstSession, store.SessionProgress{}) }()
+		select {
+		case <-waiting:
+		case err := <-firstResult:
+			t.Fatalf("first session did not wait: %v", err)
+		}
+		close(hubReady)
+		go func() {
+			nextResult <- sessions.UpdateSessionResumeState(first, firstSession, store.SessionResumeState{})
+		}()
+		go func() {
+			detached, cancel := context.WithTimeout(context.WithoutCancel(second), 10*time.Second)
+			defer cancel()
+			secondResult <- sessions.ReconcileSessionFinalization(detached, secondSession, finalization)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-secondResult:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+			t.Error("second session could not finalize before the first lease heartbeat")
+		}
+		if firstPosts != 1 || secondPosts != 1 {
+			t.Errorf("before the heartbeat, first session sent %d POSTs and second sent %d", firstPosts, secondPosts)
+		}
+		releaseHeartbeat()
+		if err := <-firstResult; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-nextResult; err != nil {
+			t.Fatal(err)
+		}
+		if firstPosts != 3 {
+			t.Fatalf("first session sent %d POSTs, want 3", firstPosts)
+		}
+	})
 }
