@@ -23,7 +23,8 @@ def time_key(value):
     return timestamp.replace(microsecond=0), (fraction[1] if fraction else "").ljust(9, "0")
 
 
-def check_history(evidence, admission_restore=False):
+def check_history(evidence):
+    restore_window = evidence.get("admission_restore_window")
     restored = False
     for event in sorted(evidence["history"], key=lambda row: int(row["aggregate_sequence"])):
         kind = event["type"]
@@ -34,9 +35,11 @@ def check_history(evidence, admission_restore=False):
         transition = event["data"]
         source, target = transition["from_state"], transition["to_state"]
         if source in {"In Progress", "Rework", "Human Review", "Done"} and target in {"Backlog", "Todo", "Rework"}:
-            if admission_restore and not restored and (source, target) == ("In Progress", "Todo"):
-                restored = True
-                continue
+            if restore_window and not restored and (source, target) == ("In Progress", "Todo"):
+                at = time_key(event["recorded_at"])
+                if time_key(restore_window[0]) <= at <= time_key(restore_window[1]):
+                    restored = True
+                    continue
             raise stack.Failure(f"backward lane transition {source} -> {target}")
 
 
@@ -282,7 +285,7 @@ def compare(project, policy, evidence, expected, definition, advanced):
     expect("attempts", counts["attempts"], len(runs))
     expect("leases", counts["leases"], len({run["lease_id"] for run in claims}))
     expect("fenced claims", counts["claims"], len({(run["lease_id"], run["fencing_token"]) for run in claims}))
-    check_history(evidence, admission_restore)
+    check_history(evidence)
     expect("current lease", None, (evidence["explanation"].get("native_runtime") or {}).get("current_lease"))
     attempt = runs[-1]
     fence = ("attempt_id", "lease_id", "fencing_token", "policy_id")

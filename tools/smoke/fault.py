@@ -130,23 +130,42 @@ class Fault:
                                 if event["data"]["run"]["attempt_id"] == attempt_id), None)
             expect("interrupted implementation on the resumed attempt", True, bool(interrupted))
             evidence["interrupted_implementation_at"] = interrupted["recorded_at"]
-        if self.action != "refuse_loopback" or len(evidence["details"]) != 2:
+        if self.action == "refuse_loopback":
+            self.verify_startup(evidence, proof)
+
+    def verify_startup(self, evidence, proof):
+        runs = sorted(evidence["details"], key=lambda row: time_key(row["started_at"]))
+        first, successor = runs[0], runs[-1]
+        interruption = next((row for row in self.operator.instance_failure(evidence["history"])
+                             if row["data"]["run"]["attempt_id"] == first["attempt_id"]), None)
+        expect("first admission durably interrupted", True, bool(interruption))
+        interrupted_at = interruption["recorded_at"]
+        expect("interruption follows injected refusal", True, time_key(proof["at"]) <= time_key(interrupted_at))
+        markers = {run["attempt_id"].removeprefix("attempt_") for run in runs}
+        provider_starts = []
+        first_marker = first["attempt_id"].removeprefix("attempt_")
+        for path in stack.provider_sessions(self.since):
+            metadata = next(self.operator.read_json_lines(path), {})
+            session = metadata.get("payload", {})
+            checkout = session.get("cwd", "")
+            if not any(marker in checkout for marker in markers):
+                continue
+            at = session.get("timestamp") or metadata["timestamp"]
+            expect("initial refusal preceded provider launch", True, time_key(interrupted_at) <= time_key(at))
+            if len(runs) == 2:
+                expect("released bootstrap has no provider rollout", False, first_marker in checkout)
+            provider_starts.append(at)
+        expect("recovery has a provider launch", True, bool(provider_starts))
+        evidence["admission_restore_window"] = [proof["at"], min(provider_starts, key=time_key)]
+        if len(runs) != 2:
             return
-        first, successor = sorted(evidence["details"], key=lambda row: time_key(row["started_at"]))
-        interrupted = next((row for row in self.operator.instance_failure(evidence["history"])
-                            if row["data"]["run"]["attempt_id"] == first["attempt_id"]), None)
-        expect("first admission durably interrupted", True, bool(interrupted))
         expect("initial bootstrap completed before replacement", True,
                bool(first.get("claim_released_at")) and time_key(first["claim_released_at"]) <= time_key(successor["started_at"]))
         expect("initial bootstrap has no source phase", False,
                any(row["attempt_id"] == first["attempt_id"] for row in evidence["phases"]))
         expect("initial bootstrap has no round", False,
                any(row["attempt_id"] == first["attempt_id"] for row in evidence["rounds"]))
-        marker = first["attempt_id"].removeprefix("attempt_")
-        for path in stack.provider_sessions(self.since):
-            first_line = next(self.operator.read_json_lines(path), {}).get("payload", {})
-            expect("initial bootstrap has no provider rollout", False, marker in first_line.get("cwd", ""))
         with (stack.LOGS / "runner.log").open() as log:
             expect("initial bootstrap has no item worktree", False,
-                   any("hook=after_create" in line and marker in line for line in log))
+                   any("hook=after_create" in line and first_marker in line for line in log))
         evidence["pre_provider_retry"] = True
