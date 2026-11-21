@@ -188,7 +188,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	issue := h.createInProgress(t, "Audit candidate")
-	requirement := providercapacity.Requirement{Role: runner.RoleSecurityAudit, Backend: "audit", Model: "audit-model"}
+	requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "audit", Model: "audit-model"}
 	request := orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"In Progress"}, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 		return requirement, nil
 	}}
@@ -203,7 +203,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 		t.Fatal("audit has no provider reservation")
 	}
 	owner := h.scheduler.RunExecution(issue.ID)
-	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleSecurityAudit, Backend: "audit", Model: "audit-model"}); err != nil {
+	if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "audit", Model: "audit-model"}); err != nil {
 		t.Fatal(err)
 	}
 	lease := execution.Recovery().Lease
@@ -244,7 +244,7 @@ func TestNativeSecurityAuditRetainsProviderReservation(t *testing.T) {
 	cfg.Agents.ModelSelection.Enabled = new(false)
 	cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
 	cfg.Agents.Backends = []config.AgentBackend{{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"}}
-	cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: runner.RoleSecurityAudit, Backend: "audit", Model: "audit-model", Default: true}}
+	cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: runner.RoleCode, Backend: "audit", Model: "audit-model", Default: true}}
 	sessions := api.NewRunnerSessions(h.native)
 	agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &providerPreviewWorkspace{}, AgentBackends: map[string]runner.AgentBackend{"audit": backend}, Store: sessions, SecurityAuditRoot: t.TempDir()})
 	if err != nil {

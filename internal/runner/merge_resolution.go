@@ -19,6 +19,9 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 	resolved, err := source.ResolveLandingConflict(ctx, info, issue, opts, func(ctx context.Context, path string, files []string) (turnErr error) {
 		workflow, runtime, budgetChecker, estimator := r.runtimeSnapshot()
 		reservation := landingProviderReservation(req.Execution)
+		if reservation != nil && reservation.Role == RoleSecurityAudit {
+			return errors.New("conflict resolution cannot run under an audit reservation")
+		}
 		var selection RouteSelection
 		var backend AgentBackend
 		var backendConfig config.AgentBackend

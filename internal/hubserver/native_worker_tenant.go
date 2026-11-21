@@ -204,6 +204,10 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Lease TTL is invalid"))
 	}
 	scope := hubscope.NativeRequestScope(c)
+	providerPlan, err := s.prepareNativeAuditProvider(c.Request().Context(), scope, tracker.LeaseID(c.Param("lease")), request.ProviderPhase)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	landing, err := s.prepareNativeLandingRenewal(c.Request().Context(), scope, c.Param("lease"), request.LandingCapacity)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -256,7 +260,7 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 				return err
 			}
 			if request.ProviderPhase != nil {
-				if err := s.setLeaseProviderPhase(c.Request().Context(), w, scope, lease, *request.ProviderPhase); err != nil {
+				if err := s.setLeaseProviderPhase(c.Request().Context(), w, scope, lease, *request.ProviderPhase, providerPlan); err != nil {
 					return err
 				}
 				reader = s.nativeLeaseReader(w, scope)
@@ -276,7 +280,7 @@ func (s *Service) renewNativeLeaseTenant(c echo.Context) error {
 	return s.writeNativeLeaseResponse(c, lease, details)
 }
 
-func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, phase tracker.NativeProviderPhaseMutation) error {
+func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, lease leasestore.Lease, phase tracker.NativeProviderPhaseMutation, providerPlan *nativeAuditProviderPlan) error {
 	id := tracker.LeaseID(lease.LeaseID)
 	attempt, err := w.LatestAttempt(ctx, lease.IssueID)
 	if err != nil {
@@ -299,15 +303,21 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	facts := policies[pinned.PolicyID]
 	requirement := phase.Requirement
 	release := requirement == (providercapacity.Requirement{})
-	if requirement.Role == "security_audit" {
+	if providerPlan != nil {
 		if !facts.Gates.SecurityAudit {
 			return hubapi.PolicyMismatch("The pinned policy does not enable security audit")
 		}
-	} else if !facts.Gates.PlanEnabled {
-		return hubapi.PolicyMismatch("The pinned policy does not enable planning")
+		if err := providerPlan.authorize(ctx, w, scope, attempt, pinned, phase); err != nil {
+			return err
+		}
+	} else if !facts.Gates.PlanEnabled || phase.AuditPredecessor != 0 {
+		return hubapi.PolicyMismatch("The pinned policy does not authorize the provider phase")
 	}
-	if !release && (requirement.Validate() != nil || !slices.Contains([]string{"plan", "code", "rework", "security_audit"}, requirement.Role)) {
+	if !release && (requirement.Validate() != nil || !slices.Contains([]string{"plan", "code", "rework", "merge", "security_audit"}, requirement.Role)) {
 		return hubapi.NativePublicInvalid("Provider phase requires a valid execution identity")
+	}
+	if requirement.Role == "merge" && (providerPlan == nil || providerPlan.event == nil) {
+		return hubapi.PolicyMismatch("Merge capacity must come from the landing attempt")
 	}
 	current, found, err := readTenantProviderReservation(ctx, w, id)
 	if err != nil {
@@ -316,6 +326,9 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	active := current.Reservation.Requirement
 	if !found {
 		active = providercapacity.Requirement{}
+	}
+	if active.Role == "security_audit" && providerPlan == nil {
+		return hubapi.PolicyMismatch("The audit phase requires its authorized successor")
 	}
 	if active == requirement {
 		return nil

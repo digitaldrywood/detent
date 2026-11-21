@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/config"
+	hubclientapi "github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -27,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -1277,6 +1280,7 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		report := capacityReport(now)
 		planner := report
 		planner.Backend, planner.AccountAlias, planner.SharedAccountAlias = "planner", "planning", "planning"
+		planner.Models = []string{"test-model", "verification-model"}
 		publishCapacity(t, f, r, report, planner)
 		issue := f.create(t, session)
 		request := providerClaim(r, issue, session)
@@ -1316,11 +1320,15 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	}
 	local := claim(first, plan, "local-plan")
 	other := claim(second, code, "other-code")
-	swap := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, from, to providercapacity.Requirement, sequence int64) *httptest.ResponseRecorder {
+	swapPhase := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, phase tracker.NativeProviderPhaseMutation) *httptest.ResponseRecorder {
 		t.Helper()
 		return performHubAPIRequest(t, service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", requester.redemption.Credential,
 			tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90,
-				ProviderPhase: &tracker.NativeProviderPhaseMutation{Expected: from, Requirement: to, Sequence: sequence}})
+				ProviderPhase: &phase})
+	}
+	swap := func(f nativeFixture, lease tracker.NativeLease, requester runnerFixture, from, to providercapacity.Requirement, sequence int64) *httptest.ResponseRecorder {
+		t.Helper()
+		return swapPhase(f, lease, requester, tracker.NativeProviderPhaseMutation{Expected: from, Requirement: to, Sequence: sequence})
 	}
 	if refused := swap(second, other.lease, local.runner, code, plan, other.sequence); refused.Code < 400 {
 		t.Fatal("runner from another tenant changed the permit")
@@ -1346,11 +1354,31 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	pinned.Gates.SecurityAudit = true
 	pinned = pinned.WithID()
 	approveHubTestPolicy(t, service, project.base+"/policy", pinned)
-	landing := claim(project, code, "landing-audit")
+	modelPath := project.base + "/model-selection"
+	modelResponse := performHubAPIRequest(t, service, http.MethodGet, modelPath, testHubAdminToken, nil)
+	requireNativeStatus(t, modelResponse, http.StatusOK)
+	var currentModel cloudModelSelection
+	decodeHubResponse(t, modelResponse, &currentModel)
+	modelSettings := cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: "audit-routing"}, ExpectedRevision: currentModel.Revision,
+		Selection: &config.ModelSelection{ComplexModel: new("verification-model"),
+			Stages: map[string]config.ModelSelectionStage{"security_audit": {Backend: new("planner"), Model: new("test-model")}}}}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, modelPath, testHubAdminToken, modelSettings), http.StatusOK)
+	original := code
+	original.Role = "merge"
+	landing := claim(project, original, "landing-audit")
+	substituted := code
+	substituted.Role = "security_audit"
+	bypass := providerClaim(landing.runner, project.create(t, "audit-without-admission"), "audit-without-admission")
+	bypass.PolicyID = pinned.ID
+	bypass.ProviderCandidates[0].Requirement = audit
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, project.base+"/claims", landing.runner.redemption.Credential, bypass), http.StatusConflict)
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, original, substituted, landing.sequence), http.StatusConflict)
+	substituted.Backend, substituted.Model = audit.Backend, "different-model"
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, original, substituted, landing.sequence), http.StatusConflict)
 	occupied := code
 	occupied.Backend = audit.Backend
 	busy := claim(project, occupied, "occupied-audit-account")
-	refused := swap(project, landing.lease, landing.runner, code, audit, landing.sequence)
+	refused := swap(project, landing.lease, landing.runner, original, audit, landing.sequence)
 	requireNativeStatus(t, refused, http.StatusConflict)
 	if !strings.Contains(refused.Body.String(), "provider_capacity") {
 		t.Fatalf("full audit account did not refuse the exchange: %s", refused.Body.String())
@@ -1359,15 +1387,53 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		landing.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: landing.lease.FencingToken, TTLSeconds: 90})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
-	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
+	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != original {
 		t.Fatalf("refused audit exchange changed the original permit: %+v", renewed)
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, project.base+"/leases/"+string(busy.lease.ID)+"/release",
 		busy.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: busy.lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
-	response = swap(project, landing.lease, landing.runner, code, audit, landing.sequence)
+	response = swap(project, landing.lease, landing.runner, original, audit, landing.sequence)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
 	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
 		t.Fatalf("audit failed to acquire its provider on the original fence: %+v", renewed)
+	}
+	verification := audit
+	verification.Model = "verification-model"
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, audit, verification, landing.sequence), http.StatusConflict)
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(server.Close)
+	client, err := hubclientapi.New(hubclientapi.Config{URL: server.URL, TokenSource: func() string { return landing.runner.redemption.Credential }, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native(project.project.OrganizationID, project.project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := hubclientapi.WithMutationAuthority(t.Context(), native.Scope(), landing.lease, nil)
+	sessions := hubclientapi.NewRunnerSessions(native)
+	primary, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(landing.lease.WorkItemID), StartedAt: now,
+		AgentRole: audit.Role, AgentBackendID: audit.Backend, RequestedModel: audit.Model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verificationPhase := tracker.NativeProviderPhaseMutation{Expected: audit, Requirement: verification, Sequence: landing.sequence, AuditPredecessor: primary}
+	requireNativeStatus(t, swapPhase(project, landing.lease, landing.runner, verificationPhase), http.StatusConflict)
+	if err := sessions.FinishSession(ctx, primary, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	response = swapPhase(project, landing.lease, landing.runner, verificationPhase)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != verification {
+		t.Fatalf("verification failed to bind the complex model on the original fence: %+v", renewed)
+	}
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, verification, occupied, landing.sequence), http.StatusConflict)
+	response = swap(project, landing.lease, landing.runner, verification, original, landing.sequence)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != original {
+		t.Fatalf("conflict resolution did not restore its original provider: %+v", renewed)
 	}
 }

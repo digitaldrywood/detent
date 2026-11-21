@@ -3,17 +3,19 @@ package runner
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -393,6 +395,123 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			if len(execution.recorded) > 1 {
 				t.Fatal("duplicate landing receipt")
+			}
+		})
+	}
+}
+
+type postAuditConflictExecution struct {
+	resolutionExecution
+	restoreErr error
+}
+
+func (e *postAuditConflictExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64) error {
+	return e.SetPhaseProvider(ctx, requirement)
+}
+
+func (*postAuditConflictExecution) StartPhased(context.Context, tracker.NativeExecutionIdentity) error {
+	return nil
+}
+
+func (e *postAuditConflictExecution) SetPhaseProvider(_ context.Context, requirement providercapacity.Requirement) error {
+	if requirement.Role != RoleSecurityAudit && e.restoreErr != nil {
+		return e.restoreErr
+	}
+	e.reservation = &providercapacity.Reservation{Requirement: requirement}
+	return nil
+}
+
+func (*postAuditConflictExecution) SecurityAuditVersion(context.Context) (NativeValidation, error) {
+	return NativeValidation{}, nil
+}
+
+func (*postAuditConflictExecution) RecordSecurityAudit(context.Context, tracker.SecurityAuditReview) error {
+	return nil
+}
+
+type postAuditConflictBackend struct {
+	landingBackend
+	execution *postAuditConflictExecution
+}
+
+func (b *postAuditConflictBackend) LandChange(ctx context.Context, _ workspace.Info, _ workspace.Issue, opts workspace.LandOptions) (workspace.LandResult, error) {
+	if opts.Resolution != nil {
+		return workspace.LandResult{MergeSHA: "merged"}, nil
+	}
+	_, err := opts.SecurityAudit(ctx, workspace.FileDiffs{BaseSHA: "base", HeadSHA: "head", Files: []workspace.FileDiff{{Path: "feature.txt", Patch: "+change"}}})
+	if err != nil {
+		return workspace.LandResult{}, err
+	}
+	return workspace.LandResult{Path: "merge_resolution_pending", BaseBefore: "new-base", BaseRef: "main"},
+		&workspace.LandRefusal{Kind: workspace.LandRefusalConflict}
+}
+
+func (*postAuditConflictBackend) InspectLandingConflict(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (string, bool, error) {
+	return "new-base", true, nil
+}
+
+func (b *postAuditConflictBackend) ResolveLandingConflict(ctx context.Context, info workspace.Info, _ workspace.Issue, _ workspace.LandOptions, resolve func(context.Context, string, []string) error) (workspace.LandingResolution, error) {
+	if b.execution.reservation.Role != RoleMerge || b.execution.reservation.Backend != "merge" {
+		return workspace.LandingResolution{}, errors.New("writable conflict workspace was opened under the audit reservation")
+	}
+	err := resolve(ctx, info.Path, []string{"feature.txt"})
+	return workspace.LandingResolution{Unchanged: true, ConflictFiles: []string{"feature.txt"}}, err
+}
+
+func TestLandingBaseMoveRestoresConflictProvider(t *testing.T) {
+	denied := errors.New("merge provider is full")
+	for _, test := range []struct {
+		name    string
+		restore error
+		retain  bool
+	}{
+		{name: "restore original provider before writable turn"},
+		{name: "refused exchange starts no writable turn", restore: denied},
+		{name: "retained continuation receives original provider", retain: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execution := &postAuditConflictExecution{restoreErr: test.restore}
+			execution.target = NativeLandingTarget{ChangeID: "change_example", VersionID: "version_example", BaseSHA: "base", HeadSHA: "head", BaseRef: "main", Repository: "https://github.com/example-org/example-project", SecurityAudit: true}
+			execution.reservation = &providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: RoleMerge, Backend: "merge", Model: "merge-model"}}
+			execution.recovery.Issue = tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example"}}
+			backend := &postAuditConflictBackend{execution: execution}
+			merge := &resolutionProvider{}
+			audit := &fakeCodexClient{updates: []AgentUpdate{
+				{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now().UTC()}},
+				{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`},
+			}}
+			cfg := config.Default()
+			cfg.Gate.SecurityAudit.Model = "audit-model"
+			cfg.Agents.ModelSelection.Enabled = new(false)
+			cfg.Agents.Backends = []config.AgentBackend{
+				{ID: "merge", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-merge"},
+				{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"},
+			}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", Default: true}}
+			runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend,
+				AgentBackends: map[string]AgentBackend{"merge": merge, "audit": audit}, Store: &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}}, SecurityAuditRoot: t.TempDir()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := RunRequest{Issue: connector.Issue{ID: "wi_example", State: "Merging"}, Execution: execution, Mode: RunModeMerge, RetainItemWorkspace: test.retain}
+			result, err := runner.landNativeChange(t.Context(), req, execution, backend, workspace.Info{Path: t.TempDir()}, workspace.Issue{}, workerGitHubPolicy{}, nil)
+			if audit.calls != 1 || !errors.Is(err, test.restore) {
+				t.Fatalf("audit turns=%d error=%v, want %v", audit.calls, err, test.restore)
+			}
+			if test.restore != nil {
+				if merge.calls != 0 || result.TurnStarted {
+					t.Fatalf("refused restoration ran conflict resolution: turns=%d", merge.calls)
+				}
+				return
+			}
+			if test.retain {
+				if merge.calls != 0 || result.NativeLanding == nil || result.NativeLanding.Path != "merge_resolution_pending" || execution.reservation.Role != RoleMerge {
+					t.Fatalf("retained conflict did not restore the original provider: result=%+v, reservation=%+v", result.NativeLanding, execution.reservation)
+				}
+				return
+			}
+			if !result.TurnStarted || merge.calls != 1 || merge.request.Model != "merge-model" || merge.request.ReadOnly {
+				t.Fatalf("conflict did not use the restored writable provider: calls=%d model=%q", merge.calls, merge.request.Model)
 			}
 		})
 	}

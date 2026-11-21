@@ -27,6 +27,14 @@ func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 }
 
 func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
+	return e.setPhaseProvider(ctx, requirement, 0)
+}
+
+func (e *nativeExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64) error {
+	return e.setPhaseProvider(ctx, requirement, predecessor)
+}
+
+func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64) error {
 	if e.scheduler.providerReports == nil && e.ProviderCapacity() == nil {
 		if requirement.Role == runner.RoleSecurityAudit {
 			return e.unavailable(errors.New("landing security audit requires a provider reservation"))
@@ -42,7 +50,7 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 	var expected providercapacity.Requirement
 	if active := e.ProviderCapacity(); active != nil {
 		expected = active.Requirement
-		if expected == requirement {
+		if expected == requirement && requirement.Role != runner.RoleSecurityAudit {
 			return e.validateProviderStart(identity)
 		}
 	}
@@ -51,7 +59,7 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 	}
 	client, lease := e.claim.source.NativeClient(), e.claim.lease
 	ttl := int64(e.scheduler.host.LeaseDuration() / time.Second)
-	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: e.data.Sequence})
+	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: e.data.Sequence, AuditPredecessor: predecessor})
 	if err != nil {
 		return e.unavailable(e.executionError(ctx, err))
 	}

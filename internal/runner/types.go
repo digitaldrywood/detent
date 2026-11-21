@@ -772,15 +772,16 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
-	landing         bool
-	usageExecution  Execution
-	complete        func(context.Context, SecurityAuditExecution) error
-	evidence        ValidationEvidenceExecution
-	OnUsageUpdate   UsageUpdateHandler
-	Issue           connector.Issue
-	Snapshot        securityaudit.Snapshot
-	StartedAt       time.Time
-	SelectorContext selector.Context
+	verificationSession int64
+	landing             bool
+	usageExecution      Execution
+	complete            func(context.Context, SecurityAuditExecution) error
+	evidence            ValidationEvidenceExecution
+	OnUsageUpdate       UsageUpdateHandler
+	Issue               connector.Issue
+	Snapshot            securityaudit.Snapshot
+	StartedAt           time.Time
+	SelectorContext     selector.Context
 }
 
 type SecurityAuditExecution struct {

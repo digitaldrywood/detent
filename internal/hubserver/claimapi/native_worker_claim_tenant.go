@@ -1418,6 +1418,9 @@ func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, 
 	if candidate == nil || candidate.Revision <= 0 || candidate.Requirement.Validate() != nil {
 		return providercapacity.Reservation{}, ProviderWait("provider_candidate_changed", "Work item needs a current local provider selection before it can be claimed")
 	}
+	if candidate.Requirement.Role == "security_audit" {
+		return providercapacity.Reservation{}, hubapi.PolicyMismatch("Security audit capacity requires phase admission under the existing lease")
+	}
 	return SelectTenantProviderRequirement(ctx, w, identity.RunnerID, candidate.Requirement, now)
 }
 

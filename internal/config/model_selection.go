@@ -35,6 +35,7 @@ type ModelSelectionDefaults struct {
 }
 
 type ModelSelectionStage struct {
+	Backend         *string `yaml:"backend,omitempty" json:"backend,omitempty"`
 	Model           *string `yaml:"model,omitempty" json:"model,omitempty"`
 	Effort          *string `yaml:"effort,omitempty" json:"effort,omitempty"`
 	Level           *string `yaml:"level,omitempty" json:"level,omitempty"`
@@ -194,6 +195,7 @@ func (p *ModelSelection) overlay(v ModelSelection, source string) {
 		p.Sources["stages"] = source
 		for name, value := range v.Stages {
 			stage := p.Stages[name]
+			selectionOverride(&stage.Backend, value.Backend, p.Sources, "stages."+name+".backend", source)
 			selectionOverride(&stage.Model, value.Model, p.Sources, "stages."+name+".model", source)
 			selectionOverride(&stage.Effort, value.Effort, p.Sources, "stages."+name+".effort", source)
 			selectionOverride(&stage.Level, value.Level, p.Sources, "stages."+name+".level", source)
@@ -266,6 +268,9 @@ func (p ModelSelection) Validate() []string {
 		}
 	}
 	for name, stage := range p.Stages {
+		if stage.Backend != nil && (name != "security_audit" || !validAgentIdentityLabel(*stage.Backend) || len(*stage.Backend) > 128) {
+			add("stages."+name+".backend", "must be a security audit backend identifier")
+		}
 		if stage.Level != nil && *stage.Level != "" {
 			if _, ok := p.Levels[*stage.Level]; !ok {
 				add("stages."+name+".level", "must reference a configured level")
@@ -368,4 +373,30 @@ func (a Agents) ModelSelectionWarnings() []string {
 		return nil
 	}
 	return []string{"agents.model_selection is ignored; configure model selection in Cloud organization or project settings; remove it before the next release, which will reject it"}
+}
+
+func (c Config) LandingAuditBackend() string {
+	return selectionString(c.EffectiveModelSelection().Stages["security_audit"].Backend)
+}
+
+func (c Config) LandingAuditModel(verification bool) string {
+	policy := c.EffectiveModelSelection()
+	if verification {
+		return policy.Model("complex")
+	}
+	if model := strings.TrimSpace(c.Gate.SecurityAudit.Model); model != "" {
+		return model
+	}
+	stage := policy.Stages["security_audit"]
+	if model := selectionString(stage.Model); model != "" {
+		return policy.Model(model)
+	}
+	if !policy.Active() {
+		return ""
+	}
+	level := selectionString(stage.Level)
+	if level == "" {
+		level = selectionString(policy.DefaultLevel)
+	}
+	return policy.Model(selectionString(policy.Levels[level].Model))
 }

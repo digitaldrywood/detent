@@ -26,6 +26,7 @@ type preparedValidatorReview struct {
 	attempt              leasestore.Attempt
 	event                eventstore.Event
 	session              runnersession.Record
+	observedModel        string
 	change               eventstore.Change
 	issue                corestore.WorkItem
 	evidence             changerules.ValidatorReviewEvidence
@@ -131,6 +132,7 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 		}
 		return nil, "", err
 	}
+	p.observedModel = session.Identity.ResolvedModel.Value
 	p.evidence.Issue, err = s.deps.HydrateWorkItemRecord(ctx, p.issue, itemVersion)
 	if err != nil {
 		return nil, "", err
@@ -207,6 +209,13 @@ func (s *validator) lockValidatorReviewRecord(ctx context.Context, w tenantstore
 			reported := providercapacity.Requirement{Role: audit.Identity.Role, Backend: audit.Identity.BackendID, Model: cmp.Or(audit.Identity.RequestedModel.Value, "provider_default")}
 			if errors.Is(err, corestore.ErrNotFound) || reserved.Reservation.Requirement != want || reported != want {
 				return s.deps.SecurityAuditRejection("landing security audit session requires the matching provider reservation", "execution_session")
+			}
+			if want.Model != "provider_default" {
+				for _, observed := range []string{p.observedModel, audit.Identity.ResolvedModel.Value} {
+					if observed != "" && observed != want.Model {
+						return s.deps.SecurityAuditRejection("landing security audit used a different model than reserved", "execution_session")
+					}
+				}
 			}
 		}
 		return releaseaudits.LockValidatorAuditDispositions(ctx, w, scope, audit.Run.ID, p.auditDispositionRows)

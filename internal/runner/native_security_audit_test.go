@@ -50,6 +50,9 @@ func (e *nativeSecurityAuditTestExecution) SetPhaseProvider(_ context.Context, r
 	e.reservation = &providercapacity.Reservation{Requirement: requirement}
 	return nil
 }
+func (e *nativeSecurityAuditTestExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64) error {
+	return e.SetPhaseProvider(ctx, requirement)
+}
 
 type nativeSecurityAuditIsolationBackend struct {
 	*fakeCodexClient
@@ -319,11 +322,15 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 	for _, test := range []struct {
 		name                            string
+		models                          []string
 		verify, refuse, providerDefault bool
+		wrongModel                      bool
 	}{
 		{name: "separate audit backend and configured model"},
-		{name: "provider default ignores the issue model", providerDefault: true},
+		{name: "provider default ignores the issue model", providerDefault: true, models: []string{"selected-by-provider"}},
+		{name: "catalog alias matches the reserved model", models: []string{"audit-alias"}},
 		{name: "verification binds the configured complex model", verify: true},
+		{name: "verification using a different model cannot approve", verify: true, models: []string{"audit-model", "different-model"}, wrongModel: true},
 		{name: "full audit account receives no diff", refuse: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -341,12 +348,19 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			var bound atomic.Pointer[providercapacity.Requirement]
 			callback := NewSSHCallbackHandler(request, nil, nil, nil)
 			host := NewSSHPeer(t.Context(), left, left, func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
-				if method != "execution.SetPhaseProvider" {
+				if method != "execution.BindLandingAuditProvider" {
 					return callback(ctx, method, arguments)
 				}
 				var requirement providercapacity.Requirement
 				if err := json.Unmarshal(arguments[0], &requirement); err != nil {
 					return nil, err
+				}
+				var predecessor int64
+				if err := json.Unmarshal(arguments[1], &predecessor); err != nil {
+					return nil, err
+				}
+				if len(phaseCalls) == 0 && predecessor != 0 || len(phaseCalls) == 1 && predecessor != 73 {
+					return nil, errors.New("audit reservation used the wrong predecessor session")
 				}
 				phaseCalls = append(phaseCalls, requirement)
 				if test.refuse {
@@ -375,7 +389,8 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", ModelField: "audit_model", Default: true}}
 			merge := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
 			audit := &verificationAuditBackend{t: t, outputs: []string{`{"verdict":"pass","summary":"No findings","findings":[]}`}}
-			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}}
+			audit.observedModels = test.models
+			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}, {ID: "audit-alias", Model: "audit-model"}}
 			if test.verify {
 				audit.outputs = []string{
 					`{"verdict":"undetermined","summary":"Potential authorization issue","findings":[{"id":"auth","certainty":"undetermined","body":"Requires caller context","unresolved_fact":"Whether the caller checks access","status":"unresolved"}]}`,
@@ -414,8 +429,17 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 				}
 				return
 			}
+			if test.wrongModel {
+				if err == nil || !strings.Contains(err.Error(), "different model than reserved") || len(audit.requests) != len(want) || result.Result.Verdict == "pass" {
+					t.Fatalf("verification model mismatch: turns=%d verdict=%q error=%v", len(audit.requests), result.Result.Verdict, err)
+				}
+				return
+			}
 			if err != nil || len(audit.requests) != len(want) || result.RuntimeIdentity.BackendID != "audit" || (result.Verification != nil) != test.verify {
 				t.Fatalf("audit did not run with the configured identity: turns=%d result=%+v error=%v", len(audit.requests), result, err)
+			}
+			if len(test.models) != 0 && !test.providerDefault && result.RuntimeIdentity.ResolvedModel.Value != model {
+				t.Fatalf("recorded model = %q, want reserved equivalent %q", result.RuntimeIdentity.ResolvedModel.Value, model)
 			}
 		})
 	}
@@ -432,6 +456,7 @@ type verificationAuditBackend struct {
 	fakeCodexClient
 	t                *testing.T
 	outputs          []string
+	observedModels   []string
 	requests         []AgentTurnRequest
 	deadline         time.Time
 	failVerification bool
@@ -462,8 +487,12 @@ func (b *verificationAuditBackend) RunTurn(ctx context.Context, req AgentTurnReq
 			return AgentTurnResult{}, errors.New("verification provider unavailable")
 		}
 	}
+	var observed string
+	if index := len(b.requests) - 1; index < len(b.observedModels) {
+		observed = b.observedModels[index]
+	}
 	b.updates = []AgentUpdate{
-		{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now().UTC()}},
+		{Type: AgentUpdateProcessStarted, Model: observed, WorkerProcess: procgroup.Identity{PID: 4242, GroupID: 4242, StartedAt: time.Now().UTC()}},
 		{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{TotalTokens: 10, ThreadTotal: &AgentTokenCounts{TotalTokens: 10}}},
 		{Type: AgentUpdateMessageDelta, Delta: b.outputs[len(b.requests)-1]},
 	}

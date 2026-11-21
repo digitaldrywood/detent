@@ -510,6 +510,10 @@ func (e *sshNativeExecution) SetPhaseProvider(ctx context.Context, requirement p
 	return e.peer.Call(ctx, "execution.SetPhaseProvider", nil, requirement)
 }
 
+func (e *sshNativeExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64) error {
+	return e.peer.Call(ctx, "execution.BindLandingAuditProvider", nil, requirement, predecessor)
+}
+
 func (e *sshNativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 	return e.peer.Call(ctx, "execution.VerifyPhaseAuthority", nil)
 }

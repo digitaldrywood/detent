@@ -56,6 +56,7 @@ func (r *Runner) audit(ctx context.Context, req SecurityAuditRequest) (SecurityA
 		}
 		verification := req
 		verification.Snapshot.Verification = &first.Result
+		verification.verificationSession = first.SessionID
 		verification.OnUsageUpdate = func(update UsageUpdate) error {
 			update.Tokens = addAgentTokenTotals(firstUsage, update.Tokens)
 			if originalUsage != nil {
@@ -111,6 +112,11 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		selectionIssue.Fields = nil
 	}
 	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(selectionIssue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
+	if req.landing {
+		if configured := workflow.Config.LandingAuditBackend(); configured != "" {
+			selection, backend, backendConfig, err = agentRuntime.backendForSelection(RouteSelection{BackendID: configured})
+		}
+	}
 	if err != nil {
 		return execution, err
 	}
@@ -147,7 +153,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	execution.StartedAt = startedAt
 	baseModel := effectiveModel(selection.Model, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	if req.landing {
-		baseModel = effectiveModel(auditConfig.Model, baseModel)
+		baseModel = effectiveModel(workflow.Config.LandingAuditModel(verification), baseModel)
 	}
 	if verification {
 		baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
@@ -193,12 +199,15 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	selectedModel := resolvedSelection.Model
 	sessionModel := effectiveModel(selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	if req.landing {
-		owner, ok := req.usageExecution.(phasedProviderExecution)
+		owner, ok := req.usageExecution.(interface {
+			BindLandingAuditProvider(context.Context, providercapacity.Requirement, int64) error
+		})
 		if !ok {
 			return execution, errors.New("landing security audit requires a fenced provider")
 		}
+		selectedModel = baseModel
 		requirement := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: selection.BackendID, Model: effectiveModel(selectedModel, "provider_default")}
-		if err := owner.SetPhaseProvider(ctx, requirement); err != nil {
+		if err := owner.BindLandingAuditProvider(ctx, requirement, req.verificationSession); err != nil {
 			return execution, fmt.Errorf("reserve landing audit provider: %w", err)
 		}
 		sessionModel = selectedModel
@@ -323,6 +332,23 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		turnErr = errors.Join(turnErr, cleanupWorkerScratchAfterProcessReap(cleanupScratch, reapErr))
 		if reapErr != nil {
 			turnErr = errors.Join(turnErr, fmt.Errorf("%w: %w", ErrWorkerProcessReap, reapErr))
+		}
+		if turnErr == nil && req.landing && selectedModel != "" {
+			observed := runResult.RuntimeIdentity.ResolvedModel
+			if observed.Value != "" && observed.Value != selectedModel {
+				if catalog, ok := backend.(AgentModelCatalogProvider); ok {
+					models, lookupErr := catalog.ListModels(ctx, processRequest)
+					requested, requestedOK := findAgentModel(models, selectedModel)
+					actual, actualOK := findAgentModel(models, observed.Value)
+					if lookupErr == nil && requestedOK && actualOK && canonicalAgentModel(requested, selectedModel) == canonicalAgentModel(actual, observed.Value) {
+						observed.Value = selectedModel
+						runResult.RuntimeIdentity.ResolvedModel = observed
+					}
+				}
+				if observed.Value != selectedModel {
+					turnErr = errors.New("landing security audit used a different model than reserved")
+				}
+			}
 		}
 		turnResult = currentTurn
 		runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource

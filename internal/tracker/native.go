@@ -621,9 +621,10 @@ type NativeLeaseMutation struct {
 }
 
 type NativeProviderPhaseMutation struct {
-	Expected    providercapacity.Requirement `json:"expected"`
-	Requirement providercapacity.Requirement `json:"requirement"`
-	Sequence    int64                        `json:"sequence,string"`
+	AuditPredecessor int64                        `json:"audit_predecessor,omitempty,string"`
+	Expected         providercapacity.Requirement `json:"expected"`
+	Requirement      providercapacity.Requirement `json:"requirement"`
+	Sequence         int64                        `json:"sequence,string"`
 }
 
 type NativeDisposition struct {

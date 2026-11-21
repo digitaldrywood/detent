@@ -113,16 +113,34 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return nil
 	}
 	options.Authorize = authorizeLanding
+	initialProvider := landingProviderReservation(req.Execution)
+	audited := false
 	if target.SecurityAudit && !target.GitHubPullRequest {
 		options.SecurityAuditRequired = true
 		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
-			return r.auditNativeLanding(ctx, req, target, diff)
+			review, err := r.auditNativeLanding(ctx, req, target, diff)
+			audited = err == nil
+			return review, err
 		}
 	}
 	var result workspace.LandResult
+	pendingConflict := false
 	land := func() {
 		if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
 			result, err = lander.LandChange(ctx, info, issue, options)
+		}
+		var conflict *workspace.LandRefusal
+		pendingConflict = result.Path == "merge_resolution_pending" && errors.As(err, &conflict) && conflict.Kind == workspace.LandRefusalConflict
+		if !pendingConflict || !audited || initialProvider == nil {
+			return
+		}
+		owner, ok := req.Execution.(phasedProviderExecution)
+		if !ok || initialProvider.Role == RoleSecurityAudit {
+			pendingConflict = false
+			err = errors.New("conflict resolution requires the original landing provider")
+		} else if restoreErr := owner.SetPhaseProvider(ctx, initialProvider.Requirement); restoreErr != nil {
+			pendingConflict = false
+			err = fmt.Errorf("restore landing provider before conflict resolution: %w", restoreErr)
 		}
 	}
 	needsResolution := target.MergeResolution && !target.GitHubPullRequest
@@ -130,9 +148,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	attemptedLanding := !target.GitHubPullRequest && !needsResolution
 	if attemptedLanding {
 		land()
-		var conflict *workspace.LandRefusal
-		if !req.RetainItemWorkspace && landingProviderReservation(req.Execution) != nil &&
-			result.Path == "merge_resolution_pending" && errors.As(err, &conflict) && conflict.Kind == workspace.LandRefusalConflict {
+		if pendingConflict && !req.RetainItemWorkspace && initialProvider != nil {
 			needsResolution = true
 			resolutionOptions.ExpectedBaseSHA = result.BaseBefore
 			resolutionOptions.TargetBranch = result.BaseRef

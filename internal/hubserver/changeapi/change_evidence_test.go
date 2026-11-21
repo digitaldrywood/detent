@@ -124,10 +124,15 @@ func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
 		SecurityAuditRejection: func(string, string) error { return refused },
 	})
 	match := providercapacity.Requirement{Role: "security_audit", Backend: "audit", Model: "audit-model"}
+	providerDefault := match
+	providerDefault.Model = "provider_default"
 	for _, test := range []struct {
 		name        string
 		reservation providercapacity.Requirement
+		requested   string
 		reported    string
+		observed    string
+		finalized   string
 		want        error
 	}{
 		{name: "matching session", reservation: match, reported: match.Model},
@@ -136,14 +141,21 @@ func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
 		{name: "different backend", reservation: providercapacity.Requirement{Role: match.Role, Backend: "other", Model: match.Model}, reported: match.Model, want: refused},
 		{name: "different model", reservation: providercapacity.Requirement{Role: match.Role, Backend: match.Backend, Model: "other"}, reported: match.Model, want: refused},
 		{name: "misattributed verdict", reservation: match, reported: "other", want: refused},
+		{name: "runtime model differs", reservation: match, reported: match.Model, observed: "other", want: refused},
+		{name: "finalized runtime model differs", reservation: match, reported: match.Model, finalized: "other", want: refused},
+		{name: "provider default accepts observed model", reservation: providerDefault, requested: "provider_default", observed: "chosen-model", finalized: "chosen-model"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			session := runnersession.Record{ID: 1, Role: match.Role, BackendID: match.Backend, Model: match.Model}
+			model := match.Model
+			if test.requested != "" {
+				model = test.requested
+			}
+			session := runnersession.Record{ID: 1, Role: match.Role, BackendID: match.Backend, Model: model}
 			writer := landingAuditEvidenceWriter{session: session, reservation: test.reservation}
 			request := tracker.ReviewChange{Mutation: tracker.Mutation{LeaseID: "lease_example", FencingToken: 1}, SecurityAudit: &tracker.SecurityAuditReview{
-				Landing: true, SessionID: session.ID, Identity: agentidentity.Identity{Role: match.Role, BackendID: match.Backend, RequestedModel: agentidentity.NewValue(test.reported, agentidentity.ProvenanceConfigured)},
+				Landing: true, SessionID: session.ID, Identity: agentidentity.Identity{Role: match.Role, BackendID: match.Backend, RequestedModel: agentidentity.NewValue(test.reported, agentidentity.ProvenanceConfigured), ResolvedModel: agentidentity.NewValue(test.observed, agentidentity.ProvenanceRuntime)},
 			}}
-			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, &preparedValidatorReview{session: session}, runnerstore.Identity{}, eventstore.Change{})
+			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, &preparedValidatorReview{session: session, observedModel: test.finalized}, runnerstore.Identity{}, eventstore.Change{})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("landing verdict error = %v, want %v", err, test.want)
 			}

@@ -146,6 +146,12 @@ the effective selection from the Hub. Enrolled runners reject
 `detent.yaml` or legacy workflow frontmatter is ignored with a compatibility
 warning; a later release will reject it.
 
+For native landing security audits, set `stages.security_audit.backend` in the
+operator model selection when using a custom audit backend. The ID must match
+the backend configured on the runner. The Hub uses `codex` by default. The
+pinned `gate.security_audit.model` takes precedence over the operator-selected
+audit stage model. Verification uses the configured complex model.
+
 Cloud complexity levels may include `max_session_duration_ms` and
 `max_session_tokens` alongside model and effort. The selected level (stage
 override, matching rule, then default) supplies these limits once at session
