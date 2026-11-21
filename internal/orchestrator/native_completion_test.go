@@ -1871,7 +1871,9 @@ func TestNativeContinuationRetainsWorkerSlot(t *testing.T) {
 	orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), globalDispatchGate: dispatch}
 	source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
 	event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: &nativeCompletionPublisher{}}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source"}}
-	if err := orch.continueNativeRun(t.Context(), &state, event, running, true); err != nil {
+	reviewCtx := orch.nativeContinuationContext(t.Context(), &running)
+	t.Cleanup(running.cancel)
+	if err := orch.continueNativeRun(reviewCtx, &state, event, running, true); err != nil {
 		t.Fatal(err)
 	}
 	review := <-orch.runResults
@@ -1888,6 +1890,107 @@ func TestNativeContinuationRetainsWorkerSlot(t *testing.T) {
 	defer state.Running[issue.ID].cancel()
 	if landing.Request.NativeReviewContinuation != nil || landing.Request.Mode != runpkg.RunModeMerge || landing.Request.WorkerHost != running.WorkerHost || dispatch.tryAcquireCalls != 0 {
 		t.Fatalf("landing replaced the worker slot: dispatch acquisitions=%d request=%+v", dispatch.tryAcquireCalls, landing.Request)
+	}
+}
+
+type deferredNativeReviewer struct {
+	*nativeCompletionPublisher
+	handoff <-chan struct{}
+}
+
+func (r *deferredNativeReviewer) BindReviewHandoff(done <-chan struct{}) {
+	r.handoff = done
+}
+
+func (r *deferredNativeReviewer) Run(ctx context.Context, request runpkg.RunRequest) (runpkg.RunResult, error) {
+	if err := ctx.Err(); err != nil {
+		return runpkg.RunResult{}, err
+	}
+	select {
+	case <-r.handoff:
+		return runpkg.RunResult{}, errors.New("review handoff ended before review")
+	default:
+	}
+	if r.handoff == nil || request.NativeReviewContinuation == nil || request.NativeReviewContinuation.Source.HeadSHA != r.change.HeadSHA {
+		return runpkg.RunResult{}, errors.New("missing bound review handoff")
+	}
+	change := *r.change
+	change.ImplementationReview = &gate.ValidatorResult{VersionID: change.VersionID, HeadSHA: change.HeadSHA, Verdict: "pass"}
+	r.change = &change
+	return runpkg.RunResult{NativeChange: &change, FinalState: runpkg.FinalStateCompleted}, nil
+}
+
+func TestDeferredNativeReviewResumesWithCapacity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, busyHost          string
+		projectSlots, laneSlots int
+	}{
+		{name: "publication resumes with a live review handoff", projectSlots: 1},
+		{name: "project slot occupied", projectSlots: 1, busyHost: "worker-b"},
+		{name: "lane slot occupied", projectSlots: 2, laneSlots: 1, busyHost: "worker-b"},
+		{name: "retained host occupied with project capacity remaining", projectSlots: 2, busyHost: "worker-a"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{MaxConcurrentAgents: test.projectSlots, MaxConcurrentAgentsPerHost: 1, WorkerHosts: []string{"worker-a", "worker-b"}})
+			if test.laneSlots > 0 {
+				cfg.MaxConcurrentAgentsByState = map[string]int{"in progress": test.laneSlots}
+			}
+			state := newState(cfg)
+			issue := dispatchTestIssue("review-owner", "In Progress")
+			running := Running{Issue: issue, Mode: runpkg.RunModeImplement, WorkerHost: "worker-a"}
+			change := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+			reviewer := &deferredNativeReviewer{nativeCompletionPublisher: &nativeCompletionPublisher{change: change}}
+			orch := &Orchestrator{
+				cfg:        cfg,
+				connector:  &nativeWorkflowConnector{reviewState: &connector.ChangeReview{Current: true}},
+				scheduling: &hubSchedulingSource{execution: reviewer},
+				supervisor: newTestSupervisor(t, reviewer, cfg),
+				runResults: make(chan runpkg.Completion, 1),
+			}
+			now := time.Now()
+			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Issue: issue, Execution: reviewer, Mode: running.Mode}, Result: runpkg.RunResult{NativeChange: change, FinalState: runpkg.FinalStateCompleted}, CompletedAt: now}
+			state.Running[issue.ID] = running
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			orch.deferTrackerUnavailableCompletion(t.Context(), &state, event, running, errNativeReviewPending)
+			retry := func() bool {
+				return orch.retryDeferredCompletion(t.Context(), &state, issue.ID, state.Retry[issue.ID].DueAt)
+			}
+			waitForReview := func() runpkg.Completion {
+				t.Helper()
+				active := state.Running[issue.ID]
+				t.Cleanup(active.cancel)
+				result := <-orch.runResults
+				<-active.done
+				return result
+			}
+			if test.busyHost != "" {
+				other := dispatchTestIssue("other-worker", "In Progress")
+				state.Running[other.ID] = Running{Issue: other, WorkerHost: test.busyHost}
+				if retry() {
+					waitForReview()
+					t.Fatal("deferred reviewer took an occupied worker slot")
+				}
+				if _, active := state.Running[issue.ID]; active || !state.deferredCompletions[issue.ID].Running.CompletionOwnershipReleased || !state.Retry[issue.ID].CompletionDeferred {
+					t.Fatal("capacity refusal lost deferred review ownership")
+				}
+				delete(state.Running, other.ID)
+			}
+			if !retry() {
+				t.Fatal("deferred reviewer did not resume when its worker was free")
+			}
+			result := waitForReview()
+			if result.Err != nil || result.Result.NativeChange == nil || result.Result.NativeChange.ImplementationReview == nil ||
+				result.Result.NativeChange.ImplementationReview.VersionID != change.VersionID || result.Request.WorkerHost != running.WorkerHost {
+				t.Fatalf("resumed reviewer did not publish current source evidence: %+v, error=%v", result.Result.NativeChange, result.Err)
+			}
+			state.Running[issue.ID].cancel()
+			select {
+			case <-reviewer.handoff:
+			default:
+				t.Fatal("running owner did not end the review handoff")
+			}
+		})
 	}
 }
 
