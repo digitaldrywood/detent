@@ -434,6 +434,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		result = RunResult{FinalState: FinalStateCompleted, FinalMessage: continuation.FinalMessage}
 		if execution, ok := req.Execution.(NativeReviewContinuationExecution); ok {
 			runErr = execution.PrepareReview(guarded, continuation.Source)
+			if runErr == nil {
+				var release func()
+				req.retainedReview, release = r.existingReviewWorkspace(guarded, req, phaseWorkspace)
+				defer release()
+			}
 		} else {
 			runErr = fmt.Errorf("%w: native review continuation is unavailable", ErrNativeRecoveryRequired)
 		}
@@ -475,7 +480,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if runErr != nil || result.FinalState != FinalStateCompleted {
 		outcome = "failed"
 	}
-	req.retainedReview = result.retainedReview
+	if result.retainedReview != nil {
+		req.retainedReview = result.retainedReview
+	}
 	var implementationReviewErr *NativeImplementationReviewError
 	if errors.As(runErr, &implementationReviewErr) || errors.Is(runErr, ErrNativeRecoveryRequired) {
 		outcome = "interrupted"
@@ -620,6 +627,46 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		result.landingCleanup = nil
 	}
 	return result, runErr
+}
+
+func (r *Runner) existingReviewWorkspace(ctx context.Context, req RunRequest, backend workspace.Backend) (*retainedReviewWorkspace, func()) {
+	noWorkspace := func() {}
+	if !req.RetainItemWorkspace || !req.phaseReceipts || req.phaseContinuation == nil || req.phaseContinuation.LastPushed == nil || req.NativeReviewContinuation.Source.VersionID == "" {
+		return nil, noWorkspace
+	}
+	local, ok := backend.(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+		ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
+	})
+	if !ok {
+		return nil, noWorkspace
+	}
+	owner, _ := req.Execution.(runworkspace.AttemptOwner)
+	attempt, valid := runworkspace.ResolveAttempt(ctx, req.AttemptWorkspace, owner, req.Issue)
+	lease, phase := req.Execution.Recovery().Lease, req.phaseContinuation.LastPushed
+	if !valid || attempt.Key() == "" || phase.AttemptID != attempt.Attempt || phase.LeaseID != lease.ID || phase.FencingToken != lease.FencingToken || phase.PolicyID != lease.PolicyID || phase.HeadSHA != req.NativeReviewContinuation.Source.HeadSHA {
+		return nil, noWorkspace
+	}
+	issue := runworkspace.Issue(r.projectID, req.Issue)
+	issue.AttemptWorkspace = attempt
+	issue.PublicationRepository = req.phaseContinuation.RepositoryURL
+	release := noWorkspace
+	if usage, ok := backend.(workspace.Usage); ok {
+		var err error
+		release, err = usage.Use(ctx, issue)
+		if err != nil {
+			return nil, noWorkspace
+		}
+	}
+	info, err := local.Existing(issue)
+	if err == nil && info.PublishBranch() == phase.Branch {
+		head, tree, err := local.ItemPhaseHead(ctx, info, issue)
+		if err == nil && head == phase.HeadSHA && tree == phase.TreeSHA {
+			return &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: req.NativeReviewContinuation.FinalMessage}, release
+		}
+	}
+	release()
+	return nil, noWorkspace
 }
 
 func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoint {
