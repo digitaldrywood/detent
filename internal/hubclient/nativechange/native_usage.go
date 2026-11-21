@@ -24,6 +24,10 @@ func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeU
 		}
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
+	if entry.SourceID != "" {
+		e.runtimeDirty = true
+		return nil
+	}
 	observed := slices.Clone(e.data.Usage)
 	if e.scheduler != nil {
 		if err := e.flush(ctx); err != nil {

@@ -249,13 +249,19 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 	if request.Key == "" || len(request.Key) > 128 || request.LeaseID == "" || request.FencingToken < 1 || request.Policy != nil {
 		return d.HTTPError(c, hubapi.NativePublicInvalid("session mutation requires a key and execution fence"))
 	}
+	if request.Start != nil && request.Start.Worker != nil || request.Finish != nil && request.Finish.Reap != nil {
+		return d.HTTPError(c, hubapi.NativePublicInvalid("worker evidence must use the session mutation"))
+	}
 	count := 0
 	for _, present := range []bool{request.Start != nil, request.Finish != nil, request.Identity != nil, request.Provider != nil, request.Resume != nil, request.Progress != nil, request.Phase != nil, request.Profile != nil, request.Usage != nil, request.Worker != nil, request.Reaped != nil} {
 		if present {
 			count++
 		}
 	}
-	if count != 1 || request.Profile != nil && request.Phase != nil || request.Progress != nil && request.Progress.LastProgressAt.IsZero() {
+	processStart := count == 2 && request.Start != nil && request.Worker != nil && request.Worker.PID > 0 && request.Finalization == nil
+	processFinish := count == 2 && request.Finish != nil && request.Reaped != nil && request.Finalization == nil
+	finalize := count == 3 && request.Finalization != nil && request.Finish != nil && request.Usage != nil && request.Phase != nil
+	if count != 1 && !processStart && !processFinish && !finalize || request.Progress != nil && request.Progress.LastProgressAt.IsZero() {
 		return d.HTTPError(c, hubapi.NativePublicInvalid("one typed session mutation is required"))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
@@ -461,9 +467,9 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 		}
 		if request.Start != nil {
 			record, err = writer.CreateRunnerSession(ctx, record, runnersession.History{Key: request.Key, Reference: historyRef})
-			return err
+		} else {
+			record.ReceiptID, err = writer.UpdateRunnerSession(ctx, record, runnersession.History{SessionID: record.ID, Revision: record.Revision, Key: request.Key, Reference: historyRef})
 		}
-		record.ReceiptID, err = writer.UpdateRunnerSession(ctx, record, runnersession.History{SessionID: record.ID, Revision: record.Revision, Key: request.Key, Reference: historyRef})
 		if err == nil && request.Worker != nil {
 			return d.RegisterWorkerProcess(ctx, w, scope, record, snapshot, historyRef, leasestore.Fence{LeaseID: locked.LeaseID, FencingToken: locked.FencingToken})
 		}

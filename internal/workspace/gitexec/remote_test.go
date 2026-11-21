@@ -28,12 +28,13 @@ func TestLocalGitInspectionSkipsCommandRegistration(t *testing.T) {
 		{"ls-files", "--others", "--exclude-standard", "-z"},
 		{"diff", "--cached", "--name-only", "--no-ext-diff", "-z", "--", "."},
 		{"diff", "--no-ext-diff", "--stat", "--", "."}, {"status", "--porcelain"},
+		{"add", "--", "."},
 	} {
 		if _, err := Run(ctx, checkout, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"init", "config user.name Local Test", "diff --no-ext-diff --stat -- .", "status --porcelain"}
+	want := []string{"init", "config user.name Local Test", "add -- ."}
 	if !slices.Equal(registered, want) {
 		t.Fatalf("registered commands = %q, want %q", registered, want)
 	}

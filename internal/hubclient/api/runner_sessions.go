@@ -194,7 +194,9 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 
 func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionStart) (int64, error) {
 	key := rand.Text() + rand.Text()
-	value, err := s.mutate(ctx, runnersession.Mutation{Start: &start, ProcessKey: key})
+	worker := start.Worker
+	start.Worker = nil
+	value, err := s.mutate(ctx, runnersession.Mutation{Start: &start, Worker: worker, ProcessKey: key})
 	if err != nil {
 		return value.ID, err
 	}
@@ -204,6 +206,12 @@ func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionSt
 		s.keys = make(map[int64]string)
 	}
 	s.keys[value.ID] = key
+	if worker != nil {
+		if s.workers == nil {
+			s.workers = make(map[int64]store.WorkerProcessRegistration)
+		}
+		s.workers[value.ID] = *worker
+	}
 	return value.ID, nil
 }
 
@@ -213,7 +221,19 @@ func (s *RunnerSessions) processKey(id int64) string {
 	return s.keys[id]
 }
 func (s *RunnerSessions) FinishSession(ctx context.Context, id int64, finish store.SessionFinish) error {
-	_, err := s.mutate(ctx, runnersession.Mutation{SessionID: id, Finish: &finish})
+	reap := finish.Reap
+	finish.Reap = nil
+	request := runnersession.Mutation{SessionID: id, Finish: &finish, Reaped: reap}
+	if reap != nil {
+		request.ProcessKey = s.processKey(id)
+	}
+	_, err := s.mutate(ctx, request)
+	if err == nil && reap != nil {
+		s.workersMu.Lock()
+		delete(s.workers, id)
+		delete(s.keys, id)
+		s.workersMu.Unlock()
+	}
 	return err
 }
 func (s *RunnerSessions) RecordUsageEvent(ctx context.Context, usage store.UsageEvent) (int64, error) {
