@@ -58,11 +58,13 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 		failure          string
 		planRecoveryRole string
 		resumeCase       string
-		legacy           bool
+		legacyCheckpoint string
 	}{
 		{name: "automatic plan and code share a claim", planReview: gate.PlanReviewAutomated},
 		{name: "planning disabled"},
-		{name: "legacy plan review starts a fresh plan despite an old approval", planReview: gate.PlanReviewAutomated, legacy: true},
+		{name: "legacy plan review starts a fresh plan despite an old approval", planReview: gate.PlanReviewAutomated, legacyCheckpoint: "none"},
+		{name: "legacy plan review with clean resume checkpoint starts a fresh plan", planReview: gate.PlanReviewAutomated, legacyCheckpoint: "clean"},
+		{name: "legacy plan review with retained unpushed checkpoint starts a fresh plan", planReview: gate.PlanReviewAutomated, legacyCheckpoint: "unpushed"},
 		{name: "human plan approval resumes at code", planReview: gate.PlanReviewHuman},
 		{name: "both plan reviews retain the human gate", planReview: gate.PlanReviewBoth},
 		{name: "human plan approval survives unrelated transitions", planReview: gate.PlanReviewHuman, answerHistory: true},
@@ -84,13 +86,14 @@ func TestNativePlannerAutomaticHandoff(t *testing.T) {
 			if test.failure != "workspace" {
 				t.Parallel()
 			}
-			testNativePlannerHandoff(t, test.planReview, test.answerHistory, test.loseLease, test.failure, test.planRecoveryRole, test.resumeCase, test.legacy, factories)
+			testNativePlannerHandoff(t, test.planReview, test.answerHistory, test.loseLease, test.failure, test.planRecoveryRole, test.resumeCase, test.legacyCheckpoint, factories)
 		})
 	}
 }
 
-func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, loseLease bool, failure, planRecoveryRole, resumeCase string, legacy bool, factories Constructors) {
+func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, loseLease bool, failure, planRecoveryRole, resumeCase, legacyCheckpoint string, factories Constructors) {
 	t.Helper()
+	legacy := legacyCheckpoint != ""
 	planningRecovery := planRecoveryRole != ""
 	manualCheckpoint := failure == "recovery" && resumeCase == ""
 	cleanCheckpoint := resumeCase == "identity" || resumeCase == "policy"
@@ -153,6 +156,27 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		t.Fatal(err)
 	}
 	confirmIssueContract(t, h.admin, issue.ID)
+
+	source := nativeChangeSourceRepo(t)
+	remote := source
+	if failure == "" || failure == "cleanup" {
+		remote = filepath.Join(t.TempDir(), "remote.git")
+		nativeChangeGit(t, source, "clone", "--bare", "--", source, remote)
+	}
+	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	h.configureCloneURL(remote)
+	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	hookLog := filepath.Join(t.TempDir(), "worktrees")
+	hooks := workspace.Hooks{AfterCreate: fmt.Sprintf("printf '%%s\\n' \"$PWD\" >> %q", hookLog)}
+	if failure == "workspace" {
+		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
+		hooks.AfterCreate = "printf '%s\\n' \"$WORKSPACE_TEST_PRIVATE_VALUE\"; exit 127"
+	}
+	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyWorkspacePath string
 	if legacy {
 		item := tracker.NativeWorkItemID(issue.ID)
 		current, err := h.admin.Issue(t.Context(), item)
@@ -162,10 +186,37 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if _, err := h.admin.UpdateIssue(t.Context(), item, tracker.UpdateIssue{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, Labels: new([]string{gate.DefaultPlanApprovalLabel})}); err != nil {
 			t.Fatal(err)
 		}
-		h.claim(t, issue.ID)
+		candidate := h.claim(t, issue.ID)
 		old := h.scheduler.RunExecution(issue.ID)
 		if err := old.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RolePlan, Backend: "codex", Model: "provider_default"}); err != nil {
 			t.Fatal(err)
+		}
+		if legacyCheckpoint != "none" {
+			target := workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier, BranchName: candidate.BranchName}
+			info, err := backend.Create(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacyWorkspacePath = info.Path
+			resume := "resume_session"
+			if legacyCheckpoint == "unpushed" {
+				resume = "manual_recovery"
+				if err := os.WriteFile(filepath.Join(info.Path, "legacy-source.txt"), []byte("retained source\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, info.Path, "add", "legacy-source.txt")
+				nativeChangeGit(t, info.Path, "commit", "-m", "retained source")
+			}
+			source, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := tracker.NativeCheckpoint{Resume: resume, Availability: "available", Storage: "local_only",
+				WorktreeState: legacyCheckpoint, HeadSHA: source.HeadSHA, WorkspaceDigest: source.WorkspaceFingerprint,
+				ExternalEffect: "none", EffectState: "none"}
+			if err := old.Checkpoint(t.Context(), checkpoint); err != nil {
+				t.Fatal(err)
+			}
 		}
 		mutation := api.NativeMutationKey()
 		mutation.LeaseID, mutation.FencingToken = old.Recovery().Lease.ID, old.Recovery().Lease.FencingToken
@@ -194,25 +245,25 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 			t.Fatal(err)
 		}
 		h.native.ApplyHeartbeatChanges(nil)
-	}
-	source := nativeChangeSourceRepo(t)
-	remote := source
-	if failure == "" || failure == "cleanup" {
-		remote = filepath.Join(t.TempDir(), "remote.git")
-		nativeChangeGit(t, source, "clone", "--bare", "--", source, remote)
-	}
-	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
-	h.configureCloneURL(remote)
-	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
-	hookLog := filepath.Join(t.TempDir(), "worktrees")
-	hooks := workspace.Hooks{AfterCreate: fmt.Sprintf("printf '%%s\\n' \"$PWD\" >> %q", hookLog)}
-	if failure == "workspace" {
-		t.Setenv("WORKSPACE_TEST_PRIVATE_VALUE", "correcthorsebatterystaple")
-		hooks.AfterCreate = "printf '%s\\n' \"$WORKSPACE_TEST_PRIVATE_VALUE\"; exit 127"
-	}
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Hooks: hooks, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
-	if err != nil {
-		t.Fatal(err)
+		recovery, err := h.admin.Recovery(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owner := recovery.SourceAttempt()
+		if owner == nil || owner.Identity == nil || owner.Identity.Role != runner.RolePlan || recovery.Change != nil {
+			t.Fatal("legacy planner is not the source attempt")
+		}
+		if legacyCheckpoint != "none" && (!owner.Checkpoint.PreservesSource() || owner.Checkpoint.WorktreeState != legacyCheckpoint) {
+			t.Fatalf("legacy source checkpoint not preserved: %+v", owner.Checkpoint)
+		}
+		receipts, err := h.admin.ItemPhaseReceipts(t.Context(), item)
+		if err != nil || len(receipts) != 0 {
+			t.Fatalf("legacy attempt unexpectedly has phase receipts: %v, %v", receipts, err)
+		}
+		resolved, err := h.admin.ResolvePlan(t.Context(), recovery, h.descriptor.ID, receipts)
+		if err != nil || resolved == nil || *resolved != (tracker.NativePlanState{}) {
+			t.Fatalf("legacy %s checkpoint must request a fresh plan: %+v, %v", legacyCheckpoint, resolved, err)
+		}
 	}
 	sessions := api.NewRunnerSessions(h.native)
 	var preserved *tracker.NativeCheckpoint
@@ -331,6 +382,23 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 	provider := &nativePlanningAgent{failure: failure, humanReview: planReview == gate.PlanReviewBoth}
 	if legacy {
 		plan.Stop = legacyStop
+		provider.beforeImplementation = func(ctx context.Context) error {
+			claim, owned := h.scheduler.ExecutionClaim(issue.ID)
+			if !owned {
+				return errors.New("implementation has no current claim")
+			}
+			receipts, err := h.admin.ItemPhaseReceipts(ctx, tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				return err
+			}
+			if !slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool {
+				return receipt.Phase == "plan" && receipt.PolicyID == h.descriptor.ID &&
+					receipt.LeaseID == claim.Lease.ID && receipt.FencingToken == claim.Lease.FencingToken
+			}) {
+				return errors.New("implementation started before fresh plan publication")
+			}
+			return nil
+		}
 	}
 
 	workflowConfig := config.Config{Policy: h.descriptor, Plan: plan, Gate: gate.Config{Run: "true"}, Tracker: config.Tracker{Kind: config.TrackerHubNative}}
@@ -780,7 +848,17 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		}
 		wantWorktrees := wantAttempts
 		if legacy {
-			wantWorktrees--
+			if legacyCheckpoint != "clean" {
+				wantWorktrees--
+			}
+			if legacyCheckpoint == "unpushed" {
+				if provider.workspace != legacyWorkspacePath {
+					t.Fatal("recoverable legacy workspace was replaced")
+				}
+				if retained, err := os.ReadFile(filepath.Join(provider.workspace, "legacy-source.txt")); err != nil || string(retained) != "retained source\n" {
+					t.Fatalf("the corrective claim lost the verified legacy source: %q, %v", retained, err)
+				}
+			}
 			accepted, err := h.admin.NativeAttempt(t.Context(), item, attempt.AttemptID)
 			if err != nil || !slices.ContainsFunc(accepted.Steps, func(step tracker.NativeStepReceipt) bool {
 				return step.Step == "plan" && step.CompletionBody != legacyDraft && step.PlanApproval == "automated:APPROVED"
@@ -788,7 +866,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 				t.Fatalf("fresh claim did not record an independently approved new plan: %+v, %v", accepted.Steps, err)
 			}
 		}
-		if plan.Enabled && (provider.planWorkspace == provider.workspace) != (wantWorktrees == 1) {
+		if plan.Enabled && (provider.planWorkspace == provider.workspace) != (wantWorktrees == 1 || legacy) {
 			t.Fatalf("wrong worktree reuse: plan=%q code=%q", provider.planWorkspace, provider.workspace)
 		}
 		worktrees, err := os.ReadFile(hookLog)
@@ -814,16 +892,17 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 }
 
 type nativePlanningAgent struct {
-	checkProvider   func(context.Context, string) error
-	failure         string
-	humanReview     bool
-	calls           atomic.Int64
-	verdictCalls    atomic.Int64
-	plans           atomic.Int64
-	implementations atomic.Int64
-	workspace       string
-	planWorkspace   string
-	resumeVerified  atomic.Int64
+	beforeImplementation func(context.Context) error
+	checkProvider        func(context.Context, string) error
+	failure              string
+	humanReview          bool
+	calls                atomic.Int64
+	verdictCalls         atomic.Int64
+	plans                atomic.Int64
+	implementations      atomic.Int64
+	workspace            string
+	planWorkspace        string
+	resumeVerified       atomic.Int64
 }
 
 func (a *nativePlanningAgent) VerifyResume(_ context.Context, _ runner.AgentProcessRequest, resume runner.AgentResume) error {
@@ -888,6 +967,11 @@ func (a *nativePlanningAgent) RunTurn(ctx context.Context, req runner.AgentTurnR
 	}
 	if a.plans.Load() > 0 && !strings.Contains(req.Prompt, "Implement README changes and verify them.") {
 		return runner.AgentTurnResult{}, errors.New("approved plan missing from the implementation prompt")
+	}
+	if a.beforeImplementation != nil {
+		if err := a.beforeImplementation(ctx); err != nil {
+			return runner.AgentTurnResult{}, err
+		}
 	}
 	a.implementations.Add(1)
 	result, err := (&committingAgent{staged: true, complete: a.failure == "cleanup" || a.failure == ""}).RunTurn(ctx, req, update)
