@@ -210,6 +210,10 @@ func attributeCommandFailure(ctx context.Context, runner workspace.ReviewCommand
 	if result.ExitCode == 0 {
 		return
 	}
+	if result.ExitCode == gate.TemporaryFailureExitCode {
+		gate.NormalizeCommandAttribution(base, result.HeadSHA, result)
+		return
+	}
 	var reproduction gate.CommandResult
 	err := errors.New("base reproduction is unavailable")
 	if host, ok := runner.(interface {
