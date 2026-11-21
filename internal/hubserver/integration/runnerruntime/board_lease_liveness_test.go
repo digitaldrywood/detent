@@ -1,17 +1,21 @@
 package runnerruntime_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgcore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -108,6 +112,13 @@ func testPostgresBoardLeaseReads(t *testing.T, renewDuringProjection bool) {
 		}
 		if attempt.Current != (i == 0) || attempt.Status != want {
 			t.Errorf("attempt detail for %s: current=%v status=%q", lease.WorkItemID, attempt.Current, attempt.Status)
+		}
+		if i == 0 {
+			var recovery tracker.NativeRecovery
+			get("/work-items/"+string(lease.WorkItemID)+"?view=recovery", &recovery)
+			if len(recovery.Attempts) != 1 || !recovery.Attempts[0].Current || recovery.Attempts[0].Status != "running" {
+				t.Errorf("recovery for %s: attempts=%+v, want one current running attempt", lease.WorkItemID, recovery.Attempts)
+			}
 		}
 	}
 
@@ -225,7 +236,111 @@ func testPostgresBoardLeaseReads(t *testing.T, renewDuringProjection bool) {
 		if projectLane != want || hostedLane != want {
 			t.Errorf("destination lane before refresh: project=%+v hosted=%+v want=%+v", projectLane, hostedLane, want)
 		}
+		for _, filter := range []string{"", "&open=true", "&open=true&state=In+Progress"} {
+			var moved tracker.NativeIssuePage
+			get("/work-items?include=work&limit=1"+filter, &moved)
+			checkFirstWorkItem(t, "moved work list"+filter, moved.Work, item)
+			if moved.Work != nil && len(moved.Work.Items) == 1 && moved.Work.Items[0].State != want.State {
+				t.Errorf("work item before refresh (%q): lane=%q, want %q", filter, moved.Work.Items[0].State, want.State)
+			}
+			var workLane tracker.NativeWorkLane
+			for _, lane := range moved.Work.Lanes {
+				if lane.State == want.State {
+					workLane = lane
+				}
+				if lane.State == "Todo" && (lane.Total != 1 || lane.Running != 0) {
+					t.Errorf("work source lane before refresh (%q): %+v", filter, lane)
+				}
+			}
+			if workLane != want {
+				t.Errorf("work destination lane before refresh (%q): %+v, want %+v", filter, workLane, want)
+			}
+		}
+	} else {
+		checkBoardWorkPlan(t, f)
 	}
+}
+
+func checkBoardWorkPlan(t *testing.T, f hubfixture.LeasedRunners) {
+	t.Helper()
+	const project = "prj_runner"
+	const seed = `INSERT INTO native_board_items (
+ organization_id,project_id,work_item_id,source_revision,source_event_sequence,source_project_revision,
+ state,archived,terminal,running,dispatchable,lane_rank,priority_rank,activity_missing,identifier,
+ execution_fence,actor_principal_id,issue_type,verification_state,created_at,updated_at,payload_object_key,
+ payload_sha256,payload_bytes,payload_content_bytes,issue_number,page_ready,list_ready,list_organization_id,list_project_id,list_work_item_id)
+ SELECT organization_id,project_id,'wi_idle_'||n,source_revision,source_event_sequence,source_project_revision,
+ state,false,false,false,true,lane_rank,priority_rank,activity_missing,'idle#'||n,
+ 0,actor_principal_id,issue_type,verification_state,created_at,updated_at,payload_object_key,
+ payload_sha256,payload_bytes,payload_content_bytes,n,true,true,organization_id,project_id,'wi_idle_'||n
+ FROM native_board_items CROSS JOIN generate_series(3,5002) n
+ WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3`
+	if _, err := f.Admin.ExecContext(t.Context(), seed, f.Organization, project, f.Leases[1].WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Admin.ExecContext(t.Context(), "ANALYZE native_board_items"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []tracker.NativeWorkItemID{f.Leases[0].WorkItemID, "wi_idle_5002"} {
+		var servingSQL string
+		ctx := pgcore.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
+			if strings.Contains(query, "AS page_part") {
+				servingSQL = query
+			}
+		})
+		selection := viewstore.BoardSelection{ProjectID: project, Archived: new(false), Terminal: new(false), Compact: true, WorkOrder: true, Limit: 1}
+		if err := f.Hub.Repository.ReadTenantSnapshot(ctx, f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			page, err := r.(interface {
+				BoardModelPages(context.Context, viewstore.BoardSelection, *viewstore.BoardSelection, accessstore.Authority) (viewstore.BoardModelPage, error)
+			}).BoardModelPages(ctx, selection, nil, accessstore.Authority{})
+			if err == nil && (len(page.Records) != 1 || page.Records[0].WorkItemID != want) {
+				t.Errorf("work page: got %d rows, want only %s", len(page.Records), want)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if servingSQL == "" {
+			t.Fatal("work page did not record its serving statement")
+		}
+		var raw string
+		if err := f.Admin.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+servingSQL, f.Organization, project, false, false, 1).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var plans []struct{ Plan boardWorkPlanNode }
+		if err := json.Unmarshal([]byte(raw), &plans); err != nil {
+			t.Fatal(err)
+		}
+		if visited := plans[0].Plan.boardRowsVisited(); visited > 64 {
+			t.Errorf("limit-one work page for %s visited %d board rows with 5,000 idle items", want, visited)
+		} else {
+			t.Logf("limit-one work page for %s visited %d board rows with 5,000 idle items", want, visited)
+		}
+		if want == f.Leases[0].WorkItemID {
+			if _, err := f.Admin.ExecContext(ctx, "UPDATE leases SET expires_at=clock_timestamp() WHERE organization_id=$1 AND lease_id=$2", f.Organization, f.Leases[0].ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+type boardWorkPlanNode struct {
+	Relation string              `json:"Relation Name"`
+	Rows     int                 `json:"Actual Rows"`
+	Removed  int                 `json:"Rows Removed by Filter"`
+	Loops    int                 `json:"Actual Loops"`
+	Plans    []boardWorkPlanNode `json:"Plans"`
+}
+
+func (p boardWorkPlanNode) boardRowsVisited() int {
+	var visited int
+	if p.Relation == "native_board_items" {
+		visited = (p.Rows + p.Removed) * p.Loops
+	}
+	for _, child := range p.Plans {
+		visited += child.boardRowsVisited()
+	}
+	return visited
 }
 
 func checkFirstWorkItem(t *testing.T, name string, work *tracker.NativeWorkSummary, want tracker.NativeWorkItemID) {
