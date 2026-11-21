@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,8 +28,10 @@ import (
 	gatepkg "github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -109,6 +112,106 @@ func TestFencedSSHBootstrapReportsTurnStartRefusal(t *testing.T) {
 	}
 	if !response.Result.TurnStartRefused || response.Result.TurnStarted {
 		t.Fatal("bootstrap failure did not report that no provider turn started")
+	}
+}
+
+func TestLocalWorkerOwnedCommandSessionProtocol(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		extension string
+		want      []string
+	}{
+		{"develop controller", "", []string{"store.StartSession", "local.register", "local.reaped", "store.FinishSession"}},
+		{"combined controller", fmt.Sprintf(", \"CombinedSessionProtocol\": %d", runnerpkg.SSHProtocolVersion), []string{"local.start", "local.finish"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var boot sshBootstrap
+			raw := fmt.Sprintf(`{"Local": true, "Version": %d%s}`, runnerpkg.SSHProtocolVersion, test.extension)
+			if err := json.Unmarshal([]byte(raw), &boot); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			effect := filepath.Join(root, ".git")
+			left, right := net.Pipe()
+			t.Cleanup(func() {
+				_ = left.Close()
+				_ = right.Close()
+			})
+			var methods []string
+			var methodsMu sync.Mutex
+			controller := runnerpkg.NewSSHPeer(t.Context(), left, left, func(_ context.Context, method string, args []json.RawMessage) (any, error) {
+				methodsMu.Lock()
+				defer methodsMu.Unlock()
+				methods = append(methods, method)
+				if len(methods) > len(test.want) || !slices.Equal(methods, test.want[:len(methods)]) {
+					return nil, fmt.Errorf("controller does not support %s at this point", method)
+				}
+				switch method {
+				case "store.StartSession":
+					var start store.SessionStart
+					if err := json.Unmarshal(args[0], &start); err != nil || start.Worker != nil {
+						return nil, errors.New("legacy start carried a process")
+					}
+					return int64(77), nil
+				case "local.start", "local.register":
+					var worker *store.WorkerProcessRegistration
+					if method == "local.start" {
+						var start store.SessionStart
+						if err := json.Unmarshal(args[0], &start); err != nil {
+							return nil, err
+						}
+						worker = start.Worker
+					} else {
+						worker = new(store.WorkerProcessRegistration)
+						if err := json.Unmarshal(args[1], worker); err != nil {
+							return nil, err
+						}
+					}
+					if _, err := os.Stat(effect); !errors.Is(err, os.ErrNotExist) || worker == nil || worker.PID <= 0 || worker.StartKey == "" {
+						return nil, errors.New("command release did not wait for process registration")
+					}
+					if method == "local.start" {
+						return struct{ ID int64 }{77}, nil
+					}
+					return nil, nil
+				}
+				return nil, nil
+			})
+			defer controller.Close()
+			worker := runnerpkg.NewSSHPeer(t.Context(), right, right, nil)
+			defer worker.Close()
+			request := runnerpkg.RunRequest{
+				Issue:            connector.Issue{ID: "example"},
+				AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_00000000000000000000000000000001"},
+			}
+			sources := &runnerpkg.SSHExecutionSources{}
+			ctx := sources.BindWorkerProcesses(t.Context(), "prj_example", boot.sessionStore(worker), request)
+			ctx, finish := (runnerpkg.AgentProcessRequest{Workspace: root}).OwnProviderLaunch(ctx)
+			cmd := exec.CommandContext(ctx, "git", "init")
+			cmd.Dir = root
+			procgroup.Configure(ctx, cmd)
+			t.Cleanup(func() {
+				if cmd.Process != nil && cmd.ProcessState == nil {
+					_ = procgroup.TerminateTree(cmd, procgroup.GroupID(cmd))
+					_ = procgroup.Wait(cmd)
+				}
+			})
+			err := procgroup.StartAuthorized(ctx, cmd)
+			if err == nil {
+				err = procgroup.Wait(cmd)
+			}
+			if err := finish(err); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(effect); err != nil {
+				t.Fatalf("owned command did not run: %v", err)
+			}
+			methodsMu.Lock()
+			defer methodsMu.Unlock()
+			if !slices.Equal(methods, test.want) {
+				t.Fatalf("session lifecycle = %v, want %v", methods, test.want)
+			}
+		})
 	}
 }
 

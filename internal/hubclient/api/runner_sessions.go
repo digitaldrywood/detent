@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/url"
@@ -23,12 +26,15 @@ import (
 
 type RunnerSessions struct {
 	*NativeClient
+
 	mu           sync.Mutex
 	workersMu    sync.Mutex
 	keys         map[int64]string
 	workers      map[int64]store.WorkerProcessRegistration
 	acknowledged map[int64]acknowledgedSessionMetadata
 	lastRevision acknowledgedSessionRevision
+
+	workerStartSecret string
 }
 
 type acknowledgedSessionRevision struct {
@@ -72,7 +78,7 @@ var _ store.SessionProgressStore = (*RunnerSessions)(nil)
 var _ store.SessionPolicyStore = (*RunnerSessions)(nil)
 
 func NewRunnerSessions(client *NativeClient) *RunnerSessions {
-	return &RunnerSessions{NativeClient: client}
+	return &RunnerSessions{NativeClient: client, workerStartSecret: rand.Text() + rand.Text()}
 }
 
 func (s *RunnerSessions) BindExecution(ctx context.Context, execution runner.Execution) context.Context {
@@ -193,14 +199,27 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 }
 
 func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionStart) (int64, error) {
-	key := rand.Text() + rand.Text()
+	var key string
 	worker := start.Worker
 	start.Worker = nil
-	request := runnersession.Mutation{Key: uuid.NewString(), Start: &start, Worker: worker, ProcessKey: key}
+	mutationKey := runner.WorkerSessionStartKey(ctx)
+	if worker != nil && mutationKey != "" {
+		mac := hmac.New(sha256.New, []byte(s.workerStartSecret))
+		_, _ = mac.Write([]byte(mutationKey))
+		key = hex.EncodeToString(mac.Sum(nil))
+	} else {
+		mutationKey = uuid.NewString()
+		key = rand.Text() + rand.Text()
+	}
+	request := runnersession.Mutation{Key: mutationKey, Start: &start, Worker: worker, ProcessKey: key}
 	value, err := s.mutate(ctx, request)
 	if err != nil {
-		if worker == nil || !NativeTransportUnavailable(err) || ctx.Err() != nil {
+		if worker == nil || !NativeTransportUnavailable(err) || !errors.Is(err, ErrUnavailable) {
 			return value.ID, err
+		}
+		err = errors.Join(runner.ErrWorkerSessionStartUncertain, err)
+		if ctx.Err() != nil {
+			return 0, err
 		}
 		var reconcileErr error
 		value, reconcileErr = s.mutate(ctx, request)

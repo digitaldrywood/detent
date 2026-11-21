@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -23,6 +25,19 @@ type workerRegistrationStore interface {
 	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
 }
 
+var ErrWorkerSessionStartUncertain = errors.New("worker session start outcome is uncertain")
+
+type workerSessionStartKey struct{}
+
+func withWorkerSessionStartKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, workerSessionStartKey{}, key)
+}
+
+func WorkerSessionStartKey(ctx context.Context) string {
+	key, _ := ctx.Value(workerSessionStartKey{}).(string)
+	return key
+}
+
 type hostValidationProcess struct {
 	store         workerRegistrationStore
 	sessionID     int64
@@ -30,6 +45,8 @@ type hostValidationProcess struct {
 	root          string
 	scratch       string
 	launchRefused bool
+
+	reconcileStart func(context.Context) (int64, error)
 }
 
 func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector.Issue, attemptID int64) context.Context {
@@ -70,15 +87,36 @@ func (p *hostValidationProcess) Started(ctx context.Context, identity procgroup.
 		WorkerProcessIdentity: worker,
 		CleanupRoot:           p.root, CleanupPath: p.scratch,
 	}
-	p.sessionID, err = p.store.StartSession(ctx, p.start)
+	p.sessionID, p.reconcileStart, err = startWorkerSession(ctx, p.store, p.start)
 	p.launchRefused = err != nil
-	if err == nil && p.sessionID <= 0 {
-		return ErrExecutionAuthorityUnavailable
-	}
 	return err
 }
 
+func startWorkerSession(ctx context.Context, owner workerRegistrationStore, start store.SessionStart) (int64, func(context.Context) (int64, error), error) {
+	key := uuid.NewString()
+	commit := func(ctx context.Context) (int64, error) {
+		id, err := owner.StartSession(withWorkerSessionStartKey(ctx, key), start)
+		if err == nil && id <= 0 {
+			err = ErrExecutionAuthorityUnavailable
+		}
+		return id, err
+	}
+	id, err := commit(ctx)
+	if id <= 0 && errors.Is(err, ErrWorkerSessionStartUncertain) && !errors.Is(err, ErrExecutionAuthorityUnavailable) && !errors.Is(err, ErrOperatorStopped) {
+		return 0, commit, err
+	}
+	return id, nil, err
+}
+
 func (p *hostValidationProcess) Finished(ctx context.Context, result gate.CommandResult, cleanupErr error) error {
+	if p.reconcileStart != nil {
+		var err error
+		p.sessionID, err = p.reconcileStart(ctx)
+		if p.sessionID <= 0 {
+			return err
+		}
+		p.reconcileStart = nil
+	}
 	if p.sessionID <= 0 {
 		return nil
 	}

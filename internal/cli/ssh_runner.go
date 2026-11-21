@@ -99,6 +99,8 @@ type sshBootstrap struct {
 	BudgetEstimator bool
 	GoTestReceipts  bool
 	Run             runnerpkg.SSHRunRequest
+
+	CombinedSessionProtocol int `json:",omitempty"`
 }
 
 func sshCommand(ctx context.Context, host, command string) *exec.Cmd {
@@ -351,11 +353,18 @@ func RunSSHWorker(ctx context.Context, input io.Reader, output io.Writer, logger
 	return errors.Join(failures...)
 }
 
-func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBootstrap, logger *slog.Logger, operation string, retainCleanup func(func() error)) (result any, runErr error) {
-	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}
+func (boot sshBootstrap) sessionStore(peer *runnerpkg.SSHPeer) runnerpkg.SessionStore {
+	sessions := runnerpkg.SSHSessionStore{Peer: peer}
 	if boot.Local {
-		sessions = runnerpkg.LocalSessionStore{SSHSessionStore: runnerpkg.SSHSessionStore{Peer: peer}}
+		return runnerpkg.LocalSessionStore{SSHSessionStore: sessions,
+			Combined: boot.Version == runnerpkg.SSHProtocolVersion && boot.CombinedSessionProtocol == boot.Version,
+		}
 	}
+	return sessions
+}
+
+func runSSHBootstrap(ctx context.Context, peer *runnerpkg.SSHPeer, boot sshBootstrap, logger *slog.Logger, operation string, retainCleanup func(func() error)) (result any, runErr error) {
+	sessions := boot.sessionStore(peer)
 	ctx = boot.Run.Sources.BindWorkerProcesses(ctx, boot.ProjectID, sessions, boot.Run.Request)
 	home, err := os.UserHomeDir()
 	if err != nil {
