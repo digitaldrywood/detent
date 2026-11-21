@@ -129,6 +129,88 @@ func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
 	return commandshell.RunCommand(ctx, cmd)
 }
 
+func PrepareLocalInspection(cmd *exec.Cmd) bool {
+	if len(cmd.Args) <= 3 || cmd.Args[0] != "git" || cmd.Args[1] != "-C" || !localInspection(cmd.Args[3:]) {
+		return false
+	}
+	args := append([]string{}, cmd.Args[:3]...)
+	args = append(args, "--no-pager", "-c", "core.fsmonitor=false", "-c", "log.showSignature=false")
+	if cmd.Args[3] == "diff" {
+		args = append(args, "diff", "--no-ext-diff", "--no-textconv", "--submodule=short")
+		cmd.Args = append(args, cmd.Args[4:]...)
+	} else {
+		cmd.Args = append(args, cmd.Args[3:]...)
+	}
+	cmd.Env = append(cmd.Environ(), "GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0")
+	return true
+}
+
+func localInspection(args []string) bool {
+	switch args[0] {
+	case "rev-parse", "merge-base", "show-ref", "check-ref-format":
+		return true
+	case "config":
+		return len(args) == 3 && args[1] == "--get"
+	case "remote":
+		return len(args) > 2 && args[1] == "get-url"
+	case "worktree":
+		return len(args) > 1 && args[1] == "list"
+	case "cat-file":
+		return len(args) == 3 && (args[1] == "-e" || args[1] == "-t" || args[1] == "-s" || args[1] == "blob") ||
+			len(args) == 2 && args[1] == "--batch-check=%(objectname) %(objecttype)"
+	case "rev-list":
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--count", "--parents", "-n", "--not", "--branches", "--tags", "--remotes", "--single-worktree", "--all", "--objects", "--no-object-names", "--disk-usage":
+			default:
+				if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--exclude=refs/") {
+					return false
+				}
+			}
+		}
+		return true
+	case "for-each-ref":
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--count=1", "--contains", "--format=%(objectname)", "--format=%(refname)", "--format=update %(refname) %(objectname)":
+			default:
+				if strings.HasPrefix(arg, "-") {
+					return false
+				}
+			}
+		}
+		return true
+	case "ls-files":
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--others", "--exclude-standard", "--cached", "--stage", "-z":
+			case "--":
+				return true
+			default:
+				return false
+			}
+		}
+		return true
+	case "diff":
+		cached := false
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--cached", "--staged":
+				cached = true
+			case "--no-ext-diff", "--no-textconv", "--name-only", "--stat", "--numstat", "--raw", "--no-renames", "-z":
+			case "--":
+				return cached
+			default:
+				if strings.HasPrefix(arg, "-") {
+					return false
+				}
+			}
+		}
+		return cached
+	}
+	return false
+}
+
 const DefaultRemote = "origin"
 
 func PathFor(ctx context.Context, workspacePath string, gitPath string) (string, error) {

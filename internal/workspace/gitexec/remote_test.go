@@ -1,11 +1,43 @@
 package gitexec
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
+
+func TestLocalGitInspectionSkipsCommandRegistration(t *testing.T) {
+	t.Parallel()
+	checkout := t.TempDir()
+	var registered []string
+	ctx := procgroup.WithCommandOwner(t.Context(), func(_ context.Context, cmd *exec.Cmd, _ procgroup.Identity) (func(error, error) error, error) {
+		gitDirectoryFlag := slices.Index(cmd.Args, "-C")
+		registered = append(registered, strings.Join(cmd.Args[gitDirectoryFlag+2:], " "))
+		return func(runErr, cleanupErr error) error { return errors.Join(runErr, cleanupErr) }, nil
+	}, PrepareLocalInspection)
+	for _, args := range [][]string{
+		{"init"}, {"config", "user.name", "Local Test"}, {"config", "--get", "user.name"},
+		{"rev-parse", "--git-common-dir"}, {"worktree", "list", "--porcelain", "-z"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+		{"diff", "--cached", "--name-only", "--no-ext-diff", "-z", "--", "."},
+		{"diff", "--no-ext-diff", "--stat", "--", "."}, {"status", "--porcelain"},
+	} {
+		if _, err := Run(ctx, checkout, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"init", "config user.name Local Test", "diff --no-ext-diff --stat -- .", "status --porcelain"}
+	if !slices.Equal(registered, want) {
+		t.Fatalf("registered commands = %q, want %q", registered, want)
+	}
+}
 
 func TestVerifyPublicationRemoteRepository(t *testing.T) {
 	checkout := t.TempDir()
