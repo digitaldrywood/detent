@@ -1801,6 +1801,12 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 		issue.RetainedCheckpoint, issue.Checkpoint = issue.Checkpoint, nil
 	}
 	if previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
+		if issue.Source == nil && !issue.RequireCheckpoint && !req.operatorFreshRetry() &&
+			previous.Outcome == "interrupted" && previous.ClaimReleasedAt == nil &&
+			previous.LeaseID != "" && previous.LeaseID == recovery.Lease.ID && previous.FencingToken == recovery.Lease.FencingToken &&
+			sameMachineWorkspaceRetained(runWorkspace, recovery, *issue) {
+			return
+		}
 		issue.FreshCheckout = true
 		if issue.Source == nil {
 			issue.BaseRef = previous.Checkpoint.HeadSHA
