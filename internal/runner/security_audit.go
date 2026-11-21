@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -185,6 +186,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	}
 	selectedModel = resolvedSelection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
+	if owner, ok := req.usageExecution.(phasedProviderExecution); req.landing && ok {
+		requirement := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}
+		if err := owner.SetPhaseProvider(ctx, requirement); err != nil {
+			return execution, err
+		}
+	}
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, RoleSecurityAudit, sessionModel, startedAt)
 	runtimeIdentity.Selection = resolvedSelection.Selection
 	if resolvedSelection.Effort != "" {

@@ -73,12 +73,11 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if request.CandidateReady != nil && !request.CandidateReady(discoveryCtx, candidate) {
 				continue
 			}
-			needsProvider := providerEnabled && candidate.NativeLandingHeadSHA == ""
 			claim.ProviderCandidates = nil
 			claim.WorkItemID = issue.WorkItemID
-			if needsProvider {
+			if providerEnabled {
 				resolve := request.ProviderRequirement
-				if request.PlanProviderRequirement != nil {
+				if request.PlanProviderRequirement != nil && candidate.NativeLandingHeadSHA == "" {
 					client := source.NativeClient()
 					receipts, err := client.ItemPhaseReceipts(discoveryCtx, issue.WorkItemID)
 					if err != nil {
@@ -122,7 +121,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				request.CandidateClaimObserved(ctx, candidate, err == nil, predicate, requirement)
 			}
 			if err == nil {
-				if needsProvider && lease.ProviderReservation == nil {
+				if providerEnabled && lease.ProviderReservation == nil {
 					return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.NativeClient().Release(context.WithoutCancel(ctx), lease, "failed"))
 				}
 				leases = append(leases, lease)

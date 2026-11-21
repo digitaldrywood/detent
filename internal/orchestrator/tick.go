@@ -926,11 +926,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				return requirement, err
 			}
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-				mode := runpkg.RunModeImplement
-				if !o.nativeWorkflow() {
-					mode = o.dispatchMode(ctx, state, issue)
-				}
-				return resolve(ctx, issue, reports, mode)
+				return resolve(ctx, issue, reports, o.dispatchMode(ctx, state, issue))
 			}
 			request.LegacyPlanStop = gate.EffectivePlan(o.cfg.Plan).Stop
 			if request.Policy.Gates.PlanEnabled {

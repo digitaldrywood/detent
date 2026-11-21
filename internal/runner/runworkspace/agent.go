@@ -70,6 +70,10 @@ func RunRole(mode string, issue connector.Issue) string {
 	switch NormalizeRunMode(mode) {
 	case RunModePlan:
 		return RolePlan
+	case RunModeMerge:
+		if issue.NativeLandingHeadSHA != "" {
+			return RoleMerge
+		}
 	case RunModeRoutine:
 		return RoleRoutine
 	}
