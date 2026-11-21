@@ -4263,6 +4263,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 					return gate.ValidatorResult{}, err
 				}
 			}
+			commands.includeGateFailure(configured.Run, req.ProjectGateFailures, req.Commands)
 		}
 		validationTools, validationHandler = commands.tools()
 	}
@@ -4706,9 +4707,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	if !req.implementationReview {
 		criteria := contract.AcceptanceCriteria(req.Issue.Description)
-		if req.NativeVersion != nil {
-			criteria = progresscheck.NativeReviewCriteria(criteria, req.Issue.Description, gate.Effective(workflow.Config.Gate).Run)
-		}
 		gate.NormalizeCriterionEvidence(&validation, criteria, tree)
 		gate.ApplyCriterionPolicy(validator, &validation)
 	}

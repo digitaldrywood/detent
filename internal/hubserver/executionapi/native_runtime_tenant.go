@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strconv"
 
+	"github.com/digitaldrywood/detent/internal/gate"
+
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -15,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -396,6 +399,12 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
 		d.AttachChange(&result, detail)
+		if selector.FirstEvidencePage && result.CurrentVersion != nil {
+			result.ProjectGateFailures, err = d.readProjectGateFailures(ctx, scope, snapshot.item, attempt.PolicyID, result.CurrentVersion.Validation)
+			if err != nil {
+				return tracker.NativeRuntimeEvidence{}, 0, false, err
+			}
+		}
 	}
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
@@ -483,4 +492,40 @@ func runtimeLandingTarget(runtime *tracker.NativeRuntimeObservation, attempt, tr
 	derived := *runtime
 	derived.Landing = &landing
 	return &derived
+}
+
+func (d RuntimeDeps) readProjectGateFailures(ctx context.Context, scope hubscope.NativeScope, item corestore.WorkItem, policyID string, pass *gate.CommandResult) ([]gate.CommandResult, error) {
+	if pass == nil || pass.ExitCode != 0 || pass.Command == "" || pass.ReceiptID == "" || pass.HeadSHA == "" || pass.TreeSHA == "" {
+		return nil, nil
+	}
+	var events []leasestore.ProjectGateFailureEvent
+	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
+			return err
+		}
+		if history, ok := r.(leasestore.ProjectGateFailureReader); ok {
+			var err error
+			events, err = history.ProjectGateFailureEvents(ctx, scope.Project, item.NativeID, item.ID, policyID, policy.Digest([]byte(pass.Command)), pass.HeadSHA, pass.TreeSHA)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, hubapi.ProjectRecordError(err)
+	}
+	content := eventstore.NewContent(d.DetailsFor(ctx))
+	for _, entry := range events {
+		event, err := content.Event(ctx, entry.Event)
+		if err != nil {
+			return nil, err
+		}
+		if run := event.Data.Run; run != nil && run.Runtime != nil {
+			failure := run.Runtime.Validation
+			if failure != nil && failure.ReceiptID == entry.ReceiptID && failure.ExitCode != 0 && !failure.InstanceFailure() &&
+				failure.Command == pass.Command && failure.HeadSHA == pass.HeadSHA && failure.TreeSHA == pass.TreeSHA {
+				return []gate.CommandResult{tracker.PublicGateResult(*failure)}, nil
+			}
+		}
+	}
+	return nil, nil
 }

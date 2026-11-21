@@ -952,7 +952,7 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 				{ReceiptID: "timing_failed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 2, Output: "[earlier output truncated]", OutputTruncated: true},
 				{ReceiptID: "timing_passed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "check-landing finished: exit=0"},
 			}},
-			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "flaky result", "names both receipt_ids", "the project's workflow sets its severity"},
+			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "Exclude instance-attributed failures from flaky-test comparisons", "genuine failure and pass of the same command on the same head and tree", "Report both receipt_ids", "apply the workflow's flaky-test review policy"},
 			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use", "p3 finding", "INV-19", "report it at p1", "report it at p2"},
 		},
 		{

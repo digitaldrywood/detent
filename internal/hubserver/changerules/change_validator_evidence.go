@@ -8,7 +8,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -157,7 +156,7 @@ func ValidateValidatorReviewEvidence(scope hubscope.NativeScope, change tracker.
 	}
 	originalVerdict := result.Verdict
 	if !implementationReview && !audit {
-		criteria := progresscheck.NativeReviewCriteria(contract.AcceptanceCriteria(issue.Body), issue.Body, gate.Effective(workflow.Config.Gate).Run)
+		criteria := contract.AcceptanceCriteria(issue.Body)
 		gate.NormalizeCriterionEvidence(result, criteria, tree)
 		gate.ApplyCriterionPolicy(workflow.Config.Gate.Validator, result)
 	}

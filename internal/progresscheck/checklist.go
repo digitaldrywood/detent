@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -40,21 +39,8 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 	for _, criterion := range contract.AcceptanceCriteria(body) {
 		add(tracker.CheckAcceptance, criterion, "", tracker.CheckNeedsReview)
 	}
-	var gateReferences []string
-	for _, criterion := range config.VerificationCriteria(body) {
-		if referencesOnlyCheck(criterion, gateConfig.Run) {
-			gateReferences = append(gateReferences, criterion)
-			continue
-		}
-		add(tracker.CheckVerification, criterion, "", tracker.CheckNeedsReview)
-	}
 	if gateConfig.Run != "" {
-		if len(gateReferences) == 0 {
-			gateReferences = append(gateReferences, "Project command gate")
-		}
-		for _, reference := range gateReferences {
-			add(tracker.CheckProjectGate, reference, policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
-		}
+		add(tracker.CheckProjectGate, "Project command gate", policy.Digest([]byte(gateConfig.Run)), tracker.CheckUnverified)
 	}
 	for _, check := range gateConfig.RequiredStatusChecks {
 		add(tracker.CheckStatusGate, check, policy.Digest([]byte(check)), tracker.CheckUnverified)
@@ -73,39 +59,6 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 
 func ChecklistRevision(body, policyID string) string {
 	return policy.Digest([]byte(policyID + "\x00" + body))
-}
-
-func NativeReviewCriteria(acceptance []string, body, projectCommand string) []string {
-	criteria := slices.Clone(acceptance)
-	for _, criterion := range config.VerificationCriteria(body) {
-		if !referencesOnlyCheck(criterion, projectCommand) && !slices.Contains(criteria, criterion) {
-			criteria = append(criteria, criterion)
-		}
-	}
-	return criteria
-}
-
-var gateRepairPreparation = regexp.MustCompile(
-	"(?i)^(?:Stage the first candidate from `[^`\n]+` for the host gate once\\. " +
-		"It (?:rejects|handles|passes) [a-z0-9 -]+ but (?:misses|fails) [a-z0-9 -]+\\. )?" +
-		"After the host records [a-z0-9 -]+ as failed, (?:repair|fix) (?:it|the [a-z0-9_-]+)(?: with `[^`\n]+`)?$",
-)
-
-func referencesOnlyCheck(criterion, command string) bool {
-	if command == "" {
-		return false
-	}
-	criterion = strings.TrimSpace(criterion)
-	if preparation, final, found := strings.Cut(criterion, ", then run "); found && gateRepairPreparation.MatchString(preparation) {
-		criterion = final
-	}
-	quoted := "`" + command + "`"
-	for _, form := range []string{command, quoted, "Run " + command, "Run " + quoted} {
-		if criterion == form || criterion == form+"." {
-			return true
-		}
-	}
-	return false
 }
 
 func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) (RoundInput, *gate.CommandResult) {
@@ -183,19 +136,12 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 			gateStatus = tracker.CheckFailed
 		}
 	}
-	hasProjectGateReceipt := gateDigest != "" && slices.ContainsFunc(checks, func(check tracker.ExecutionCheck) bool {
-		return check.Kind == tracker.CheckProjectGate && check.CheckDigest == gateDigest
-	})
 	for _, check := range checks {
 		var status tracker.ExecutionCheckStatus
 		var receipt string
-		kind := check.Kind
-		if kind == tracker.CheckVerification && hasProjectGateReceipt && referencesOnlyCheck(check.Text, command.Command) {
-			kind = tracker.CheckProjectGate
-		}
-		switch kind {
+		switch check.Kind {
 		case tracker.CheckProjectGate:
-			if hasProjectGateReceipt && (check.Kind == tracker.CheckVerification || check.CheckDigest == gateDigest) {
+			if gateDigest != "" && check.CheckDigest == gateDigest {
 				status, receipt = gateStatus, command.ReceiptID
 			}
 		case tracker.CheckIndependentReview:
@@ -216,13 +162,9 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 					status = tracker.CheckManual
 				}
 			}
-		case tracker.CheckAcceptance, tracker.CheckVerification:
+		case tracker.CheckAcceptance:
 			if validator != nil {
-				var gateCommand string
-				if command != nil {
-					gateCommand = command.Command
-				}
-				status, receipt = acceptedCriterion(check.Text, validator.Validator, evidence.head, evidence.tree, gateCommand)
+				status, receipt = acceptedCriterion(check.Text, validator, evidence.head, evidence.tree)
 				if status == "" && evidence.disclose && slices.Contains(validator.Validator.NotVerified, check.Text) {
 					status, receipt = tracker.CheckDisclosed, checklistStepDigest(validator)
 				}
@@ -236,7 +178,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 		if status == "" || receipt == "" {
 			continue
 		}
-		if kind != tracker.CheckProjectGate && check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
+		if (check.Kind == tracker.CheckStatusGate || check.Kind == tracker.CheckSecurityAudit) && check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
 			status = tracker.CheckFlaky
 		}
 		updates = append(updates, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Head: evidence.head, Tree: evidence.tree, Receipt: receipt})
@@ -255,23 +197,38 @@ func checklistDeltas(checks []tracker.ExecutionCheck, updates []tracker.Executio
 	return changes
 }
 
-func acceptedCriterion(text string, result *gate.ValidatorResult, head, tree, projectCommand string) (tracker.ExecutionCheckStatus, string) {
+func acceptedCriterion(text string, step *tracker.NativeStepReceipt, head, tree string) (tracker.ExecutionCheckStatus, string) {
+	result := step.Validator
 	for _, criterion := range result.CriteriaEvidence {
-		if criterion.Criterion != text || criterion.RestatesImplementation || criterion.HeadSHA != head || tree == "" || criterion.TreeSHA != tree || strings.TrimSpace(criterion.Behavior) == "" {
+		if criterion.Criterion != text {
 			continue
 		}
-		if criterion.Kind != gate.EvidenceReceipt && criterion.Kind != gate.EvidenceNotVerified {
+		if criterion.RestatesImplementation {
+			return "", ""
+		}
+		if criterion.Kind == gate.EvidenceNotVerified {
+			if tree != "" && criterion.HeadSHA == head && criterion.TreeSHA == tree && strings.TrimSpace(criterion.Behavior) != "" {
+				for _, command := range result.Commands {
+					if command.ExitCode != 0 && !command.InstanceFailure() && command.HeadSHA == head && command.TreeSHA == tree &&
+						command.ReceiptID != "" && slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
+						return tracker.CheckFailed, command.ReceiptID
+					}
+				}
+			}
+			return "", ""
+		}
+		if result.Verdict != gate.ValidatorVerdictPass || strings.TrimSpace(criterion.Reference) == "" || strings.TrimSpace(criterion.Behavior) == "" {
 			continue
 		}
-		for _, command := range result.Commands {
-			if command.Command == projectCommand || command.HeadSHA != head || command.TreeSHA != tree || command.ReceiptID == "" || !slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
-				continue
-			}
-			if command.ExitCode == 0 && criterion.Kind == gate.EvidenceReceipt && result.Verdict == gate.ValidatorVerdictPass {
-				return tracker.CheckPassed, command.ReceiptID
-			}
-			if command.ExitCode != 0 && criterion.Kind == gate.EvidenceNotVerified {
-				return tracker.CheckFailed, command.ReceiptID
+		switch criterion.Kind {
+		case gate.EvidenceTest:
+			return tracker.CheckPassed, checklistStepDigest(step)
+		case gate.EvidenceReceipt, gate.EvidenceAttachment:
+			if criterion.HeadSHA == head && tree != "" && criterion.TreeSHA == tree {
+				if len(criterion.ReceiptIDs) == 1 {
+					return tracker.CheckPassed, criterion.ReceiptIDs[0]
+				}
+				return tracker.CheckPassed, checklistStepDigest(step)
 			}
 		}
 	}

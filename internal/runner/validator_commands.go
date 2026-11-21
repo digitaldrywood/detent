@@ -59,6 +59,24 @@ func (v *validatorCommands) reuse(tree string, receipts []gate.CommandResult) {
 	}
 }
 
+func (v *validatorCommands) includeGateFailure(command string, histories ...[]gate.CommandResult) {
+	for _, pass := range slices.Backward(v.results) {
+		if !workspace.ValidationCoversHead(&pass, command, v.issue.PullRequestHeadSHA) || pass.ReceiptID == "" || pass.TreeSHA == "" {
+			continue
+		}
+		for _, history := range histories {
+			for _, failure := range slices.Backward(history) {
+				if failure.ExitCode != 0 && !failure.InstanceFailure() && failure.ReceiptID != "" && failure.ReceiptID != pass.ReceiptID &&
+					failure.Command == pass.Command && failure.HeadSHA == pass.HeadSHA && failure.TreeSHA == pass.TreeSHA {
+					v.results = slices.Insert(v.results, 0, failure)
+					return
+				}
+			}
+		}
+		return
+	}
+}
+
 func (v *validatorCommands) canReuse(ctx context.Context, receipt gate.CommandResult) bool {
 	if receipt.ReceiptID == "" || receipt.Evidence == nil || !receipt.Evidence.Valid() {
 		return false

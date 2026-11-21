@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -73,5 +75,36 @@ func TestAuditRunAttributionRetainsSourceBoundProof(t *testing.T) {
 	run := execution.auditRun(snapshot)
 	if run.Attribution != "independent" || run.Verdict != "fail" || len(run.Findings) != 1 || run.Findings[0].Attribution != "independent" || run.Findings[0].AttributionEvidence == nil || run.Findings[0].AttributionEvidence.BaseSHA != base || run.Findings[0].AttributionEvidence.Command != observation.Command {
 		t.Fatalf("audit outcome lost source-bound attribution: %#v", run)
+	}
+}
+
+func TestValidatorPromptIncludesSameSourceGateFailure(t *testing.T) {
+	pass := gate.CommandResult{Command: "make check", HeadSHA: "B", TreeSHA: "tree-B", ReceiptID: "gate-pass", DurationNS: 1}
+	for _, test := range []struct {
+		name, head, tree string
+		exitCode         int
+		wantFailure      bool
+	}{
+		{name: "instance exit followed by pass", head: "B", tree: "tree-B", exitCode: gate.TemporaryFailureExitCode},
+		{name: "code failure followed by same-source pass", head: "B", tree: "tree-B", exitCode: 1, wantFailure: true},
+		{name: "code failure on superseded head", head: "A", tree: "tree-A", exitCode: 1},
+		{name: "code failure on different tree", head: "B", tree: "tree-A", exitCode: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			failure := gate.CommandResult{Command: pass.Command, HeadSHA: test.head, TreeSHA: test.tree, ReceiptID: "gate-fail", ExitCode: test.exitCode, Output: "TestReport: missing tenant"}
+			gate.NormalizeCommandAttribution("base", failure.HeadSHA, &failure)
+			commands := validatorCommands{issue: workspace.Issue{PullRequestHeadSHA: pass.HeadSHA}}
+			commands.reuse(pass.TreeSHA, []gate.CommandResult{pass})
+			commands.includeGateFailure(pass.Command, []gate.CommandResult{failure})
+			receipts, err := commands.evidence()
+			if err != nil || len(receipts) == 0 || receipts[len(receipts)-1].ReceiptID != pass.ReceiptID {
+				t.Fatalf("passing receipt unavailable: %v, %+v", err, receipts)
+			}
+			out := BuildValidatorPrompt(config.Workflow{Config: config.Default()}, connector.Issue{}, ValidatorPromptOptions{VersionID: "version", Commands: receipts})
+			if !strings.Contains(out, `receipt_id="gate-pass"`) || strings.Contains(out, `receipt_id="gate-fail"`) != test.wantFailure ||
+				strings.Contains(out, failure.Output) != test.wantFailure {
+				t.Fatalf("review input is missing a source-bound receipt or exposes an unrelated failure: %s", out)
+			}
+		})
 	}
 }

@@ -90,7 +90,7 @@ func evaluateChecklist(list *tracker.ExecutionChecklist, evidence checklistEvide
 	updates := checklistEvidenceUpdates(list.Checks, evidence)
 	changes := checklistDeltas(list.Checks, updates)
 	for _, check := range list.Checks {
-		if check.Kind == tracker.CheckStatusGate && deferredStatusChecks {
+		if check.Kind == tracker.CheckVerification || check.Kind == tracker.CheckStatusGate && deferredStatusChecks {
 			continue
 		}
 		if !slices.ContainsFunc(updates, func(update tracker.ExecutionCheckUpdate) bool {
@@ -136,6 +136,15 @@ func checklistTree(head string, command *gate.CommandResult, validator *gate.Val
 				return ""
 			}
 			tree = result.TreeSHA
+		}
+		for _, read := range validator.AttachmentReads {
+			if read.HeadSHA != head || read.TreeSHA == "" || read.ReceiptID == "" {
+				continue
+			}
+			if tree != "" && read.TreeSHA != tree {
+				return ""
+			}
+			tree = read.TreeSHA
 		}
 	}
 	return tree

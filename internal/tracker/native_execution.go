@@ -377,6 +377,7 @@ type NativeRuntimeAdmission struct {
 }
 
 type NativeRuntimeEvidence struct {
+	ProjectGateFailures      []gate.CommandResult         `json:"project_gate_failures,omitempty"`
 	Checklist                *ExecutionChecklist          `json:"checklist,omitempty"`
 	ChangeSequence           int64                        `json:"change_sequence"`
 	CurrentVersion           *NativeChangeVersionEvidence `json:"current_version,omitempty"`

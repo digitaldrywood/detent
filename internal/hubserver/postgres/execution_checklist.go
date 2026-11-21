@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -82,6 +84,45 @@ ORDER BY observed_at DESC LIMIT 64`, s.organization, project, attempt, list.Revi
 		list.Interventions = append(list.Interventions, event)
 	}
 	return &list, interventions.Err()
+}
+
+func (s *session) ProjectGateFailureEvents(ctx context.Context, project tracker.ProjectID, item tracker.NativeWorkItemID, itemID int64, policyID, digest, head, tree string) ([]leasestore.ProjectGateFailureEvent, error) {
+	rows, err := s.db.Query(ctx, `SELECT t.round_id, t.receipt_id
+FROM native_execution_check_transitions AS t
+JOIN native_execution_checks AS c USING (organization_id, project_id, attempt_id, revision, ordinal)
+JOIN native_execution_checklists AS l USING (organization_id, project_id, attempt_id, revision)
+JOIN native_attempts AS a ON a.organization_id = t.organization_id AND a.id = t.attempt_id
+WHERE t.organization_id = $1 AND t.project_id = $2 AND a.issue_id = $3 AND l.policy_id = $4
+  AND c.kind = 'project_gate' AND c.check_digest = $5 AND t.head_sha = $6 AND t.tree_sha = $7
+  AND t.status IN ('failed', 'flaky') AND t.round_id LIKE 'evidence:%'
+ORDER BY t.checked_at DESC, t.receipt_id
+LIMIT 8`, s.organization, project, itemID, policyID, digest, head, tree)
+	if err != nil {
+		return nil, err
+	}
+	type reference struct{ event, receipt string }
+	var refs []reference
+	for rows.Next() {
+		var ref reference
+		if err := rows.Scan(&ref.event, &ref.receipt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]leasestore.ProjectGateFailureEvent, 0, len(refs))
+	for _, ref := range refs {
+		event, err := s.RunEvent(ctx, project, item, strings.TrimPrefix(ref.event, "evidence:"))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, leasestore.ProjectGateFailureEvent{Event: event, ReceiptID: ref.receipt})
+	}
+	return result, nil
 }
 
 func (f *runnerEventSession) RecordExecutionCheckChanges(ctx context.Context, project tracker.ProjectID, attempt, revision, round string, checkedAt time.Time, changes []tracker.ExecutionCheckUpdate) error {

@@ -6,9 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -67,5 +71,90 @@ func TestChecklistKeepsAttemptsAndReplayedStateDistinct(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestProjectGateFailureHistorySurvivesPassingRetry(t *testing.T) {
+	r, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	ctx := t.Context()
+	content := eventstore.NewContent(pgstoretest.NewHistoryObjects())
+	const org = tracker.OrganizationID("org_example")
+	const project = tracker.ProjectID("prj_1")
+	const item = tracker.NativeWorkItemID("wi_1")
+	const command = "make check"
+	const policyID = "policy"
+	head, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	pgstoretest.SeedLeaseFamily(t, r, org)
+	claim := pgstoretest.LeaseClaim(1)
+	writeObservation := func(lease leasestore.Lease, receipt string, code int) {
+		t.Helper()
+		attempt := pgstoretest.AttemptEvent(lease)
+		pgstoretest.RecordLeaseAttempt(t, r, org, attempt)
+		when := pgstoretest.HistoryAt()
+		check := tracker.ExecutionCheck{Ordinal: 1, Kind: tracker.CheckProjectGate, Text: "Project command gate", CheckDigest: policy.Digest([]byte(command)), Status: tracker.CheckUnverified}
+		list := tracker.ExecutionChecklist{AttemptID: attempt.ID, Revision: strings.Repeat("c", 64), PolicyID: policyID, FrozenAt: when, Checks: []tracker.ExecutionCheck{check}}
+		status := tracker.CheckPassed
+		if code != 0 {
+			status = tracker.CheckFailed
+		}
+		change := tracker.ExecutionCheckUpdate{Ordinal: 1, Status: status, Head: head, Tree: tree, Receipt: receipt}
+		event := tracker.CollaborationEvent{ID: "run-" + receipt, OrganizationID: org, ProjectID: project, AggregateType: "issue", AggregateID: item, Type: "run.observed", SchemaVersion: 1,
+			Actor: pgstoretest.HistoryActor(), RecordedAt: when, Data: tracker.CollaborationData{Run: &tracker.NativeRunData{
+				AttemptID: attempt.ID, PolicyID: policyID, Runtime: &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{Command: command, HeadSHA: head, TreeSHA: tree, ReceiptID: receipt, ExitCode: code, Output: "TestReport"}},
+			}},
+		}
+		row, err := content.PrepareEvent(ctx, org, pgstoretest.HistoryJSON(t, event))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			if _, err := w.AppendEvent(ctx, row); err != nil {
+				return err
+			}
+			owner := w.(leasestore.ChecklistWriter)
+			if err := owner.FreezeExecutionChecklist(ctx, project, list); err != nil {
+				return err
+			}
+			return owner.RecordExecutionCheckChanges(ctx, project, attempt.ID, list.Revision, "evidence:"+event.ID, when, []tracker.ExecutionCheckUpdate{change})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := pgstoretest.ClaimLease(t, r, org, claim)
+	writeObservation(first, "failed", 1)
+	if err := r.WriteLeases(ctx, org, corestore.Serving, func(w leasestore.Writer) error {
+		_, err := w.Release(ctx, pgstoretest.LeaseFence(first), "finished")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claim.LeaseID, claim.SessionID = "lease_retry", "session_retry"
+	writeObservation(pgstoretest.ClaimLease(t, r, org, claim), "passed", 0)
+	for _, test := range []struct {
+		name, head, tree, command string
+		want                      bool
+	}{
+		{name: "failure from prior fenced attempt", head: head, tree: tree, command: command, want: true},
+		{name: "different head", head: strings.Repeat("d", 40), tree: tree, command: command},
+		{name: "different tree", head: head, tree: strings.Repeat("d", 40), command: command},
+		{name: "different command", head: head, tree: tree, command: "make other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var failures []leasestore.ProjectGateFailureEvent
+			err := r.ReadTenant(t.Context(), org, corestore.Serving, func(reader tenantstore.Reader) error {
+				var err error
+				failures, err = reader.(leasestore.ProjectGateFailureReader).ProjectGateFailureEvents(t.Context(), project, item, 1, policyID, policy.Digest([]byte(test.command)), test.head, test.tree)
+				return err
+			})
+			if err != nil || test.want && (len(failures) != 1 || failures[0].ReceiptID != "failed") || !test.want && len(failures) != 0 {
+				t.Fatalf("failure events = %+v, error = %v, want failure = %v", failures, err, test.want)
+			}
+			if test.want {
+				event, err := content.Event(t.Context(), failures[0].Event)
+				if err != nil || event.Data.Run.Runtime.Validation.Output != "TestReport" {
+					t.Fatalf("recorded failure diagnostic = %+v, error = %v", event.Data.Run, err)
+				}
+			}
+		})
 	}
 }

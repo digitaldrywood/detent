@@ -762,6 +762,7 @@ type ValidatorRequest struct {
 	Discussion           NativeReviewDiscussion
 	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor
 	Evidence             []tracker.NativeEvidence
+	ProjectGateFailures  []gate.CommandResult
 	Commands             []gate.CommandResult
 	implementationReview bool
 	EvidenceTools        []AgentTool

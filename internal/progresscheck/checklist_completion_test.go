@@ -14,12 +14,14 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
 		manual, automatic  bool
+		attachment         bool
 		disclosure         string
 		staleBody, staleCI bool
 		preparing, withCI  bool
 		want               tracker.ExecutionCheckStatus
 	}{
 		{name: "current independent receipt", automatic: true, want: tracker.CheckPassed},
+		{name: "attachment without a command", automatic: true, attachment: true, want: tracker.CheckPassed},
 		{name: "current authorized human review", manual: true, want: tracker.CheckManual},
 		{name: "summary alone cannot supply proof"},
 		{name: "normalized approved disclosure without embedded policy", automatic: true, disclosure: "approved", want: tracker.CheckDisclosed},
@@ -44,6 +46,12 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 			if tc.automatic {
 				result := checklistValidator(v.ID, v.Repository, v.BaseSHA, v.HeadSHA)
 				decision := "approved"
+				if tc.attachment {
+					result.Commands = nil
+					result.AttachmentReads = []gate.AttachmentRead{{ReceiptID: "attachment", AttachmentID: "file", SHA256: "digest", HeadSHA: v.HeadSHA, TreeSHA: "attachment-tree"}}
+					result.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceAttachment, Reference: "observed file", Behavior: "required content", ReceiptIDs: []string{"attachment"}}}
+					gate.NormalizeCriterionEvidence(result, []string{"criterion"}, "")
+				}
 				if tc.disclosure != "" {
 					decision = tc.disclosure
 					result.CriteriaEvidence = nil
@@ -72,6 +80,9 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 			}
 			if ready && (len(changes) == 0 || changes[0].Status != tc.want || changes[0].Head != v.HeadSHA) {
 				t.Fatalf("checklist changes = %+v, want %s on exact head", changes, tc.want)
+			}
+			if ready && tc.attachment && (changes[0].Tree != "attachment-tree" || changes[0].Receipt != "attachment") {
+				t.Fatalf("attachment did not bind its source: %+v", changes[0])
 			}
 		})
 	}
@@ -134,6 +145,6 @@ func TestNoChangeChecklistCompletion(t *testing.T) {
 func checklistValidator(version, repo, base, head string) *gate.ValidatorResult {
 	return &gate.ValidatorResult{VersionID: version, Repository: repo, BaseSHA: base, HeadSHA: head, Submitted: true, SessionID: 1, Verdict: gate.ValidatorVerdictPass,
 		Commands: []gate.CommandResult{{Command: "inspect source", HeadSHA: head, TreeSHA: "tree", ReceiptID: "inspection"}},
-		CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, Behavior: "independent behavior",
+		CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, Reference: "source inspection", Behavior: "independent behavior",
 			HeadSHA: head, TreeSHA: "tree", ReceiptIDs: []string{"inspection"}}}}
 }
