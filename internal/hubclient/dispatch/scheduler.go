@@ -324,6 +324,7 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 			s.mu.Unlock()
 			return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
 		}
+		current.signalLeaseChange()
 		current.lease = lease
 		current.deadline = nativeLeaseDeadline(started, lease)
 		s.nativeClaims[issueID] = current
@@ -335,6 +336,7 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	if err == nil {
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
+	s.signalExpiredLease(claim.lease)
 	if claim.lifecycle != nil {
 		if !claim.lifecycle.TryLock() {
 			return orchestrator.Claimed{}, errors.Join(ErrUnavailable, err)
@@ -384,6 +386,8 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		s.mu.Unlock()
 		return nil
 	}
+	current := s.nativeClaims[issueID]
+	current.signalLeaseChange()
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)

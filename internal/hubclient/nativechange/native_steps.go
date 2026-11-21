@@ -21,6 +21,9 @@ func (e *nativeExecution) RecordStep(ctx context.Context, receipt tracker.Native
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
+	if receipt.Step == "review" || receipt.Step == "validator" {
+		ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.recordStep(ctx, receipt)
@@ -195,6 +198,43 @@ func (e *nativeExecution) VerifyPhaseAuthority(ctx context.Context) error {
 	return e.executionError(ctx, err)
 }
 
+func (e *nativeExecution) RetryPhasePublication(ctx context.Context, send func() error) error {
+	return e.retryPhasePublication(ctx, send(), send)
+}
+
+func (e *nativeExecution) retryPhasePublication(ctx context.Context, err error, send func() error) error {
+	for api.NativePublicationUnavailable(err) {
+		if ctx.Err() != nil {
+			return errors.Join(err, context.Cause(ctx))
+		}
+		lease := e.claim.lease
+		claim, ok := e.scheduler.host.ExecutionClaim(string(lease.WorkItemID))
+		if !ok || claim.Lost || claim.Lease.ID != lease.ID || claim.Lease.FencingToken != lease.FencingToken ||
+			!e.scheduler.now().Before(claim.Deadline) {
+			return errors.Join(err, runner.ErrExecutionAuthorityUnavailable)
+		}
+		authorityErr := e.VerifyPhaseAuthority(ctx)
+		switch {
+		case authorityErr == nil:
+			err = send()
+			if !api.NativePublicationUnavailable(err) {
+				return err
+			}
+		case !api.NativePublicationUnavailable(authorityErr):
+			return errors.Join(err, authorityErr)
+		}
+		if claim.LeaseChanged == nil {
+			return errors.Join(err, authorityErr)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, context.Cause(ctx))
+		case <-claim.LeaseChanged:
+		}
+	}
+	return err
+}
+
 func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch, head, tree, input string) error {
 	lease := e.claim.lease
 	e.mu.Lock()
@@ -214,16 +254,17 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 		AttemptID: attemptID, Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree, PolicyID: lease.PolicyID, InputDigest: digest,
 	}
 	client := e.claim.source.NativeClient()
-	if err := e.VerifyPhaseAuthority(ctx); err != nil {
+	var recorded tracker.NativePhaseReceipt
+	send := func() error {
+		var err error
+		recorded, err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, request)
 		return err
 	}
-	recorded, err := client.PublishPhaseReceipt(ctx, lease.WorkItemID, request)
-	if nativeTransportUnavailable(err) && ctx.Err() == nil {
-		if authorityErr := e.VerifyPhaseAuthority(ctx); authorityErr != nil {
-			return errors.Join(err, authorityErr)
-		}
-		recorded, err = client.PublishPhaseReceipt(ctx, lease.WorkItemID, request)
+	err := e.VerifyPhaseAuthority(ctx)
+	if err == nil {
+		err = send()
 	}
+	err = e.retryPhasePublication(ctx, err, send)
 	if err == nil && recorded != request {
 		return errors.New("Hub phase receipt differs from the published source")
 	}

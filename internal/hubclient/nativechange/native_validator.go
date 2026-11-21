@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/validation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -119,6 +120,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
+	ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {
@@ -172,6 +174,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
+	ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {
