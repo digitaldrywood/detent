@@ -470,6 +470,15 @@ func (o *Orchestrator) completeNativeChangeRun(
 			if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
 				return handoff(err)
 			}
+			comment := nativeReusedDispositionComment(change)
+			if resolvedRefusal {
+				comment = strings.TrimSpace(comment + "\n\n" + workspace.ReviewConversationsResolvedText)
+			}
+			if comment != "" {
+				if err := o.connector.CreateComment(ctx, issueID, comment); err != nil {
+					o.warnNativeCompletion(issue, fmt.Errorf("comment on the landing continuation: %w", err))
+				}
+			}
 			return true
 		}
 		return handoff(fmt.Errorf("native workflow allows no held landing path from %s", strings.TrimSpace(issue.State)))
@@ -828,10 +837,17 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	return metadata
 }
 
+func nativeReusedDispositionComment(change *runpkg.NativeChange) string {
+	if change.ReusedDispositionAttemptID == "" {
+		return ""
+	}
+	return fmt.Sprintf("Detent reused the completed disposition from attempt %s to resume review without rerunning implementation.", change.ReusedDispositionAttemptID)
+}
+
 func nativeCompletionComment(change *runpkg.NativeChange, from, to string) (comment string) {
 	defer func() {
-		if change.ReusedDispositionAttemptID != "" {
-			comment += fmt.Sprintf("\n\nDetent reused the completed disposition from attempt %s to resume review without rerunning implementation.", change.ReusedDispositionAttemptID)
+		if reused := nativeReusedDispositionComment(change); reused != "" {
+			comment += "\n\n" + reused
 		}
 	}()
 	from, to = displayStateName(from), displayStateName(to)
