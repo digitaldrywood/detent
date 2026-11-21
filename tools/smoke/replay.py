@@ -151,7 +151,7 @@ def page(project, item_path, suffix):
             return result
 
 
-def capture(project, case_name, item_path, repository_before):
+def capture(project, case_name, item_path, repository_before, include_checklists=False):
     item = project.request(item_path)
     attempts = page(project, item_path, "/attempts")
     details = [project.request(item_path + "/attempts/" + record["attempt_id"]) for record in attempts]
@@ -185,6 +185,9 @@ def capture(project, case_name, item_path, repository_before):
                 "history": history, "rounds": list(reversed(rounds)), "phases": list(reversed(phases)),
                 "changes": list(changes.values()), "develop_before": repository_before,
                 "develop_after": project.git("rev-parse", DEVELOP)}
+    if include_checklists:
+        evidence["checklists"] = [project.request(item_path + "/progress", query={"checklist_attempt": attempt["attempt_id"]})
+                                  for attempt in attempts]
     stack.write(stack.ROOT / (case_name + ".evidence.json"), evidence)
     return evidence
 
@@ -240,6 +243,7 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
     })
     org, admin = stack.current()
     expected = stack.read(case / "expected.json")
+    include_checklists = "tool_loop" in expected
     fault = Fault(FIXTURE, project, key, definition, expected["fault"]) if "fault" in expected else None
     service = None
     try:
@@ -265,7 +269,7 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
                 break
             time.sleep(1)
         else:
-            evidence = capture(project, case.name, key, source)
+            evidence = capture(project, case.name, key, source, include_checklists)
             if fault:
                 fault.verify(evidence)
             raise stack.Failure(f"replay timed out in {evidence['item']['state']}")
@@ -275,7 +279,7 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
         runner = stack.runner_status(admin, org)
         if not (runner.get("used") or runner.get("leases")):
             stack.route([], admin, org)
-    evidence = capture(project, case.name, key, source)
+    evidence = capture(project, case.name, key, source, include_checklists)
     evidence["policy"] = policy
     if operator and not moved:
         raise stack.Failure("required isolated target advance did not occur")

@@ -272,6 +272,26 @@ def phase_events(attempt, receipt_phases, reviews, command, interrupted_at=None)
     return [label for _, label in sorted(events)]
 
 
+def check_tool_loop(checklists, attempt, expected):
+    expect("recorded execution checklist", True, len(checklists) == 1 and bool(checklists[0]))
+    checklist, = checklists
+    assert_binding(checklist, attempt, ("attempt_id", "policy_id"), "checklist")
+    interventions = sorted(checklist.get("interventions", []), key=lambda event: time_key(event["observed_at"]))
+    fields = ("action", "period", "repeats")
+    expect("confirmed tool-loop interventions", expected,
+           [{field: event[field] for field in fields} for event in interventions])
+    first, stop = interventions
+    assert_binding(stop, first, ("thread_id", "turn_id", "fingerprint"), "loop stop")
+    for event in interventions:
+        expect("loop intervention checklist revision", checklist["revision"], event.get("revision"))
+        expect("loop intervention identifies the provider decision", True,
+               bool(event["thread_id"] and event["turn_id"] and event["fingerprint"] and event["sequence"] > 0))
+        expect("loop intervention recorded while claim held", True,
+               time_key(attempt["started_at"]) <= time_key(event["observed_at"]) <= time_key(attempt["claim_released_at"]))
+    expect("loop stop follows acknowledged steer", True,
+           first["sequence"] < stop["sequence"] and time_key(first["observed_at"]) < time_key(stop["observed_at"]))
+
+
 def compare(project, policy, evidence, expected, definition, advanced):
     item, claims, runs = (evidence[field] for field in ("item", "attempts", "details"))
     expect("final lane", expected["final_lane"], item["state"])
@@ -287,6 +307,8 @@ def compare(project, policy, evidence, expected, definition, advanced):
     fence = ("attempt_id", "lease_id", "fencing_token", "policy_id")
     assert_binding(next(run for run in claims if run["attempt_id"] == attempt["attempt_id"]), attempt, fence, "claim")
     expect("approved policy", policy["policy_id"], attempt["policy_id"])
+    if "tool_loop" in expected:
+        check_tool_loop(evidence.get("checklists", []), attempt, expected["tool_loop"])
     retained = expected.get("workspace_disposition") == "retained"
     expect("cleanup acknowledgement", expected.get("cleanup_acknowledged", not retained), bool(attempt.get("cleanup_acknowledged_at")))
     if attempt.get("cleanup_acknowledged_at"):
