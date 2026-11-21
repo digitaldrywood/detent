@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/diagnostics"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -91,6 +93,96 @@ func TestLocalProviderRevalidation(t *testing.T) {
 				t.Fatalf("operator record = %+v, want redacted provider start with code %q", record, test.wantCode)
 			}
 		})
+	}
+}
+
+func TestReviewedMergingClaimRegistersWithoutProvider(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHubTransport(t, "Merging", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Merging"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	h.configureCloneURL(nativeChangeRepository)
+	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{
+		Mutation: nativeMutationKey(),
+		Policy:   tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	issue := h.createInProgress(t, "Reviewed historical landing")
+	item := tracker.NativeWorkItemID(issue.ID)
+	change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+	if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "approved", Body: "Reviewed the current version"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := h.admin.Issue(t.Context(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.State != "Merging" {
+		if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtureConfigureScheduler(t, h, func(cfg *SchedulerConfig) {
+		cfg.ProviderReports = func() ([]providercapacity.Report, error) {
+			return []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "local", SharedAccountAlias: "team",
+				Models: []string{"test-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()}}, nil
+		}
+	})
+	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+		ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"Todo", "In Progress"},
+		ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+			return providercapacity.Requirement{}, errors.New("landing unexpectedly asked for a provider")
+		},
+	})
+	if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID || candidates[0].State != "Merging" || candidates[0].NativeLandingHeadSHA != version.HeadSHA {
+		t.Fatalf("historical landing was not claimed for its reviewed head: %+v, %v", candidates, err)
+	}
+	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], h.clock()); err != nil {
+		t.Fatal(err)
+	}
+	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	lease := execution.Recovery().Lease
+	if lease.ID == "" || execution.ProviderCapacity() != nil {
+		t.Fatalf("expected a fenced Git-only claim without a provider: lease=%q provider=%+v", lease.ID, execution.ProviderCapacity())
+	}
+	now := h.clock().UTC().Truncate(time.Microsecond)
+	worker := tracker.NativeAttemptWorker{PID: 500, PGID: 500, StartedAt: now, StartKey: "fixture-start"}
+	observation := tracker.NativeRuntimeObservation{Phase: "merging", HeartbeatAt: now, LocalAttemptID: 1, Generation: 1,
+		WorkerLaunch: &tracker.NativeWorkerLaunch{
+			PID: int(worker.PID), GroupID: int(worker.PGID), ProcessStart: now,
+			PolicyID: lease.PolicyID, ExecutionVersion: "test", ControlVersion: "test",
+			ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64),
+			Protocol: runner.SSHProtocolVersion, SelectedAt: now,
+		}}
+	primary, err := execution.RegisterAttemptWorker(t.Context(), worker, observation)
+	if err != nil || !primary {
+		t.Fatalf("register reviewed landing worker: primary=%t error=%v", primary, err)
+	}
+	if err := execution.StartLanding(t.Context(), observation.LocalAttemptID, observation.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.FlushRuntime(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := h.admin.Recovery(t.Context(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
+	if len(recovery.Attempts) != 1 || recovery.Attempts[0].LeaseID != lease.ID || recovery.Attempts[0].FencingToken != lease.FencingToken ||
+		recovery.Attempts[0].Identity == nil || *recovery.Attempts[0].Identity != identity {
+		t.Fatalf("registered landing did not start as Git on its original lease: %+v", recovery.Attempts)
+	}
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test-model"}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("landing worker could start a model without a provider reservation: %v", err)
 	}
 }
 
