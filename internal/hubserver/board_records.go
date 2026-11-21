@@ -263,7 +263,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		limit = min(limit, 200)
 	}
 	selection.Summary = (legacy || (includeBoard || includeWork) && selection.Terminal == nil) && selection.SupportsSummary()
-	selection.CountLanes = (includeBoard || includeWork && selection.Terminal == nil) && !legacy && !selection.Summary && selection.SearchText == "" && selection.Fingerprint == ""
+	selection.CountLanes = (includeBoard || includeWork) && !legacy && !selection.Summary && selection.SearchText == "" && selection.Fingerprint == ""
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -347,7 +347,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: *selection.WindowAsOf}
 	}
 	if page.Work != nil && (!selection.Summary || snapshot.Pending) {
-		page.Work.Lanes = nil
+		if !includeBoard {
+			page.Work.Lanes = nil
+		}
 		if selection.CountLanes && !snapshot.Pending {
 			page.Work.Lanes = make([]tracker.NativeWorkLane, 0, len(snapshot.Lanes))
 			for _, lane := range snapshot.Lanes {
@@ -481,6 +483,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 				row.Liveness = viewstore.BoardLiveness{}
 			}
 			card.Attempt, card.Execution, card.LivenessExpiresAt = row.Liveness.Apply(card.Attempt, card.Execution, *selection.WindowAsOf)
+			if card.LivenessExpiresAt != nil {
+				card.LivenessObservedAt = new(*selection.WindowAsOf)
+			}
 			card.StatusLine = nativeBoardStatusLine(card)
 			if card.Change != nil {
 				change := *card.Change

@@ -11,9 +11,9 @@ import (
 )
 
 func (s *session) BoardCardLiveness(ctx context.Context, project tracker.ProjectID, items []tracker.NativeWorkItemID, now time.Time) (map[tracker.NativeWorkItemID]viewstore.BoardLiveness, error) {
-	query := "WITH " + boardviewsql.Liveness("$1", "$2::text", "$3", "$4") + `
+	query := "WITH " + boardviewsql.ItemLiveness("$1", "$2::text", "$3", "$4", "$5") + `
  SELECT work_item_id,coalesce(card_attempt_id,''),coalesce(card_execution_id,''),lease_expires_at,attempt_until,execution_until
- FROM board_liveness WHERE work_item_id=ANY($5::text[])`
+ FROM board_liveness`
 	rows, err := s.db.Query(ctx, query, s.organization, project, now, int64(runnerauth.HeartbeatTimeout/time.Second), items)
 	if err != nil {
 		return nil, mapError(ctx, err)

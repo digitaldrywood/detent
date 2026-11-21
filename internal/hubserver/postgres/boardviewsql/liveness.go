@@ -1,9 +1,23 @@
 package boardviewsql
 
 func Liveness(organization, projects, now, timeout string) string {
+	return liveness(`FROM leases l WHERE l.organization_id=`+organization+` AND l.project_id IN (`+projects+`)`, organization, now, timeout)
+}
+
+func ItemLiveness(organization, project, now, timeout, items string) string {
+	return liveness(`FROM (SELECT DISTINCT native_id FROM unnest(`+items+`::text[]) AS ids(native_id)) requested
+ JOIN LATERAL (
+  SELECT i.id FROM issues i WHERE i.organization_id=`+organization+` AND i.project_id=`+project+` AND i.native_id=requested.native_id LIMIT 1
+ ) i ON true
+ JOIN LATERAL (
+  SELECT l.* FROM leases l WHERE l.organization_id=`+organization+` AND l.project_id=`+project+` AND l.issue_id=i.id AND l.released_at IS NULL LIMIT 1
+ ) l ON true WHERE true`, organization, now, timeout)
+}
+
+func liveness(source, organization, now, timeout string) string {
 	return `active_leases AS MATERIALIZED (
  SELECT l.organization_id,l.project_id,l.lease_id,l.fencing_token,l.issue_id,l.runner_id,l.machine_id,l.expires_at
- FROM leases l WHERE l.organization_id=` + organization + ` AND l.project_id IN (` + projects + `)
+ ` + source + `
  AND l.released_at IS NULL AND l.renewed_at<=` + now + ` AND l.expires_at>` + now + ` AND l.runner_id IS NOT NULL
 ), fresh_owners AS MATERIALIZED (
  SELECT r.runner_id,r.machine_id,least(r.expires_at,r.last_heartbeat_at+` + timeout + `::bigint*interval '1 second') AS deadline

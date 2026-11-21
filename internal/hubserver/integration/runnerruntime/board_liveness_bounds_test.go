@@ -63,44 +63,56 @@ WHERE b.organization_id=$1 AND b.project_id=i.project_id AND b.work_item_id=i.na
 			if _, err := f.Admin.ExecContext(t.Context(), "ANALYZE native_board_items, issues, leases, runner_identities"); err != nil {
 				t.Fatal(err)
 			}
-			query := "EXPLAIN (ANALYZE, FORMAT JSON) WITH " + boardviewsql.Liveness("$1", "$2::text", "$3", "$4") + " SELECT count(*) FROM board_liveness"
-			var raw []byte
-			if err := f.Admin.QueryRowContext(t.Context(), query, f.Organization, "prj_runner", now, int64(runnerauth.HeartbeatTimeout/time.Second)).Scan(&raw); err != nil {
-				t.Fatal(err)
-			}
-			type plan struct {
-				Relation string  `json:"Relation Name"`
-				Subplan  string  `json:"Subplan Name"`
-				Rows     float64 `json:"Actual Rows"`
-				Loops    float64 `json:"Actual Loops"`
-				Removed  float64 `json:"Rows Removed by Filter"`
-				Plans    []plan  `json:"Plans"`
-			}
-			var report []struct{ Plan plan }
-			if err := json.Unmarshal(raw, &report); err != nil {
-				t.Fatal(err)
-			}
-			var boardRows, candidates, owners float64
-			var visit func(plan)
-			visit = func(p plan) {
-				switch p.Subplan {
-				case "CTE board_liveness":
-					candidates = p.Rows
-				case "CTE fresh_owners":
-					owners = p.Rows
+			check := func(cte string, want float64, items ...string) {
+				t.Helper()
+				args := []any{f.Organization, "prj_runner", now, int64(runnerauth.HeartbeatTimeout / time.Second)}
+				if len(items) > 0 {
+					args = append(args, items)
 				}
-				if p.Relation == "native_board_items" {
-					boardRows += (p.Rows + p.Removed) * p.Loops
+				query := "EXPLAIN (ANALYZE, FORMAT JSON) WITH " + cte + " SELECT count(*) FROM board_liveness"
+				var raw []byte
+				if err := f.Admin.QueryRowContext(t.Context(), query, args...).Scan(&raw); err != nil {
+					t.Fatal(err)
 				}
-				for _, child := range p.Plans {
-					visit(child)
+				type plan struct {
+					Relation string  `json:"Relation Name"`
+					Subplan  string  `json:"Subplan Name"`
+					Rows     float64 `json:"Actual Rows"`
+					Loops    float64 `json:"Actual Loops"`
+					Removed  float64 `json:"Rows Removed by Filter"`
+					Plans    []plan  `json:"Plans"`
+				}
+				var report []struct{ Plan plan }
+				if err := json.Unmarshal(raw, &report); err != nil {
+					t.Fatal(err)
+				}
+				var boardRows, leaseRows, candidates, owners float64
+				var visit func(plan)
+				visit = func(p plan) {
+					switch p.Subplan {
+					case "CTE board_liveness":
+						candidates = p.Rows
+					case "CTE fresh_owners":
+						owners = p.Rows
+					}
+					switch p.Relation {
+					case "native_board_items":
+						boardRows += (p.Rows + p.Removed) * p.Loops
+					case "leases":
+						leaseRows += (p.Rows + p.Removed) * p.Loops
+					}
+					for _, child := range p.Plans {
+						visit(child)
+					}
+				}
+				visit(report[0].Plan)
+				if candidates != want || owners != want || boardRows != want || len(items) > 0 && leaseRows != want {
+					t.Fatalf("lease candidates=%g owners=%g lease rows=%g board rows=%g, want %g of each with %d idle cards: %s", candidates, owners, leaseRows, boardRows, want, tc.idle, raw)
 				}
 			}
-			visit(report[0].Plan)
-			want := float64(len(f.Leases) + tc.additional)
-			if candidates != want || owners != want || boardRows != want {
-				t.Fatalf("lease candidates=%g owners=%g board rows=%g, want %g of each with %d idle cards: %s", candidates, owners, boardRows, want, tc.idle, raw)
-			}
+			check(boardviewsql.Liveness("$1", "$2::text", "$3", "$4"), float64(len(f.Leases)+tc.additional))
+			check(boardviewsql.ItemLiveness("$1", "$2::text", "$3", "$4", "$5"), 1, "wi_1")
+
 		})
 	}
 }

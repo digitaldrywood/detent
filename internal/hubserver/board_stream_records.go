@@ -169,6 +169,9 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				card.Issue.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
 				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
 				card.Attempt, card.Execution, card.LivenessExpiresAt = liveness[row.WorkItemID].Apply(card.Attempt, card.Execution, now)
+				if card.LivenessExpiresAt != nil {
+					card.LivenessObservedAt = new(now)
+				}
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card
 			}

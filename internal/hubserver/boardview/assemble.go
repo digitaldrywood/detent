@@ -285,6 +285,9 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			liveness = viewstore.BoardLiveness{}
 		}
 		card.Attempt, card.Execution, card.LivenessExpiresAt = liveness.Apply(card.Attempt, card.Execution, now)
+		if card.LivenessExpiresAt != nil {
+			card.LivenessObservedAt = new(now)
+		}
 		if card.Execution != nil && card.Execution.Running || card.Execution == nil && card.Attempt != nil && card.Attempt.Status == "running" {
 			view.Running[issue.WorkItemID] = true
 		}

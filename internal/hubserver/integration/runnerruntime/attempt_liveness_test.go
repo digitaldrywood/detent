@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -137,7 +138,7 @@ func TestPostgresAttemptLivenessFollowsOwningRunnerHeartbeat(t *testing.T) {
 							continue
 						}
 						found = true
-						if running != (card.LivenessExpiresAt != nil) {
+						if running != (card.LivenessExpiresAt != nil && card.LivenessObservedAt != nil) {
 							t.Errorf("%s item %s deadline = %v, want live=%t", read.name, lease.WorkItemID, card.LivenessExpiresAt, running)
 						}
 						if tc.change == "renew" && i == 0 && (card.Execution == nil || !card.Execution.ExpiresAt.Equal(projectedExpiry.Add(time.Hour))) {
@@ -176,6 +177,17 @@ func TestPostgresAttemptLivenessFollowsOwningRunnerHeartbeat(t *testing.T) {
 				t.Fatalf("targeted board returned %d cards in %d projects", len(slice.Cards), len(slice.Projects))
 			}
 			requireRunningCount(t, "targeted work board", slice.Projects[0].Work, wantRunning)
+			counts := f.Hub.Request(t, http.MethodGet, base+"/projects/prj_runner/board/counts", f.Tokens[0], nil)
+			hubfixture.RequireStatus(t, counts, http.StatusOK)
+			var summary viewstore.BoardSummaryPage
+			hubfixture.Decode(t, counts, &summary)
+			var lanes []tracker.NativeWorkLane
+			for _, row := range summary.Rows {
+				if row.Kind == "lane" {
+					lanes = append(lanes, tracker.NativeWorkLane{State: row.State, Running: int(row.Running)})
+				}
+			}
+			requireRunningCount(t, "separate counts route", &tracker.NativeWorkSummary{Lanes: lanes}, wantRunning)
 			runtime := explanation.NativeRuntime
 			if tc.change == "release" {
 				if runtime == nil || runtime.CurrentLease != nil || runtime.Attempt == nil || runtime.Attempt.Current {

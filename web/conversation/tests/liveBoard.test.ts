@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { NativeBoardCard } from "../src/contracts/work.ts";
+import type { NativeBoardCard, NativeWorkSummary } from "../src/contracts/work.ts";
 import { statusPill } from "../src/app/work/components/IssueCard.tsx";
 import * as disk from "../src/app/work/lib/boardDisk.ts";
 import { boardAccountKey, clearBoardCache, confirmWorkItem, getBoardRead, rejectBoardCache } from "../src/app/work/lib/boardStore.ts";
@@ -22,10 +22,11 @@ class Source extends EventTarget {
 
 const PROJECTS = [{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }, { id: "proj_gamma", name: "gamma" }];
 type BoardBody = {
-  projects: { project: { project_id: string }; sequence: number; projection_pending: boolean; work?: unknown }[];
+  projects: { project: { project_id: string }; sequence: number; projection_pending: boolean; work?: NativeWorkSummary }[];
   cards: {
-    issue: { work_item_id: string; project_id: string; actor: { kind: string } };
+    issue: { work_item_id: string; project_id: string; state: string; actor: { kind: string } };
     liveness_expires_at?: NativeBoardCard["liveness_expires_at"];
+    liveness_observed_at?: NativeBoardCard["liveness_observed_at"];
     execution?: NativeBoardCard["execution"];
     attempt?: NativeBoardCard["attempt"];
   }[];
@@ -33,7 +34,7 @@ type BoardBody = {
 
 let visibility: DocumentVisibilityState = "visible";
 beforeEach(() => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
   vi.spyOn(Math, "random").mockReturnValue(0);
   vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
   vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
@@ -150,8 +151,9 @@ describe("the live board", () => {
     expect(read.snapshot().items.length).toBeGreaterThan(0);
   });
 
-  it("expires and refreshes visible workers together on an unchanged connected board", async () => {
-    const deadline = Date.now() + 2_000;
+  it.each([-180_000, 180_000])("expires and refreshes an unchanged connected board with Hub clock offset %i", async (offset) => {
+    const observed = Date.now() + offset;
+    const deadline = observed + 2_000;
     const expires = new Date(deadline).toISOString();
     const ids = new Map<string, string>();
     const sequences: number[][] = [];
@@ -163,13 +165,20 @@ describe("the live board", () => {
           if (project === "proj_gamma" || ids.has(project)) continue;
           ids.set(project, card.issue.work_item_id);
           card.liveness_expires_at = expires;
+          card.liveness_observed_at = new Date(observed).toISOString();
+          const summary = body.projects.find((entry) => entry.project.project_id === project);
+          if (summary?.work !== undefined) summary.work = { ...summary.work, lanes: summary.work.lanes.map((lane) =>
+            ({ ...lane, running: lane.state === card.issue.state ? 1 : 0 })) };
           card.execution = { id: card.issue.work_item_id, running: true, stage: "implementation", expires_at: new Date(deadline + 90_000).toISOString() };
         }
       } else {
         for (const card of body.cards) {
           const recovered = card.issue.project_id === "proj_alpha";
           card.attempt = { attempt_id: card.issue.work_item_id, status: recovered ? "running" : "interrupted", started_at: expires };
-          if (recovered) card.liveness_expires_at = new Date(deadline + 60_000).toISOString();
+          if (recovered) {
+            card.liveness_observed_at = expires;
+            card.liveness_expires_at = new Date(deadline + 60_000).toISOString();
+          }
         }
       }
     });
@@ -181,10 +190,17 @@ describe("the live board", () => {
       const worker = (project: string) => read.snapshot().items.find((item) => item.id === ids.get(project));
       expect(worker("proj_alpha")?.attempt?.running).toBe(true);
       expect(worker("proj_beta")?.attempt?.running).toBe(true);
+      expect(read.projectSnapshot("proj_alpha").totals?.running).toBe(1);
+      expect(read.projectSnapshot("proj_beta").totals?.running).toBe(1);
       gate.next = held.promise;
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(worker("proj_alpha")?.attempt?.running).toBe(true);
+      expect(boards).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
       expect(statusPill(worker("proj_alpha")!)?.label).toBe("Runner status unknown");
       expect(worker("proj_beta")?.attempt).toBeNull();
+      expect(read.projectSnapshot("proj_alpha").totals?.running).toBe(0);
+      expect(read.projectSnapshot("proj_beta").totals?.running).toBe(0);
       await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
       expect(boards).toHaveLength(2);
       expect(boards[1]!.searchParams.getAll("item").toSorted()).toEqual([...ids.values()].toSorted());
@@ -193,6 +209,106 @@ describe("the live board", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(worker("proj_alpha")?.attempt?.running).toBe(true);
       expect(worker("proj_beta")?.attempt?.status).toBe("interrupted");
+    } finally {
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  });
+
+  it.each([-180_000, 180_000])("decodes and refreshes a searched connected board with Hub clock offset %i", async (offset) => {
+    const fixture = workPaginationFixture([PROJECTS[0]!]);
+    await fixture.control();
+    const observed = Date.now() + offset;
+    const held = deferred();
+    const queries: string[] = [];
+    const http = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
+      const response = await fixture.fetch(input, init);
+      const url = new URL(input, "http://fixture.test");
+      if (!url.pathname.endsWith("/work-items") || url.searchParams.get("include") !== "board") return response;
+      queries.push(url.searchParams.get("q") ?? "");
+      const page = await response.json();
+      page.work = { items: [], lanes: [], truncated: false, as_of: new Date(observed).toISOString() };
+      for (const card of page.cards) {
+        const running = queries.length === 1;
+        card.execution = running ? { id: "attempt_example", running: true, stage: "implementation", expires_at: new Date(observed + 90_000).toISOString() } : undefined;
+        card.attempt = running ? null : { attempt_id: "attempt_example", status: "interrupted", started_at: new Date(observed).toISOString() };
+        if (running) {
+          card.liveness_observed_at = new Date(observed).toISOString();
+          card.liveness_expires_at = new Date(observed + 2_000).toISOString();
+        }
+      }
+      if (queries.length === 2) await held.promise;
+      return Response.json(page, { status: response.status });
+    } });
+    const read = getBoardRead(fixture.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, q: "Observed later-page worker" });
+    const stop = read.subscribe(() => {});
+    read.start();
+    try {
+      Source.instances[0]!.emit("open");
+      await vi.advanceTimersByTimeAsync(0);
+      const item = () => read.snapshot().items[0]!;
+      expect(item().attempt?.running).toBe(true);
+      const sequence = read.sequence("proj_alpha");
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(item().attempt?.running).toBe(true);
+      expect(queries).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(statusPill(item())?.label).toBe("Runner status unknown");
+      expect(queries).toEqual(["Observed later-page worker", "Observed later-page worker"]);
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(read.sequence("proj_alpha")).toBe(sequence);
+      expect(item().attempt?.status).toBe("interrupted");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(queries).toHaveLength(2);
+    } finally {
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+      stop();
+    }
+  });
+
+  it.each(["", "Observed later-page worker"])("revalidates cached worker evidence on a board with search %j", async (q) => {
+    const fixture = workPaginationFixture([PROJECTS[0]!]);
+    await fixture.control();
+    const held = deferred();
+    const observed = Date.now() + 180_000;
+    const view = { ...DEFAULT_VIEW_STATE, q };
+    let workerId: string | undefined;
+    let holding = false;
+    const http = makeWorkHttp({ ...fixture.client.http, fetch: async (input, init) => {
+      const response = await fixture.fetch(input, init);
+      const url = new URL(input, "http://fixture.test");
+      if (!url.pathname.endsWith("/work-board") && !(url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board")) return response;
+      const page = await response.json();
+      const card = page.cards[0];
+      workerId = card.issue.work_item_id;
+      card.liveness_observed_at = new Date(observed).toISOString();
+      card.liveness_expires_at = new Date(observed + 60_000).toISOString();
+      card.execution = { id: "attempt_example", running: true, stage: "implementation", expires_at: new Date(observed + 90_000).toISOString() };
+      if (holding) await held.promise;
+      return Response.json(page, { status: response.status });
+    } });
+    const original = getBoardRead(fixture.client, http, "proj_alpha", view);
+    original.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(original.snapshot().items.find((item) => item.id === workerId)?.attempt?.running).toBe(true);
+    const persisted = vi.mocked(disk.updateBoardDisk).mock.calls.map(([, entry]) => entry).findLast((entry) => entry !== undefined);
+    expect(persisted).toBeDefined();
+    clearBoardCache();
+    vi.mocked(disk.readBoardDisk).mockResolvedValue(persisted!);
+    holding = true;
+    const restored = getBoardRead(fixture.client, http, "proj_alpha", view);
+    restored.start();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restored.snapshot().cached).toBe(true);
+      const worker = () => restored.snapshot().items.find((item) => item.id === workerId)!;
+      expect(statusPill(worker())?.label).toBe("Runner status unknown");
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restored.snapshot().cached).toBe(false);
+      expect(worker().attempt?.running).toBe(true);
     } finally {
       held.release();
       await vi.advanceTimersByTimeAsync(0);

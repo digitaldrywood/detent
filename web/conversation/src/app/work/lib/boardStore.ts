@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 import { LiveEntrySchema, LoadedSchema, type Loaded } from "./boardSchema.ts";
+import { BoardDeadlines, expireBoardEvidence, revalidateCachedLiveness, runningBoardCard } from "./boardLiveness.ts";
+import { subscribeClock } from "./workClock.ts";
 import { LiveBoard, liveCompleted, type LiveEntry } from "./liveBoard.ts";
 import { subscribeProjectQuery } from "./projectEvents.ts";
 
@@ -287,6 +289,7 @@ export class BoardRead {
   private readonly facetKey: string;
   private seen = -1;
   private unlisten: (() => void) | null = null;
+  private readonly deadlines = new BoardDeadlines();
   private readonly derived = new WeakMap<LiveEntry, Loaded>();
 
   constructor(readonly owner: string, readonly key: string, readonly http: WorkHttp,
@@ -316,7 +319,7 @@ export class BoardRead {
     this.sync();
     return Object.fromEntries(this.entries.map((entry) => {
       const runners = new Set(entry.cards?.flatMap((card) => {
-        const runner = card.execution?.running ? card.execution.runner_id : card.attempt?.status === "running" ? card.attempt.runner_id : undefined;
+        const runner = runningBoardCard(card) ? card.execution?.runner_id ?? card.attempt?.runner_id : undefined;
         return runner === undefined ? [] : [runner];
       }) ?? []);
       return [entry.project.project_id, {
@@ -336,7 +339,10 @@ export class BoardRead {
     this.subscribers.add(notify);
     if (this.subscribers.size === 1) {
       if (this.live !== null) this.unlisten = this.live.subscribe(() => { if (this.sync()) this.notify(); });
-      else this.listen();
+      else {
+        this.listen();
+        this.unlisten = subscribeClock(this.expireLiveness);
+      }
     }
     return () => {
       this.subscribers.delete(notify);
@@ -376,6 +382,20 @@ export class BoardRead {
     }
   }
 
+  private readonly expireLiveness = (): void => {
+    if (this.revoked || typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    const due = this.deadlines.due();
+    if (due.size === 0) return;
+    this.entries = this.entries.map((entry) => {
+      const items = due.get(entry.project.project_id);
+      return items === undefined ? entry : expireBoardEvidence(entry, (card) => items.has(card.issue.work_item_id));
+    });
+    this.publish({ ...this.build(this.entries, this.state.asOf ?? Date.now()), refreshing: this.state.refreshing });
+    for (const project of due.keys()) this.dirtyProjects.add(project);
+    if (this.controller !== null) this.pending = true;
+    else this.read(false, new Set(this.dirtyProjects));
+  };
+
   private notify(): void {
     for (const notify of this.subscribers) notify();
   }
@@ -398,6 +418,9 @@ export class BoardRead {
   revoke(): void {
     this.revoked = true;
     this.dispose();
+    this.unlisten?.();
+    this.unlisten = null;
+    this.deadlines.clear();
     this.entries = [];
     this.failed.clear();
     this.frames.clear();
@@ -479,8 +502,8 @@ export class BoardRead {
         !Number.isInteger(entry.pageCount) || entry.pageCount < 1 ||
         !Number.isInteger(entry.backlogTotal) || entry.backlogTotal < 0 ||
         [...entry.issues, ...(entry.work?.items ?? [])].some((issue) => issue.project_id !== entry.project.project_id))) return;
-      this.entries = entries;
-      this.publish({ ...this.build(entries, stored.asOf), cached: true, refreshing: this.controller !== null, error: this.state.error });
+      this.entries = entries.map(revalidateCachedLiveness);
+      this.publish({ ...this.build(this.entries, stored.asOf), cached: true, refreshing: this.controller !== null, error: this.state.error });
     } catch {
       return;
     }
@@ -508,7 +531,9 @@ export class BoardRead {
         : { limit: 100, ...tabQuery(this.view, toLanes(project)), sort: effectiveSort(this.view) === "closed" ? "closed" : undefined }) });
       if (page.projection_pending) throw new Error("Board projection is pending");
       issues.push(...page.items);
-      cards.push(...(page.cards ?? []));
+      const observed = page.cards ?? [];
+      this.deadlines.observe(observed);
+      cards.push(...observed);
       work = page.total === -1 ? previous?.work : page.work;
       sequence = Math.min(sequence ?? Infinity, page.change_sequence ?? page.sequence ?? 0);
       grantVersion ??= page.grant_version;
@@ -560,6 +585,7 @@ export class BoardRead {
         cards.delete(issue.work_item_id);
         if (card !== null && this.matches(card.issue, entry.project)) {
           issues.set(issue.work_item_id, card.issue);
+          this.deadlines.observe([card]);
           cards.set(issue.work_item_id, card);
         }
       }
@@ -567,6 +593,7 @@ export class BoardRead {
       return { ...entry, issues: [...issues.values()], cards: [...cards.values()], sequence: frame.sequence, work,
         backlogTotal: work?.lanes.find((lane) => lane.state.toLowerCase() === "backlog")?.total ?? entry.backlogTotal };
     });
+    this.deadlines.replace(this.entries);
     if (this.state.resolved) {
       this.publish({ ...this.build(this.entries, this.stamp()), refreshing: this.state.refreshing });
       this.persist();
@@ -635,7 +662,7 @@ export class BoardRead {
     let cardsReady = false;
     const withCounts = (entry: Loaded): Loaded => {
       const rows = counts.get(entry.project.project_id);
-      if (rows === undefined) return entry;
+      if (rows === undefined || entry.cards?.some((card) => card.liveness_expires_at === null)) return entry;
       const total = rows.find((row) => row.kind === "total" || row.kind === undefined && row.state === "*");
       const windows = ["1h", "24h", "7d"] as const;
       const lanes = rows.filter((row) => row.kind === "lane" || row.kind === undefined && !["*", "@open", "@closed"].includes(row.state)).map(({ state, total, running }) => ({ state, total, running }));
@@ -692,7 +719,7 @@ export class BoardRead {
           } catch (cause) {
             if (rejectUnauthorized(this.owner, cause) || signal.aborted) throw cause;
             failures.set(id, { label: previous?.project.name ?? id, cause });
-            return previous;
+            return this.entries.find((entry) => entry.project.project_id === id) ?? previous;
           }
           succeeded.add(id);
           const issues = entry.issues;
@@ -733,6 +760,7 @@ export class BoardRead {
           return;
         }
         this.entries = entries.map(withCounts);
+        this.deadlines.replace(this.entries);
         cardsReady = true;
         this.publish(this.build(this.entries, this.stamp()));
         for (const [id, frames] of this.frames) {
@@ -882,7 +910,7 @@ function localWork(cards: readonly NativeBoardCard[], base: NativeWorkSummary | 
   const lanes = new Map<string, { state: string; total: number; running: number }>();
   for (const card of cards) {
     const lane = lanes.get(card.issue.state) ?? { state: card.issue.state, total: 0, running: 0 };
-    lanes.set(card.issue.state, { ...lane, total: lane.total + 1, running: lane.running + (card.execution?.running || card.attempt?.status === "running" ? 1 : 0) });
+    lanes.set(card.issue.state, { ...lane, total: lane.total + 1, running: lane.running + (runningBoardCard(card) ? 1 : 0) });
   }
   return { items: [], lanes: [...lanes.values()], truncated: false, as_of: base?.as_of ?? new Date(0).toISOString() };
 }

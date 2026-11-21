@@ -27,7 +27,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	selection.WindowAsOf = new(s.config.Clock())
+	selection.CardLiveness = !status
 	selection.SearchText = params.Get("q")
 	selection.WorkItemIDs = nil
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
@@ -99,6 +99,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
+				selection.WindowAsOf = new(s.config.Clock())
 				var rows []viewstore.BoardSummaryRecord
 				rows, err = model.BoardSummaryModel(ctx, selection)
 				response = viewstore.BoardSummaryPage{Rows: rows}

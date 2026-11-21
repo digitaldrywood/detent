@@ -254,6 +254,15 @@ func TestWorkListLaneSummariesCountTheFilteredPopulation(t *testing.T) {
 			}
 		}
 	})
+	t.Run("board search keeps an array for unavailable lane counts", func(t *testing.T) {
+		response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items?include=board&q=lane", f.Token, nil)
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var page tracker.NativeIssuePage
+		hubfixture.Decode(t, response, &page)
+		if page.Work == nil || page.Work.Lanes == nil || len(page.Work.Lanes) != 0 {
+			t.Fatalf("searched board returned work=%+v, want an empty lane array", page.Work)
+		}
+	})
 	t.Run("search lanes stay unavailable", func(t *testing.T) {
 		response := f.Hub.Request(t, http.MethodGet, f.Base+"/work-items?include=work&q=lane", f.Token, nil)
 		hubfixture.RequireStatus(t, response, http.StatusOK)

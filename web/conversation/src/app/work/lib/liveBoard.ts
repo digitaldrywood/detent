@@ -3,6 +3,7 @@ import { invalidateQueries } from "../../lib/queryCache.ts";
 import type { BoardView } from "./boardSchema.ts";
 import { projectEventData, subscribeProjectQuery } from "./projectEvents.ts";
 import { DEFAULT_VIEW_STATE } from "./viewState.ts";
+import { BoardDeadlines, expireBoardEvidence, revalidateCachedLiveness } from "./boardLiveness.ts";
 import { subscribeClock } from "./workClock.ts";
 import type { WorkHttp } from "./workHttp.ts";
 
@@ -64,7 +65,7 @@ export class LiveBoard {
   private itemsInFlight = false;
   private readonly itemGeneration = new Map<string, number>();
   private itemCounter = 0;
-  private readonly deadlines = new Map<string, { project: string; at: number }>();
+  private readonly deadlines = new BoardDeadlines();
   private releaseClock: (() => void) | undefined;
   private readonly workSequences = new Map<string, number>();
   private fallback: ReturnType<typeof setInterval> | undefined;
@@ -136,7 +137,7 @@ export class LiveBoard {
       this.queries.delete(projectId!);
       this.connected.delete(projectId!);
       for (const [item, project] of this.pendingItems) if (project === projectId) this.pendingItems.delete(item);
-      for (const [item, deadline] of this.deadlines) if (deadline.project === projectId) this.deadlines.delete(item);
+      this.deadlines.forgetProject(projectId!);
       if (this.controller !== null) {
         this.controller.abort();
         this.controller = null;
@@ -195,31 +196,16 @@ export class LiveBoard {
     }
   }
 
-  private observeLiveness(card: NativeBoardCard): void {
-    const at = Date.parse(card.liveness_expires_at ?? "");
-    if (Number.isFinite(at)) this.deadlines.set(card.issue.work_item_id, { project: card.issue.project_id, at });
-  }
-
   private readonly expireLiveness = (): void => {
     if (hidden() || this.disposed) return;
-    const now = Date.now();
-    const due = new Map<string, Set<string>>();
-    for (const [item, { project, at }] of this.deadlines) {
-      if (now < at) continue;
-      this.deadlines.delete(item);
-      const items = due.get(project) ?? new Set<string>();
-      items.add(item);
-      due.set(project, items);
-      this.queue(project, item);
-    }
+    const due = this.deadlines.due();
     if (due.size === 0) return;
     const entries = new Map(this.current.entries);
     for (const [project, items] of due) {
       const entry = entries.get(project);
       if (entry === undefined) continue;
-      const cards = entry.cards.map((card) => items.has(card.issue.work_item_id)
-        ? { ...card, liveness_expires_at: null, execution: undefined, attempt: null, status_line: undefined } : card);
-      entries.set(project, { ...entry, cards });
+      entries.set(project, expireBoardEvidence(entry, (card) => items.has(card.issue.work_item_id)));
+      for (const item of items) this.queue(project, item);
     }
     this.publish({ ...this.current, entries });
   };
@@ -283,9 +269,8 @@ export class LiveBoard {
       if (entries === null || this.disposed || this.current.resolved || generation !== this.generation) return;
       const requested = this.requested();
       if (entries.length !== requested.length || entries.some((entry, index) => entry.project.project_id !== requested[index])) return;
-      for (const entry of entries) for (const card of entry.cards) this.observeLiveness(card);
-      this.publish({ ...this.current, resolved: true, cached: true, asOf: Date.now(), entries: new Map(entries.map((entry) => [entry.project.project_id, entry])) });
-      this.expireLiveness();
+      const cached = entries.map(revalidateCachedLiveness);
+      this.publish({ ...this.current, resolved: true, cached: true, asOf: Date.now(), entries: new Map(cached.map((entry) => [entry.project.project_id, entry])) });
     }, () => undefined);
   }
 
@@ -357,10 +342,11 @@ export class LiveBoard {
       this.deps.states(id, entry.project);
       this.workSequences.set(id, entry.sequence);
       if (entry.work === undefined) countsPending.add(id);
-      entries.set(id, { project: entry.project, cards: cards.get(id) ?? [], sequence: entry.sequence, grantVersion: response.grant_version, work: entry.work });
+      const observed = cards.get(id) ?? [];
+      this.deadlines.observe(observed);
+      entries.set(id, { project: entry.project, cards: observed, sequence: entry.sequence, grantVersion: response.grant_version, work: entry.work });
     }
-    this.deadlines.clear();
-    for (const entry of entries.values()) for (const card of entry.cards) this.observeLiveness(card);
+    this.deadlines.replace(entries.values());
     return { ...this.current, resolved: this.current.resolved || entries.size > 0 || failed.size === 0, refreshing: false, cached: false, error: null,
       asOf: Date.now(), entries, failed, countsPending };
   }
@@ -407,16 +393,17 @@ export class LiveBoard {
         if (existing === undefined && !belongs) continue;
         cards ??= [...entry.cards];
         if (index >= 0) cards.splice(index, 1);
-        this.deadlines.delete(itemId);
+        this.deadlines.forget(itemId);
         if (belongs) {
           const observed = this.deps.overlay(card);
           cards.push(observed);
-          this.observeLiveness(observed);
+          this.deadlines.observe([observed]);
+          this.deadlines.track(observed);
         }
       }
       const update = projects.get(id);
       const counted = update !== undefined && update.sequence >= (this.workSequences.get(id) ?? 0);
-      const work = counted && update.work !== undefined ? update.work : entry.work;
+      const work = counted && update.work !== undefined && !(cards ?? entry.cards).some((card) => card.liveness_expires_at === null) ? update.work : entry.work;
       if (counted) {
         this.workSequences.set(id, update.sequence);
         if (update.work === undefined) countsPending.add(id);
