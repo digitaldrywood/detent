@@ -490,6 +490,43 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 	}
 }
 
+func TestNativeWorkerFailureSettlesBeforeOverloadRetry(t *testing.T) {
+	now := time.Now().UTC()
+	issue := dispatchTestIssue("wi_example", "In Progress")
+	source := &hubSchedulingSource{}
+	o, err := New(normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"In Progress"},
+		TerminalStates:      []string{"Done"},
+	}), Dependencies{
+		Connector:  &nativeHubSchedulingConnector{&hubSchedulingConnector{}},
+		Scheduling: source,
+		Runner:     &hubSchedulingRunner{requests: make(chan RunRequest, 1)},
+		Now:        func() time.Time { return now },
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newState(o.cfg)
+	running := Running{Issue: issue, Mode: runpkg.RunModeImplement, Attempt: 1, TurnCount: 1, StartedAt: now.Add(-time.Second)}
+	state.Running[issue.ID] = running
+	state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: running.StartedAt}
+	fault := backendcapacity.NewError(backendcapacity.Scope{BackendID: "ssh:local"},
+		backendcapacity.Details{Type: backendcapacity.ErrorTypeTransientOverload}, io.ErrUnexpectedEOF)
+	o.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID: issue.ID, Request: RunRequest{Issue: issue, Mode: runpkg.RunModeImplement}, CompletedAt: now,
+		Err:       runpkg.RestoreFailureDecision(fault, tracker.FailureAttribution{Outcome: "instance"}),
+		Retryable: true, RetryDelay: time.Second,
+	})
+	if source.releases != 1 {
+		t.Fatalf("settled executions = %d, want 1 before retry", source.releases)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok || retry.Issue.State != issue.State || len(state.Blocked) != 0 {
+		t.Fatalf("retry = %+v, exists = %t, blocked = %d", retry, ok, len(state.Blocked))
+	}
+}
+
 type hubSchedulingSource struct {
 	repository      string
 	admission       tracker.NativeAdmissionContext
