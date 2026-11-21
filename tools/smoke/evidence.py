@@ -294,6 +294,10 @@ def compare(project, policy, evidence, expected, definition, advanced):
                time_key(attempt["cleanup_acknowledged_at"]) <= time_key(attempt["claim_released_at"]))
     for phase in evidence["phases"]:
         assert_binding(phase, attempt, fence, "phase")
+    accepted = [phase["phase"] for phase in evidence["phases"]]
+    if policy["gates"]["plan_enabled"]:
+        expect("one fenced plan receipt before implementation", True,
+               accepted.count("plan") == 1 and "implement" in accepted and accepted.index("plan") < accepted.index("implement"))
     for verdict in evidence["rounds"]:
         assert_binding(verdict, attempt, fence, "round")
     actions = [record["action"] for record in evidence["rounds"]]
