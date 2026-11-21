@@ -167,7 +167,7 @@ func (d AdmissionDeps) ReadRuntimeAdmissionTenant(ctx context.Context, scope hub
 				states = append(states, state.Name)
 			}
 		}
-		candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: issue.WorkItemID, States: states, AvailableAt: now, Limit: 1})
+		candidates, err = r.CandidatePage(ctx, claimstore.CandidateQuery{ProjectID: scope.Project, Scope: string(scope.Project), WorkItemID: issue.WorkItemID, States: states, AvailableAt: now, Limit: 1, RunnerSelection: true})
 		if err != nil {
 			return err
 		}
@@ -268,7 +268,8 @@ func (d AdmissionDeps) ReadRuntimeAdmissionTenant(ctx context.Context, scope hub
 	if !hubcontent.ExplanationRead(ctx) && capacity.Truncated {
 		landingReady, landingLimit = false, d.LandingCapacityUnknown
 	}
-	landingRequired := hubapi.StringsEqualFold(issue.State, "Merging") || issue.ListChange != nil && issue.ListChange.LandingPending
+	historicalLanding := hubapi.StringsEqualFold(issue.State, "Merging")
+	landingRequired := historicalLanding || issue.ListChange != nil && issue.ListChange.LandingPending
 	if landingRequired && !landingReady {
 		if landingLimit == d.LandingCapacityUnknown {
 			evidence.Unavailable = append(evidence.Unavailable, "project_landing_capacity")
@@ -346,7 +347,7 @@ func (d AdmissionDeps) ReadRuntimeAdmissionTenant(ctx context.Context, scope hub
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", claimSourceRefusal(source, runner)
 		case !found:
 			entry.Unavailable = append(entry.Unavailable, "runner_specific_candidate_selection")
-		case !runtimeAdmissionSelects(selected, candidates.Items[0]):
+		case !runtimeAdmissionSelects(selected, candidates.Items[0], historicalLanding):
 			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Outcome, entry.ReasonCode, entry.Reason = "skipped", "no_claimable_work", "Current claim selectors do not select this item"
 		case workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered:
@@ -376,11 +377,11 @@ func (d AdmissionDeps) ReadRuntimeAdmissionTenant(ctx context.Context, scope hub
 	return nil
 }
 
-func runtimeAdmissionSelects(selected tracker.NativeAdmissionContext, item claimstore.Candidate) bool {
+func runtimeAdmissionSelects(selected tracker.NativeAdmissionContext, item claimstore.Candidate, historicalLanding bool) bool {
 	contains := func(values []string, value string) bool {
 		return slices.ContainsFunc(values, func(candidate string) bool { return hubapi.StringsEqualFold(candidate, value) })
 	}
-	if !contains(selected.WorkflowStates, item.State) || len(selected.Authors) > 0 && !contains(selected.Authors, item.Author) {
+	if !historicalLanding && !contains(selected.WorkflowStates, item.State) || len(selected.Authors) > 0 && !contains(selected.Authors, item.Author) {
 		return false
 	}
 	if len(selected.Assignees) > 0 && !slices.ContainsFunc(item.Assignees, func(value string) bool { return contains(selected.Assignees, value) }) {
