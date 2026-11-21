@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,11 +9,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
@@ -184,6 +188,66 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 				if reads != 0 {
 					t.Fatalf("completion reads=%d want=0", reads)
 				}
+			}
+		})
+	}
+}
+
+type sessionLeaseExecution struct {
+	runner.Execution
+	lease tracker.NativeLease
+}
+
+func (e sessionLeaseExecution) Recovery() tracker.NativeRecovery {
+	return tracker.NativeRecovery{Lease: e.lease}
+}
+
+func (e sessionLeaseExecution) RetryPhasePublication(_ context.Context, send func() error) error {
+	return send()
+}
+
+func TestDetachedSessionFinalizationSendsUnderLiveFence(t *testing.T) {
+	for _, revoked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("revoked=%t", revoked), func(t *testing.T) {
+			lease := tracker.NativeLease{ID: "lease_review", FencingToken: 17}
+			finalization := &sessionmodel.Finalization{SessionID: 42, Phase: &workflowmetrics.PhaseEvent{}}
+			writes := 0
+			client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				response := httptest.NewRecorder()
+				if req.Method == http.MethodGet {
+					if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 1}); err != nil {
+						t.Fatal(err)
+					}
+					return response.Result(), nil
+				}
+				writes++
+				var mutation runnersession.Mutation
+				if err := json.NewDecoder(req.Body).Decode(&mutation); err != nil || mutation.LeaseID != lease.ID || mutation.FencingToken != lease.FencingToken || mutation.Finalization == nil || !mutation.Finalization.Equal(*finalization) {
+					t.Fatalf("finalization = %+v, %v", mutation, err)
+				}
+				if revoked {
+					response.WriteHeader(http.StatusConflict)
+					response.WriteString(`{"code":"stale_fencing_token"}`)
+				} else {
+					if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 2,
+						Finalization: &runnersession.Finalization{Input: *finalization, Finished: true, UsageRecorded: true, PhaseRecorded: true}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return response.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessions := NewRunnerSessions(&NativeClient{client: client, organization: "org_example", project: "prj_example"})
+			parent, stop := context.WithCancelCause(t.Context())
+			bound := sessions.BindExecution(parent, sessionLeaseExecution{lease: lease})
+			stop(context.DeadlineExceeded)
+			detached, cancel := context.WithTimeout(context.WithoutCancel(bound), 10*time.Second)
+			defer cancel()
+			err = sessions.ReconcileSessionFinalization(detached, finalization.SessionID, finalization)
+			if writes != 1 || (!revoked && err != nil) || (revoked && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable)) {
+				t.Fatalf("finalization sent %d POSTs, result = %v", writes, err)
 			}
 		})
 	}
