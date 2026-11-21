@@ -25,7 +25,7 @@ func TestChecklistKeepsAttemptsAndReplayedStateDistinct(t *testing.T) {
 			project := tracker.ProjectID(fmt.Sprintf("prj_%d", id))
 			list := tracker.ExecutionChecklist{AttemptID: event.ID, Revision: strings.Repeat("d", 64), PolicyID: "policy", FrozenAt: now,
 				Checks: []tracker.ExecutionCheck{{Ordinal: 1, Kind: tracker.CheckAcceptance, Text: string(org) + " " + event.ID, Status: tracker.CheckNeedsReview}}}
-			change := tracker.ExecutionCheckUpdate{Ordinal: 1, Status: tracker.CheckPassed, Tree: strings.Repeat("a", 40), Receipt: "command-receipt"}
+			change := tracker.ExecutionCheckUpdate{Ordinal: 1, Status: tracker.CheckPassed, Head: strings.Repeat("c", 40), Tree: strings.Repeat("a", 40), Receipt: "command-receipt"}
 			intervention := tracker.ExecutionLoopIntervention{Revision: list.Revision, ThreadID: "thread", TurnID: "turn", Action: "steer", Fingerprint: strings.Repeat("b", 64), Period: 1, Repeats: 3, Sequence: 3, ObservedAt: now}
 			if err := r.WriteLeases(ctx, org, corestore.Serving, func(w leasestore.Writer) error {
 				owner := w.(leasestore.ChecklistWriter)
@@ -56,7 +56,7 @@ func TestChecklistKeepsAttemptsAndReplayedStateDistinct(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if got == nil || len(got.Checks) != 1 || got.Checks[0].Text != string(org)+" "+attempt || got.Checks[0].Status != tracker.CheckPassed || got.Checks[0].Receipt != "command-receipt" {
+				if got == nil || len(got.Checks) != 1 || got.Checks[0].Text != string(org)+" "+attempt || got.Checks[0].Status != tracker.CheckPassed || got.Checks[0].Head != strings.Repeat("c", 40) || got.Checks[0].Receipt != "command-receipt" {
 					t.Fatalf("tenant %s attempt %s: %+v", org, attempt, got)
 				}
 				if len(got.Interventions) != 1 || got.Interventions[0].Action != "steer" || got.Interventions[0].Sequence != 3 {

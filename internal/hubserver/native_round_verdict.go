@@ -378,6 +378,18 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 	}
 	if list != nil {
 		record.ChecklistRevision = list.Revision
+		record.ChecklistChanges = progresscheck.ChecklistChanges(list.Checks, record, command, attempt.Steps)
+		if record.Disposition == progresscheck.NoChangeDisposition {
+			workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, descriptor)
+			if err != nil {
+				return record, err
+			}
+			changes, ready := progresscheck.NoChangeStepChecklist(list, *attempt.Finalization.NoChange, attempt.Steps, gate.Effective(workflow.Config.Gate))
+			if !ready {
+				return record, hubapi.NativePublicInvalid("No-change completion requires evidence for the frozen checklist")
+			}
+			record.ChecklistChanges = changes
+		}
 	}
 	if !exactCommand || command.ReceiptID == "" {
 		return record, nil
@@ -406,9 +418,6 @@ func (o nativeRoundOwner) assess(ctx context.Context, input progresscheck.Public
 		}
 	}
 	recordRoundProgress(&record, previous, command, previous.PolicyID == record.PolicyID && previous.CriteriaRevision == record.CriteriaRevision)
-	if list != nil {
-		record.ChecklistChanges = progresscheck.ChecklistChanges(list.Checks, record, command, attempt.Steps)
-	}
 
 	return record, nil
 }

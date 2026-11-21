@@ -82,25 +82,27 @@ func referencesOnlyCheck(criterion, command string) bool {
 	return len(fields) == 3 && fields[1] == command
 }
 
-func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) *gate.CommandResult {
-	if current.Runtime == nil || current.Runtime.Validation == nil || current.Runtime.Validation.ReceiptID == "" {
-		return nil
+func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) (RoundInput, *gate.CommandResult) {
+	var command *gate.CommandResult
+	if current.Runtime != nil && current.Runtime.Validation != nil && current.Runtime.Validation.ReceiptID != "" {
+		command = current.Runtime.Validation
 	}
-	command := current.Runtime.Validation
-	if previous == nil || previous.Runtime == nil || previous.Runtime.Validation == nil || previous.Runtime.Validation.ReceiptID != command.ReceiptID {
-		return command
-	}
-	for _, step := range current.Steps {
+	for i := len(current.Steps) - 1; i >= 0; i-- {
+		step := current.Steps[i]
 		if step.Step != "validator" && step.Step != "security_audit" {
 			continue
 		}
-		if !slices.ContainsFunc(previous.Steps, func(old tracker.NativeStepReceipt) bool {
-			return old.Step == step.Step && reflect.DeepEqual(old, step)
+		if step.Source.HeadSHA == "" || previous != nil && slices.ContainsFunc(previous.Steps, func(old tracker.NativeStepReceipt) bool {
+			return reflect.DeepEqual(old, step)
 		}) {
-			return command
+			continue
 		}
+		return RoundInput{HeadSHA: step.Source.HeadSHA, TreeSHA: checklistTree(step.Source.HeadSHA, command, step.Validator)}, command
 	}
-	return nil
+	if command != nil && (previous == nil || previous.Runtime == nil || previous.Runtime.Validation == nil || previous.Runtime.Validation.ReceiptID != command.ReceiptID) {
+		return RoundInput{HeadSHA: command.HeadSHA, TreeSHA: command.TreeSHA}, command
+	}
+	return RoundInput{}, nil
 }
 
 func ApplyChecklistChanges(checks []tracker.ExecutionCheck, changes []tracker.ExecutionCheckUpdate) {
@@ -108,13 +110,13 @@ func ApplyChecklistChanges(checks []tracker.ExecutionCheck, changes []tracker.Ex
 		index := slices.IndexFunc(checks, func(check tracker.ExecutionCheck) bool { return check.Ordinal == change.Ordinal })
 		if index >= 0 {
 			check := &checks[index]
-			check.Status, check.Tree, check.Receipt = change.Status, change.Tree, change.Receipt
+			check.Status, check.Head, check.Tree, check.Receipt = change.Status, change.Head, change.Tree, change.Receipt
 		}
 	}
 }
 
 func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, command *gate.CommandResult, steps []tracker.NativeStepReceipt) []tracker.ExecutionCheckUpdate {
-	if command == nil || command.ReceiptID == "" || command.TreeSHA == "" || command.TreeSHA != verdict.TreeSHA || command.HeadSHA != verdict.HeadSHA {
+	if verdict.HeadSHA == "" {
 		return nil
 	}
 	var validator, audit *tracker.NativeStepReceipt
@@ -124,19 +126,35 @@ func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, com
 			continue
 		}
 		switch {
-		case step.Step == "validator" && step.Validator != nil && step.Validator.Submitted:
+		case step.Step == "validator" && step.Validator != nil && step.Validator.Submitted && step.Validator.VersionID == step.Change.VersionID && step.Validator.HeadSHA == verdict.HeadSHA:
 			validator = step
-		case step.Step == "security_audit" && step.SecurityAudit != nil:
+		case step.Step == "security_audit" && step.SecurityAudit != nil && step.SecurityAudit.VersionID == step.Change.VersionID && step.SecurityAudit.Run.HeadSHA == verdict.HeadSHA:
 			audit = step
 		}
 	}
-	var changes []tracker.ExecutionCheckUpdate
+	updates := checklistEvidenceUpdates(checks, checklistEvidence{head: verdict.HeadSHA, tree: verdict.TreeSHA, command: command, validator: validator, audit: audit})
+	return checklistDeltas(checks, updates)
+}
+
+type checklistEvidence struct {
+	head, tree, approval string
+	command              *gate.CommandResult
+	validator, audit     *tracker.NativeStepReceipt
+	auditApproved        bool
+	disclose             bool
+	ci                   *tracker.NativeLandingCIReceipt
+}
+
+func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklistEvidence) []tracker.ExecutionCheckUpdate {
+	var updates []tracker.ExecutionCheckUpdate
+	command, validator, audit := evidence.command, evidence.validator, evidence.audit
+	gateReceipt := command != nil && command.HeadSHA == evidence.head && command.TreeSHA != "" && command.TreeSHA == evidence.tree && command.ReceiptID != ""
 	for _, check := range checks {
 		var status tracker.ExecutionCheckStatus
 		var receipt string
 		switch check.Kind {
 		case tracker.CheckProjectGate:
-			if check.CheckDigest == policy.Digest([]byte(command.Command)) {
+			if gateReceipt && check.CheckDigest == policy.Digest([]byte(command.Command)) {
 				receipt = command.ReceiptID
 				status = tracker.CheckPassed
 				if command.ExitCode != 0 {
@@ -157,36 +175,59 @@ func ChecklistChanges(checks []tracker.ExecutionCheck, verdict RoundVerdict, com
 				status = tracker.CheckFailed
 				if audit.SecurityAudit.Verdict == "pass" {
 					status = tracker.CheckPassed
+				} else if evidence.auditApproved {
+					status = tracker.CheckManual
 				}
 			}
-		case tracker.CheckAcceptance:
+		case tracker.CheckAcceptance, tracker.CheckVerification:
 			if validator != nil {
-				status, receipt = acceptedCriterion(check.Text, validator.Validator, command)
+				var gateCommand string
+				if command != nil {
+					gateCommand = command.Command
+				}
+				status, receipt = acceptedCriterion(check.Text, validator.Validator, evidence.head, evidence.tree, gateCommand)
+				if status == "" && evidence.disclose && slices.Contains(validator.Validator.NotVerified, check.Text) {
+					status, receipt = tracker.CheckDisclosed, checklistStepDigest(validator)
+				}
 			}
+			if status == "" && evidence.approval != "" {
+				status, receipt = tracker.CheckManual, evidence.approval
+			}
+		case tracker.CheckStatusGate:
+			status, receipt = checklistStatusGate(check, evidence.head, evidence.ci)
 		}
 		if status == "" || receipt == "" {
 			continue
 		}
-		if check.Tree == command.TreeSHA && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
+		if check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
 			status = tracker.CheckFlaky
 		}
-		if check.Status != status || check.Tree != command.TreeSHA {
-			changes = append(changes, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Tree: command.TreeSHA, Receipt: receipt})
+		updates = append(updates, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Head: evidence.head, Tree: evidence.tree, Receipt: receipt})
+	}
+	return updates
+}
+
+func checklistDeltas(checks []tracker.ExecutionCheck, updates []tracker.ExecutionCheckUpdate) []tracker.ExecutionCheckUpdate {
+	changes := updates[:0:0]
+	for _, update := range updates {
+		i := slices.IndexFunc(checks, func(check tracker.ExecutionCheck) bool { return check.Ordinal == update.Ordinal })
+		if i >= 0 && (checks[i].Status != update.Status || checks[i].Head != update.Head || checks[i].Tree != update.Tree) {
+			changes = append(changes, update)
 		}
 	}
 	return changes
 }
 
-func acceptedCriterion(text string, result *gate.ValidatorResult, projectGate *gate.CommandResult) (tracker.ExecutionCheckStatus, string) {
+func acceptedCriterion(text string, result *gate.ValidatorResult, head, tree, projectCommand string) (tracker.ExecutionCheckStatus, string) {
 	for _, criterion := range result.CriteriaEvidence {
-		if criterion.Criterion != text || criterion.RestatesImplementation || criterion.HeadSHA != projectGate.HeadSHA || criterion.TreeSHA != projectGate.TreeSHA || strings.TrimSpace(criterion.Behavior) == "" {
+		if criterion.Criterion != text || criterion.RestatesImplementation || criterion.HeadSHA != head || tree == "" || criterion.TreeSHA != tree || strings.TrimSpace(criterion.Behavior) == "" {
 			continue
 		}
 		if criterion.Kind != gate.EvidenceReceipt && criterion.Kind != gate.EvidenceNotVerified {
 			continue
 		}
 		for _, command := range result.Commands {
-			if command.Command == projectGate.Command || command.HeadSHA != projectGate.HeadSHA || command.TreeSHA != projectGate.TreeSHA || command.ReceiptID == "" || !slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
+			if command.Command == projectCommand || command.HeadSHA != head || command.TreeSHA != tree || command.ReceiptID == "" || !slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
 				continue
 			}
 			if command.ExitCode == 0 && criterion.Kind == gate.EvidenceReceipt && result.Verdict == gate.ValidatorVerdictPass {

@@ -69,7 +69,7 @@ func TestChecklistBindsAcceptanceToIndependentReceipt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			check := proof
 			check.TreeSHA = test.proofTree
-			validator := gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass,
+			validator := gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, HeadSHA: "head",
 				CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, HeadSHA: "head", TreeSHA: "tree", ReceiptIDs: []string{test.citation}, Behavior: "inspected exact changed line"}},
 				Commands:         []gate.CommandResult{check, command}}
 			steps := []tracker.NativeStepReceipt{{Step: "validator", PolicyID: "policy", Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Change: tracker.NativeChangeReference{HeadSHA: "head"}, Validator: &validator}}
@@ -127,12 +127,12 @@ func TestRunChecklistEvidenceOnlyProjectsNewReceipts(t *testing.T) {
 	}{
 		{name: "first gate result", current: previous, want: "gate-1"},
 		{name: "same validation heartbeat", previous: &previous, current: previous},
-		{name: "distinct gate receipt", previous: &previous, current: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{ReceiptID: "gate-2"}}}, want: "gate-2"},
-		{name: "independent review on same source", previous: &previous, current: tracker.NativeRunData{Runtime: previous.Runtime, Steps: []tracker.NativeStepReceipt{{Step: "validator", Validator: &gate.ValidatorResult{Submitted: true}}}}, want: "gate-1"},
+		{name: "distinct gate receipt", previous: &previous, current: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{ReceiptID: "gate-2", HeadSHA: "head"}}}, want: "gate-2"},
+		{name: "independent review on same source", previous: &previous, current: tracker.NativeRunData{Runtime: previous.Runtime, Steps: []tracker.NativeStepReceipt{{Step: "validator", Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Validator: &gate.ValidatorResult{Submitted: true}}}}, want: "gate-1"},
 		{name: "unrelated tracked step", previous: &previous, current: tracker.NativeRunData{Runtime: previous.Runtime, Steps: []tracker.NativeStepReceipt{{Step: "agent_turn"}}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := RunChecklistEvidence(test.previous, test.current)
+			_, result := RunChecklistEvidence(test.previous, test.current)
 			var receipt string
 			if result != nil {
 				receipt = result.ReceiptID
