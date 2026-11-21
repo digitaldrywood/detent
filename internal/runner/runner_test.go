@@ -8565,7 +8565,7 @@ func TestAgentRunProgressRetainsLastCommand(t *testing.T) {
 			}
 			var usage UsageUpdate
 			runner := &Runner{}
-			err := runner.publishRunUpdate(t.Context(), RunRequest{Admission: &AdmissionRequest{}, OnUsageUpdate: func(update UsageUpdate) error { usage = update; return nil }}, workspace.Info{}, workspace.Issue{}, progress, RunResult{}, time.Now(), time.Now(), 1, false)
+			err := runner.publishRunUpdate(t.Context(), RunRequest{Admission: &AdmissionRequest{}, OnUsageUpdate: func(update UsageUpdate) error { usage = update; return nil }}, workspace.Info{}, workspace.Issue{}, progress, RunResult{}, time.Now(), time.Now(), 1, false, false)
 			if err != nil {
 				t.Fatal(err)
 			}

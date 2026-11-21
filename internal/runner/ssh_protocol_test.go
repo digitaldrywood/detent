@@ -570,7 +570,7 @@ func TestSSHDisconnectKeepsLatestSessionObservation(t *testing.T) {
 		progress := &agentRunProgress{turnIDs: make(map[string]struct{}), turnOffset: 1}
 		progress.apply(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: observation.thread, TurnID: "turn-2"}, observation.at)
 		if err := r.publishRunUpdate(t.Context(), request, workspace.Info{}, workspace.Issue{}, progress,
-			RunResult{Tokens: TokenTotals{TotalTokens: observation.tokens}}, observation.at, observation.at, 41, false); err != nil {
+			RunResult{Tokens: TokenTotals{TotalTokens: observation.tokens}}, observation.at, observation.at, 41, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}

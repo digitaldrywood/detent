@@ -468,12 +468,8 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 			heads := make([]string, 9)
 			headTimes := make([]time.Time, 9)
 			for i, command := range []string{"cat AGENTS.md", "go test ./internal/fixture", "go test ./internal/fixture", "git diff", "git rebase origin/develop", "gh api repos/fixture/repo/pulls/1/merge", "sleep 1"} {
-				refreshAt := at.Add(time.Duration(i*2+1) * time.Second)
 				if i == 3 && physical {
 					runRunnerGit(t, workspacePath, "commit", "--allow-empty", "-m", "change physical head")
-				}
-				if i == 4 || i == 6 {
-					refreshAt = progress.diffStatsCheckedAt.Add(time.Second)
 				}
 				if i == 5 {
 					if physical {
@@ -485,15 +481,8 @@ func TestActivityRecorderAuditsActiveAndInterruptedRuns(t *testing.T) {
 					}
 				}
 				beforeRead := time.Now()
-				checkedAt := progress.diffStatsCheckedAt
-				if i == 0 || i >= 3 {
-					r.liveDiffStats(t.Context(), r.workspaceSnapshot(), info, issue, progress, refreshAt)
-				}
 				if i == 0 || i == 3 || i == 5 {
-					checkedAt = refreshAt
-				}
-				if !progress.diffStatsCheckedAt.Equal(checkedAt) {
-					t.Fatalf("refresh cadence changed: %v, want %v", progress.diffStatsCheckedAt, checkedAt)
+					r.refreshLiveDiffStats(t.Context(), r.workspaceSnapshot(), info, issue, progress)
 				}
 				heads[i], headTimes[i] = progress.diffStats.HeadSHA, progress.diffStatsHeadObservedAt
 				if physical && (i == 0 || i == 3) {
