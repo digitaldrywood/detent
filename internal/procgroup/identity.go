@@ -125,10 +125,14 @@ func (e launchRollbackError) Unwrap() []error { return []error{e.launch, e.clean
 
 type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error)
 
-func WithCommandOwner(ctx context.Context, owner CommandOwner) context.Context {
+func WithCommandOwner(ctx context.Context, owner CommandOwner, prepareLocalInspection func(*exec.Cmd) bool) context.Context {
 	return shell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
 		if owner == nil {
 			return nil, errors.New("native command has no process owner")
+		}
+		if prepareLocalInspection(cmd) {
+			Configure(ctx, cmd)
+			return func() error { return Wait(cmd) }, Start(cmd)
 		}
 		return startOwnedCommand(ctx, cmd, owner)
 	})
