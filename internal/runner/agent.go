@@ -2300,6 +2300,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if resolvedOverride.Err != nil {
 		return RunResult{}, resolvedOverride.Err
 	}
+	planWorkflow := workflow
 	workflow.Config.Agent = workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, resolvedOverride.Selection.Level)
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(role))
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, role, sessionModel, startedAt)
@@ -2320,10 +2321,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	turnRequest := AgentTurnRequest{Model: selectedModel, ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort}
 	var budgetProjection *dispatchBudgetProjection
-	if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
-		if admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, startedAt); err != nil {
-			return RunResult{}, err
-		} else if refused {
+	admitImplementation := func(at time.Time) (RunResult, bool, error) {
+		if workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeSubscription {
+			return RunResult{}, false, nil
+		}
+		admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, dispatchEstimator, req.Issue, sessionModel, at)
+		budgetProjection = admission.budgetProjection
+		if refused {
 			r.logWorkerEvent(req.Issue, "worker_budget_refused",
 				telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 				"workspace_path", info.Path,
@@ -2333,10 +2337,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				"model", sessionModel,
 				"code", admission.BudgetRefusal.Code,
 			)
-			return admission, nil
-		} else {
-			budgetProjection = admission.budgetProjection
 		}
+		return admission, refused, err
 	}
 	resumeState := store.AgentResumeState{}
 	if turnRecovery != nil && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
@@ -2357,6 +2359,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	planPhase := mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil
+	if !planPhase {
+		if admission, refused, err := admitImplementation(startedAt); refused || err != nil {
+			return admission, err
+		}
+	}
 	if req.Execution != nil {
 		start := req.Execution.Start
 
@@ -2460,7 +2467,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	if planPhase {
-		plan, wait, err := r.runPlanPhase(ctx, req, workflow, agentRuntime, runWorkspace, info, workspaceIssue)
+		plan, wait, admission, err := r.runPlanPhase(ctx, req, planWorkflow, agentRuntime, runWorkspace, info, workspaceIssue, budgetChecker, dispatchEstimator)
+		if admission.BudgetRefusal != nil {
+			afterRunPending = false
+			return admission, nil
+		}
 		if err == nil && wait == "" && sourceBudgetRemaining(ctx) == 0 {
 			err = ErrSessionTurnLimitExceeded
 		}
@@ -2474,6 +2485,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if wait != "" {
 			afterRunPending = false
 			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait}, nil
+		}
+		if admission, refused, err := admitImplementation(r.now()); refused || err != nil {
+			afterRunPending = false
+			return admission, err
 		}
 		if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
 			afterRunPending = false
