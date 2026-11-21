@@ -6,10 +6,73 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+type existingReviewTestWorkspace struct {
+	*fakeWorkspaceBackend
+	info     workspace.Info
+	attempt  workspace.AttemptWorkspace
+	used     bool
+	released bool
+}
+
+func (w *existingReviewTestWorkspace) Existing(issue workspace.Issue) (workspace.Info, error) {
+	w.attempt = issue.AttemptWorkspace
+	return w.info, nil
+}
+
+func (w *existingReviewTestWorkspace) Use(context.Context, workspace.Issue) (func(), error) {
+	w.used = true
+	return func() { w.released = true }, nil
+}
+
+func (w *existingReviewTestWorkspace) ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error) {
+	return "review-head", "review-tree", nil
+}
+
+func TestReviewContinuationReusesOnlyTheExactHeldPhase(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mismatch func(*tracker.NativePhaseReceipt)
+		opened   bool
+	}{
+		{name: "current attempt and fence", opened: true},
+		{name: "lost fence", mismatch: func(phase *tracker.NativePhaseReceipt) { phase.FencingToken-- }},
+		{name: "different attempt", mismatch: func(phase *tracker.NativePhaseReceipt) { phase.AttemptID = "attempt_other" }},
+		{name: "different version head", mismatch: func(phase *tracker.NativePhaseReceipt) { phase.HeadSHA = "other-head" }},
+		{name: "different checkout tree", mismatch: func(phase *tracker.NativePhaseReceipt) { phase.TreeSHA = "other-tree" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			attempt := workspace.AttemptWorkspace{Organization: "org_fixture", Project: "prj_fixture", Attempt: "attempt_11111111111111111111111111111111"}
+			lease := tracker.NativeLease{ID: "lease_fixture", FencingToken: 14, PolicyID: "policy_fixture"}
+			phase := tracker.NativePhaseReceipt{Phase: "project_gate", AttemptID: attempt.Attempt, PolicyID: lease.PolicyID,
+				Mutation: tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken},
+				Branch:   "detent/item", HeadSHA: "review-head", TreeSHA: "review-tree"}
+			if test.mismatch != nil {
+				test.mismatch(&phase)
+			}
+			backend := &existingReviewTestWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{}, info: workspace.Info{PublicationBranch: "detent/item"}}
+			req := RunRequest{Issue: connector.Issue{ID: "wi_fixture"}, AttemptWorkspace: attempt,
+				Execution: &testExecution{recovery: tracker.NativeRecovery{Lease: lease}}, RetainItemWorkspace: true,
+				phaseReceipts: true, phaseContinuation: &tracker.NativePhaseContinuation{LastPushed: &phase},
+				NativeReviewContinuation: &NativeReviewContinuation{Source: tracker.NativeChangeReference{VersionID: "version_fixture", HeadSHA: "review-head"}}}
+			runner := &Runner{}
+			retained, release := runner.existingReviewWorkspace(t.Context(), req, backend)
+			if (retained != nil) != test.opened || test.opened && (backend.attempt != attempt || backend.released) || backend.created {
+				t.Fatalf("retained=%t, attempt=%+v, released=%t, created=%t", retained != nil, backend.attempt, backend.released, backend.created)
+			}
+			release()
+			if backend.used != backend.released {
+				t.Fatal("worktree use was not released")
+			}
+		})
+	}
+}
 
 func TestNativeSourceRework(t *testing.T) {
 	t.Parallel()
