@@ -1339,12 +1339,35 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		t.Fatalf("another tenant's permit changed: %+v", renewed)
 	}
 	audit := providercapacity.Requirement{Role: "security_audit", Backend: "planner", Model: "test-model"}
-	requireNativeStatus(t, swap(first, local.lease, local.runner, code, audit, local.sequence), http.StatusUnprocessableEntity)
-	response = performHubAPIRequest(t, service, http.MethodPost, first.base+"/leases/"+string(local.lease.ID)+"/renew",
-		local.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: local.lease.FencingToken, TTLSeconds: 90})
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/leases/"+string(local.lease.ID)+"/release",
+		local.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: local.lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
+	project := newNativeFixture(t, service, first.project.OrganizationID, "landing-audit")
+	pinned.Gates.PlanEnabled = false
+	pinned.Gates.SecurityAudit = true
+	pinned = pinned.WithID()
+	approveHubTestPolicy(t, service, project.base+"/policy", pinned)
+	landing := claim(project, code, "landing-audit")
+	occupied := code
+	occupied.Backend = audit.Backend
+	busy := claim(project, occupied, "occupied-audit-account")
+	refused := swap(project, landing.lease, landing.runner, code, audit, landing.sequence)
+	requireNativeStatus(t, refused, http.StatusConflict)
+	if !strings.Contains(refused.Body.String(), "provider_capacity") {
+		t.Fatalf("full audit account did not refuse the exchange: %s", refused.Body.String())
+	}
+	response = performHubAPIRequest(t, service, http.MethodPost, project.base+"/leases/"+string(landing.lease.ID)+"/renew",
+		landing.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: landing.lease.FencingToken, TTLSeconds: 90})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
-	if renewed.ID != local.lease.ID || renewed.FencingToken != local.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
-		t.Fatalf("audit swap changed the existing reservation: %+v", renewed)
+	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
+		t.Fatalf("refused audit exchange changed the original permit: %+v", renewed)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, project.base+"/leases/"+string(busy.lease.ID)+"/release",
+		busy.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: busy.lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
+	response = swap(project, landing.lease, landing.runner, code, audit, landing.sequence)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != landing.lease.ID || renewed.FencingToken != landing.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
+		t.Fatalf("audit failed to acquire its provider on the original fence: %+v", renewed)
 	}
 }

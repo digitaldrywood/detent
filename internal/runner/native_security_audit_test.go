@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -41,6 +40,15 @@ type nativeSecurityAuditTestExecution struct {
 
 func (e *nativeSecurityAuditTestExecution) ProviderCapacity() *providercapacity.Reservation {
 	return e.reservation
+}
+
+func (*nativeSecurityAuditTestExecution) StartPhased(context.Context, tracker.NativeExecutionIdentity) error {
+	return nil
+}
+
+func (e *nativeSecurityAuditTestExecution) SetPhaseProvider(_ context.Context, requirement providercapacity.Requirement) error {
+	e.reservation = &providercapacity.Reservation{Requirement: requirement}
+	return nil
 }
 
 type nativeSecurityAuditIsolationBackend struct {
@@ -308,121 +316,107 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	}
 }
 
-type landingAuditDeadlineBackend struct {
-	started bool
-}
-
-func (b *landingAuditDeadlineBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
-	b.started = true
-	<-ctx.Done()
-	return AgentTurnResult{}, ctx.Err()
-}
-
-func TestLandingAuditKeepsClaimProvider(t *testing.T) {
+func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 	for _, test := range []struct {
-		name, held, alternate string
-		expires, verify       bool
+		name                            string
+		verify, refuse, providerDefault bool
 	}{
-		{name: "first landing with opposite audit route", held: "first", alternate: "second"},
-		{name: "second landing verifies on its held account", held: "second", alternate: "first", verify: true},
-		{name: "deadline leaves no host acquisition to wake", held: "first", alternate: "second", expires: true},
+		{name: "separate audit backend and configured model"},
+		{name: "provider default ignores the issue model", providerDefault: true},
+		{name: "verification binds the configured complex model", verify: true},
+		{name: "full audit account receives no diff", refuse: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				lease := tracker.NativeLease{ID: tracker.LeaseID("lease_" + test.held), FencingToken: 7}
-				reserved := providercapacity.Requirement{Role: RoleMerge, Backend: test.held, Model: "reserved-model"}
-				owner := &nativeSecurityAuditTestExecution{reservation: &providercapacity.Reservation{
-					Requirement: reserved, Report: providercapacity.Report{Backend: test.held, SharedAccountAlias: test.held, MaxConcurrent: 1},
-				}}
-				owner.recovery.Lease = lease
-				request := RunRequest{Execution: owner}
-				wire := NewSSHRunRequest(request)
-				wire.Native = true
-				left, right := net.Pipe()
-				t.Cleanup(func() { left.Close(); right.Close() })
-				release := make(chan struct{})
-				var acquisitions, late atomic.Int32
-				callback := NewSSHCallbackHandler(request, nil, nil, nil)
-				hostCtx, stopHost := context.WithCancel(t.Context())
-				defer stopHost()
-				host := NewSSHPeer(hostCtx, left, left, func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
-					if method != "execution.SetPhaseProvider" {
-						return callback(ctx, method, arguments)
-					}
-					acquisitions.Add(1)
-					if !test.expires {
-						return nil, errors.New("the opposite landing holds the only slot")
-					}
-					select {
-					case <-release:
-						late.Add(1)
-						return nil, nil
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					}
-				})
-				t.Cleanup(host.Close)
-				worker := NewSSHPeer(t.Context(), right, right, nil)
-				t.Cleanup(worker.Close)
-				execution := wire.Bind(t.Context(), worker).Execution
-
-				cfg := config.Default()
-				cfg.Gate.SecurityAudit.TurnTimeoutMS = 250
-				cfg.Agents.ModelSelection.Enabled = new(false)
-				cfg.Agents.ModelSelection.ComplexModel = new("configured-complex-model")
-				cfg.Agents.Backends = []config.AgentBackend{
-					{ID: test.held, Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-held"},
-					{ID: test.alternate, Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-alternate"},
+			lease := tracker.NativeLease{ID: "lease_landing", FencingToken: 7}
+			owner := &nativeSecurityAuditTestExecution{reservation: &providercapacity.Reservation{
+				Requirement: providercapacity.Requirement{Role: RoleMerge, Backend: "merge", Model: "issue-model"},
+			}}
+			owner.recovery.Lease = lease
+			request := RunRequest{Execution: owner}
+			wire := NewSSHRunRequest(request)
+			wire.Native = true
+			left, right := net.Pipe()
+			t.Cleanup(func() { left.Close(); right.Close() })
+			var phaseCalls []providercapacity.Requirement
+			var bound atomic.Pointer[providercapacity.Requirement]
+			callback := NewSSHCallbackHandler(request, nil, nil, nil)
+			host := NewSSHPeer(t.Context(), left, left, func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
+				if method != "execution.SetPhaseProvider" {
+					return callback(ctx, method, arguments)
 				}
-				cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: test.alternate, Model: "other-model", Default: true}}
-				success := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
-				alternate := &fakeCodexClient{}
-				deadline := &landingAuditDeadlineBackend{}
-				verification := &verificationAuditBackend{t: t, outputs: []string{
+				var requirement providercapacity.Requirement
+				if err := json.Unmarshal(arguments[0], &requirement); err != nil {
+					return nil, err
+				}
+				phaseCalls = append(phaseCalls, requirement)
+				if test.refuse {
+					return nil, errors.New("audit account is full")
+				}
+				bound.Store(&requirement)
+				return nil, nil
+			})
+			t.Cleanup(host.Close)
+			worker := NewSSHPeer(t.Context(), right, right, nil)
+			t.Cleanup(worker.Close)
+			execution := wire.Bind(t.Context(), worker).Execution
+
+			cfg := config.Default()
+			model := "audit-model"
+			if test.providerDefault {
+				model = ""
+			}
+			cfg.Gate.SecurityAudit.Model = model
+			cfg.Agents.ModelSelection.Enabled = new(false)
+			cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
+			cfg.Agents.Backends = []config.AgentBackend{
+				{ID: "merge", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-merge"},
+				{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"},
+			}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", ModelField: "audit_model", Default: true}}
+			merge := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
+			audit := &verificationAuditBackend{t: t, outputs: []string{`{"verdict":"pass","summary":"No findings","findings":[]}`}}
+			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}}
+			if test.verify {
+				audit.outputs = []string{
 					`{"verdict":"undetermined","summary":"Potential authorization issue","findings":[{"id":"auth","certainty":"undetermined","body":"Requires caller context","unresolved_fact":"Whether the caller checks access","status":"unresolved"}]}`,
 					`{"verdict":"pass","summary":"Lead disproved","findings":[{"id":"auth","certainty":"disproved","body":"The caller checks access","status":"rejected"}]}`,
-				}}
-				var held AgentBackend = success
-				var sessions SessionStore = &fakeSessionStore{sessionID: 73}
-				switch {
-				case test.expires:
-					held = deadline
-				case test.verify:
-					held = verification
-					sessions = &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}}
 				}
-				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{},
-					AgentBackends:     map[string]AgentBackend{test.held: held, test.alternate: alternate},
-					SecurityAuditRoot: t.TempDir(), Store: sessions,
-				})
-				if err != nil {
-					t.Fatal(err)
+			}
+			audit.checkProvider = func(req AgentTurnRequest) error {
+				current := bound.Load()
+				if current == nil || *current != (providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: effectiveModel(req.Model, "provider_default")}) {
+					return errors.New("audit turn started without the matching reservation")
 				}
-				result, err := r.Audit(t.Context(), SecurityAuditRequest{landing: true, usageExecution: execution, Snapshot: securityaudit.Snapshot{
-					ProjectID: "prj_example", IssueID: "wi_example", Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change",
-				}})
-				close(release)
-				synctest.Wait()
-				if acquisitions.Load() != 0 || late.Load() != 0 {
-					t.Fatalf("audit requested another slot: acquisitions=%d after deadline=%d, error=%v", acquisitions.Load(), late.Load(), err)
-				}
-				if test.expires {
-					if !errors.Is(err, context.DeadlineExceeded) || !deadline.started {
-						t.Fatalf("audit deadline did not stop a turn on the held backend: started=%t error=%v", deadline.started, err)
-					}
-				} else if test.verify {
-					if err != nil || result.Verification == nil || len(verification.requests) != 2 || verification.requests[0].Model != reserved.Model || verification.requests[1].Model != reserved.Model || result.RuntimeIdentity.BackendID != reserved.Backend {
-						t.Fatalf("verification left the held backend/model: turns=%d identity=%+v error=%v", len(verification.requests), result.RuntimeIdentity, err)
-					}
-				} else if err != nil || success.calls != 1 || success.request.Model != reserved.Model || result.RuntimeIdentity.BackendID != reserved.Backend {
-					t.Fatalf("audit missed its held backend/model: calls=%d model=%q identity=%+v error=%v", success.calls, success.request.Model, result.RuntimeIdentity, err)
-				}
-				current := execution.Recovery().Lease
-				reservation := execution.(ProviderCapacityExecution).ProviderCapacity()
-				if alternate.calls != 0 || current.ID != lease.ID || current.FencingToken != lease.FencingToken || reservation == nil || reservation.Requirement != reserved {
-					t.Fatalf("audit changed its execution authority: alternate calls=%d lease=%s/%d reservation=%+v", alternate.calls, current.ID, current.FencingToken, reservation)
-				}
+				return nil
+			}
+			r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{},
+				AgentBackends:     map[string]AgentBackend{"merge": merge, "audit": audit},
+				SecurityAuditRoot: t.TempDir(), Store: &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}},
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Audit(t.Context(), SecurityAuditRequest{
+				landing: true, usageExecution: execution,
+				Issue:    connector.Issue{ModelOverride: "issue-model", Fields: map[string]string{"audit_model": "issue-model"}, Description: "```detent-agent\nschema: 1\nmodel: issue-model\n```"},
+				Snapshot: securityaudit.Snapshot{ProjectID: "prj_example", IssueID: "wi_example", Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change"},
+			})
+			want := []providercapacity.Requirement{{Role: RoleSecurityAudit, Backend: "audit", Model: effectiveModel(model, "provider_default")}}
+			if test.verify {
+				want = append(want, providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: "complex-model"})
+			}
+			if merge.calls != 0 || !reflect.DeepEqual(phaseCalls, want) {
+				t.Fatalf("landing audit escaped configured admission: merge turns=%d phases=%+v error=%v", merge.calls, phaseCalls, err)
+			}
+			if test.refuse {
+				if err == nil || len(audit.requests) != 0 || !result.RuntimeIdentity.IsZero() {
+					t.Fatalf("refused reservation allowed an audit: turns=%d result=%+v error=%v", len(audit.requests), result, err)
+				}
+				return
+			}
+			if err != nil || len(audit.requests) != len(want) || result.RuntimeIdentity.BackendID != "audit" || (result.Verification != nil) != test.verify {
+				t.Fatalf("audit did not run with the configured identity: turns=%d result=%+v error=%v", len(audit.requests), result, err)
+			}
 		})
 	}
 }
@@ -441,6 +435,7 @@ type verificationAuditBackend struct {
 	requests         []AgentTurnRequest
 	deadline         time.Time
 	failVerification bool
+	checkProvider    func(AgentTurnRequest) error
 }
 
 func (b *verificationAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -454,6 +449,11 @@ func (b *verificationAuditBackend) RunTurn(ctx context.Context, req AgentTurnReq
 		b.t.Fatal("verification weakened the fresh no-tools audit boundary")
 	}
 	b.requests = append(b.requests, req)
+	if b.checkProvider != nil {
+		if err := b.checkProvider(req); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
 	if len(b.requests) == 2 {
 		if !strings.Contains(req.Prompt, `"verification_of"`) || !strings.Contains(req.Prompt, `"textual_diff":"+change"`) || !strings.Contains(req.Prompt, `"id":"auth"`) {
 			b.t.Fatal("verification lost supplied evidence or lead identity")

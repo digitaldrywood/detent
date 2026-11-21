@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner/internal/runobserve"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -104,18 +105,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if err != nil {
 		return execution, err
 	}
-	reservation := landingProviderReservation(req.usageExecution)
-	if !req.landing {
-		reservation = nil
+	selectionIssue := req.Issue
+	if req.landing {
+		selectionIssue.ModelOverride = ""
+		selectionIssue.Fields = nil
 	}
-	var selection RouteSelection
-	var backend AgentBackend
-	var backendConfig config.AgentBackend
-	if reservation != nil {
-		selection, backend, backendConfig, err = agentRuntime.selectReservedLandingBackend(reservation)
-	} else {
-		selection, backend, backendConfig, err = agentRuntime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
-	}
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(selectionIssue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleSecurityAudit)
 	if err != nil {
 		return execution, err
 	}
@@ -150,17 +145,16 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	}
 	execution.InvocationID = uuid.NewString()
 	execution.StartedAt = startedAt
-	baseModel := selection.Model
-	if reservation == nil {
-		baseModel = effectiveModel("", baseModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
-		if verification {
-			baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
-			if baseModel == "" {
-				return execution, errors.New("security audit complex model is not configured")
-			}
+	baseModel := effectiveModel(selection.Model, agentRuntime.defaultModelForRole(RoleSecurityAudit))
+	if req.landing {
+		baseModel = effectiveModel(auditConfig.Model, baseModel)
+	}
+	if verification {
+		baseModel = workflow.Config.EffectiveModelSelection().Model("complex")
+		if baseModel == "" {
+			return execution, errors.New("security audit complex model is not configured")
 		}
 	}
-	selectionIssue := req.Issue
 	selectionIssue.Description = ""
 	baseEnvironment := r.withGoBudget(ctx, auditWorkspace, workerEnvironment(map[string]string{
 		"GH_TOKEN":                             "",
@@ -176,11 +170,8 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	if err != nil {
 		return execution, err
 	}
-	resolvedSelection := agentSelection{resolvedAgentOverride: resolvedAgentOverride{Model: baseModel}}
-	if reservation == nil {
-		resolvedSelection = resolveAgentSelection(ctx, selectionIssue, processRequest, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
-	}
-	if reservation == nil && verification && resolvedSelection.Err == nil {
+	resolvedSelection := resolveAgentSelection(ctx, selectionIssue, processRequest, baseModel, RoleSecurityAudit, workflow.Config, backendConfig, backend)
+	if verification && resolvedSelection.Err == nil {
 		provider, ok := backend.(AgentModelCatalogProvider)
 		if !ok {
 			resolvedSelection.Err = errors.New("security audit verification requires a backend model catalog")
@@ -200,9 +191,17 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		return execution, err
 	}
 	selectedModel := resolvedSelection.Model
-	sessionModel := selectedModel
-	if reservation == nil {
-		sessionModel = effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
+	sessionModel := effectiveModel(selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
+	if req.landing {
+		owner, ok := req.usageExecution.(phasedProviderExecution)
+		if !ok {
+			return execution, errors.New("landing security audit requires a fenced provider")
+		}
+		requirement := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: selection.BackendID, Model: effectiveModel(selectedModel, "provider_default")}
+		if err := owner.SetPhaseProvider(ctx, requirement); err != nil {
+			return execution, fmt.Errorf("reserve landing audit provider: %w", err)
+		}
+		sessionModel = selectedModel
 	}
 	runtimeIdentity := configuredRuntimeIdentity(selection, backendConfig, RoleSecurityAudit, sessionModel, startedAt)
 	runtimeIdentity.Selection = resolvedSelection.Selection

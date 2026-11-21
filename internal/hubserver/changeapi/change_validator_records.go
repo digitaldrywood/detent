@@ -1,6 +1,7 @@
 package changeapi
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/releaseaudits"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -195,8 +197,19 @@ func (s *validator) lockValidatorReviewRecord(ctx context.Context, w tenantstore
 	if !reflect.DeepEqual(session, p.session) {
 		return corestore.ErrRevisionConflict
 	}
-	if request.SecurityAudit != nil {
-		return releaseaudits.LockValidatorAuditDispositions(ctx, w, scope, request.SecurityAudit.Run.ID, p.auditDispositionRows)
+	if audit := request.SecurityAudit; audit != nil {
+		if audit.Landing {
+			reserved, err := w.ProviderReservation(ctx, request.LeaseID)
+			if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+				return err
+			}
+			want := providercapacity.Requirement{Role: "security_audit", Backend: session.BackendID, Model: cmp.Or(session.Model, "provider_default")}
+			reported := providercapacity.Requirement{Role: audit.Identity.Role, Backend: audit.Identity.BackendID, Model: cmp.Or(audit.Identity.RequestedModel.Value, "provider_default")}
+			if errors.Is(err, corestore.ErrNotFound) || reserved.Reservation.Requirement != want || reported != want {
+				return s.deps.SecurityAuditRejection("landing security audit session requires the matching provider reservation", "execution_session")
+			}
+		}
+		return releaseaudits.LockValidatorAuditDispositions(ctx, w, scope, audit.Run.ID, p.auditDispositionRows)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient/provider"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -27,6 +28,9 @@ func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 
 func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
 	if e.scheduler.providerReports == nil && e.ProviderCapacity() == nil {
+		if requirement.Role == runner.RoleSecurityAudit {
+			return e.unavailable(errors.New("landing security audit requires a provider reservation"))
+		}
 		return nil
 	}
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {

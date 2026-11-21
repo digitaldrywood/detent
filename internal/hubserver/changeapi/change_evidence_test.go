@@ -6,14 +6,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -81,4 +88,65 @@ func (r *validatorArchiveReader) RunnerForLease(context.Context, string) (runner
 func (r *validatorArchiveReader) AttachmentArchive(context.Context, attachmentstore.ArchiveQuery) (attachment.ArchiveReference, error) {
 	r.archiveLookups++
 	return attachment.ArchiveReference{}, corestore.ErrNotFound
+}
+
+type landingAuditEvidenceWriter struct {
+	tenantstore.Writer
+	runnersession.Reader
+	eventstore.AuditDispositionReader
+	session     runnersession.Record
+	reservation providercapacity.Requirement
+}
+
+func (w landingAuditEvidenceWriter) RunnerSession(context.Context, tracker.ProjectID, int64) (runnersession.Record, error) {
+	return w.session, nil
+}
+
+func (w landingAuditEvidenceWriter) ProviderReservation(_ context.Context, lease tracker.LeaseID) (claimstore.ProviderReservation, error) {
+	if lease != "lease_example" || w.reservation == (providercapacity.Requirement{}) {
+		return claimstore.ProviderReservation{}, corestore.ErrNotFound
+	}
+	return claimstore.ProviderReservation{LeaseID: lease, Reservation: providercapacity.Reservation{Requirement: w.reservation}}, nil
+}
+
+func (landingAuditEvidenceWriter) AuditDispositions(context.Context, tracker.ProjectID, int64) ([]eventstore.AuditDisposition, error) {
+	return nil, nil
+}
+
+func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
+	t.Parallel()
+	scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example"}
+	refused := errors.New("audit session does not match its reservation")
+	owner := newValidator(ValidatorDeps{
+		RunnerSessionFenceWithOwner: func(context.Context, tenantstore.Reader, hubscope.NativeScope, runnersession.Mutation, string, runnerstore.Identity) (leasestore.Attempt, corestore.WorkItem, policystore.Revision, error) {
+			return leasestore.Attempt{}, corestore.WorkItem{}, policystore.Revision{}, nil
+		},
+		SecurityAuditRejection: func(string, string) error { return refused },
+	})
+	match := providercapacity.Requirement{Role: "security_audit", Backend: "audit", Model: "audit-model"}
+	for _, test := range []struct {
+		name        string
+		reservation providercapacity.Requirement
+		reported    string
+		want        error
+	}{
+		{name: "matching session", reservation: match, reported: match.Model},
+		{name: "missing reservation", reported: match.Model, want: refused},
+		{name: "merge reservation", reservation: providercapacity.Requirement{Role: "merge", Backend: match.Backend, Model: match.Model}, reported: match.Model, want: refused},
+		{name: "different backend", reservation: providercapacity.Requirement{Role: match.Role, Backend: "other", Model: match.Model}, reported: match.Model, want: refused},
+		{name: "different model", reservation: providercapacity.Requirement{Role: match.Role, Backend: match.Backend, Model: "other"}, reported: match.Model, want: refused},
+		{name: "misattributed verdict", reservation: match, reported: "other", want: refused},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			session := runnersession.Record{ID: 1, Role: match.Role, BackendID: match.Backend, Model: match.Model}
+			writer := landingAuditEvidenceWriter{session: session, reservation: test.reservation}
+			request := tracker.ReviewChange{Mutation: tracker.Mutation{LeaseID: "lease_example", FencingToken: 1}, SecurityAudit: &tracker.SecurityAuditReview{
+				Landing: true, SessionID: session.ID, Identity: agentidentity.Identity{Role: match.Role, BackendID: match.Backend, RequestedModel: agentidentity.NewValue(test.reported, agentidentity.ProvenanceConfigured)},
+			}}
+			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, &preparedValidatorReview{session: session}, runnerstore.Identity{}, eventstore.Change{})
+			if !errors.Is(err, test.want) {
+				t.Fatalf("landing verdict error = %v, want %v", err, test.want)
+			}
+		})
+	}
 }
