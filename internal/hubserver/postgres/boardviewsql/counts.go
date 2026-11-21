@@ -4,7 +4,7 @@ import "strconv"
 
 func DirtyItems(projects string) string {
 	return `dirty AS MATERIALIZED (
- SELECT d.project_id,d.work_item_id,i.workflow_state_name AS state,i.archived,w.terminal,w.dispatchable,i.actor_principal_id
+ SELECT d.project_id,d.work_item_id,i.workflow_state_name AS state,i.archived,w.terminal,w.dispatchable,w.board_rank,i.actor_principal_id
  FROM (` + projects + `) v
  CROSS JOIN LATERAL (
   SELECT d.project_id,d.work_item_id FROM native_board_dirty d

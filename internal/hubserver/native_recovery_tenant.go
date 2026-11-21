@@ -358,7 +358,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			if attempt.IssueID != row.ID {
 				return corestore.ErrNotFound
 			}
-			lease, err := r.Lease(ctx, attempt.LeaseID)
+			lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
@@ -372,7 +372,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			if event.WorkItemID != row.NativeID {
 				return corestore.ErrNotFound
 			}
-			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
