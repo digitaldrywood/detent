@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -18,6 +20,8 @@ import (
 // the sessions it opened on that channel using usage already received.
 type SSHCallbacks struct {
 	local                 *Runner
+	localStartNamespace   string
+	localSessionMu        sync.Mutex
 	issue                 connector.Issue
 	publicationMu         sync.Mutex
 	publicationCallbackMu sync.Mutex
@@ -41,6 +45,7 @@ type SSHCallbacks struct {
 func (r *Runner) LocalRunCallbacks(request RunRequest) *SSHCallbacks {
 	callbacks := r.SSHRunCallbacks(request)
 	callbacks.local, callbacks.issue = r, request.Issue
+	callbacks.localStartNamespace = uuid.NewString()
 	return callbacks
 }
 
@@ -61,7 +66,11 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	var result any
 	var err error
 	switch method {
-	case "local.start", "local.finish", "local.processes", "local.register", "local.reaped":
+	case "local.start", "local.finish":
+		c.localSessionMu.Lock()
+		defer c.localSessionMu.Unlock()
+		result, err = c.handleLocalProcess(ctx, method, args)
+	case "local.processes", "local.register", "local.reaped":
 		result, err = c.handleLocalProcess(ctx, method, args)
 	case "publication.authorize", "publication.effect":
 		c.publicationCallbackMu.Lock()
@@ -150,12 +159,12 @@ func (c *SSHCallbacks) RegisterOverlappingWorker(ctx context.Context, request Ru
 		return nil, ErrExecutionAuthorityUnavailable
 	}
 	ctx = bindSessionExecution(ctx, c.store, c.execution)
-	id, err := owner.StartSession(ctx, store.SessionStart{
+	id, reconcile, err := startWorkerSession(ctx, owner, store.SessionStart{
 		ProjectID: request.ProjectID, IssueID: request.Issue.ID, Identifier: request.Issue.Identifier,
 		IssueURL: request.Issue.URL, WorkAttemptID: request.WorkAttemptID, StartedAt: worker.StartedAt,
 		AgentBackendKind: "host", AgentRole: "execution_worker", Worker: &worker,
 	})
-	if id <= 0 {
+	if id <= 0 && reconcile == nil {
 		return nil, errors.Join(err, ErrExecutionAuthorityUnavailable)
 	}
 	state := FinalStateCompleted
@@ -164,6 +173,14 @@ func (c *SSHCallbacks) RegisterOverlappingWorker(ctx context.Context, request Ru
 	}
 	return func(ctx context.Context) error {
 		ctx = bindSessionExecution(ctx, c.store, c.execution)
+		if reconcile != nil {
+			var err error
+			id, err = reconcile(ctx)
+			if id <= 0 {
+				return err
+			}
+			reconcile = nil
+		}
 		now := time.Now().UTC()
 		err := owner.FinishSession(ctx, id, store.SessionFinish{
 			CompletedAt: now, FinalState: state,

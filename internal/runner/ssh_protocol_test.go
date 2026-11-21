@@ -473,6 +473,7 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 			CleanupRoot:           root, CleanupPath: filepath.Join(root, "scratch"),
 		}}
 		finish := store.SessionFinish{Reap: &store.WorkerProcessReap{Outcome: "already_exited"}}
+		const launchKey = "00000000-0000-4000-8000-000000000001"
 		for _, test := range []struct {
 			name      string
 			callbacks *SSHCallbacks
@@ -483,7 +484,7 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 			{"remote generic reap", remote, "store.FinishSession", []any{int64(77), finish}},
 			{"local generic registration", local, "store.StartSession", []any{start}},
 			{"local generic reap", local, "store.FinishSession", []any{int64(77), finish}},
-			{"remote local registration", remote, "local.start", []any{start}},
+			{"remote local registration", remote, "local.start", []any{start, launchKey}},
 			{"remote local reap", remote, "local.finish", []any{int64(77), finish}},
 		} {
 			t.Run(test.name, func(t *testing.T) {
@@ -496,7 +497,7 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 		worker := *start.Worker
 		worker.CleanupPath = filepath.Join(t.TempDir(), "scratch")
 		escaped.Worker = &worker
-		if err := call(local, "local.start", escaped); err == nil || sessions.startCalls != 0 || sessions.finishCalls != 0 {
+		if err := call(local, "local.start", escaped, launchKey); err == nil || sessions.startCalls != 0 || sessions.finishCalls != 0 {
 			t.Fatalf("rejected payload reached session store: starts=%d finishes=%d cleanup error=%v", sessions.startCalls, sessions.finishCalls, err)
 		}
 
@@ -509,7 +510,7 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 			<-controller.Context().Done()
 			<-client.Context().Done()
 		})
-		workerStore := LocalSessionStore{SSHSessionStore{Peer: client}}
+		workerStore := LocalSessionStore{SSHSessionStore: SSHSessionStore{Peer: client}, Combined: true}
 		id, err := workerStore.StartSession(t.Context(), start)
 		if err != nil || id != 77 || sessions.startCalls != 1 || sessions.started.Worker == nil || sessions.started.Worker.CleanupRoot != root {
 			t.Fatalf("local registration failed: id=%d calls=%d error=%v", id, sessions.startCalls, err)

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -12,6 +15,7 @@ import (
 
 type LocalSessionStore struct {
 	SSHSessionStore
+	Combined bool
 }
 
 type localSessionStartResult struct {
@@ -23,8 +27,24 @@ func (s LocalSessionStore) StartSession(ctx context.Context, start store.Session
 	if start.Worker == nil {
 		return s.SSHSessionStore.StartSession(ctx, start)
 	}
+	if !s.Combined {
+		worker := *start.Worker
+		start.Worker = nil
+		id, err := s.SSHSessionStore.StartSession(ctx, start)
+		if err != nil {
+			return id, err
+		}
+		return id, s.UpdateSessionWorkerProcess(ctx, id, worker)
+	}
+	key := WorkerSessionStartKey(ctx)
+	if key == "" {
+		key = uuid.NewString()
+	}
 	var result localSessionStartResult
-	if err := s.Peer.Call(ctx, "local.start", &result, start); err != nil {
+	if err := s.Peer.Call(ctx, "local.start", &result, start, key); err != nil {
+		if errors.Is(err, io.ErrUnexpectedEOF) || ctx.Err() != nil {
+			err = errors.Join(ErrWorkerSessionStartUncertain, err)
+		}
 		return 0, err
 	}
 	return result.ID, result.Failure.err()
@@ -33,6 +53,11 @@ func (s LocalSessionStore) StartSession(ctx context.Context, start store.Session
 func (s LocalSessionStore) FinishSession(ctx context.Context, id int64, finish store.SessionFinish) error {
 	if finish.Reap == nil {
 		return s.SSHSessionStore.FinishSession(ctx, id, finish)
+	}
+	if !s.Combined {
+		err := s.MarkSessionWorkerProcessReaped(ctx, id, *finish.Reap)
+		finish.Reap = nil
+		return errors.Join(err, s.SSHSessionStore.FinishSession(ctx, id, finish))
 	}
 	return s.Peer.Call(ctx, "local.finish", nil, id, finish)
 }
@@ -56,7 +81,10 @@ func (s LocalSessionStore) MarkSessionWorkerProcessReaped(ctx context.Context, i
 	return s.Peer.Call(ctx, "local.reaped", nil, id, result)
 }
 
-func (c *SSHCallbacks) startLocalSession(ctx context.Context, start store.SessionStart) (localSessionStartResult, error) {
+func (c *SSHCallbacks) startLocalSession(ctx context.Context, start store.SessionStart, key string) (localSessionStartResult, error) {
+	if err := uuid.Validate(key); err != nil || len(key) != 36 {
+		return localSessionStartResult{}, errors.New("invalid local session start key")
+	}
 	if start.Worker == nil || strings.TrimSpace(start.Worker.CleanupPath) != "" && strings.TrimSpace(start.Worker.CleanupRoot) == "" {
 		return localSessionStartResult{}, errors.New("local session start requires worker ownership and a cleanup root for scratch")
 	}
@@ -65,7 +93,7 @@ func (c *SSHCallbacks) startLocalSession(ctx context.Context, start store.Sessio
 		return localSessionStartResult{}, err
 	}
 	start.Worker.CleanupRoot = root
-	id, err := c.store.StartSession(ctx, start)
+	id, err := c.store.StartSession(withWorkerSessionStartKey(ctx, c.localStartNamespace+":"+key), start)
 	if err != nil && id <= 0 {
 		return localSessionStartResult{}, err
 	}
