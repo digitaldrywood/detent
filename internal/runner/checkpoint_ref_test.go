@@ -135,6 +135,40 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 	}
 }
 
+func TestInterruptedFenceKeepsCleanCheckpointWorktree(t *testing.T) {
+	t.Parallel()
+	scope := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+	for _, test := range []struct {
+		name      string
+		fence     tracker.FencingToken
+		workspace error
+		wantFresh bool
+	}{
+		{name: "same fence", fence: 1},
+		{name: "different fence", fence: 2, wantFresh: true},
+		{name: "missing worktree", fence: 1, workspace: workspace.ErrMissingWorkspace, wantFresh: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			checkpoint := &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", Resume: "fresh_checkout", WorktreeState: "clean", HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExternalEffect: "none", EffectState: "none"}
+			recovery := tracker.NativeRecovery{
+				Lease: tracker.NativeLease{ID: "lease_example", MachineID: "machine", FencingToken: test.fence},
+				Attempts: []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{AttemptID: scope.Attempt, LeaseID: "lease_example", MachineID: "machine", FencingToken: 1, Outcome: "interrupted"},
+					Checkpoint:    checkpoint,
+				}},
+			}
+			issue := workspace.Issue{AttemptWorkspace: scope}
+			restoreRunWorkspaceCheckpoint(RunRequest{Execution: &testExecution{recovery: recovery}}, existingWorkspaceBackend{err: test.workspace}, &issue, false)
+			if issue.FreshCheckout != test.wantFresh {
+				t.Fatalf("fresh checkout = %t, want %t", issue.FreshCheckout, test.wantFresh)
+			}
+			if test.wantFresh && issue.BaseRef != checkpoint.HeadSHA {
+				t.Fatalf("replacement base = %q, want %q", issue.BaseRef, checkpoint.HeadSHA)
+			}
+		})
+	}
+}
+
 type checkpointFinalizingWorkspace struct {
 	*wipExecutionWorkspace
 	onFinalize func() error
