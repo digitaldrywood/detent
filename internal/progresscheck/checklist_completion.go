@@ -3,7 +3,6 @@ package progresscheck
 import (
 	"slices"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -28,7 +27,11 @@ func ReviewedChecklist(list *tracker.ExecutionChecklist, body string, detail tra
 		case review.Validator != nil && review.Actor.Kind == "runner":
 			result := review.Validator
 			if result.Submitted && result.SessionID > 0 && result.VersionID == version.ID && result.HeadSHA == version.HeadSHA && result.BaseSHA == version.BaseSHA && result.Repository == version.Repository {
-				validator = result
+				validator = nil
+				if review.Decision == "approved" && result.Verdict == gate.ValidatorVerdictPass {
+					validator = result
+					evidence.disclose = len(result.UnsatisfiableCriteria()) == 0
+				}
 			}
 		case review.SecurityAudit != nil && !review.SecurityAudit.Landing:
 			audit := review.SecurityAudit
@@ -43,9 +46,6 @@ func ReviewedChecklist(list *tracker.ExecutionChecklist, body string, detail tra
 	}
 	if validator != nil {
 		evidence.validator = &tracker.NativeStepReceipt{Validator: validator}
-		if workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, version.Policy); err == nil {
-			evidence.disclose = allowsChecklistDisclosure(workflow.Config.Gate.Validator, validator)
-		}
 	}
 	evidence.tree = checklistTree(evidence.head, evidence.command, validator)
 	return evaluateChecklist(list, evidence, preparingLanding && version.Policy.Gates.GitHubPullRequest)
