@@ -763,7 +763,7 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request *orchestr
 			continue
 		}
 		renewable := *recovery.ContinuationEligible
-		if renewable {
+		if renewable && !interrupted {
 			renewable, err = s.nativeClaimRenewable(ctx, nativeClaim{source: source, lease: tracker.NativeLease{ID: held.ID, WorkItemID: held.WorkItemID, FencingToken: held.FencingToken}, recovery: recovery})
 			if err != nil {
 				return nil, err
