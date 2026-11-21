@@ -19,6 +19,8 @@ const (
 	CheckPassed      ExecutionCheckStatus = "passed"
 	CheckFailed      ExecutionCheckStatus = "failed"
 	CheckFlaky       ExecutionCheckStatus = "flaky"
+	CheckManual      ExecutionCheckStatus = "manual_approved"
+	CheckDisclosed   ExecutionCheckStatus = "disclosed"
 )
 
 type ExecutionCheck struct {
@@ -27,6 +29,7 @@ type ExecutionCheck struct {
 	Text        string               `json:"text"`
 	CheckDigest string               `json:"check_digest,omitempty"`
 	Status      ExecutionCheckStatus `json:"status"`
+	Head        string               `json:"head_sha,omitempty"`
 	Tree        string               `json:"tree_sha,omitempty"`
 	Receipt     string               `json:"receipt_id,omitempty"`
 	CheckedAt   time.Time            `json:"checked_at,omitzero"`
@@ -44,7 +47,8 @@ type ExecutionChecklist struct {
 type ExecutionCheckUpdate struct {
 	Ordinal int                  `json:"ordinal"`
 	Status  ExecutionCheckStatus `json:"status"`
-	Tree    string               `json:"tree_sha"`
+	Head    string               `json:"head_sha,omitempty"`
+	Tree    string               `json:"tree_sha,omitempty"`
 	Receipt string               `json:"receipt_id"`
 }
 

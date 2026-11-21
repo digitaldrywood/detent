@@ -33,7 +33,7 @@ func (e *nativeExecution) RecordSourceValidation(ctx context.Context, result gat
 	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{Validation: &result}); err != nil {
 		return err
 	}
-	if e.checklistFrozen.Load() && result.ReceiptID != "" {
+	if e.frozenChecklist.Load() != nil && result.ReceiptID != "" {
 		return e.FlushRuntime(ctx)
 	}
 	return nil
