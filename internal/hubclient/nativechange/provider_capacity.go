@@ -3,10 +3,12 @@ package nativechange
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/provider"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,8 +31,29 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 	if e.scheduler.providerReports == nil && e.ProviderCapacity() == nil {
 		return nil
 	}
+	for delay := time.Second; ; delay = min(30*time.Second, 2*delay) {
+		err := e.setPhaseProvider(ctx, requirement)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		var refusal *APIError
+		if requirement.Role != runner.RoleSecurityAudit || !errors.As(err, &refusal) || refusal.Code != "provider_capacity" {
+			return e.unavailable(err)
+		}
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case <-time.After(delay/2 + time.Duration(rand.Int64N(int64(delay/2)+1))):
+		}
+	}
+}
+
+func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
 	if err := e.VerifyPhaseAuthority(ctx); err != nil {
-		return e.unavailable(err)
+		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -43,16 +66,16 @@ func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement prov
 		}
 	}
 	if err := e.flushObservations(ctx); err != nil {
-		return e.unavailable(err)
+		return err
 	}
 	client, lease := e.claim.source.NativeClient(), e.claim.lease
 	ttl := int64(e.scheduler.host.LeaseDuration() / time.Second)
 	current, err := client.SetLeaseProviderPhase(ctx, lease, ttl, tracker.NativeProviderPhaseMutation{Expected: expected, Requirement: requirement, Sequence: e.data.Sequence})
 	if err != nil {
-		return e.unavailable(e.executionError(ctx, err))
+		return e.executionError(ctx, err)
 	}
 	if current.ID != lease.ID || current.FencingToken != lease.FencingToken || current.ProviderReservation == nil || current.ProviderReservation.Requirement != requirement {
-		return e.unavailable(errors.New("Hub returned a different phase provider reservation"))
+		return errors.New("Hub returned a different phase provider reservation")
 	}
 	e.phaseReservation.Store(current.ProviderReservation)
 	return e.validateProviderStart(identity)
