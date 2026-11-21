@@ -379,7 +379,7 @@ def execute(profile, case):
     if action == "pause_runner":
         clock = {"heartbeat_interval_seconds": scenario["heartbeat_seconds"],
                  "lease_ttl_seconds": scenario["lease_ttl_seconds"]}
-    if action == "restart_runner":
+    if scenario.get("action") in {"restart_hub", "restart_runner"}:
         clock = {"heartbeat_interval_seconds": 5, "lease_ttl_seconds": 75}
     stack.up(capacity, clock, scripted_codex=scenario.get("scripted_codex", False))
     org, admin = stack.current()

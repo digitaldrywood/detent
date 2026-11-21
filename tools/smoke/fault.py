@@ -4,7 +4,7 @@ import socket
 import time
 
 import stack
-from evidence import expect, time_key
+from evidence import expect, instant, time_key
 
 
 def load_operator(fixture):
@@ -116,11 +116,12 @@ ROLLBACK;
             review_session = self.active_validator(attempt_id)
             if not review_session:
                 return
+            lease = {field: active[field] for field in ("lease_id", "fencing_token", "lease_renewed_at", "lease_expires_at")}
             stack.stop("hub")
             at = self.operator.timestamp()
             time.sleep(self.definition["down_seconds"])
             stack.start_hub()
-            proof = {"at": at, "ready_at": self.operator.timestamp(), "review_session": review_session}
+            proof = {"at": at, "ready_at": self.operator.timestamp(), "review_session": review_session, "lease": lease}
         else:
             raise stack.Failure(f"unknown fault action {self.action!r}")
         self.observation = {"action": self.action, "attempt_id": attempt_id, "lease_id": active["lease_id"], **proof}
@@ -131,6 +132,14 @@ ROLLBACK;
         stack.write(stack.ROOT / "fault.evidence.json", {"fault": proof, "samples": self.samples, "difference": difference})
         if difference:
             raise stack.Failure(difference)
+        if self.action == "restart_hub":
+            lease = proof["lease"]
+            expires = instant(lease["lease_expires_at"])
+            expect("Hub restart lease lifetime", 75, (expires - instant(lease["lease_renewed_at"])).total_seconds())
+            expect("Hub ready before the held lease expired", True, instant(proof["ready_at"]) < expires)
+            attempt, = evidence["details"]
+            expect("Hub restart retained the same lease", lease["lease_id"], attempt["lease_id"])
+            expect("Hub restart retained the same fence", lease["fencing_token"], attempt["fencing_token"])
         if self.action == "kill_worker" or self.specification.get("resumed_implementation") and len(evidence["details"]) == 1:
             attempt_id = evidence["details"][0]["attempt_id"]
             interrupted = next((event for event in self.operator.instance_failure(evidence["history"])
