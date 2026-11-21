@@ -1123,7 +1123,7 @@ func dispatchStartTransitionState(issue connector.Issue, mode string, activeStat
 
 func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
 	if o.nativeWorkflow() {
-		if issue.NativeLandingHeadSHA != "" && !autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote)) {
+		if issue.NativeLandingHeadSHA != "" {
 			return runpkg.RunModeMerge
 		}
 		return runpkg.RunModeImplement
