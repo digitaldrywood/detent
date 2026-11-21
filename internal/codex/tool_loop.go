@@ -23,6 +23,7 @@ type loopToolItem struct {
 	Command          string
 	CWD              string
 	Server           string
+	Namespace        string
 	Tool             string
 	Status           string
 	Source           string
@@ -30,7 +31,6 @@ type loopToolItem struct {
 	AggregatedOutput *string
 	Arguments        json.RawMessage
 	Result           json.RawMessage
-	Error            json.RawMessage
 	ContentItems     json.RawMessage
 }
 
@@ -288,19 +288,56 @@ func (i loopToolItem) experiment(root string) (progresscheck.ToolExperiment, boo
 		if i.Tool == "" || len(i.Arguments) == 0 {
 			return e, false
 		}
-		e.Tool += "/" + i.Server + "/" + i.Tool
+		e.Tool += "/" + firstNonBlank(i.Server, i.Namespace) + "/" + i.Tool
 		e.Arguments = i.Arguments
-		e.Result = i.Result
-		if len(e.Result) == 0 || string(e.Result) == "null" {
-			e.Result = i.Error
-		}
-		if len(e.Result) == 0 || string(e.Result) == "null" {
-			e.Result = i.ContentItems
-		}
+		e.Result = i.settledJobPoll()
 	default:
 		return e, false
 	}
 	return e, len(e.Result) != 0 && string(e.Result) != "null"
+}
+
+func (i loopToolItem) settledJobPoll() json.RawMessage {
+	var request struct {
+		JobID string `json:"job_id"`
+	}
+	if json.Unmarshal(i.Arguments, &request) != nil || strings.TrimSpace(request.JobID) == "" {
+		return nil
+	}
+	payload := i.Result
+	if i.Type == "mcpToolCall" {
+		var result struct {
+			StructuredContent json.RawMessage `json:"structuredContent"`
+		}
+		if json.Unmarshal(payload, &result) != nil {
+			return nil
+		}
+		if len(result.StructuredContent) != 0 {
+			payload = result.StructuredContent
+		}
+	} else if len(payload) == 0 || string(payload) == "null" {
+		var items []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(i.ContentItems, &items) != nil || len(items) != 1 || items[0].Type != "inputText" {
+			return nil
+		}
+		payload = json.RawMessage(items[0].Text)
+	}
+	var observation struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(payload, &observation) != nil || observation.JobID != request.JobID {
+		return nil
+	}
+	switch observation.Status {
+	case "completed", "succeeded", "failed", "cancelled", "canceled", "missing", "not_found", "stuck", "timed_out":
+		return payload
+	default:
+		return nil
+	}
 }
 
 func newTurnToolLoop(req RunTurnRequest, thread, turn string, logger *slog.Logger) *turnToolLoop {
