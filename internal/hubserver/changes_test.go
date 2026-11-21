@@ -1860,6 +1860,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				secondFixture = newLandingCapacityFixture(t, f.service, "independent-landings", true)
 			}
 			second := secondFixture.ready(t, "second change")
+			if test.nativeOnly {
+				second = updateNativeWorkPageFixtureIssue(t, secondFixture.nativeFixture, second.WorkItemID, func(issue *tracker.NativeIssue) {
+					issue.Labels = append(issue.Labels, "requires-human-review")
+				})
+			}
 			if test.direct || test.directRace {
 				second = updateNativeWorkPageFixtureIssue(t, f.nativeFixture, second.WorkItemID, func(issue *tracker.NativeIssue) { issue.State = "In Progress" })
 			}
@@ -2086,7 +2091,8 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			if test.nativeOnly || test.otherProject || test.expired && !test.renewFree || test.room {
 				want = http.StatusOK
 			}
-			preview := performHubAPIRequest(t, f.service, http.MethodPost, secondFixture.base+"/claims/preview", waiter.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{LandingCapacity: test.contenderCapacity, PolicyID: secondFixture.descriptor.ID, MachineID: waiter.binding.MachineID}})
+			claimStates := []string{"Todo", "In Progress"}
+			preview := performHubAPIRequest(t, f.service, http.MethodPost, secondFixture.base+"/claims/preview", waiter.redemption.Credential, tracker.NativeCapacityPreview{NativeClaim: tracker.NativeClaim{LandingCapacity: test.contenderCapacity, PolicyID: secondFixture.descriptor.ID, MachineID: waiter.binding.MachineID, WorkflowStates: claimStates}})
 			requireNativeStatus(t, preview, http.StatusOK)
 			var page tracker.NativeCapacityPage
 			decodeHubResponse(t, preview, &page)
@@ -2098,19 +2104,21 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				t.Fatalf("preview landing eligibility = %v, claim status = %d", visible, want)
 			}
 			if test.admission != "" {
-				context := tracker.NativeAdmissionContext{ObservedAt: f.service.config.Clock(), PolicyID: secondFixture.descriptor.ID, WorkflowStates: []string{"Merging"}}
-				raw, err := json.Marshal(context)
-				if err != nil {
-					t.Fatal(err)
+				readEvidence := func(selectors tracker.NativeAdmissionContext) tracker.NativeRuntimeEvidence {
+					t.Helper()
+					selectors.ObservedAt, selectors.PolicyID, selectors.WorkflowStates = f.service.config.Clock(), secondFixture.descriptor.ID, claimStates
+					raw, err := json.Marshal(selectors)
+					if err != nil {
+						t.Fatal(err)
+					}
+					path := secondFixture.base + "/work-items/" + string(second.WorkItemID) + "/runtime?admission=" + url.QueryEscape(string(raw))
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path, waiter.redemption.Credential, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var evidence tracker.NativeRuntimeEvidence
+					decodeHubResponse(t, response, &evidence)
+					return evidence
 				}
-				path := secondFixture.base + "/work-items/" + string(second.WorkItemID) + "/runtime?admission=" + url.QueryEscape(string(raw))
-				response := performHubAPIRequest(t, f.service, http.MethodGet, path, waiter.redemption.Credential, nil)
-				requireNativeStatus(t, response, http.StatusOK)
-				var evidence tracker.NativeRuntimeEvidence
-				decodeHubResponse(t, response, &evidence)
-				if evidence.Scheduling.Outcome != test.admission {
-					t.Fatalf("runtime scheduling claims an unproved ceiling: %#v", evidence.Scheduling)
-				}
+				evidence := readEvidence(tracker.NativeAdmissionContext{})
 				found := false
 				for _, admission := range evidence.Admission {
 					if admission.RunnerID != waiter.binding.RunnerID {
@@ -2123,6 +2131,24 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				if !found {
 					t.Fatal("runtime lost the contender's admission evidence")
+				}
+				if evidence.Scheduling.Outcome != test.admission {
+					t.Fatalf("runtime scheduling claims an unproved ceiling: %#v", evidence.Scheduling)
+				}
+				if test.nativeOnly {
+					for _, selectors := range []tracker.NativeAdmissionContext{
+						{Authors: []string{"other-author"}},
+						{Assignees: []string{"other-assignee"}},
+						{LabelInclude: []string{"absent-label"}},
+						{LabelExclude: []string{"requires-human-review"}},
+					} {
+						evidence := readEvidence(selectors)
+						if !slices.ContainsFunc(evidence.Admission, func(entry tracker.NativeRuntimeAdmission) bool {
+							return entry.RunnerID == waiter.binding.RunnerID && entry.Outcome == "skipped" && entry.Reason == "Current claim selectors do not select this item"
+						}) {
+							t.Fatalf("historical landing bypassed selectors %+v: %+v", selectors, evidence.Admission)
+						}
+					}
 				}
 			}
 			requireNativeStatus(t, secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity), want)
