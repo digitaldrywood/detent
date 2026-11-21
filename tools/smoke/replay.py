@@ -248,9 +248,10 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
             if operator and not moved:
                 moved = advance_when_staged(project, operator, original, advanced)
             current = project.request(key)
-            native = (project.request(key + "/explanation").get("native_runtime") or {})
-            if current["state"] in {"Done", "Blocked", "Cancelled", "Human Review"} and not native.get("current_lease"):
-                break
+            if current["state"] in {"Done", "Blocked", "Cancelled", "Human Review"}:
+                attempts = page(project, key, "/attempts")
+                if attempts and all(attempt.get("claim_released_at") for attempt in attempts):
+                    break
             time.sleep(1)
         else:
             evidence = capture(project, case.name, key, source)

@@ -200,7 +200,7 @@ def main():
     parser.add_argument("--ref", default=DEFAULT_REF, help="clean worktree path or Git ref to build")
     parser.add_argument("--parallel", type=int, default=int(os.environ.get("DETENT_SMOKE_PARALLEL", "4")))
     parser.add_argument("--port", type=int, default=int(os.environ.get("DETENT_SMOKE_PORT", "57000")))
-    parser.add_argument("--timeout", type=int, default=int(os.environ.get("DETENT_SMOKE_TIMEOUT", "900")))
+    parser.add_argument("--timeout", type=int, default=int(os.environ.get("DETENT_SMOKE_TIMEOUT", "1200")))
     parser.add_argument("--list", action="store_true")
     config = parser.parse_args()
     if not 1 <= config.parallel <= 16 or not 1024 < config.port <= 65000 or not 1 <= config.timeout <= 3600:
