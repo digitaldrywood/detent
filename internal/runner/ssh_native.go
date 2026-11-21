@@ -403,6 +403,10 @@ func (e *sshNativeExecution) PublishValidationEvidence(ctx context.Context, file
 	return e.peer.Call(ctx, "execution.PublishValidationEvidence", nil, files)
 }
 
+func (e *sshNativeExecution) PrepareMergeResolution(ctx context.Context) error {
+	return e.peer.Call(ctx, "execution.PrepareMergeResolution", nil)
+}
+
 func (e *sshNativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessage string, failure *tracker.NativeTerminalFailure) error {
 	return e.peer.Call(ctx, "execution.PrepareFinish", nil, outcome, finalMessage, failure)
 }

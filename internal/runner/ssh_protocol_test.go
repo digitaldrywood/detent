@@ -734,6 +734,27 @@ func (e *sshReleaseDeliveryTestExecution) ReconcileReleaseDelivery(ctx context.C
 	return e.result, nil
 }
 
+func TestSSHWorkerPreparesMergeResolutionPublication(t *testing.T) {
+	t.Parallel()
+	owner := &resolutionExecution{}
+	request := RunRequest{Execution: owner}
+	wire := NewSSHRunRequest(request)
+	wire.Native = true
+	left, right := net.Pipe()
+	t.Cleanup(func() { left.Close(); right.Close() })
+	central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(request, nil, nil, nil))
+	t.Cleanup(central.Close)
+	remote := NewSSHPeer(t.Context(), right, right, nil)
+	t.Cleanup(remote.Close)
+	execution, ok := wire.Bind(t.Context(), remote).Execution.(MergeResolutionExecution)
+	if !ok {
+		t.Fatal("worker has no merge resolution publication authority")
+	}
+	if err := execution.PrepareMergeResolution(t.Context()); err != nil || !owner.publication {
+		t.Fatalf("worker did not prepare publication on the lease owner: prepared=%t, error=%v", owner.publication, err)
+	}
+}
+
 func TestSSHReleaseDeliveryReconciliation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

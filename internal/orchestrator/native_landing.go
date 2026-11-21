@@ -33,7 +33,9 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+	protected := !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected
+	unresolved := landing.Path == "merge_resolution_failed" && landing.RefusalKind == workspace.LandRefusalConflict && !landing.GateFailed
+	if !landing.Landed && (protected || unresolved) {
 		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
 			running.Issue = cloneIssue(issue)
 			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
