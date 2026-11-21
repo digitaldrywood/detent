@@ -431,10 +431,15 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			runErr = fmt.Errorf("%w: native review continuation is unavailable", ErrNativeRecoveryRequired)
 		}
 		if runErr == nil && req.AttemptWorkspace.Key() != "" {
-			var release func()
-			result.retainedReview, release, runErr = r.resumeReviewWorkspace(guarded, req, phaseWorkspace, *continuation)
-			if runErr == nil {
-				defer release()
+			result.retainedReview = req.retainedReview
+			if result.retainedReview == nil {
+				var release func()
+				result.retainedReview, release, runErr = r.resumeReviewWorkspace(guarded, req, phaseWorkspace, *continuation)
+				if runErr == nil {
+					defer release()
+				}
+			}
+			if result.retainedReview != nil {
 				result.WorkspaceBranch = result.retainedReview.info.Branch
 			}
 		}
@@ -631,6 +636,7 @@ func (r *Runner) existingReviewWorkspace(ctx context.Context, req RunRequest, ba
 		return nil, noWorkspace
 	}
 	local, ok := backend.(interface {
+		workspace.ReviewTreeVerifier
 		Existing(workspace.Issue) (workspace.Info, error)
 		ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
 	})
@@ -657,7 +663,7 @@ func (r *Runner) existingReviewWorkspace(ctx context.Context, req RunRequest, ba
 	info, err := local.Existing(issue)
 	if err == nil && info.PublishBranch() == phase.Branch {
 		head, tree, err := local.ItemPhaseHead(ctx, info, issue)
-		if err == nil && head == phase.HeadSHA && tree == phase.TreeSHA {
+		if err == nil && head == phase.HeadSHA && tree == phase.TreeSHA && local.VerifyReviewTree(ctx, info, issue) == nil {
 			return &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: req.NativeReviewContinuation.FinalMessage}, release
 		}
 	}

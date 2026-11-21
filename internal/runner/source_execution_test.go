@@ -35,6 +35,10 @@ func (w *existingReviewTestWorkspace) ItemPhaseHead(context.Context, workspace.I
 	return "review-head", "review-tree", nil
 }
 
+func (*existingReviewTestWorkspace) VerifyReviewTree(context.Context, workspace.Info, workspace.Issue) error {
+	return nil
+}
+
 func TestReviewContinuationReusesOnlyTheExactHeldPhase(t *testing.T) {
 	for _, test := range []struct {
 		name     string
