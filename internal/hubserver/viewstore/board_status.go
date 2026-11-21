@@ -1,4 +1,4 @@
-package boardview
+package viewstore
 
 import (
 	"strconv"
@@ -63,4 +63,19 @@ func StatusLine(card tracker.NativeBoardCard) string {
 		}
 	}
 	return ""
+}
+
+func ExpireLease(attempt *tracker.NativeBoardAttempt, execution *tracker.NativeBoardExecution, line string) string {
+	card := tracker.NativeBoardCard{Attempt: attempt, Execution: execution}
+	previous := StatusLine(card)
+	if attempt != nil && attempt.Status == "running" {
+		attempt.Status = "interrupted"
+	}
+	if execution != nil {
+		execution.Running, execution.Stage = false, ""
+	}
+	if line == previous {
+		return StatusLine(card)
+	}
+	return line
 }

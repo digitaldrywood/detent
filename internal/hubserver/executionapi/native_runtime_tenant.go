@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -146,6 +147,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
 	var snapshot nativeRuntimeTenantSnapshot
+	var now time.Time
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
@@ -284,7 +286,14 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
 		snapshot.leasePolicy = leasePolicy
-		activeLease, activeErr := r.ActiveLeaseForIssue(ctx, row.ID)
+		leases, ok := r.(interface {
+			ActiveLeaseForIssueSnapshot(context.Context, int64) (leasestore.Lease, time.Time, error)
+		})
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		activeLease, at, activeErr := leases.ActiveLeaseForIssueSnapshot(ctx, row.ID)
+		now = at.UTC()
 		if activeErr == nil {
 			if activeLease.OrganizationID != scope.Organization || activeLease.IssueID != row.ID {
 				return corestore.ErrNotFound
@@ -332,7 +341,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 	}
 	issue.ChangeSequence = snapshot.boardSequence
 	issue = issue.RuntimeReference()
-	attempt, err := d.HydrateAttempt(ctx, snapshot.attempt, d.Now().UTC())
+	attempt, err := d.HydrateAttempt(ctx, snapshot.attempt, now)
 	if err != nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, err
 	}
@@ -356,8 +365,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
 	}
-	now := d.Now().UTC()
-	attempt.Current = snapshot.attempt.Lease.ReleasedAt == nil && !now.Before(snapshot.attempt.Lease.RenewedAt) && now.Before(snapshot.attempt.Lease.ExpiresAt)
+	attempt.Current = snapshot.currentLease != nil && snapshot.currentLease.LeaseID == snapshot.attempt.Lease.LeaseID && snapshot.currentLease.FencingToken == snapshot.attempt.Lease.FencingToken
 	if attempt.Runtime != nil {
 		attempt.RuntimeFreshness = "available"
 		heartbeat := attempt.Runtime.HeartbeatAt
@@ -400,7 +408,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 	if !snapshot.policyFound {
 		result.Unavailable = append(result.Unavailable, "approved_dispatch_policy")
 	}
-	if snapshot.currentLease != nil && !now.Before(snapshot.currentLease.RenewedAt) && now.Before(snapshot.currentLease.ExpiresAt) {
+	if snapshot.currentLease != nil {
 		lease := snapshot.currentLease
 		current := tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: issue.WorkItemID, MachineID: tracker.MachineID(lease.MachineID), SessionID: lease.SessionID, FencingToken: tracker.FencingToken(lease.FencingToken), AcquiredAt: lease.AcquiredAt, RenewedAt: lease.RenewedAt, ExpiresAt: lease.ExpiresAt, PolicyID: snapshot.currentPolicyBinding.PolicyID, ServerTime: now}
 		if snapshot.reservation != nil {

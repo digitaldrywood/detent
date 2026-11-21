@@ -270,7 +270,9 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	if err != nil {
 		return nil, err
 	}
+	currentLease := "true"
 	if typed {
+		currentLease = boardviewsql.CurrentCardLease
 		where += " AND b.page_ready"
 		if f.Compact {
 			where += " AND b.list_ready"
@@ -336,16 +338,21 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	if f.WorkOrder && !projectedWorkOrder {
 		from += " JOIN issues i ON i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id"
 	}
-	rows, err := s.db.Query(ctx, candidateSQL+"SELECT "+boardColumns+from+" WHERE "+where+" ORDER BY "+order+fmt.Sprintf(" LIMIT $%d", len(args)), args...)
+	rows, err := s.db.Query(ctx, candidateSQL+"SELECT "+boardColumns+","+currentLease+from+" WHERE "+where+" ORDER BY "+order+fmt.Sprintf(" LIMIT $%d", len(args)), args...)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
 	defer rows.Close()
 	result := []viewstore.BoardRecord{}
 	for rows.Next() {
-		row, err := scanBoard(rows)
+		var current bool
+		row, err := scanBoard(rows, &current)
 		if err != nil {
 			return nil, mapError(ctx, err)
+		}
+		if !current {
+			row.Running = false
+			row.Display.StatusLine = viewstore.ExpireLease(row.Display.Attempt, row.Display.Execution, row.Display.StatusLine)
 		}
 		result = append(result, row)
 	}
@@ -630,13 +637,15 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 	if err != nil {
 		return nil, err
 	}
+	currentLease := "true"
 	if typed {
+		currentLease = boardviewsql.CurrentCardLease
 		where += " AND b.page_ready"
 		if f.Compact {
 			where += " AND b.list_ready"
 		}
 	}
-	query, args, err := searchsql.Ranked(f, where, args, boardColumns)
+	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease)
 	if err != nil {
 		return nil, err
 	}
@@ -650,9 +659,14 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 		var exact bool
 		var rank float64
 		var number int64
-		row, err := scanBoard(rows, &exact, &rank, &number)
+		var current bool
+		row, err := scanBoard(rows, &current, &exact, &rank, &number)
 		if err != nil {
 			return nil, mapError(ctx, err)
+		}
+		if !current {
+			row.Running = false
+			row.Display.StatusLine = viewstore.ExpireLease(row.Display.Attempt, row.Display.Execution, row.Display.StatusLine)
 		}
 		row.Position.SearchExact, row.Position.SearchRank, row.Position.SearchNumber = exact, rank, number
 		if f.After != nil && !f.WorkOrder {

@@ -235,6 +235,10 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		}
 		selection.ClosedAfter = after
 	}
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return workBoardView{}, hubapi.NativeWorkItemStorageUnavailable()
+	}
 	var rows viewstore.BoardViewRows
 	var entry boardAccessEntry
 	var unavailable []tracker.ProjectID
@@ -256,7 +260,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		if len(selection.Projects) > viewstore.BoardViewMaxProjects {
 			return workBoardView{}, hubapi.NativePublicInvalid("Name at most 500 projects")
 		}
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 			model, ok := reader.(interface {
 				BoardView(context.Context, viewstore.BoardViewSelection) (viewstore.BoardViewRows, error)
 			})

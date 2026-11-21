@@ -268,7 +268,7 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 		issue.BlockedReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[0]), Basis: boardViewText(reason.Text[1]), CurrentBasis: boardViewText(reason.Text[2]), Revision: boardViewNumber(reason.Int[0])}, blocked, slices.ContainsFunc(issue.Blockers, cross))
 		issue.UnblocksReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[3]), Basis: boardViewText(reason.Text[4]), CurrentBasis: boardViewText(reason.Text[5]), Revision: boardViewNumber(reason.Int[1])}, unblocks, slices.ContainsFunc(issue.Dependents, cross))
 		card := tracker.NativeBoardCard{Issue: issue}
-		if boardViewFlag(c.Running) {
+		if boardViewFlag(c.Running) && boardViewFlag(row.Bool[0]) {
 			view.Running[issue.WorkItemID] = true
 		}
 		if boardViewText(c.AttemptID) != "" {
@@ -282,6 +282,9 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			if identity := (tracker.NativeExecutionIdentity{Role: boardViewText(c.ExecutionRole), Backend: boardViewText(c.ExecutionBackend), Model: boardViewText(c.ExecutionModel), ReasoningEffort: boardViewText(c.ExecutionEffort)}); identity != (tracker.NativeExecutionIdentity{}) {
 				card.Execution.Identity = &identity
 			}
+		}
+		if !boardViewFlag(row.Bool[0]) {
+			viewstore.ExpireLease(card.Attempt, card.Execution, "")
 		}
 		owned := scope.ReporterOwns(tracker.Actor{PrincipalID: boardViewText(c.ChangePrincipalID)})
 		visible := boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && owned
