@@ -14,11 +14,20 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, source workspace.LandingConflictResolver, info workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.LandingResolution, RunResult, error) {
+func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, source workspace.LandingConflictResolver, info workspace.Info, issue workspace.Issue, opts workspace.LandOptions, startLanding func() error) (workspace.LandingResolution, RunResult, error) {
 	var result RunResult
 	resolved, err := source.ResolveLandingConflict(ctx, info, issue, opts, func(ctx context.Context, path string, files []string) (turnErr error) {
 		workflow, runtime, budgetChecker, estimator := r.runtimeSnapshot()
-		selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleMerge)
+		reservation := landingProviderReservation(req.Execution)
+		var selection RouteSelection
+		var backend AgentBackend
+		var backendConfig config.AgentBackend
+		var err error
+		if reservation != nil {
+			selection, backend, backendConfig, err = runtime.selectReservedLandingBackend(reservation)
+		} else {
+			selection, backend, backendConfig, err = runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleMerge)
+		}
 		if err != nil {
 			return err
 		}
@@ -38,10 +47,17 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 				}
 			}()
 		}
-		model := effectiveModel("", selection.Model, runtime.defaultModelForRole(RoleMerge))
-		selected := resolveRequestAgentSelection(ctx, req, process, model, RoleMerge, workflow.Config, backendConfig, backend)
-		if selected.Err != nil {
-			return selected.Err
+		model := selection.Model
+		var selected agentSelection
+		if reservation == nil {
+			model = effectiveModel("", model, runtime.defaultModelForRole(RoleMerge))
+			selected = resolveRequestAgentSelection(ctx, req, process, model, RoleMerge, workflow.Config, backendConfig, backend)
+			if selected.Err != nil {
+				return selected.Err
+			}
+			model = effectiveModel("", selected.Model, model, "provider_default")
+		} else {
+			selected.Effort, _ = workflow.Config.Agent.Effort.Resolve(RoleMerge)
 		}
 		if cleanup != nil {
 			err := cleanup()
@@ -50,13 +66,9 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 				return err
 			}
 		}
-		model = effectiveModel("", selected.Model, model)
-		if model == "" {
-			model = "provider_default"
-		}
 		var projection *dispatchBudgetProjection
 		if workflow.Config.Budget.EffectiveBillingMode() != config.BillingModeSubscription {
-			admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, estimator, req.Issue, model, r.now())
+			admission, refused, err := r.checkDispatchBudget(ctx, budgetChecker, estimator, req.Issue, effectiveModel("", model, "provider_default"), r.now())
 			if err != nil {
 				return err
 			}
@@ -66,7 +78,7 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 			}
 			projection = admission.budgetProjection
 		}
-		if req.AcquireModelPermit != nil {
+		if reservation == nil && req.AcquireModelPermit != nil {
 			if err := req.AcquireModelPermit(ctx); err != nil {
 				return err
 			}
@@ -75,15 +87,21 @@ func (r *Runner) resolveNativeLanding(ctx context.Context, req RunRequest, sourc
 		if selected.Effort != "" {
 			effort = selected.Effort
 		}
-		turnIdentity := AgentTurnRequest{Model: model, ReasoningEffort: effort}
-		executionIdentity := nativeAttemptIdentity(ctx, req.Execution, RoleMerge, selection.BackendID, &turnIdentity)
-		model, effort = turnIdentity.Model, turnIdentity.ReasoningEffort
+		if reservation != nil {
+			if err := startLanding(); err != nil {
+				return err
+			}
+		} else {
+			turnIdentity := AgentTurnRequest{Model: model, ReasoningEffort: effort}
+			executionIdentity := nativeAttemptIdentity(ctx, req.Execution, RoleMerge, selection.BackendID, &turnIdentity)
+			model, effort = turnIdentity.Model, turnIdentity.ReasoningEffort
+			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+				return err
+			}
+		}
 		identity := configuredRuntimeIdentity(selection, backendConfig, RoleMerge, model, r.now())
 		identity.Selection = selected.Selection
 		identity.ReasoningEffort = agentidentity.NewValue(effort, agentidentity.ProvenanceConfigured)
-		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
-			return err
-		}
 		started := r.now()
 		sessionID, sessionStarted, err := r.startSession(ctx, req, started, identity, store.AgentResumeState{}, "", "")
 		if err != nil {
