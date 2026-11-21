@@ -292,6 +292,13 @@ def check_tool_loop(checklists, attempt, expected):
            first["sequence"] < stop["sequence"] and time_key(first["observed_at"]) < time_key(stop["observed_at"]))
 
 
+def check_round_verdicts(actions, expected):
+    terminal = expected[-1:]
+    if actions[-1:] != terminal or any(action != "continue" for action in actions[:-1]):
+        label = terminal[0] if terminal else None
+        raise stack.Failure(f"round verdicts: expected zero or more continue followed by {label!r}, observed {actions!r}")
+
+
 def compare(project, policy, evidence, expected, definition, advanced):
     item, claims, runs = (evidence[field] for field in ("item", "attempts", "details"))
     expect("final lane", expected["final_lane"], item["state"])
@@ -323,9 +330,9 @@ def compare(project, policy, evidence, expected, definition, advanced):
     for verdict in evidence["rounds"]:
         assert_binding(verdict, attempt, fence, "round")
     actions = [record["action"] for record in evidence["rounds"]]
-    if actions == ["no_progress"] and "alternative" in expected:
+    if actions[-1:] == ["no_progress"] and "alternative" in expected:
         expected = expected | expected["alternative"]
-    expect("round verdicts", expected["verdicts"], actions)
+    check_round_verdicts(actions, expected["verdicts"])
 
     checks = attempt["runtime"]
     expect("complete phase and pipeline evidence", False, bool(checks.get("phases_dropped") or checks.get("pipeline_dropped")))
