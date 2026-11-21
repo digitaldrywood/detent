@@ -119,6 +119,7 @@ func TestProjectGateChecklistAfterRepair(t *testing.T) {
 	cfg.Policy.ID = "policy"
 	cfg.Gate.Run = "make check"
 	cfg.Gate.SecurityAudit.Enabled = false
+	const criterion = "The configured project gate passes."
 	const guidance = "Once the gate fails, fix the check and rerun the project gate."
 	for _, test := range []struct {
 		name, verification string
@@ -129,23 +130,22 @@ func TestProjectGateChecklistAfterRepair(t *testing.T) {
 		{name: "legacy verification row", verification: guidance, legacy: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := "## How we know it worked\n\n" + test.verification
+			body := "## Acceptance criteria\n\n- " + criterion + "\n\n## How we know it worked\n\n" + test.verification
 			list, err := FreezeChecklist(body, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(list.Checks) != 1 || list.Checks[0].Kind != tracker.CheckProjectGate {
+			if len(list.Checks) != 2 || list.Checks[0].Text != criterion || list.Checks[1].Kind != tracker.CheckProjectGate {
 				t.Fatalf("verification guidance changed the frozen checklist: %+v", list.Checks)
 			}
-			legacy := tracker.ExecutionCheck{Ordinal: 1, Kind: tracker.CheckVerification, Text: test.verification, Status: tracker.CheckFailed, Head: "A", Tree: "tree-A", Receipt: "old-review"}
+			legacy := tracker.ExecutionCheck{Ordinal: 3, Kind: tracker.CheckVerification, Text: test.verification, Status: tracker.CheckFailed, Head: "A", Tree: "tree-A", Receipt: "old-review"}
 			if test.legacy {
-				list.Checks[0].Ordinal = 2
-				list.Checks = append([]tracker.ExecutionCheck{legacy}, list.Checks...)
+				list.Checks = append(list.Checks, legacy)
 			}
 			failure := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "A", TreeSHA: "tree-A", ReceiptID: "failed-A", ExitCode: 1}
 			verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: "A", TreeSHA: "tree-A"}, PolicyID: list.PolicyID}
 			ApplyChecklistChanges(list.Checks, ChecklistChanges(list.Checks, verdict, &failure, nil))
-			if check := list.Checks[len(list.Checks)-1]; check.Status != tracker.CheckFailed || check.Receipt != failure.ReceiptID {
+			if check := list.Checks[1]; check.Status != tracker.CheckFailed || check.Receipt != failure.ReceiptID {
 				t.Fatalf("first gate = %+v, want recorded failure on A", check)
 			}
 			pass := gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: "B", TreeSHA: "tree-B", ReceiptID: "passed-B"}
@@ -157,42 +157,81 @@ func TestProjectGateChecklistAfterRepair(t *testing.T) {
 					t.Fatal("completion accepted a receipt for different source")
 				}
 			}
-			changes, ready := evaluateChecklist(&list, checklistEvidence{head: "B", tree: "tree-B", command: &pass}, false)
+			list.AttemptID = "attempt"
+			version := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{
+				AttemptID: list.AttemptID, Repository: "example", HeadSHA: pass.HeadSHA, BaseSHA: "base", PolicyID: list.PolicyID, Validation: &pass,
+			}}
+			review := checklistValidator(version.ID, version.Repository, version.BaseSHA, version.HeadSHA)
+			review.Commands = []gate.CommandResult{pass}
+			review.CriteriaEvidence = []gate.CriterionEvidence{{
+				Criterion: criterion, Kind: gate.EvidenceReceipt, Reference: "project gate", Behavior: "project gate exited successfully", ReceiptIDs: []string{pass.ReceiptID},
+			}}
+			gate.NormalizeCriterionEvidence(review, []string{criterion}, pass.TreeSHA)
+			detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: version.ID}, Summary: tracker.ChangeSummary{Status: "reviewed"},
+				Reviews: []tracker.ChangeReview{{VersionID: version.ID, Actor: tracker.Actor{Kind: "runner"}, Decision: "approved", Validator: review}}}
+			changes, ready := ReviewedChecklist(&list, body, detail, version, nil, false)
 			ApplyChecklistChanges(list.Checks, changes)
-			if !ready || len(changes) != 1 || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != pass.ReceiptID {
-				t.Fatalf("current gate: ready = %v, changes = %+v, want current gate pass", ready, changes)
+			if !ready || len(changes) != 2 {
+				t.Fatalf("reviewed completion = %v, updates = %+v, want both rows to pass", ready, changes)
 			}
-			if test.legacy && list.Checks[0] != legacy {
-				t.Fatalf("legacy verification row changed: %+v", list.Checks[0])
+			for _, change := range changes {
+				if change.Status != tracker.CheckPassed || change.Receipt != pass.ReceiptID || change.Head != pass.HeadSHA || change.Tree != pass.TreeSHA {
+					t.Fatalf("update = %+v, want exact passing gate evidence", change)
+				}
+			}
+			if test.legacy && list.Checks[2] != legacy {
+				t.Fatalf("legacy verification row changed: %+v", list.Checks[2])
 			}
 		})
 	}
 }
 
-func TestChecklistBindsAcceptanceToIndependentReceipt(t *testing.T) {
-	command := gate.CommandResult{Command: "make check", ReceiptID: "gate", HeadSHA: "head", TreeSHA: "tree"}
-	proof := gate.CommandResult{Command: "git diff -- main.go", ReceiptID: "inspection", HeadSHA: "head", TreeSHA: "tree"}
-	verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: "head", TreeSHA: "tree"}, PolicyID: "policy", VerifiedCriteria: []string{"criterion"}}
-	checks := []tracker.ExecutionCheck{{Ordinal: 1, Kind: tracker.CheckAcceptance, Text: "criterion", Status: tracker.CheckNeedsReview}}
+func TestChecklistUsesReviewedAcceptanceEvidence(t *testing.T) {
+	const criterion = "The report includes both tenants."
 	for _, test := range []struct {
-		name, citation string
-		proofTree      string
-		want           string
+		name, kind, receipt string
+		wrongTree           bool
+		want                bool
 	}{
-		{name: "generic gate alone remains unverified", citation: "gate", proofTree: "tree"},
-		{name: "mismatched tree remains unverified", citation: "inspection", proofTree: "wrong"},
-		{name: "accepted independent receipt verifies criterion", citation: "inspection", proofTree: "tree", want: "inspection"},
+		{name: "named test", kind: gate.EvidenceTest, want: true},
+		{name: "attachment without a command", kind: gate.EvidenceAttachment, receipt: "attachment", want: true},
+		{name: "current independent receipt", kind: gate.EvidenceReceipt, receipt: "inspection", want: true},
+		{name: "stale receipt", kind: gate.EvidenceReceipt, receipt: "inspection", wrongTree: true},
+		{name: "missing evidence for part of a criterion", kind: gate.EvidenceNotVerified},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			check := proof
-			check.TreeSHA = test.proofTree
-			validator := gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, HeadSHA: "head",
-				CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "criterion", Kind: gate.EvidenceReceipt, HeadSHA: "head", TreeSHA: "tree", ReceiptIDs: []string{test.citation}, Behavior: "inspected exact changed line"}},
-				Commands:         []gate.CommandResult{check, command}}
-			steps := []tracker.NativeStepReceipt{{Step: "validator", PolicyID: "policy", Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Change: tracker.NativeChangeReference{HeadSHA: "head"}, Validator: &validator}}
-			changes := ChecklistChanges(checks, verdict, &command, steps)
-			if test.want == "" && len(changes) != 0 || test.want != "" && (len(changes) != 1 || changes[0].Receipt != test.want || changes[0].Status != tracker.CheckPassed) {
-				t.Fatalf("checklist changes %+v, want receipt %q", changes, test.want)
+			body := "## Acceptance criteria\n\n- " + criterion
+			v := tracker.ChangeVersion{ID: "version", ChangeVersionInput: tracker.ChangeVersionInput{
+				AttemptID: "attempt", Repository: "example", HeadSHA: "head", BaseSHA: "base", PolicyID: "policy",
+			}}
+			review := checklistValidator(v.ID, v.Repository, v.BaseSHA, v.HeadSHA)
+			review.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: criterion, Kind: test.kind, Reference: "report evidence", Behavior: "both expected rows observed"}}
+			if test.receipt != "" {
+				review.CriteriaEvidence[0].ReceiptIDs = []string{test.receipt}
+			}
+			if test.kind == gate.EvidenceAttachment {
+				review.Commands = nil
+				review.AttachmentReads = []gate.AttachmentRead{{ReceiptID: "attachment", AttachmentID: "report", SHA256: "digest", HeadSHA: v.HeadSHA, TreeSHA: "tree"}}
+			}
+			gate.NormalizeCriterionEvidence(review, []string{criterion}, "tree")
+			gate.ApplyCriterionPolicy(gate.ValidatorConfig{UnverifiedCriteria: gate.UnverifiedCriteriaRework}, review)
+			decision := "approved"
+			if review.Verdict != gate.ValidatorVerdictPass {
+				decision = "changes_requested"
+			}
+			if test.wrongTree {
+				v.Validation = &gate.CommandResult{HeadSHA: v.HeadSHA, TreeSHA: "new-tree", ReceiptID: "current-gate"}
+			}
+			list := &tracker.ExecutionChecklist{AttemptID: v.AttemptID, Revision: ChecklistRevision(body, v.PolicyID), PolicyID: v.PolicyID,
+				Checks: []tracker.ExecutionCheck{{Ordinal: 1, Kind: tracker.CheckAcceptance, Text: criterion, Status: tracker.CheckNeedsReview}}}
+			detail := tracker.ChangeDetail{Change: tracker.ChangeRequest{CurrentVersion: v.ID}, Summary: tracker.ChangeSummary{Status: "reviewed"},
+				Reviews: []tracker.ChangeReview{{VersionID: v.ID, Actor: tracker.Actor{Kind: "runner"}, Decision: decision, Validator: review}}}
+			changes, ready := ReviewedChecklist(list, body, detail, v, nil, false)
+			if ready != test.want || ready && (len(changes) != 1 || changes[0].Status != tracker.CheckPassed || changes[0].Receipt == "") {
+				t.Fatalf("reviewed completion = %v, updates = %+v, want ready = %v", ready, changes, test.want)
+			}
+			if ready && test.receipt != "" && (changes[0].Tree != "tree" || changes[0].Receipt != test.receipt) {
+				t.Fatalf("update = %+v, want source-bound receipt %q", changes[0], test.receipt)
 			}
 		})
 	}
