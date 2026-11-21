@@ -346,7 +346,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			}
 			candidate := claim()
 			candidate.NativeLandingHeadSHA = retry.NativeLandingHeadSHA
-			target := "Rework"
+			target := "Blocked"
 			if test.disappeared {
 				target = "Done"
 			}
@@ -358,7 +358,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 				return
 			}
 			if err != nil || provider.calls != 1 || result.NativeLanding == nil || result.NativeLanding.Path != "merge_resolution_failed" || !result.NativeLanding.RequiresRework() || result.NativeLanding.VersionID != version.ID || result.NativeLanding.HeadSHA != head {
-				t.Fatalf("unresolved published source did not enter corrective work and Rework: result=%+v calls=%d error=%v", result, provider.calls, err)
+				t.Fatalf("unresolved published source did not reach a typed human wait: result=%+v calls=%d error=%v", result, provider.calls, err)
 			}
 		})
 	}

@@ -19,6 +19,8 @@ import (
 
 const maxLandingConflictBytes = 16 << 20
 
+var ErrLandingConflictUnresolved = errors.New("unresolved conflicts")
+
 type LandingResolution struct {
 	BaseSHA       string
 	HeadSHA       string
@@ -224,7 +226,7 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 		return result, err
 	}
 	if remaining != "" {
-		return result, fmt.Errorf("%w: unresolved conflicts", ErrMergeResolutionInvalid)
+		return result, fmt.Errorf("%w: %w", ErrMergeResolutionInvalid, ErrLandingConflictUnresolved)
 	}
 	if _, err := runGitAt(ctx, path, "diff", "--quiet"); err != nil {
 		return result, fmt.Errorf("%w: resolution must be staged", ErrMergeResolutionInvalid)

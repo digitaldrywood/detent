@@ -587,7 +587,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				}
 			}
 			if test.MergeResolution {
-				if err := execution.(runner.MergeResolutionExecution).PrepareMergeResolution(); err != nil {
+				if err := execution.(runner.MergeResolutionExecution).PrepareMergeResolution(t.Context()); err != nil {
 					t.Fatal(err)
 				}
 			}
