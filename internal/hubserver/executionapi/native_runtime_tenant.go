@@ -109,7 +109,7 @@ func readRuntimeFailureRows(ctx context.Context, r tenantstore.Reader, scope hub
 		if attempt.OrganizationID != scope.Organization || attempt.IssueID != row.ID {
 			return corestore.ErrNotFound
 		}
-		lease, err := r.Lease(ctx, attempt.LeaseID)
+		lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 		if err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func readRuntimeFailureRows(ctx context.Context, r tenantstore.Reader, scope hub
 		if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID {
 			return corestore.ErrNotFound
 		}
-		snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+		snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 		if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 			return err
 		}
@@ -195,7 +195,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 				return err
 			}
 		}
-		lease, err := r.Lease(ctx, attempt.LeaseID)
+		lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		if leasePolicy.OrganizationID != scope.Organization || leasePolicy.ProjectID != scope.Project || leasePolicy.LeaseID != tracker.LeaseID(lease.LeaseID) || leasePolicy.PolicyID == "" {
 			return hubapi.PolicyMismatch("Lease policy is missing or outside the authorized project")
 		}
-		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+		snapshot.attempt = hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 		snapshot.leasePolicy = leasePolicy
 		snapshot.attempt.EvidencePage = selector.FirstEvidencePage || selector.EvidenceAfter != ""
 		if selector.EvidenceAfter == "" || selector.EvidenceAfter == "start" {
@@ -286,19 +286,13 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
 		snapshot.leasePolicy = leasePolicy
-		leases, ok := r.(interface {
-			ActiveLeaseForIssueSnapshot(context.Context, int64) (leasestore.Lease, time.Time, error)
-		})
-		if !ok {
-			return hubapi.NativeRunEventStorageUnavailable()
-		}
-		activeLease, at, activeErr := leases.ActiveLeaseForIssueSnapshot(ctx, row.ID)
-		now = at.UTC()
+		activeLease, activeErr := r.ActiveLeaseForIssueSnapshot(ctx, row.ID)
+		now = snapshot.attempt.LeaseObservation.At.UTC()
 		if activeErr == nil {
 			if activeLease.OrganizationID != scope.Organization || activeLease.IssueID != row.ID {
 				return corestore.ErrNotFound
 			}
-			snapshot.currentLease = &activeLease
+			snapshot.currentLease = &activeLease.Lease
 			currentBinding, bindingErr := r.LeasePolicy(ctx, tracker.LeaseID(activeLease.LeaseID))
 			if bindingErr != nil {
 				return bindingErr

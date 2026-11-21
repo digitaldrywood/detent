@@ -11,7 +11,7 @@ import (
 )
 
 type AttemptMetadata struct {
-	Leases      map[string]leasestore.Lease
+	Leases      map[string]leasestore.ObservedLease
 	Events      map[string]eventstore.Event
 	Archives    map[string]artifactstore.ArchiveObject
 	Attachments map[string]attachmentstore.Record

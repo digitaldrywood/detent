@@ -28,8 +28,8 @@ func (dailySummaryReports) ValidateUsage(facts []reportstore.UsageFact) error {
 
 type dailySummaryWorkItems struct{ service *Service }
 
-func (w dailySummaryWorkItems) AttemptSnapshot(ctx context.Context, reader tenantstore.Reader, attempt leasestore.Attempt, lease leasestore.Lease, event eventstore.Event) (any, error) {
-	snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+func (w dailySummaryWorkItems) AttemptSnapshot(ctx context.Context, reader tenantstore.Reader, attempt leasestore.Attempt, lease leasestore.ObservedLease, event eventstore.Event) (any, error) {
+	snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 	if err := hubrecords.ReadTenantAttemptPayload(ctx, reader, &snapshot); err != nil {
 		return nil, err
 	}

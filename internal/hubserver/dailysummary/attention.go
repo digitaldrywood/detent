@@ -107,7 +107,7 @@ func (s *Service) readSummaryAttentionTenant(ctx context.Context, r summaryRecip
 				}
 				if err == nil {
 					record.hasAttempt = true
-					lease, err := reader.Lease(ctx, attempt.LeaseID)
+					lease, err := reader.LeaseSnapshot(ctx, attempt.LeaseID)
 					if err != nil {
 						return err
 					}

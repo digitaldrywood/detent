@@ -298,9 +298,13 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 			}
 			projectedWorkOrder = !pending
 		}
-		order = "b.running DESC,b.dispatchable DESC,i.number DESC,b.identifier"
+		running := "b.running"
+		if typed {
+			running = boardviewsql.RunningCard
+		}
+		order = running + " DESC,b.dispatchable DESC,i.number DESC,b.identifier"
 		if projectedWorkOrder {
-			order = "b.running DESC,b.dispatchable DESC,b.issue_number DESC,b.identifier"
+			order = running + " DESC,b.dispatchable DESC,b.issue_number DESC,b.identifier"
 			where += " AND (SELECT true FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id LIMIT 1)"
 		}
 	}
@@ -359,7 +363,7 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	return result, mapError(ctx, rows.Err())
 }
 
-func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, now time.Time) (lanes []viewstore.BoardLane, err error) {
+func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, _ time.Time) (lanes []viewstore.BoardLane, err error) {
 	defer func(parent context.Context, selection viewstore.BoardSelection) {
 		err = s.boardSearchFailure(parent, selection, err)
 	}(ctx, f)
@@ -375,8 +379,7 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, no
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, now)
-	current := fmt.Sprintf("b.running AND b.expires_at>$%d AND EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND l.fencing_token=b.execution_fence AND l.released_at IS NULL AND l.renewed_at<=$%d AND l.expires_at>$%d)", len(args), len(args), len(args))
+	current := boardviewsql.RunningCard
 	statement := "SELECT b.state,count(*),count(*) FILTER (WHERE " + current + ") FROM native_board_items b WHERE " + where + " GROUP BY b.state ORDER BY b.state LIMIT 201"
 	filtered := f.SearchText != "" || f.WorkItemIDs != nil || f.Reporter || f.ActorPrincipalID != "" || f.Fingerprint != "" || len(f.Types)+len(f.Verification)+len(f.Labels)+len(f.Assignees)+len(f.Priorities) > 0 || f.CreatedAfter != nil || f.CreatedBefore != nil || f.UpdatedAfter != nil || f.NativeCreatedAfter != nil || f.NativeCreatedBefore != nil || f.NativeUpdatedAfter != nil || f.CompletedFrom != nil || f.CompletedTo != nil
 	if !filtered && f.ExcludeWorkspace {
@@ -645,7 +648,11 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 			where += " AND b.list_ready"
 		}
 	}
-	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease)
+	running := "b.running"
+	if typed && f.WorkOrder {
+		running = boardviewsql.RunningCard
+	}
+	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease, running)
 	if err != nil {
 		return nil, err
 	}

@@ -38,8 +38,10 @@ type Reader interface {
 	AttemptDiffBodyReferenced(context.Context, tracker.ProjectID, string) (bool, bool, error)
 	Machine(context.Context, string) (Machine, error)
 	Lease(context.Context, string) (Lease, error)
+	LeaseSnapshot(context.Context, string) (ObservedLease, error)
 	LeaseBySession(context.Context, string) (Lease, error)
 	ActiveLeaseForIssue(context.Context, int64) (Lease, error)
+	ActiveLeaseForIssueSnapshot(context.Context, int64) (ObservedLease, error)
 	Attempt(context.Context, string) (Attempt, error)
 	LocalAttemptMatches(context.Context, tracker.ProjectID, tracker.NativeWorkItemID, int64) ([]string, error)
 	LatestAttempt(context.Context, int64) (Attempt, error)
@@ -137,6 +139,16 @@ type Claim struct {
 	TTL                         time.Duration
 	LandingCapacity             int64
 	RunnerID                    string `json:"-"`
+}
+
+type LeaseObservation struct {
+	At        time.Time
+	Unexpired bool
+}
+
+type ObservedLease struct {
+	Lease
+	LeaseObservation
 }
 
 type Lease struct {

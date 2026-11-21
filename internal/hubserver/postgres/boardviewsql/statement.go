@@ -191,10 +191,7 @@ func boardViewSQL(reporter bool) string {
 	ctes := `WITH visible AS MATERIALIZED (SELECT p.id FROM projects p WHERE p.organization_id=$1 AND p.id=ANY($2::text[]) AND p.deleted_at IS NULL AND p.profile='native'),
 lanes AS MATERIALIZED (SELECT w.project_id,w.name,w.terminal FROM project_workflow_states w JOIN visible v ON w.organization_id=$1 AND w.project_id=v.id
  WHERE NOT $11::boolean AND ($12::text='all' OR NOT w.terminal AND ($12::text='open' OR w.dispatchable)) AND (cardinality($16::text[])=0 OR w.name=ANY($16::text[])) AND w.name<>ALL($17::text[])),
-dirty AS MATERIALIZED (SELECT d.project_id,d.work_item_id,i.workflow_state_name AS state,i.archived,w.terminal,w.dispatchable FROM visible v
- CROSS JOIN LATERAL (SELECT d.project_id,d.work_item_id FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id ORDER BY d.work_item_id LIMIT ` + strconv.Itoa(dirtyOverlayLimit) + `) d
- JOIN issues i ON i.organization_id=$1 AND i.project_id=d.project_id AND i.native_id=d.work_item_id
- LEFT JOIN project_workflow_states w ON w.organization_id=$1 AND w.project_id=d.project_id AND w.name=i.workflow_state_name),
+` + DirtyItems("SELECT id FROM visible") + `,
 cards AS MATERIALIZED (SELECT ` + strings.Join(exact, ",") + ` FROM native_board_cards c WHERE c.organization_id=$1 AND c.project_id IN (SELECT id FROM visible) AND ` + scoped("c.archived") + `
  AND NOT EXISTS(SELECT 1 FROM dirty d WHERE d.project_id=c.project_id AND d.work_item_id=c.work_item_id) AND ` + placed("c.state", "c.terminal") + `
  UNION ALL SELECT ` + strings.Join(live, ",") + ` FROM dirty d JOIN native_board_cards c ON c.organization_id=$1 AND c.project_id=d.project_id AND c.work_item_id=d.work_item_id
@@ -209,12 +206,7 @@ completion AS MATERIALIZED (SELECT v.id AS project_id,w.* FROM visible v
 linked AS MATERIALIZED (SELECT project_id,work_item_id FROM cards WHERE has_links UNION SELECT project_id,work_item_id FROM closed WHERE has_links),
 evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_policy_id FROM cards WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'
  UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'),` + LiveItems("$1", "SELECT id FROM visible") + `,
-running_counts AS MATERIALIZED (
- SELECT l.project_id,coalesce(d.state,l.state) AS state,count(*) AS running
- FROM live_items l LEFT JOIN dirty d ON d.project_id=l.project_id AND d.work_item_id=l.work_item_id
- WHERE l.running AND NOT l.workspace AND NOT coalesce(d.terminal,l.terminal) AND coalesce(d.archived,l.archived)=$5
- AND ($4::text='' OR l.actor_principal_id=$4 AND l.current_actor=$4)
- GROUP BY l.project_id,coalesce(d.state,l.state))
+` + ScopedCounts("SELECT id FROM visible", "$4", "$5::text", "true") + `
 `
 	readiness := `(EXISTS(SELECT 1 FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id OFFSET ` + strconv.Itoa(dirtyOverlayLimit) + `)
   OR EXISTS(SELECT 1 FROM (SELECT d.work_item_id FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id LIMIT ` + strconv.Itoa(dirtyOverlayLimit) + `) d
@@ -230,8 +222,8 @@ running_counts AS MATERIALIZED (
 			"d1": "(SELECT d.queued_at FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id ORDER BY d.queued_at LIMIT 1)"}) + ` FROM visible v` + affected,
 		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'scope'", "i1": "o.total", "i2": RunningCount("o.project_id", "o.kind", "o.state"), "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
 			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
-			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope=$5::text AND o.exclude_workspace
- LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=o.archive_scope` + affected,
+			` FROM visible v JOIN scoped_counts o ON o.project_id=v.id
+ LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=$5::text` + affected,
 		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'all'", "i1": "o.total", "i2": "0", "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
 			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
 			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope='all' AND o.exclude_workspace AND o.kind IN ('total','lane') AND $5::text<>'all'

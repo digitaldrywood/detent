@@ -18,7 +18,7 @@ type Reports interface {
 }
 
 type WorkItems interface {
-	AttemptSnapshot(context.Context, tenantstore.Reader, leasestore.Attempt, leasestore.Lease, eventstore.Event) (any, error)
+	AttemptSnapshot(context.Context, tenantstore.Reader, leasestore.Attempt, leasestore.ObservedLease, eventstore.Event) (any, error)
 	Attempt(context.Context, any, time.Time) (tracker.NativeAttempt, error)
 	Issue(context.Context, corestore.WorkItem, eventstore.CollaborationVersion) (tracker.NativeIssue, error)
 }

@@ -25,6 +25,7 @@ func ScanAttachmentArchive(row interface{ Scan(...any) error }) (attachment.Arch
 }
 
 type TenantAttemptSnapshot struct {
+	LeaseObservation  leasestore.LeaseObservation  `json:"-"`
 	ArtifactsPayload  *attachment.ArchiveReference `json:"-"`
 	CheckpointPayload *attachment.ArchiveReference `json:"-"`
 	RecoverPayload    bool                         `json:"-"`

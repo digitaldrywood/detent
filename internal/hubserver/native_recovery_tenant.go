@@ -940,11 +940,12 @@ func (s *Service) readNativeRecoveryAttemptSnapshot(ctx context.Context, scope h
 		if err != nil {
 			return err
 		}
-		snapshot.Lease, err = r.Lease(ctx, snapshot.Attempt.LeaseID)
+		lease, err := r.LeaseSnapshot(ctx, snapshot.Attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		if snapshot.Lease.IssueID != issueID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken {
+		snapshot.Lease, snapshot.LeaseObservation = lease.Lease, lease.LeaseObservation
+		if lease.IssueID != issueID || lease.FencingToken != snapshot.Attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
 		snapshot.Event, err = r.LatestRunEvent(ctx, scope.Project, attemptID)
