@@ -555,6 +555,10 @@ func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.C
 	if err != nil {
 		return RouteSelection{}, nil, config.AgentBackend{}, err
 	}
+	return r.backendForSelection(selection)
+}
+
+func (r agentRuntime) backendForSelection(selection RouteSelection) (RouteSelection, AgentBackend, config.AgentBackend, error) {
 	backend, ok := r.backends[selection.BackendID]
 	if !ok {
 		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)

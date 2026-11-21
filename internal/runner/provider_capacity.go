@@ -92,6 +92,21 @@ type ProviderCapacityExecution interface {
 	ProviderCapacity() *providercapacity.Reservation
 }
 
+func landingProviderReservation(execution Execution) *providercapacity.Reservation {
+	if owner, ok := execution.(ProviderCapacityExecution); ok {
+		return owner.ProviderCapacity()
+	}
+	return nil
+}
+
+func (r agentRuntime) selectReservedLandingBackend(reservation *providercapacity.Reservation) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+	model := reservation.Model
+	if model == "provider_default" {
+		model = ""
+	}
+	return r.backendForSelection(RouteSelection{BackendID: reservation.Backend, Model: model})
+}
+
 func capacitySelectionBackend(req RunRequest, backend AgentBackend) AgentBackend {
 	execution, ok := req.Execution.(ProviderCapacityExecution)
 	if !ok {

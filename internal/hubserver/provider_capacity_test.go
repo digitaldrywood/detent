@@ -1339,18 +1339,12 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		t.Fatalf("another tenant's permit changed: %+v", renewed)
 	}
 	audit := providercapacity.Requirement{Role: "security_audit", Backend: "planner", Model: "test-model"}
-	occupied := claim(first, plan, "occupied-audit-account")
-	refused := swap(first, local.lease, local.runner, code, audit, local.sequence)
-	requireNativeStatus(t, refused, http.StatusConflict)
-	if !strings.Contains(refused.Body.String(), "provider_capacity") {
-		t.Fatalf("full audit account did not return provider capacity: %s", refused.Body.String())
-	}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, first.base+"/leases/"+string(occupied.lease.ID)+"/release",
-		occupied.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: occupied.lease.FencingToken, Reason: "cancelled"}), http.StatusNoContent)
-	response = swap(first, local.lease, local.runner, code, audit, local.sequence)
+	requireNativeStatus(t, swap(first, local.lease, local.runner, code, audit, local.sequence), http.StatusUnprocessableEntity)
+	response = performHubAPIRequest(t, service, http.MethodPost, first.base+"/leases/"+string(local.lease.ID)+"/renew",
+		local.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: local.lease.FencingToken, TTLSeconds: 90})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
-	if renewed.ID != local.lease.ID || renewed.FencingToken != local.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
-		t.Fatalf("audit did not acquire its provider on the same lease: %+v", renewed)
+	if renewed.ID != local.lease.ID || renewed.FencingToken != local.lease.FencingToken || renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != code {
+		t.Fatalf("audit swap changed the existing reservation: %+v", renewed)
 	}
 }

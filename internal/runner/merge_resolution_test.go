@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -25,6 +26,7 @@ type resolutionExecution struct {
 	capture     func(context.Context, string, string) (tracker.ChangeSourceCapture, error)
 	source      tracker.ChangeSourceCapture
 	published   *NativeChange
+	reservation *providercapacity.Reservation
 }
 
 func (e *resolutionExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
@@ -43,6 +45,10 @@ func (e *resolutionExecution) StartLanding(ctx context.Context, localAttempt int
 		return err
 	}
 	return e.landingRunExecution.StartLanding(ctx, localAttempt, generation)
+}
+
+func (e *resolutionExecution) ProviderCapacity() *providercapacity.Reservation {
+	return e.reservation
 }
 
 func (e *resolutionExecution) PrepareMergeResolution() error { e.publication = true; return nil }
@@ -121,11 +127,12 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 	for _, test := range []struct {
 		name, content, effort                                        string
 		changed, failed, outside, shifted, gateFailure, budgetDenied bool
-		incorporated                                                 bool
+		incorporated, reserved                                       bool
 	}{
 		{name: "unchanged reviewed diff retains review and lands", content: "first\nreviewed\nbase\n"},
 		{name: "pending conflict incorporated before next attempt lands without provider", content: "first\nreviewed\nthird\n", incorporated: true},
 		{name: "merge identity retains project effort", content: "first\nreviewed\nbase\n", effort: "low"},
+		{name: "conflict keeps implementation reservation", content: "first\nreviewed\nbase\n", reserved: true},
 		{name: "base line shifts retain equivalent reviewed diff", content: "prefix\nfirst\nreviewed\nbase\n", shifted: true},
 		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
 		{name: "changed diff publishes for review", content: "first\nresolved\nbase\n", changed: true},
@@ -181,6 +188,21 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			cfg.Agent.Effort.Merge = test.effort
 			cfg.Gate.Run = command
 			deps := Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
+			reserved := providercapacity.Requirement{Role: RoleCode, Backend: "held", Model: "held-model"}
+			alternate := &resolutionProvider{}
+			if test.reserved {
+				deps.Workflow.Config.Agents.ModelSelection.Enabled = new(false)
+				deps.Workflow.Config.Agents.Backends = []config.AgentBackend{
+					{ID: "held", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-held"},
+					{ID: "merge", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-merge"},
+				}
+				deps.Workflow.Config.Agents.Routes = []config.AgentRoute{
+					{Name: "implementation", Role: RoleCode, Default: true, Backend: reserved.Backend, Model: reserved.Model},
+					{Name: "merge", Role: RoleMerge, Default: true, Backend: "merge", Model: "merge-model"},
+				}
+				deps.AgentBackend = nil
+				deps.AgentBackends = map[string]AgentBackend{reserved.Backend: provider, "merge": alternate}
+			}
 			if test.budgetDenied {
 				deps.Workflow.Config.Budget.BillingMode = config.BillingModeMetered
 				deps.BudgetChecker = &fakeBudgetChecker{refusal: budget.Refusal{Code: budget.ReasonPerDayMaxUSD}}
@@ -215,6 +237,13 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			target.RebaseRequired, target.MergeResolution = true, true
 			execution = &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: target}}}
 			req.Execution = execution
+			if test.reserved {
+				execution.reservation = &providercapacity.Reservation{Requirement: reserved}
+				execution.identity = tracker.NativeExecutionIdentity{Role: reserved.Role, Backend: reserved.Backend, Model: reserved.Model}
+				req.AcquireModelPermit = func(context.Context) error {
+					return errors.New("conflict requested a second model permit")
+				}
+			}
 			var result RunResult
 			if test.changed {
 				result, err = r.Run(t.Context(), req)
@@ -243,7 +272,15 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				}
 				return
 			}
-			if permits != 1 || result.Tokens.TotalTokens != 7 || provider.calls != 1 || provider.request.MaxTurns != 1 || provider.request.MaxDuration <= 0 || !result.TurnStarted || !strings.Contains(provider.request.Prompt, "only the conflicting hunks") {
+			wantPermits := 1
+			if test.reserved {
+				wantPermits = 0
+				if provider.request.Model != reserved.Model || alternate.calls != 0 || execution.identity.Role != RoleCode ||
+					result.RuntimeIdentity.BackendID != reserved.Backend || result.RuntimeIdentity.Role != RoleMerge {
+					t.Fatalf("conflict left its held provider: model=%q alternate turns=%d attempt=%+v runtime=%+v", provider.request.Model, alternate.calls, execution.identity, result.RuntimeIdentity)
+				}
+			}
+			if permits != wantPermits || result.Tokens.TotalTokens != 7 || provider.calls != 1 || provider.request.MaxTurns != 1 || provider.request.MaxDuration <= 0 || !result.TurnStarted || !strings.Contains(provider.request.Prompt, "only the conflicting hunks") {
 				t.Fatalf("resolution was not one bounded merge turn: %#v, %#v", provider, result)
 			}
 			if execution.identity.ReasoningEffort != test.effort || provider.request.ReasoningEffort != test.effort {
