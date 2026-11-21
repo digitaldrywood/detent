@@ -219,6 +219,7 @@ func TestNativeReviewCompletionSurvivesSlowSessionWrite(t *testing.T) {
 				go func() {
 					_, err := r.Validate(t.Context(), ValidatorRequest{usageExecution: owner, implementationReview: review,
 						NativeVersion: input.Version, Diff: input.Diff, Issue: connector.Issue{ID: "test", Identifier: "TEST-1"},
+						retainedReview: &retainedReviewWorkspace{backend: source, info: source.info},
 						complete: func(_ context.Context, result gate.ValidatorResult, finalization *sessionmodel.Finalization) (gate.ValidatorResult, error) {
 							if finalization == nil || finalization.Finish.ProviderThreadID != "review-thread" || result.HeadSHA != head {
 								return result, errors.New("missing source-bound review finalization")

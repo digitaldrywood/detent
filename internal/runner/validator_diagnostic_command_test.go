@@ -191,7 +191,7 @@ func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := runner.Validate(t.Context(), ValidatorRequest{Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- Document the source contract.\n"}, NativeVersion: input.Version, Diff: input.Diff})
+			result, err := runner.Validate(t.Context(), ValidatorRequest{Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- Document the source contract.\n"}, NativeVersion: input.Version, Diff: input.Diff, retainedReview: &retainedReviewWorkspace{backend: worktree, info: worktree.info}})
 			if err != nil {
 				t.Fatal(err)
 			}
