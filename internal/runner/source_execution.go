@@ -2,12 +2,20 @@ package runner
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func (r *Runner) sourceFinalizationContext(ctx context.Context, req RunRequest, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if req.Execution == nil || req.observationPeer == nil {
+		ctx = context.WithoutCancel(ctx)
+	}
+	return r.finalizationContext(ctx, timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+}
 
 type sourceTurnBudgetKey struct{}
 
