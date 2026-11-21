@@ -23,7 +23,7 @@ Use one execution loop and retry owner. Adding or expanding a protection or reco
 
 Infrastructure failures belong to the instance. Retry the failed phase with capped jittered backoff and keep valid work and receipts. Machine failures stay dispatchable. Reconcile uncertain publication against the remote ref. A match with the intended SHA confirms publication, an unchanged or absent ref permits a compare-and-swap push, and a moved ref returns the item to Rework.
 
-Lease renewal proves ownership only, and the existing stall owner ends a quiet provider session and restarts it in place. At the end of each round, an AI verdict judges progress against the issue’s acceptance criteria and open findings, never by commits or activity.
+Lease renewal proves ownership only. For providers with confirmed tool-decision ordering and result coverage, the existing execution owner uses bounded, result-aware repetition evidence to steer or retire a non-progressing provider turn. Silence or activity alone is not a progress verdict. Providers without that coverage retain the existing quiet-session recovery path. One provider-owned deadline remains a transport backstop; command cancellation, resource controls and execution fencing retain their distinct authority. Every retirement feeds the existing end-of-round AI verdict and retry owner under the item lease. That verdict judges progress against the frozen acceptance criteria, verified source and open findings, never by commits or activity alone.
 
 ## INV-4 — Native merge queue
 
