@@ -34,7 +34,9 @@ import (
 func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	const adminToken = "runner-client-test-admin"
 	const hubURL = "https://runner-hub.example.test"
-	hubConfig := dispatchPostgresConfig(t, hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, InitialAdminToken: []byte(adminToken), Version: "v1.2.4"})
+	var clockOffset atomic.Int64
+	clock := func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())) }
+	hubConfig := dispatchPostgresConfig(t, hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, InitialAdminToken: []byte(adminToken), Version: "v1.2.4", Clock: clock})
 	service, err := hubserver.Open(t.Context(), hubConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -596,7 +598,8 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err := scheduler.ReleaseClaim(t.Context(), string(issue.WorkItemID), "interrupted"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := native.Renew(t.Context(), retained, 90); err != nil {
+	retained, err = native.Renew(t.Context(), retained, 90)
+	if err != nil {
 		t.Fatalf("interruption released the original lease: %v", err)
 	}
 	resumedScheduler, err := newTestScheduler(restarted, SchedulerConfig{OrganizationID: organization, NativeProjects: map[string]tracker.ProjectID{"native": project.ID}, Machine: machine, HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second})
@@ -607,6 +610,23 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	request.CandidateKnownWait = func(candidate connector.Issue) bool { return candidate.ID == string(issue.WorkItemID) }
 	if waiting, err := resumedScheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(waiting) != 0 {
 		t.Fatalf("reconnect admitted a lease while the item was waiting: candidates=%+v error=%v", waiting, err)
+	}
+	for _, now := range []time.Time{retained.ExpiresAt.Add(-30 * time.Second), retained.ExpiresAt.Add(5 * time.Second)} {
+		clockOffset.Store(int64(time.Until(now)))
+		if err := resumedScheduler.Heartbeat(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var owner runnerauth.Runner
+		if err := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &owner); err != nil {
+			t.Fatal(err)
+		}
+		index := slices.IndexFunc(owner.Leases, func(lease runnerauth.RunnerLease) bool { return lease.ID == retained.ID })
+		if index < 0 || owner.Leases[index].FencingToken != retained.FencingToken || !owner.Leases[index].ExpiresAt.After(retained.ExpiresAt) {
+			t.Fatalf("waiting retry did not renew its original authority at %v: %+v", now, owner.Leases)
+		}
+	}
+	if waiting, err := resumedScheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(waiting) != 0 {
+		t.Fatalf("reconnect admitted a waiting retry after the original expiry: candidates=%+v error=%v", waiting, err)
 	}
 	request.CandidateKnownWait = nil
 	resumedCandidates, err := resumedScheduler.FetchCandidateIssues(t.Context(), request)
@@ -669,7 +689,28 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil || len(heldRecovery.Attempts) != 1 || heldRecovery.Attempts[0].Outcome != "cancelled" || heldRecovery.Attempts[0].ClaimReleasedAt == nil {
 		t.Fatalf("recovery retained a running attempt: %+v, %v", heldRecovery.Attempts, err)
 	}
-	if _, err := adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"}); err != nil {
+	current, err = adminNative.Transition(t.Context(), issue.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Todo", Reason: "user_requested"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adminNative.Dependency(t.Context(), issue.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: prerequisite.WorkItemID, Operation: "remove"}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := native.Claim(t.Context(), tracker.NativeClaim{
+		WorkItemID: issue.WorkItemID, PolicyID: descriptor.ID, MachineID: machine.ID,
+		SessionID: "replacement-fence-test", TTLSeconds: 90, ProtocolMajor: 2,
+		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+	})
+	if err != nil {
+		t.Fatalf("replacement did not claim the released item: %v", err)
+	}
+	if replacement.ID == retained.ID || replacement.FencingToken <= retained.FencingToken {
+		t.Fatalf("replacement did not advance the fence: old=%+v new=%+v", retained, replacement)
+	}
+	if _, err := native.Renew(t.Context(), retained, 90); !nativeLeaseLost(err) {
+		t.Fatalf("replaced fence renewed: %v", err)
+	}
+	if err := native.Release(t.Context(), replacement, "released"); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -699,7 +740,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 			}
 			report := machine
 			report.Capacity = test.reported
-			now := time.Now().UTC()
+			now := clock().UTC()
 			report.CapacityConfig = &runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 8, ClientLimit: 8, RuntimeLimit: 8, Manageable: true, ObservedAt: now}
 			report.ProviderReports = []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "capacity-test", Models: []string{"sol"}, MaxConcurrent: 8, Availability: "available", ObservedAt: now}}
 			if err := native.HeartbeatMachine(t.Context(), report); err != nil {
