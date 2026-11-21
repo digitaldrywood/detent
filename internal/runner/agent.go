@@ -4323,7 +4323,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	runReq.StartedAt = startedAt
 	profileRequest := runReq
-	profileRequest.Execution = req.usageExecution
+	if req.NativeVersion == nil {
+		profileRequest.Execution = req.usageExecution
+	}
 	activityProfile := r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, "validation")
 	defer activityProfile.finish()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)

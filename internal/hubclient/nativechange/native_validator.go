@@ -368,7 +368,7 @@ func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected t
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if landing := e.pendingLandingResolution(); e.role == runner.RoleMerge && landing != nil {
+	if landing := e.pendingLandingResolution(); e.executionRole() == runner.RoleMerge && landing != nil {
 		if e.data.Identity == nil || e.recoveredSource == nil || *e.recoveredSource != expected ||
 			landing.ChangeID != expected.ChangeID || landing.VersionID != expected.VersionID || landing.HeadSHA != expected.HeadSHA {
 			return reviewRefusal("landing_rework_source_mismatch")
@@ -383,7 +383,7 @@ func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected t
 		if err := e.flushObservations(ctx); err != nil {
 			return err
 		}
-		e.role = e.data.Identity.Role
+		e.landing = false
 	} else if err := e.prepareReview(ctx, expected); err != nil {
 		return err
 	}

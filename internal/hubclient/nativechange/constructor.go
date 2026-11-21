@@ -23,7 +23,6 @@ func NewExecution(host executioncontract.ExecutionHost, view executioncontract.E
 			execution.runtimePublishedAt = attempt.Runtime.HeartbeatAt
 		}
 		execution.usageStartedAt = attempt.StartedAt
-		execution.role = attempt.Identity.Role
 		execution.workerBootstrapping = attempt.Runtime != nil && attempt.Runtime.WorkerLaunch != nil && attempt.Runtime.WorkerLaunch.Bootstrap
 		execution.reconnecting = true
 		execution.workerFromRecovery = true
@@ -81,9 +80,6 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 				execution.change.SecurityAudit = restored.SecurityAudit
 			}
 		}
-	}
-	if state.Data.Identity != nil {
-		execution.role = state.Data.Identity.Role
 	}
 	return execution, nil
 }

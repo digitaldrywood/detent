@@ -53,7 +53,7 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
 			execution := &nativeExecution{
 				scheduler: &executionAuthority{now: time.Now},
-				role:      runner.RoleCode, settled: !test.unsettled, storedSeq: 2,
+				settled:   !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
 				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},
 				publication:   publication,

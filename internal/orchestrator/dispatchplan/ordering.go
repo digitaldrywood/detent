@@ -14,8 +14,6 @@ type CandidateOrder struct {
 	StatePriority        []string
 	LabelPriority        []string
 	PrioritizeUnblockers bool
-	NativeMergeOrder     bool
-	MergeState           string
 }
 
 type WaitState struct {
@@ -26,26 +24,11 @@ type WaitState struct {
 	Blocked      bool
 }
 
-func OrderCandidates(issues []connector.Issue, cfg CandidateOrder, now time.Time) {
+func OrderCandidates(issues []connector.Issue, cfg CandidateOrder) {
 	ranker := dispatchpriority.New(cfg.StatePriority, cfg.LabelPriority)
 	sort.SliceStable(issues, func(i, j int) bool {
 		return ranker.Compare(dispatchpriority.Candidate{Issue: issues[i]}, dispatchpriority.Candidate{Issue: issues[j]}, cfg.PrioritizeUnblockers) < 0
 	})
-	if cfg.NativeMergeOrder {
-		slices.SortStableFunc(issues, func(a, b connector.Issue) int {
-			am, bm := MergeWorkerIssue(a, cfg.MergeState), MergeWorkerIssue(b, cfg.MergeState)
-			if am && bm {
-				return MergeQueueEnteredAt(a, now).Compare(MergeQueueEnteredAt(b, now))
-			}
-			if am {
-				return -1
-			}
-			if bm {
-				return 1
-			}
-			return 0
-		})
-	}
 }
 
 func DeferKnownWaits(issues []connector.Issue, knownWaits map[string]bool) {
