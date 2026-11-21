@@ -52,6 +52,34 @@ func (e *retainedReviewExecution) RecoverChangeSource(ctx context.Context) (work
 	return e.source, e.Validate(ctx)
 }
 
+type continuedReviewExecution struct {
+	deadlineRoundExecution
+	phase tracker.NativePhaseReceipt
+}
+
+func (*continuedReviewExecution) PrepareReview(context.Context, tracker.NativeChangeReference) error {
+	return nil
+}
+
+func (e *continuedReviewExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
+	return &tracker.NativePhaseContinuation{LastPushed: &e.phase}, nil
+}
+
+type retainedLocalReviewWorkspace struct {
+	*workspace.LocalGit
+	uses int
+}
+
+func (w *retainedLocalReviewWorkspace) Use(ctx context.Context, issue workspace.Issue) (func(), error) {
+	w.uses++
+	if w.uses > 1 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		cancel()
+	}
+	return w.LocalGit.Use(ctx, issue)
+}
+
 func TestResumeReviewWorkspaceRetainsExactSource(t *testing.T) {
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
@@ -87,6 +115,43 @@ func TestResumeReviewWorkspaceRetainsExactSource(t *testing.T) {
 	if retained.info.Path != info.Path {
 		t.Fatalf("review workspace = %q, want %q", retained.info.Path, info.Path)
 	}
+	t.Run("continuation with a matching pushed phase", func(t *testing.T) {
+		head, tree, err := local.ItemPhaseHead(t.Context(), info, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease := tracker.NativeLease{ID: "lease_example", PolicyID: "policy_example", FencingToken: 1}
+		execution := &continuedReviewExecution{phase: tracker.NativePhaseReceipt{
+			Mutation:  tracker.Mutation{LeaseID: lease.ID, FencingToken: lease.FencingToken},
+			AttemptID: req.AttemptWorkspace.Attempt, PolicyID: lease.PolicyID, Phase: "project_gate",
+			Branch: info.PublishBranch(), HeadSHA: head, TreeSHA: tree,
+		}}
+		execution.recovery.Lease = lease
+		execution.checkpoint = &tracker.NativeCheckpoint{HeadSHA: head}
+		execution.finalized = true
+		source := &retainedLocalReviewWorkspace{LocalGit: local}
+		agent := &deadlineRoundBackend{run: func(_ context.Context, _ AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+			return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"action":"continue","next_phase":"implement","reason":"continue the existing work"}`})
+		}}
+		runner, err := NewRunner(Dependencies{ProjectID: r.projectID, ProcessSource: emptyProcessSource, Workspace: source, AgentBackend: agent, Store: r.store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runner.sleepInhibitor = nil
+		request := req
+		request.Execution = execution
+		request.Mode = RunModeImplement
+		request.RetainItemWorkspace = true
+		request.DeferExecutionFinish = true
+		continuation := resume
+		continuation.Source.VersionID = "version_example"
+		request.NativeReviewContinuation = &continuation
+		result, err := runner.Run(t.Context(), request)
+		if err != nil || result.WorkspaceBranch != info.Branch || source.uses != 1 {
+			t.Fatalf("review did not reuse the exact held workspace: branch=%q acquisitions=%d error=%v", result.WorkspaceBranch, source.uses, err)
+		}
+	})
+
 	other := resume
 	other.Source.HeadSHA = strings.Repeat("a", 40)
 	if _, _, err := r.resumeReviewWorkspace(t.Context(), req, local, other); !errors.Is(err, ErrNativeRecoveryRequired) {
