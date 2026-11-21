@@ -533,7 +533,7 @@ func TestHandleRunResultReconcilesDeliverableRecoveryExactHead(t *testing.T) {
 			}
 			o := &Orchestrator{
 				cfg: cfg, connector: recoveryConnector, workAttempts: attempts,
-				recoveryInspector:       staticBlockedRecoveryInspector{snapshot: runpkg.BlockedRecoverySnapshot{HeadSHA: headSHA, WorkspacePresent: true, WorkspaceStatus: "present", Health: "ready"}},
+				recoveryInspector:       staticBlockedRecoveryInspector{present: true},
 				deliverableRecoveryWait: func(context.Context, time.Duration) bool { return true },
 			}
 			state := newState(cfg)

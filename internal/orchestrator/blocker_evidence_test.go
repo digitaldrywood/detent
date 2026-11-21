@@ -171,7 +171,7 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 				Fingerprint: "config-a",
 			}),
 			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
-				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-a")}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{fingerprint: "config-a"}
 			},
 			wantStatus: blockerEvidenceStatusHolds,
 			wantOwner:  workpad.BlockerOwnerOrchestrator,
@@ -183,7 +183,7 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 				Fingerprint: "config-a",
 			}),
 			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
-				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-b")}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{fingerprint: "config-b"}
 			},
 			wantStatus: blockerEvidenceStatusCleared,
 			wantOwner:  workpad.BlockerOwnerOrchestrator,
@@ -208,7 +208,7 @@ func TestRecordedBlockerPredicateRegistry(t *testing.T) {
 				return blocker
 			}(),
 			prepare: func(orch *Orchestrator, _ *State, _ *connector.Issue, _ *blockerEvidenceTestConnector) {
-				orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig("config-a")}
+				orch.recoveryInspector = staticBlockedRecoveryInspector{fingerprint: "config-a"}
 			},
 			wantStatus:       blockerEvidenceStatusUnverifiable,
 			wantUnverifiable: true,
@@ -272,7 +272,7 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := &dependencyAutoUnblockConnector{}
 			orch := blockedCauseTestOrchestrator(tracker)
-			orch.recoveryInspector = staticBlockedRecoveryInspector{snapshot: blockedRecoverySnapshotWithConfig(tt.fingerprint)}
+			orch.recoveryInspector = staticBlockedRecoveryInspector{fingerprint: tt.fingerprint}
 			issue := dependencyAutoUnblockIssue("issue-tick-evidence", blockedStatusState)
 			issue.WorkpadSignal = &workpad.Signal{
 				Source: workpad.SourceStructured,
@@ -495,14 +495,6 @@ func typedTestBlocker(predicate workpad.Predicate) workpad.Blocker {
 		Owner:           workpad.BlockerOwnerOrchestrator,
 		Predicate:       &predicate,
 		RecheckInterval: "tick",
-	}
-}
-
-func blockedRecoverySnapshotWithConfig(fingerprint string) runpkg.BlockedRecoverySnapshot {
-	return runpkg.BlockedRecoverySnapshot{
-		ConfigFingerprint: fingerprint,
-		WorkspaceStatus:   "absent",
-		Health:            "ready",
 	}
 }
 

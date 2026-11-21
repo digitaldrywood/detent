@@ -338,7 +338,6 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 		issue,
 		running.Mode,
 		cause,
-		blockedRecoveryPredicateManaged,
 		autoPromoteReworkState,
 		running.DiffStats,
 	)

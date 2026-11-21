@@ -244,29 +244,12 @@ type WorkerHostChecker interface {
 }
 
 type BlockedRecoveryInspector interface {
-	BlockedRecoverySnapshot(context.Context, RunRequest) BlockedRecoverySnapshot
+	BlockedRecoveryWorkspace(context.Context, RunRequest) (present, changed bool)
+	BlockedRecoveryConfigFingerprint() string
 }
 
 type GitHubRESTBudgetProber interface {
 	ProbeGitHubRESTBudget(context.Context, connector.Issue) (telemetry.RESTBudget, bool, error)
-}
-
-type BlockedRecoverySnapshot struct {
-	ConfigFingerprint              string
-	ToolingFingerprint             string
-	BaseFingerprint                string
-	HeadSHA                        string
-	WorkspaceFingerprint           string
-	WorkspaceStatus                string
-	WorkspacePresent               bool
-	WorkspaceFiles                 int
-	UnpushedCommits                int
-	UnpushedCommitRefs             []string
-	TrackedPaths                   []string
-	UntrackedPaths                 []string
-	CommitsNotInPullRequest        []string
-	PullRequestComparisonAvailable bool
-	Health                         string
 }
 
 type Validator interface {

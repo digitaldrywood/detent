@@ -55,7 +55,7 @@ func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, i
 	}
 	body := "## Codex Workpad\n\n```detent-status\n" + string(raw) + "```"
 	target := firstNonBlank(o.cfg.StopRunTargetState, blockedStatusState)
-	metadata := o.newBlockedRecoveryMetadata(ctx, issue, RunModeImplement, workpadBlockedUnactionedReason, blockedRecoveryPredicateManaged, returnState, DiffStats{})
+	metadata := o.newBlockedRecoveryMetadata(ctx, issue, RunModeImplement, workpadBlockedUnactionedReason, returnState, DiffStats{})
 	metadata.ReasonDetail = body
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "state_transition", metadata); err != nil {
