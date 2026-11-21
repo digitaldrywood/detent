@@ -110,18 +110,18 @@ func (p Policy) VerifySigning(ctx context.Context) (_ bool, err error) {
 		return false, fmt.Errorf("prepare signing probe: %w", err)
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	if _, err := gitexec.Run(ctx, scratch, "init", "--quiet"); err != nil {
+	if err := gitexec.InitScratch(ctx, scratch, "--quiet"); err != nil {
 		return false, fmt.Errorf("initialize signing probe: %w", err)
 	}
 	file := filepath.Join(scratch, "empty")
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		return false, err
 	}
-	tree, err := gitexec.Run(ctx, scratch, "hash-object", "-w", "-t", "tree", "--", file)
+	tree, err := gitexec.ReadPublicationSource(ctx, scratch, "hash-object", "-w", "-t", "tree", "--", file)
 	if err != nil {
 		return false, err
 	}
-	_, err = p.Run(ctx, scratch, nil, "commit-tree", strings.TrimSpace(tree), "-m", "Detent signing probe")
+	_, err = p.run(ctx, scratch, gitexec.IsolatedEnvironment(), nil, "commit-tree", strings.TrimSpace(tree), "-m", "Detent signing probe")
 	return true, err
 }
 
@@ -167,7 +167,11 @@ func SignerUnavailable(err error) bool {
 	return false
 }
 
-func (p Policy) Run(ctx context.Context, path string, env []string, args ...string) (_ string, err error) {
+func (p Policy) Run(ctx context.Context, path string, env []string, args ...string) (string, error) {
+	return p.run(ctx, path, os.Environ(), env, args...)
+}
+
+func (p Policy) run(ctx context.Context, path string, baseEnv, env []string, args ...string) (_ string, err error) {
 	identity := p.Report.Identity
 	env = append(env, p.environment...)
 	env = append(env, "GIT_COMMITTER_NAME="+identity.Name, "GIT_COMMITTER_EMAIL="+identity.Email, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true")
@@ -252,7 +256,7 @@ func (p Policy) Run(ctx context.Context, path string, env []string, args ...stri
 	invocation = append(invocation, args[command+1:]...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = append([]string{"git", "-C", path}, invocation...)
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = append(baseEnv, env...)
 	cmd.WaitDelay = gitexec.WaitDelay
 	procgroup.Configure(ctx, cmd)
 	file, err := os.CreateTemp("", "detent-commit-output-*")

@@ -67,8 +67,16 @@ class DeployReleaseTest(unittest.TestCase):
             jq.chmod(0o755)
             payload = scratch / 'payload.tar'
             arguments = scratch / 'ssh-arguments.json'
+            git_dir = repository / '.git'
+            source_config = (git_dir / 'config').read_bytes()
+            source_head = (git_dir / 'HEAD').read_bytes()
             environment = {
                 'PATH': str(scratch / 'bin') + os.pathsep + os.environ['PATH'],
+                'GIT_DIR': str(git_dir),
+                'GIT_COMMON_DIR': str(git_dir),
+                'GIT_WORK_TREE': str(repository),
+                'GIT_INDEX_FILE': str(git_dir / 'index'),
+                'GIT_OBJECT_DIRECTORY': str(git_dir / 'objects'),
                 'TMPDIR': str(scratch),
                 'SSH_KEY': 'example-private-key',
                 'KNOWN_HOSTS': 'example-host-key',
@@ -92,6 +100,9 @@ class DeployReleaseTest(unittest.TestCase):
                 text=True,
                 timeout=30,
             )
+            self.assertEqual((git_dir / 'config').read_bytes(), source_config)
+            self.assertEqual((git_dir / 'HEAD').read_bytes(), source_head)
+            self.assertFalse((git_dir / 'FETCH_HEAD').exists())
             ssh_arguments = json.loads(arguments.read_text())
             self.assertEqual(ssh_arguments[-2:], ['apprunner@cloud.detent.build', f'cutover-postgres {commit}'])
             with tarfile.open(payload) as archive:

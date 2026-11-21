@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func captureIncorporationObjects(ctx context.Context, directory, base, head, target string) (pack []byte, err error) {
@@ -84,25 +85,20 @@ func VerifyLandingIncorporation(ctx context.Context, proof tracker.LandingIncorp
 		return err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
-	env := []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_NO_REPLACE_OBJECTS=1"}
+	if err := gitexec.InitScratch(ctx, scratch, "--bare"); err != nil {
+		return err
+	}
+	env := gitexec.IsolatedEnvironment()
 	git := func(input []byte, args ...string) (string, error) {
 		command := exec.CommandContext(ctx, "git")
 		command.Args = append(command.Args, "-C", scratch)
 		command.Args = append(command.Args, args...)
-		for _, value := range os.Environ() {
-			if !strings.HasPrefix(value, "GIT_") {
-				command.Env = append(command.Env, value)
-			}
-		}
-		command.Env = append(command.Env, env...)
+		command.Env = env
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = workspaceCommandWaitDelay
 		procgroup.Configure(ctx, command)
 		output, err := commandshell.CommandOutput(ctx, command, false)
 		return string(output), err
-	}
-	if _, err := git(nil, "init", "--bare", "--template="); err != nil {
-		return err
 	}
 	if _, err := git(pack, "-c", "pack.threads=1", "index-pack", "--stdin", "--fsck-objects"); err != nil {
 		return errors.New("invalid incorporation objects")
