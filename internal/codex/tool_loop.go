@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -14,6 +15,8 @@ import (
 
 const loopSteerRequestID = 11
 const loopInterruptRequestID = 12
+
+var loopReadOnlyCommand = regexp.MustCompile(`^/(usr/)?bin/(pwd|cat|ls|wc)([ 	]+[A-Za-z0-9_./-]+)*$`)
 
 type loopToolItem struct {
 	ID               string
@@ -69,7 +72,10 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 			}
 		}
 		l.pendingSteer = progresscheck.ToolLoopEvidence{}
-		return nil
+		if l.uncertain {
+			return nil
+		}
+		return l.intervene(ctx, transport, l.observer.Evidence())
 	}
 	if message.Method == "" && requestIDMatches(message.ID, loopInterruptRequestID) && message.Error != nil {
 		l.interrupted = progresscheck.ToolLoopEvidence{}
@@ -234,6 +240,7 @@ func (l *turnToolLoop) intervene(ctx context.Context, transport Transport, evide
 		if err := sendRequest(ctx, transport, loopSteerRequestID, "turn/steer", map[string]any{"threadId": l.thread, "expectedTurnId": l.turn, "input": input}); err != nil {
 			return err
 		}
+		l.observer.SteerSent(evidence)
 		l.pendingSteer = evidence
 		l.steerSequence = l.sequence
 	case progresscheck.ToolLoopStop:
@@ -268,7 +275,7 @@ func (i loopToolItem) experiment(root string) (progresscheck.ToolExperiment, boo
 	switch i.Type {
 	case "commandExecution":
 		dir, err := filepath.Rel(root, i.CWD)
-		if err != nil || !filepath.IsLocal(dir) || i.Command == "" || i.ExitCode == nil || i.AggregatedOutput == nil {
+		if err != nil || !filepath.IsLocal(dir) || !loopReadOnlyCommand.MatchString(i.Command) || i.ExitCode == nil || i.AggregatedOutput == nil {
 			return e, false
 		}
 		if strings.Contains(*i.AggregatedOutput, "truncated") || strings.Contains(*i.AggregatedOutput, "Process running with session ID") {
@@ -327,6 +334,9 @@ func (i loopToolItem) settledJobPoll() json.RawMessage {
 	}
 	switch observation.Status {
 	case "completed", "succeeded", "failed", "cancelled", "canceled", "missing", "not_found", "stuck", "timed_out":
+		if i.Type == "mcpToolCall" {
+			return i.Result
+		}
 		return payload
 	default:
 		return nil
