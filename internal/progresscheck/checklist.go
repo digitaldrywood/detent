@@ -141,7 +141,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 				}
 			}
 		case tracker.CheckIndependentReview:
-			if validator != nil {
+			if validator != nil && (validator.Validator.Verdict == gate.ValidatorVerdictPass || !validator.Validator.InstanceFailure()) {
 				receipt = checklistStepDigest(validator)
 				status = tracker.CheckFailed
 				if validator.Validator.Verdict == gate.ValidatorVerdictPass {
@@ -149,7 +149,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 				}
 			}
 		case tracker.CheckSecurityAudit:
-			if audit != nil {
+			if audit != nil && (audit.SecurityAudit.Verdict == "pass" || audit.SecurityAudit.Run.Attribution != gate.InstanceAttribution) {
 				receipt = checklistStepDigest(audit)
 				status = tracker.CheckFailed
 				if audit.SecurityAudit.Verdict == "pass" {
@@ -160,11 +160,7 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 			}
 		case tracker.CheckAcceptance:
 			if validator != nil {
-				var gateCommand string
-				if command != nil {
-					gateCommand = command.Command
-				}
-				status, receipt = acceptedCriterion(check.Text, validator.Validator, evidence.head, evidence.tree, gateCommand)
+				status, receipt = acceptedCriterion(check.Text, validator, evidence.head, evidence.tree)
 				if status == "" && evidence.disclose && slices.Contains(validator.Validator.NotVerified, check.Text) {
 					status, receipt = tracker.CheckDisclosed, checklistStepDigest(validator)
 				}
@@ -177,9 +173,6 @@ func checklistEvidenceUpdates(checks []tracker.ExecutionCheck, evidence checklis
 		}
 		if status == "" || receipt == "" {
 			continue
-		}
-		if check.Kind != tracker.CheckProjectGate && check.Head == evidence.head && check.Tree == evidence.tree && (check.Status == tracker.CheckFlaky || check.Status == tracker.CheckPassed && status == tracker.CheckFailed || check.Status == tracker.CheckFailed && status == tracker.CheckPassed) {
-			status = tracker.CheckFlaky
 		}
 		updates = append(updates, tracker.ExecutionCheckUpdate{Ordinal: check.Ordinal, Status: status, Head: evidence.head, Tree: evidence.tree, Receipt: receipt})
 	}
@@ -197,24 +190,27 @@ func checklistDeltas(checks []tracker.ExecutionCheck, updates []tracker.Executio
 	return changes
 }
 
-func acceptedCriterion(text string, result *gate.ValidatorResult, head, tree, projectCommand string) (tracker.ExecutionCheckStatus, string) {
+func acceptedCriterion(text string, step *tracker.NativeStepReceipt, head, tree string) (tracker.ExecutionCheckStatus, string) {
+	result := step.Validator
 	for _, criterion := range result.CriteriaEvidence {
-		if criterion.Criterion != text || criterion.RestatesImplementation || criterion.HeadSHA != head || tree == "" || criterion.TreeSHA != tree || strings.TrimSpace(criterion.Behavior) == "" {
+		if criterion.Criterion != text || criterion.RestatesImplementation || strings.TrimSpace(criterion.Behavior) == "" {
 			continue
 		}
-		if criterion.Kind != gate.EvidenceReceipt && criterion.Kind != gate.EvidenceNotVerified {
-			continue
+		exactSource := criterion.HeadSHA == head && tree != "" && criterion.TreeSHA == tree
+		if criterion.Kind == gate.EvidenceNotVerified && exactSource && result.Attribution != gate.InstanceAttribution {
+			for _, command := range result.Commands {
+				if command.ExitCode != 0 && !command.InstanceFailure() && command.HeadSHA == head && command.TreeSHA == tree &&
+					command.ReceiptID != "" && slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
+					return tracker.CheckFailed, command.ReceiptID
+				}
+			}
 		}
-		for _, command := range result.Commands {
-			if command.Command == projectCommand || command.HeadSHA != head || command.TreeSHA != tree || command.ReceiptID == "" || !slices.Contains(criterion.ReceiptIDs, command.ReceiptID) {
-				continue
+		if result.Verdict == gate.ValidatorVerdictPass && criterion.Reference != "" && (criterion.Kind == gate.EvidenceTest ||
+			exactSource && (criterion.Kind == gate.EvidenceReceipt || criterion.Kind == gate.EvidenceAttachment)) {
+			if criterion.Kind != gate.EvidenceTest && len(criterion.ReceiptIDs) == 1 && criterion.ReceiptIDs[0] != "" {
+				return tracker.CheckPassed, criterion.ReceiptIDs[0]
 			}
-			if command.ExitCode == 0 && criterion.Kind == gate.EvidenceReceipt && result.Verdict == gate.ValidatorVerdictPass {
-				return tracker.CheckPassed, command.ReceiptID
-			}
-			if command.ExitCode != 0 && criterion.Kind == gate.EvidenceNotVerified {
-				return tracker.CheckFailed, command.ReceiptID
-			}
+			return tracker.CheckPassed, checklistStepDigest(step)
 		}
 	}
 	return "", ""
