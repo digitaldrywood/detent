@@ -84,7 +84,7 @@ func (e *nativeExecution) recoverLocalChangeSource(ctx context.Context, version 
 }
 
 func (e *nativeExecution) verifiedEmptyRework(diff tracker.AttemptDiffRequest) bool {
-	return e.role == runner.RoleRework && e.recoveredSource != nil && e.sourceRequired &&
+	return e.executionRole() == runner.RoleRework && e.recoveredSource != nil && e.sourceRequired &&
 		diff.BaseSHA != diff.HeadSHA && len(diff.Files) == 0 && e.retainedSource != nil &&
 		e.retainedSource.Source.Validate(diff.BaseSHA, diff.HeadSHA, e.retainedSource.Bundle) == nil &&
 		e.retainedSource.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil)

@@ -292,7 +292,8 @@ func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor
 		if !d.nativeClaimIssueContractAllowed(plan) {
 			continue
 		}
-		if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && !plan.ChangeReady {
+		landing := hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending
+		if landing && !plan.ChangeReady {
 			continue
 		}
 		if plan.LandingRequired {
@@ -311,7 +312,7 @@ func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor
 				continue
 			}
 		}
-		if len(reports) > 0 {
+		if !landing && len(reports) > 0 {
 			if resolver == nil {
 				resolver, err = d.nativeClaimRankResolver(ctx, competitor.scope, plan)
 				if err != nil {

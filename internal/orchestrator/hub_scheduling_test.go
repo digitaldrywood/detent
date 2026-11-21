@@ -45,10 +45,7 @@ func TestHubSchedulingCycle(t *testing.T) {
 		wantDegrade  bool
 		native       bool
 		restPause    bool
-		expired      bool
-		gitLanding   bool
 		interrupted  bool
-		mergeOnly    bool
 		slots        int
 		batchSize    int
 		empty        bool
@@ -58,9 +55,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "Hub dispatches without connector reads", githubPause: true, wantRunning: true},
 		{name: "Hub outage degrades without spending work budgets", fetchError: errors.Join(ErrSchedulingUnavailable, errors.New("Hub unavailable")), wantDegrade: true},
 		{name: "native REST-held 137 leaves one-candidate boundary for 138", native: true, restPause: true, wantRunning: true},
-		{name: "native merge-only REST wait makes zero claims", native: true, restPause: true, mergeOnly: true},
-		{name: "expired REST wait restores native merging", native: true, restPause: true, expired: true, mergeOnly: true, wantRunning: true},
-		{name: "native Git landing stays eligible during REST wait", native: true, restPause: true, gitLanding: true, mergeOnly: true, wantRunning: true},
 		{name: "non-native REST safety stays active", restPause: true},
 		{name: "one refresh starts six scheduled candidates", slots: 6, batchSize: 6, wantRunning: true},
 		{name: "unselected batch claims are released", slots: 2, batchSize: 6, wantRunning: true},
@@ -68,7 +62,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "partial capacity batch stays healthy", slots: 6, batchSize: 2, wantRunning: true, repeats: 4},
 		{name: "native interrupted Code claim without local retry", native: true, interrupted: true, wantRunning: true},
 		{name: "native backend pause makes zero claims", native: true, capacityWait: "paused"},
-		{name: "native backend pause refuses merging before claim", native: true, capacityWait: "paused", mergeOnly: true},
 		{name: "native HTTP outage reset admits a canary", native: true, capacityWait: "reset", wantRunning: true},
 		{name: "native HTTP outage probe admits a canary before reset", native: true, capacityWait: "probe", wantRunning: true},
 		{name: "native backend running canary makes zero claims", native: true, capacityWait: "running"},
@@ -94,7 +87,9 @@ func TestHubSchedulingCycle(t *testing.T) {
 			var backend connector.Connector = trackerBackend
 			if test.native {
 				backend = &nativeHubSchedulingConnector{trackerBackend}
-				merge := dispatchTestIssue("wi_137", "Merging")
+				scheduling.filterReady = test.restPause
+				merge := dispatchTestIssue("wi_137", "In Progress")
+				merge.NativeLandingHeadSHA = "reviewed-head"
 				merge.Fields["detent_hub_work_item_id"] = "137"
 				merge.Priority = new(1)
 				coding := cloneIssue(issue)
@@ -102,9 +97,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 				coding.Priority = new(2)
 				scheduling.issues = []connector.Issue{merge, coding}
 				selected = coding
-				if test.mergeOnly {
-					selected = merge
-				}
 			}
 			runner := &hubSchedulingRunner{started: make(chan struct{}, 1)}
 			if test.interrupted {
@@ -119,13 +111,10 @@ func TestHubSchedulingCycle(t *testing.T) {
 				Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets",
 			})
 			if test.native {
-				cfg.Policy = policy.Descriptor{Gates: policy.Gates{GitHubPullRequest: !test.gitLanding}}
+				cfg.Policy = policy.Descriptor{Gates: policy.Gates{GitHubPullRequest: true}}
 			}
 			if test.interrupted {
 				cfg.ActiveStates = []string{"Todo", "In Progress", "Merging"}
-			}
-			if test.mergeOnly {
-				cfg.ActiveStates = []string{"Merging"}
 			}
 			if test.empty {
 				scheduling.issues = []connector.Issue{}
@@ -146,9 +135,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 					backendCapacityTestController: backendCapacityTestController{scope: scope},
 					observe: func(request runpkg.RunRequest) {
 						wantMode := runpkg.RunModeImplement
-						if test.mergeOnly {
-							wantMode = runpkg.RunModeMerge
-						}
 						if request.Mode != wantMode || request.Issue.ID != selected.ID || request.SelectorContext.Persona != "capacity-admission" {
 							t.Errorf("capacity admission lost dispatch request: mode=%q issue=%q selector=%+v", request.Mode, request.Issue.ID, request.SelectorContext)
 						}
@@ -186,9 +172,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 			}
 			if test.restPause {
 				resume := time.Date(2026, 10, 2, 1, 53, 59, 0, time.UTC)
-				if test.expired {
-					resume = now
-				}
 				state.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: resume}
 			}
 			if test.githubPause {
@@ -244,14 +227,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				}
 			}
 			candidateLimit := cfg.MaxConcurrentAgents + 8
-			if test.native && test.gitLanding {
-				candidateLimit = max(candidateLimit, 100)
-			}
 			if scheduling.fetches != 0 && (!reflect.DeepEqual(request.DispatchPriorityByState, cfg.DispatchPriorityByState) || !reflect.DeepEqual(request.DispatchPriorityByLabel, cfg.DispatchPriorityByLabel) || !request.PrioritizeUnblockers || request.CandidateLimit != candidateLimit || request.AdmissionLimit != cfg.MaxConcurrentAgents || request.CandidateReady == nil || request.CandidateAdmitted == nil) {
 				t.Fatalf("scheduling request lost configured ranking/readiness: %+v", request)
-			}
-			if test.native && test.mergeOnly && test.restPause && !test.expired && !test.gitLanding && scheduling.fetches != 0 {
-				t.Fatal("all states held still requested a native claim")
 			}
 			if test.wantRunning && request.CandidateReady(t.Context(), selected) {
 				t.Fatal("running work remained ready for a new native claim")
@@ -273,8 +250,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 			if test.wantRunning && (scheduling.fetches != wantFetches || scheduling.adoptions != wantAdoptions || scheduling.releases != wantReleases) {
 				t.Fatalf("Hub scheduling calls = fetch %d adopt %d release %d", scheduling.fetches, scheduling.adoptions, scheduling.releases)
 			}
-			if test.native && test.restPause && !test.expired && !test.gitLanding {
-				if stateIn("Merging", request.WorkflowStates) || scheduling.issues[0].State != "Merging" || *scheduling.issues[0].Priority != 1 {
+			if test.native && test.restPause {
+				if stateIn("Merging", request.WorkflowStates) || scheduling.issues[0].NativeLandingHeadSHA != "reviewed-head" || *scheduling.issues[0].Priority != 1 {
 					t.Fatal("REST wait changed native head authority or left it eligible upstream")
 				}
 			}
@@ -861,6 +838,9 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
 			issue := dispatchTestIssue("candidate", test.state)
+			if test.native && test.state == "Merging" {
+				issue.NativeLandingHeadSHA = "reviewed-head"
+			}
 			issue.DependencySource = connector.BlockedRefSourceNative
 			if test.dependency {
 				issue.BlockedBy = []connector.BlockedRef{{ID: "dependency", Identifier: "acme/widgets#2", State: "In Progress", Source: connector.BlockedRefSourceNative}}
@@ -897,9 +877,6 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			}
 			available := o.dispatchPlanner().hardAvailableSlots(&state)
 			candidateLimit := available + dispatchCandidateLookahead
-			if test.native && !test.githubPR {
-				candidateLimit = max(candidateLimit, 100)
-			}
 			if source.request.CandidateLimit != candidateLimit || source.request.AdmissionLimit != max(1, available) {
 				t.Fatalf("readiness lost bounded lookahead: %+v", source.request)
 			}
@@ -938,18 +915,6 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				refusal := state.ProjectDiagnostics(nil, now).Admissions
 				if len(refusal) != 1 || refusal[0].Result != "skipped" || refusal[0].Predicate != "hub_claim.provider_capacity" || refusal[0].ProviderRequirement == nil || *refusal[0].ProviderRequirement != requirement {
 					t.Fatalf("claim refusal lost readiness/model boundary: %+v", refusal)
-				}
-			}
-			if test.want && test.native && test.state == "Merging" {
-				source.request.CandidateAdmitted(issue)
-				next := cloneIssue(issue)
-				next.ID = "next-merge"
-				if ready := source.request.CandidateReady(t.Context(), next); ready == test.githubPR {
-					t.Fatalf("next merge readiness = %t, native batch = %t", ready, !test.githubPR)
-				}
-				next.ID, next.State = "independent", "Todo"
-				if !source.request.CandidateReady(t.Context(), next) {
-					t.Fatal("selected merge starved independent coding")
 				}
 			}
 			afterRetry, hasRetry := state.Retry[issue.ID]

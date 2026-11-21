@@ -138,7 +138,7 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	reviewState := e.stepReviewState() + e.phasePlanDigest
 	landing := e.pendingLandingResolution()
-	resumeLanding := landing != nil && e.role == runner.RoleMerge && pinned.AttemptID == e.data.AttemptID &&
+	resumeLanding := landing != nil && e.executionRole() == runner.RoleMerge && pinned.AttemptID == e.data.AttemptID &&
 		pinned.HeadSHA == landing.HeadSHA && pinned.PolicyID == lease.PolicyID
 	e.mu.Unlock()
 	if resumeLanding {

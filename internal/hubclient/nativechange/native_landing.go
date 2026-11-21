@@ -33,7 +33,7 @@ func (a deliveryAuthority) DeliveryIdentity(fallback tracker.NativeExecutionIden
 func (a deliveryAuthority) AcceptDelivery(status tracker.ReleaseDeliveryStatus) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.role = runner.RoleMerge
+	a.landing = true
 	a.releaseDelivery = &status
 }
 

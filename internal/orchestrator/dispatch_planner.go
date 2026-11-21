@@ -103,9 +103,7 @@ func (p dispatchPlanner) plan(
 		StatePriority:        p.cfg.DispatchPriorityByState,
 		LabelPriority:        p.cfg.DispatchPriorityByLabel,
 		PrioritizeUnblockers: p.cfg.PrioritizeUnblockers,
-		NativeMergeOrder:     p.nativeWorkflow && !p.cfg.Policy.Gates.GitHubPullRequest,
-		MergeState:           autoPromoteMergingState,
-	}, now)
+	})
 
 	dueRetries := dueRetriesByIssue(state, now)
 	retryIssues := plannedCandidates
@@ -114,7 +112,10 @@ func (p dispatchPlanner) plan(
 	}
 	p.releaseInvalidDueRetries(state, retryIssues, dueRetries, hooks)
 	dueRetries = dueRetriesByIssue(state, now)
-	mergePriority := prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
+	var mergePriority mergingIssuePriority
+	if !p.nativeWorkflow {
+		mergePriority = prioritizeReadyMergingIssues(plannedCandidates, state, now, p.cfg)
+	}
 	knownWaits := make(map[string]bool, len(plannedCandidates))
 	for _, issue := range plannedCandidates {
 		knownWaits[issue.ID] = knownDispatchWait(issue, state, dueRetries, p.cfg.TerminalStates)
@@ -974,7 +975,10 @@ func (p dispatchPlanner) modelPermitRequiredAtDispatch(issue connector.Issue) bo
 }
 
 func (p dispatchPlanner) mechanicalMergeAdmission(issue connector.Issue) bool {
-	return (p.nativeWorkflow && !p.cfg.Policy.Gates.GitHubPullRequest || p.cfg.MergeFastPathEnabled) && normalizeState(issue.State) == normalizeState(autoPromoteMergingState)
+	if p.nativeWorkflow {
+		return issue.NativeLandingHeadSHA != "" && !p.cfg.Policy.Gates.GitHubPullRequest
+	}
+	return p.cfg.MergeFastPathEnabled && normalizeState(issue.State) == normalizeState(autoPromoteMergingState)
 }
 
 func modelPermitsUsed(state *State) int {
@@ -1199,7 +1203,7 @@ func (p dispatchPlanner) releaseClaim(state *State, issueID string) {
 }
 
 func (p dispatchPlanner) githubRESTDependent(issue connector.Issue) bool {
-	return !p.nativeWorkflow || normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && p.cfg.Policy.Gates.GitHubPullRequest
+	return !p.nativeWorkflow || issue.NativeLandingHeadSHA != "" && p.cfg.Policy.Gates.GitHubPullRequest
 }
 
 func dispatchLabelSelector(auth selector.Selector) selector.Selector {

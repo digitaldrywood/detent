@@ -124,13 +124,13 @@ func (e *nativeExecution) runtimeHeartbeatDue(observation *tracker.NativeRuntime
 }
 
 func (e *nativeExecution) activityBoundary(at time.Time, outcome string) {
-	observation := runtimeevidence.ActivityBoundary(e.data.Runtime, e.role, e.usageStartedAt, at, outcome)
+	observation := runtimeevidence.ActivityBoundary(e.data.Runtime, e.executionRole(), e.usageStartedAt, at, outcome)
 	e.data.Runtime = &observation
 }
 
 func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, generation uint64) error {
 	e.mu.Lock()
-	e.role = runner.RoleMerge
+	e.landing = true
 	e.mu.Unlock()
 	if e.claim.landingCapacity > 0 {
 		if err := e.renew(ctx, e.claim.landingCapacity); err != nil {
@@ -155,21 +155,16 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 	observation := tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: at, Identity: runtimeIdentity}
 	if current := e.claim.recovery.Issue.ListChange; current != nil && current.LandingPending {
 		target, err := e.LandingTarget(ctx)
-		if err != nil {
+		if err == nil {
+			observation.Landing = &tracker.NativeLandingReceipt{Waiting: true, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, CI: target.CI, ObservedAt: at}
+		} else if !errors.Is(err, runner.ErrLandingNotReviewed) || !target.ReviewPending {
 			return err
 		}
-		observation.Landing = &tracker.NativeLandingReceipt{Waiting: true, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, CI: target.CI, ObservedAt: at}
 	}
 	if err := e.ObserveRuntime(ctx, observation); err != nil {
 		return err
 	}
-	if err := e.StartPhased(ctx, identity); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	e.role = runner.RoleMerge
-	e.mu.Unlock()
-	return nil
+	return e.StartPhased(ctx, identity)
 }
 
 func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.NativeLanding) error {

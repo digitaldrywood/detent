@@ -86,7 +86,7 @@ type nativeExecution struct {
 	// unpushed worktree is settled; dirty work takes the ordinary path.
 	worktreeState            string
 	worktreeHead             string
-	role                     string
+	landing                  bool
 	conversationContinuation bool
 	conversationReady        chan struct{}
 	settled                  bool
@@ -400,7 +400,6 @@ func (e *nativeExecution) start(ctx context.Context, identity tracker.NativeExec
 	e.mu.Lock()
 	if e.workerBootstrapping {
 		e.data.Identity = &identity
-		e.role = identity.Role
 		e.workerBootstrapping = false
 		if e.data.Runtime != nil && e.data.Runtime.WorkerLaunch != nil {
 			runtime, launch := *e.data.Runtime, *e.data.Runtime.WorkerLaunch
@@ -460,7 +459,6 @@ func (e *nativeExecution) start(ctx context.Context, identity tracker.NativeExec
 		return e.flush(ctx)
 	}
 	e.data.Identity = &identity
-	e.role = identity.Role
 	if reservation := e.ProviderCapacity(); phased && reservation != nil && reservation.Role == runner.RolePlan {
 		observation := tracker.NativeRuntimeObservation{HeartbeatAt: e.scheduler.now().UTC()}
 		if e.data.Runtime != nil {
@@ -555,7 +553,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	if e.ownsIssueCompletion() || e.change != nil && e.change.NoChange != nil {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
-	if e.role == runner.RoleMerge {
+	if e.executionRole() == runner.RoleMerge {
 		if disposition := runner.NativeDispositionFromMessage(finalMessage); disposition != nil && disposition.Status == "blocked" && disposition.HumanAction {
 			e.preparedDisposition = disposition
 		}
@@ -764,7 +762,7 @@ func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminal
 	if e.change != nil && (e.change.VersionError != "" || e.change.Error != "") {
 		stage = "publication"
 	}
-	if e.role == runner.RoleMerge {
+	if e.executionRole() == runner.RoleMerge {
 		stage = "landing"
 	}
 	failure := tracker.NativeTerminalFailure{ErrorClass: stage, Stage: stage, ObservedAt: e.scheduler.now().UTC()}

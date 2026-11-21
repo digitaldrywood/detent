@@ -221,7 +221,7 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 	created := "i.native_created_at"
 	aging := "CASE WHEN ps.aging_enabled THEN -LEAST(3,GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($5-COALESCE(f.dispatch_wait_since,$5)))/86400)::bigint)) ELSE 0 END::bigint"
 	landing := "CASE WHEN lower(trim(ws.name))='merging' THEN 0 ELSE 1 END::bigint"
-	lane := "CASE lower(trim(ws.name)) WHEN 'merging' THEN 0 WHEN 'rework' THEN 1 WHEN 'in progress' THEN 2 ELSE 3 END::bigint"
+	lane := "CASE WHEN p.profile='github_compatible' AND lower(trim(ws.name))='merging' THEN 0 WHEN lower(trim(ws.name))='rework' THEN 1 WHEN lower(trim(ws.name))='in progress' THEN 2 ELSE 3 END::bigint"
 	unblockers := `(SELECT count(*) FROM issue_dependencies d JOIN issues dependent ON dependent.organization_id=d.organization_id AND dependent.project_id=d.dependent_project_id AND dependent.id=d.dependent_issue_id JOIN project_workflow_states dependent_state ON dependent_state.organization_id=dependent.organization_id AND dependent_state.project_id=dependent.project_id AND dependent_state.name=dependent.workflow_state_name WHERE d.organization_id=i.organization_id AND d.blocker_project_id=i.project_id AND d.blocker_issue_id=i.id AND dependent.archived=false AND dependent_state.terminal=false)`
 	unblockerRank := "0::bigint"
 	if query.PrioritizeUnblockers {
@@ -282,11 +282,15 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		{normalizedClaimValues(query.Authors), "f.author_login"},
 		{normalizedClaimValues(query.Repositories), "f.repository"},
 	}
+	landingRecovery := "false"
+	if query.RunnerSelection && !query.WorkspaceLane {
+		const recoverableChange = `EXISTS(SELECT 1 FROM change_issue_links link
+ JOIN change_requests change ON change.organization_id=link.organization_id AND change.project_id=link.project_id AND change.id=link.change_id
+ WHERE link.organization_id=i.organization_id AND link.project_id=i.project_id AND link.work_item_id=i.native_id AND change.current_version_id IS NOT NULL)`
+		landingRecovery = "(NOT ws.operator_only AND lower(trim(ws.name))='merging' AND (p.profile='github_compatible' OR " + recoverableChange + "))"
+		statement += " AND (p.profile='github_compatible' OR lower(trim(ws.name))<>'merging' OR " + landingRecovery + ")"
+	}
 	if states := normalizedClaimValues(query.States); len(states) > 0 {
-		landingRecovery := "false"
-		if query.RunnerSelection && !query.WorkspaceLane {
-			landingRecovery = "(NOT ws.operator_only AND lower(trim(ws.name))='merging')"
-		}
 		statement += " AND (lower(trim(ws.name))=ANY(" + bind(states) + "::text[]) OR " + recovery + " OR " + landingRecovery + ")"
 	}
 	var filterSQL strings.Builder
