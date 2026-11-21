@@ -94,4 +94,26 @@ overlay("internal/cli/ssh_runner.go", [
 	}
 	var sessions runnerpkg.SessionStore = runnerpkg.SSHSessionStore{Peer: peer}'''),
 ])
+overlay("internal/workspace/merge.go", [
+    ("\tcmd := commandshell.Command(ctx, command, l.hooks.Shell)\n\tcmd.Dir = commandInfo.Path",
+     '''	actual := command
+	armed := os.Getenv("DETENT_LOCAL_GATE_ARMED")
+	driver := os.Getenv("DETENT_LOCAL_GATE_DRIVER")
+	python := os.Getenv("DETENT_LOCAL_GATE_PYTHON")
+	injected := native && command == "make check" && armed != "" && driver != "" && python != "" && os.Rename(armed, armed+".used") == nil
+	if injected {
+		actual = `exec "$DETENT_LOCAL_GATE_PYTHON" "$DETENT_LOCAL_GATE_DRIVER" "$DETENT_LOCAL_GATE_ARMED"`
+	}
+	cmd := commandshell.Command(ctx, actual, l.hooks.Shell)
+	cmd.Dir = commandInfo.Path'''),
+    ("\tcmd.Env = hookEnv(commandInfo, issue, l.hooks.StripGitHubTokens)",
+     '''	cmd.Env = hookEnv(commandInfo, issue, l.hooks.StripGitHubTokens)
+	if injected {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{
+			"DETENT_LOCAL_GATE_PYTHON": python, "DETENT_LOCAL_GATE_DRIVER": driver,
+			"DETENT_LOCAL_GATE_ARMED": armed + ".used", "DETENT_LOCAL_GATE_WORKTREE": info.Path,
+			"DETENT_LOCAL_GATE_HEAD": issue.PullRequestHeadSHA,
+		}})
+	}'''),
+])
 (output / "overlay.json").write_text(json.dumps({"Replace": replacements}))

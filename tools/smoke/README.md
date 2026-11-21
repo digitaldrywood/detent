@@ -8,6 +8,8 @@ The fixture defaults to the published `test/smoke-scenarios` branch of the todo 
 
 The baseline profile uses tagged todo policy. The pyro profile uses the same todo source and command with the acceptance, promotion and security-audit configuration declared by the fixture. The review rejection scenario uses the baseline implementation reviewer and the Pyro acceptance validator.
 
+The six extended scenarios use the same isolated stack and the fixture's replay verifier. Lease expiry requires a plan receipt before pausing the runner and checks the replacement's implementation checkpoint. Runner restart and gate flake arm the one-shot source gate fault. The parallel scenario records a capacity-one control from a fresh project in the same stack. Dependency order and the operator's typed answer are verified from the recorded item history.
+
 Each replay starts from fresh private state. Loopback ports are pinned for a replay and reused by subsequent scenarios after shutdown. Set `--parallel` or `--port` to fit the available local capacity. The observation window defaults to 1,200 seconds per item and is adjustable with `--timeout`. The table reports the first difference per scenario and the path to its run log, Hub and runner logs, and receipt snapshot. Set `DETENT_SMOKE_ARTIFACTS` to keep these artifacts outside the default temporary directory. Keep the artifact directory private because it also contains the isolated service state.
 
 A trusted optional private pack can set `DETENT_SMOKE_PRIVATE_PACK` to a directory containing `scenarios/<name>/run`. The launcher passes the pinned commit, profile and private artifact directory to that executable and uses its exit status and first `FAIL` line. Keep private scenario code and inputs in that pack.

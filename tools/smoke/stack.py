@@ -278,7 +278,7 @@ def org_bootstrap(admin):
     return local[0]["organization_id"]
 
 
-def runner_enroll(org, admin):
+def runner_enroll(org, admin, capacity, clock):
     path = STATE / "runner.json"
     config = STATE / "global.yaml"
     if read(path):
@@ -287,10 +287,13 @@ def runner_enroll(org, admin):
                     {"scope": "organization", "operations": OPERATIONS, "ttl_seconds": 300}, admin)
     record = json.loads(command([BINARY, "hub", "runner", "register", "--enrollment-token-stdin", "--format", "json",
                                  "--url", url(), "--organization", org, "--name", "Local Canary Runner",
-                                 "--capacity", "1", "--isolation-tier", "sandbox",
+                                 "--capacity", str(capacity), "--isolation-tier", "sandbox",
                                  "--config", config, "--workspace-root", WORKSPACES], SOURCE,
                                 data=grant["token"] + "\n"))
     raw = config.read_text()
+    if clock:
+        settings = "".join(f"    {key}: {value}\n" for key, value in clock.items())
+        raw = raw.replace("client:\n", "client:\n" + settings, 1)
     raw = re.sub(r"(?m)^github_token:.*$", 'github_token: ""', raw)
     raw = re.sub(r"(?m)^port:.*$", f'port: {available_ports()["runner"]}', raw)
     raw = re.sub(r"(?m)^service_name:.*$", "service_name: detent.runner.local-stack", raw)
@@ -315,7 +318,10 @@ def start_runner():
     spawn("runner", [BINARY, "--config", STATE / "global.yaml", "--host", "127.0.0.1",
                      "--port", ports["runner"], "--headless", "--log-level", "debug"],
           git_transport() | {"DETENT_LOCAL_SOURCE_WORKERS": str(ROOT / "cache/workers"),
-                             "DETENT_LOCAL_STARTUP_REFUSAL": str(STATE / "startup-refusal")})
+                             "DETENT_LOCAL_STARTUP_REFUSAL": str(STATE / "startup-refusal"),
+                             "DETENT_LOCAL_GATE_ARMED": str(STATE / "gate.armed.json"),
+                             "DETENT_LOCAL_GATE_DRIVER": str(STATE / "replay-gate.py"),
+                             "DETENT_LOCAL_GATE_PYTHON": sys.executable})
     def runner_started():
         with logfile.open() as log:
             log.seek(offset)
@@ -434,13 +440,13 @@ def runner_status(admin, org):
     return next((row for row in runners if row["runner_id"] == runner_id), None)
 
 
-def route(projects, admin, org, state="active"):
+def route(projects, admin, org, state="active", capacity=1):
     runner = runner_status(admin, org)
     if not runner:
         raise Failure("Enrolled runner was missing from the fleet")
     project_ids = sorted(projects)
     same_projects = runner.get("scope") == "projects" and sorted(runner.get("project_ids", [])) == project_ids
-    if same_projects and runner.get("state") == state:
+    if same_projects and runner.get("state") == state and runner.get("capacity_limit") == capacity:
         return runner
     if not same_projects and (runner.get("used") or runner.get("leases")):
         raise Failure("Runner has unsettled leases")
@@ -448,8 +454,8 @@ def route(projects, admin, org, state="active"):
     return request(f'/api/v2/organizations/{org}/runners/{runner["runner_id"]}/routing', "PUT",
                    {key: runner[key] for key in retained if key in runner} | {
                        "expected_revision": runner["revision"], "scope": "projects",
-                       "project_ids": project_ids, "capacity_limit": 1, "state": state,
-                       "project_capacity_limits": {project: 1 for project in project_ids},
+                       "project_ids": project_ids, "capacity_limit": capacity, "state": state,
+                       "project_capacity_limits": {project: capacity for project in project_ids},
                        "idempotency_key": uuid.uuid4().hex,
                    }, admin)
 
@@ -465,6 +471,10 @@ def current():
     return org, credentials()["DETENT_HUB_ADMIN_TOKEN"]
 
 
+def operator_token():
+    return current()[1]
+
+
 def start_hub():
     cfg = credentials()
     port = available_ports()["hub"]
@@ -477,7 +487,7 @@ def start_hub():
     wait_for("Hub readiness", lambda: request("/health", token=admin))
 
 
-def up():
+def up(capacity=1, clock=None):
     check_ports()
     for directory in (ROOT / "bin", LOGS, STATE, SANDBOX_HOME, CODEX, SOCKETS, WORKSPACES, ROOT / "tmp"):
         directory.mkdir(exist_ok=True)
@@ -509,8 +519,8 @@ def up():
     start_hub()
     admin = cfg["DETENT_HUB_ADMIN_TOKEN"]
     org = org_bootstrap(admin)
-    runner_enroll(org, admin)
-    route([], admin, org)
+    runner_enroll(org, admin, capacity, clock)
+    route([], admin, org, capacity=capacity)
 
 
 if __name__ == "__main__":

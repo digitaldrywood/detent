@@ -1,7 +1,11 @@
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import runpy
+import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -305,25 +309,102 @@ def held_items(project, specification):
     return rows
 
 
+def run_next(project, case, scenario, mode, capacity):
+    worker = runpy.run_path(str(fixture_path("scripts/replay-next.py")))
+
+    class Replay(worker["Replay"]):
+        def hook_count(self, path):
+            with (stack.LOGS / "runner.log").open() as log:
+                fields = (stack.log_fields(line) for line in log if "running workspace hook" in line)
+                return sum(row.get("hook") == "after_create" and row.get("path") == path for row in fields)
+
+    names = [scenario["control"]] if mode == "control" else scenario["items"]
+    items = {name: project.item(stack.read(fixture_path(f"issues/{name}.json"))) for name in names}
+    if "dependency" in scenario:
+        child, parent = scenario["dependency"]
+        items[child] = add_dependency(project, items[child], items[parent])
+    for name, item in items.items():
+        project.request("/work-items/" + item["work_item_id"] + "/workflow", "POST", {
+            "idempotency_key": f"smoke-start-{name}", "expected_revision": item["revision"],
+            "state": "Todo", "reason": "user_requested",
+        })
+    expected = stack.read(case / "expected.json")
+    replay = Replay(stack, scenario, expected, mode, project=project.id, mirror=project.mirror,
+                    items={name: item["work_item_id"] for name, item in items.items()})
+    stem = f"{case.name}.{mode}"
+    records = {}
+    difference = ""
+    with ExitStack() as sensors:
+        action = scenario["action"]
+        if action in {"restart_runner", "refuse_gate_service"}:
+            shutil.copyfile(fixture_path("scripts/replay-gate.py"), stack.STATE / "replay-gate.py")
+            armed = {"kind": action}
+            if action == "refuse_gate_service":
+                refusal = sensors.enter_context(socket.socket())
+                refusal.bind(("127.0.0.1", 0))
+                armed["port"] = refusal.getsockname()[1]
+            stack.write(stack.STATE / "gate.armed.json", armed)
+        start, since = time.monotonic(), time.time()
+        stack.route([project.id], replay.admin, replay.org, capacity=capacity)
+        try:
+            records = replay.observe(start + TIMEOUT, since, stack.ROOT / (stem + ".fault.json"))
+            for name, record in records.items():
+                replay.verify_landing(name, record)
+            replay.verify_fault(records)
+        except (KeyError, IndexError, OSError, StopIteration, ValueError, stack.Failure) as error:
+            difference = str(error) or "Missing required session or receipt"
+            raise stack.Failure(difference) from error
+        finally:
+            seconds = time.monotonic() - start
+            stack.write(stack.ROOT / (stem + ".evidence.json"), {
+                "difference": difference, "seconds": round(seconds, 2), "fault": replay.fault,
+                "samples": replay.samples, "records": records,
+            })
+    stack.route([], replay.admin, replay.org, capacity=capacity)
+    print(f"{stem} {seconds:.1f}s", flush=True)
+    return seconds
+
+
 def execute(profile, case):
     started = time.monotonic()
-    stack.up()
+    scenario = stack.read(case / "scenario.json")
+    action = scenario.get("action") if "items" in scenario else None
+    capacity = scenario.get("capacity", 1)
+    clock = {}
+    if action == "pause_runner":
+        clock = {"heartbeat_interval_seconds": scenario["heartbeat_seconds"],
+                 "lease_ttl_seconds": scenario["lease_ttl_seconds"]}
+    if action == "restart_runner":
+        clock = {"heartbeat_interval_seconds": 5, "lease_ttl_seconds": 75}
+    stack.up(capacity, clock)
     org, admin = stack.current()
     configure_models(org, admin)
-    scenario = stack.read(case / "scenario.json")
     profile_policy = stack.read(FIXTURE / f"smoke/profiles/{profile}.json")["policy"]
     policy_fields = profile_policy | scenario.get("policy", {})
+    if action == "pause_runner":
+        policy_fields |= {"plan.enabled": True, "plan.review": "automated"}
     projects = scenario.get("projects", [{"name": "Todo smoke", "case": case.name}])
     seeded = [
         Project(org, admin, index, spec["name"], policy_fields, scenario.get("source_patch"))
         for index, spec in enumerate(projects, 1)
     ]
     ids = [project.id for project in seeded]
-    stack.route(ids, admin, org)
+    stack.route(ids, admin, org, capacity=capacity)
     stack.start_runner()
     policy = [project.approve_policy() for project in seeded]
-    stack.route([], admin, org)
+    stack.route([], admin, org, capacity=capacity)
     print(f"Replay seed ready in {time.monotonic() - started:.1f}s", flush=True)
+    if action:
+        mode = "phase-receipt" if action == "pause_runner" else "default"
+        seconds = run_next(seeded[0], case, scenario, mode, capacity)
+        if scenario.get("control"):
+            control = Project(org, admin, 2, "Single-item control", policy_fields, scenario.get("source_patch"))
+            stack.route([control.id], admin, org)
+            control.approve_policy()
+            stack.route([], admin, org)
+            single = run_next(control, case, scenario, "control", 1)
+            print(f"Parallel {seconds:.1f}s, single-item control {single:.1f}s", flush=True)
+        return
     if "projects" in scenario:
         expected = stack.read(case / "expected.json")
         held = [item for project, spec in zip(seeded, projects) for item in held_items(project, spec.get("held", {}))]
