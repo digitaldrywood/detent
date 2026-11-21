@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -22,6 +23,14 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+func TestTemporaryGateCommandFailureIsInstanceAttributed(t *testing.T) {
+	result := gate.CommandResult{Command: "make check", ExitCode: 75, FinishedAt: time.Now()}
+	gate.NormalizeCommandAttribution("", "", &result)
+	if result.Attribution != "instance" || len(result.Findings) != 0 {
+		t.Fatalf("temporary command failure lost its instance attribution: %+v", result)
+	}
 }
 
 func TestFindingAttributionRequiresExactBaseReproduction(t *testing.T) {
