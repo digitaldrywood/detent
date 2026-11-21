@@ -68,11 +68,12 @@ func (d AttemptDeps) ReadNativeAttemptSnapshotTenant(ctx context.Context, scope 
 		if err != nil {
 			return err
 		}
-		snapshot.Lease, err = r.Lease(ctx, snapshot.Attempt.LeaseID)
+		lease, err := r.LeaseSnapshot(ctx, snapshot.Attempt.LeaseID)
 		if err != nil {
 			return err
 		}
-		if snapshot.Lease.IssueID != workItem.ID || snapshot.Lease.FencingToken != snapshot.Attempt.FencingToken {
+		snapshot.Lease, snapshot.LeaseObservation = lease.Lease, lease.LeaseObservation
+		if lease.IssueID != workItem.ID || lease.FencingToken != snapshot.Attempt.FencingToken {
 			return corestore.ErrNotFound
 		}
 		snapshot.Event, err = r.LatestRunEvent(ctx, scope.Project, snapshot.Attempt.ID)
@@ -168,7 +169,7 @@ func (d AttemptDeps) ReadNativeAttemptPageTenant(ctx context.Context, scope hubs
 			if attempt.IssueID != workItem.ID {
 				return corestore.ErrNotFound
 			}
-			lease, err := r.Lease(ctx, attempt.LeaseID)
+			lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
@@ -182,7 +183,7 @@ func (d AttemptDeps) ReadNativeAttemptPageTenant(ctx context.Context, scope hubs
 			if event.WorkItemID != tracker.NativeWorkItemID(item) {
 				return corestore.ErrNotFound
 			}
-			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
@@ -297,6 +298,10 @@ func (d AttemptDeps) HydrateNativeAttemptTenant(ctx context.Context, snapshot hu
 	}
 	attempt := snapshot.Attempt
 	lease := snapshot.Lease
+	observation := snapshot.LeaseObservation
+	if !observation.At.IsZero() {
+		now = observation.At
+	}
 	checkpoint, err := d.ReadNativeAttemptCheckpointTenant(ctx, snapshot)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
@@ -306,7 +311,7 @@ func (d AttemptDeps) HydrateNativeAttemptTenant(ctx context.Context, snapshot hu
 	}
 	result := tracker.NativeAttempt{NativeRunData: run, LocalAttemptID: attempt.LocalAttemptID, Status: attempt.Status, StartedAt: attempt.StartedAt, UpdatedAt: attempt.UpdatedAt,
 		WorkItemRevision: tracker.Revision(attempt.WorkItemRevision), DispatchGeneration: attempt.DispatchGeneration,
-		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: lease.ReleasedAt == nil && !now.Before(lease.RenewedAt) && now.Before(lease.ExpiresAt),
+		LeaseRenewedAt: lease.RenewedAt, LeaseExpiresAt: lease.ExpiresAt, Current: observation.Unexpired && lease.LeaseID == attempt.LeaseID && lease.FencingToken == attempt.FencingToken,
 		Checkpoint: checkpoint, RuntimeFreshness: "unavailable",
 		TerminalFailureAvailability: "unavailable", FinalizationAvailability: "unavailable", Unavailable: []string{"evidence"}}
 	if err := ProjectAttemptEvidence(&result, snapshot); err != nil {
@@ -327,7 +332,7 @@ func (d AttemptDeps) HydrateNativeAttemptTenant(ctx context.Context, snapshot hu
 	if lease.ReleasedAt != nil {
 		released := *lease.ReleasedAt
 		result.ClaimReleasedAt = &released
-	} else if !lease.ExpiresAt.After(now) {
+	} else if !observation.At.IsZero() && !observation.Unexpired {
 		expired := lease.ExpiresAt
 		result.ClaimReleasedAt = &expired
 	}

@@ -427,20 +427,20 @@ func TestBoardProjectionRetainsCoreWhenHistoricalAttemptUnavailable(t *testing.T
 				if test.concurrent {
 					service.config.TenantRepository = &boardAdvancingAttemptRepository{Repository: repository, advance: advance}
 					t.Cleanup(func() { service.config.TenantRepository = repository })
-					snapshot, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID}, lease.RenewedAt.Add(time.Second))
+					snapshot, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID})
 					service.config.TenantRepository = repository
 					if err != nil || snapshot.attempt == nil {
 						t.Fatalf("read board attempt snapshot: %+v, %v", snapshot.attempt, err)
 					}
-					attempt, present, err := service.boardAttemptDetails(t.Context(), *snapshot.attempt, lease.RenewedAt.Add(time.Second))
+					attempt, present, err := service.boardAttemptDetails(t.Context(), *snapshot.attempt)
 					if err != nil || !present || attempt == nil || attempt.Sequence != 1 {
 						t.Fatalf("board mixed committed attempt generations: %+v, %v", attempt, err)
 					}
-					fresh, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID}, lease.RenewedAt.Add(time.Second))
+					fresh, err := service.boardProjectionSnapshot(t.Context(), organization, viewstore.BoardCandidate{ProjectID: project, WorkItemID: itemID})
 					if err != nil || fresh.attempt == nil {
 						t.Fatalf("read advanced board attempt: %+v, %v", fresh.attempt, err)
 					}
-					attempt, present, err = service.boardAttemptDetails(t.Context(), *fresh.attempt, lease.RenewedAt.Add(time.Second))
+					attempt, present, err = service.boardAttemptDetails(t.Context(), *fresh.attempt)
 					if err != nil || !present || attempt == nil || attempt.Sequence != 2 {
 						t.Fatalf("board lost committed attempt observation: %+v, %v", attempt, err)
 					}

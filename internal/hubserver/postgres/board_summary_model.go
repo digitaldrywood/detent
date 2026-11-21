@@ -89,17 +89,11 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeM
 	}
 	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
  ` + boardviewsql.LiveItems("$1", "$2::text") + `,
-running_counts AS MATERIALIZED (
- SELECT l.project_id,l.state,count(*) AS running FROM live_items l
- WHERE l.running AND NOT l.terminal AND ($4='all' OR l.archived::text=$4)
- AND (NOT $5::boolean OR NOT l.workspace) AND ($3::text='' OR l.actor_principal_id=$3 AND l.current_actor=$3)
- GROUP BY l.project_id,l.state
-),
+ ` + boardviewsql.DirtyItems("SELECT $2::text AS id WHERE NOT (SELECT pending FROM metadata)") + `,
+ ` + boardviewsql.ScopedCounts("SELECT $2::text WHERE NOT (SELECT pending FROM metadata)", "$3", "$4", "$5") + `,
 counts AS MATERIALIZED (
  SELECT c.kind,c.state,c.total,` + boardviewsql.RunningCount("c.project_id", "c.kind", "c.state") + ` AS running,c.projected_at
- FROM native_board_page_summaries c
- WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM metadata)
- ORDER BY c.kind,c.state LIMIT 204
+ FROM scoped_counts c ORDER BY c.kind,c.state LIMIT 204
 ), completion AS MATERIALIZED (
  SELECT c.kind,c.state,c.projected_at
  FROM native_board_page_summaries c

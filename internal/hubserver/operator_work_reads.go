@@ -463,7 +463,7 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubsco
 			if attempt.OrganizationID != scope.Organization || attempt.IssueID != work.ID {
 				return corestore.ErrNotFound
 			}
-			lease, err := r.Lease(ctx, attempt.LeaseID)
+			lease, err := r.LeaseSnapshot(ctx, attempt.LeaseID)
 			if err != nil {
 				return err
 			}
@@ -477,7 +477,7 @@ func (s *Service) readOperatorAttemptSnapshots(ctx context.Context, scope hubsco
 			if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != work.NativeID || event.AttemptID != attempt.ID {
 				return corestore.ErrNotFound
 			}
-			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease, Event: event}
+			snapshot := hubrecords.TenantAttemptSnapshot{Attempt: attempt, Lease: lease.Lease, LeaseObservation: lease.LeaseObservation, Event: event}
 			if err := hubrecords.ReadTenantAttemptPayload(ctx, r, &snapshot); err != nil {
 				return err
 			}
