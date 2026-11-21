@@ -13,9 +13,7 @@ root = Path(__file__).resolve().parent.parent
 scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
 if not scratch:
     raise SystemExit("This diagnostic requires a provided TMPDIR, TMP or TEMP")
-env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-env.update(GOMAXPROCS=os.environ.get("TEST_PROCS", "4"), CGO_ENABLED="0",
-           GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+env = dict(os.environ, GOMAXPROCS=os.environ.get("TEST_PROCS", "4"), CGO_ENABLED="0")
 env.pop("DETENT_API_TOKEN", None)
 
 
@@ -40,7 +38,7 @@ def embedded_consumer(cwd, command_env=None):
 
 
 with tempfile.TemporaryDirectory(prefix="conversation-build-", dir=scratch) as directory:
-    work = Path(directory).resolve()
+    work = Path(directory)
     repo = work / "source"
     repo.mkdir()
     files = run(root, "git", "ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")
@@ -50,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix="conversation-build-", dir=scratch) as d
         target = repo / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / name, target)
-    run(repo, "git", "init", "-q", "--initial-branch=base", "--template=", "--", str(repo))
+    run(repo, "git", "init", "-q", "--initial-branch=base")
     run(repo, "git", "config", "user.name", "Conversation build diagnostic")
     run(repo, "git", "config", "user.email", "conversation-build@localhost")
     run(repo, "git", "config", "commit.gpgsign", "false")
