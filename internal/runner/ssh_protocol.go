@@ -219,7 +219,7 @@ func sshSentinels() []error {
 		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrProviderSessionUnretired, ErrLandingNotReviewed, ErrValidatorInfrastructure,
-		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired,
+		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired, ErrWorkerSessionStartUncertain,
 		ErrChangeSourceVersionSuperseded, progresscheck.ErrRoundVerdictRejected, progresscheck.ErrChecklistSuperseded}
 }
 

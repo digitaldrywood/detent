@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -272,6 +273,92 @@ func TestPostgresHostSessionRecordsOnlyBoundaries(t *testing.T) {
 	}
 }
 
+func TestPostgresSessionCreatePersistsWorkerIdentity(t *testing.T) {
+	f := hubfixture.NewLeasedRunners(t)
+	for index, mode := range []string{"tenant transaction", "runner command"} {
+		t.Run(mode, func(t *testing.T) {
+			repository := f.Hub.Repository
+			lease := f.Leases[index]
+			ref, err := f.Hub.Config.RunDetails.StoreDetail(t.Context(), string(f.Organization), []byte(mode))
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			record := runnersession.Record{
+				Organization: f.Organization, Project: "prj_runner", IssueID: string(lease.WorkItemID),
+				AttemptID: f.Data[index].AttemptID, StartedAt: at, PolicyID: f.Policy.PolicyID,
+				WorkerPID: 10000 + index, WorkerGroupID: 9000 + index, WorkerStartedAt: &at,
+				Reference: ref,
+			}
+			var created runnersession.Record
+			create := func(ctx context.Context, w tenantstore.Writer) error {
+				var err error
+				created, err = w.(runnersession.Writer).CreateRunnerSession(ctx, record, runnersession.History{Key: fmt.Sprintf("start_worker_%d", index), Reference: ref})
+				return err
+			}
+			if index == 0 {
+				err = repository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+					return create(t.Context(), w)
+				})
+			} else {
+				command := eventstore.RunCommand{Project: "prj_runner", WorkItem: lease.WorkItemID, LeaseID: string(lease.ID)}
+				err = repository.WriteRunnerEventCommand(t.Context(), f.Organization, "credential_"+strconv.Itoa(index+1), f.Bindings[index].RunnerID, command, create)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if created.ID <= 0 || created.WorkerPID != record.WorkerPID || created.WorkerGroupID != record.WorkerGroupID || created.WorkerStartedAt == nil || !created.WorkerStartedAt.Equal(at) {
+				t.Fatalf("create did not persist the process identity: id=%d pid=%d group=%d start=%v", created.ID, created.WorkerPID, created.WorkerGroupID, created.WorkerStartedAt)
+			}
+		})
+	}
+}
+
+func TestPostgresFinishedSessionRetainsUnreapedWorker(t *testing.T) {
+	f := hubfixture.NewLeasedRunners(t)
+	for index, lease := range f.Leases {
+		native, ctx := f.Client(t, index)
+		sessions := api.NewRunnerSessions(native)
+		at := time.Now().UTC().Truncate(time.Microsecond)
+		worker := store.WorkerProcessRegistration{WorkerProcessIdentity: store.WorkerProcessIdentity{
+			PID: 10000 + index, GroupID: 9000 + index, StartedAt: at, StartKey: "example-process",
+		}}
+		id, err := sessions.StartSession(ctx, store.SessionStart{
+			IssueID: string(lease.WorkItemID), StartedAt: at, AgentBackendKind: "host",
+			AgentRole: store.WorkerProcessRoleHostValidation, Worker: &worker,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sessions.FinishSession(ctx, id, store.SessionFinish{CompletedAt: at.Add(time.Second), FinalState: "failed"}); err != nil {
+			t.Fatal(err)
+		}
+		path := native.Scope() + "/runner-processes?attempt=" + f.Data[index].AttemptID
+		var processes runnersession.Processes
+		if err := native.Transport().Request(ctx, http.MethodGet, path, nil, &processes); err != nil {
+			t.Fatal(err)
+		}
+		if processes.Unobserved || len(processes.Workers) != 1 || processes.Workers[0].SessionID != id {
+			t.Fatalf("finished session hid its unreaped worker: %+v", processes)
+		}
+		got := processes.Workers[0].WorkerProcessIdentity
+		if got.PID != worker.PID || got.GroupID != worker.GroupID || !got.StartedAt.Equal(worker.StartedAt) || got.StartKey != worker.StartKey {
+			t.Fatalf("process read lost registered identity: got=%+v want=%+v", got, worker.WorkerProcessIdentity)
+		}
+		reap := store.WorkerProcessReap{ReapedAt: at.Add(2 * time.Second), Outcome: "already_exited", Reason: "host_validation"}
+		if err := sessions.MarkSessionWorkerProcessReaped(ctx, id, reap); err != nil {
+			t.Fatal(err)
+		}
+		processes = runnersession.Processes{}
+		if err := native.Transport().Request(ctx, http.MethodGet, path, nil, &processes); err != nil {
+			t.Fatal(err)
+		}
+		if processes.Unobserved || len(processes.Workers) != 0 {
+			t.Fatalf("authorized reap did not retire the worker: %+v", processes)
+		}
+	}
+}
+
 func TestPostgresSessionFinalizationCompletesLegacyPrefix(t *testing.T) {
 	f := hubfixture.NewLeasedRunners(t)
 	for _, stagedUsage := range []bool{false, true} {
@@ -334,10 +421,28 @@ func (rollbackTestBackend) RunTurn(context.Context, runner.AgentTurnRequest, run
 }
 
 func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
-	f := hubfixture.NewLeasedRunners(t)
+	for _, test := range []struct {
+		name          string
+		lostResponses int32
+		deadline      bool
+	}{
+		{name: "one lost response", lostResponses: 1},
+		{name: "both responses lost", lostResponses: 2},
+		{name: "caller deadline after commit", lostResponses: 1, deadline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testPostgresHostSessionStartRollback(t, hubfixture.NewLeasedRunners(t), test.lostResponses, test.deadline)
+		})
+	}
+}
+
+func testPostgresHostSessionStartRollback(t *testing.T, f hubfixture.LeasedRunners, lostResponses int32, deadline bool) {
+	t.Helper()
 	const index = 0
 	lease := f.Leases[index]
 	native, ctx := f.Client(t, index)
+	caller, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	type startReceipt struct {
 		ID         int64
 		Key        string
@@ -369,13 +474,16 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 			f.Hub.Handler().ServeHTTP(w, r)
 			return
 		}
-		if attempts.Add(1) > 1 {
+		attempt := attempts.Add(1)
+		if attempt > 1 {
 			start := first.Load()
 			if start == nil || start.Key != mutation.Key || start.ProcessKey != mutation.ProcessKey {
 				t.Error("start was reconciled with different authority keys")
 			}
-			f.Hub.Handler().ServeHTTP(w, r)
-			return
+			if attempt > lostResponses {
+				f.Hub.Handler().ServeHTTP(w, r)
+				return
+			}
 		}
 		response := httptest.NewRecorder()
 		f.Hub.Handler().ServeHTTP(response, r)
@@ -384,7 +492,13 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 			t.Errorf("worker start did not commit: status=%d id=%d revision=%d error=%v", response.Code, snapshot.ID, snapshot.Revision, err)
 			return
 		}
-		first.Store(&startReceipt{ID: snapshot.ID, Key: mutation.Key, ProcessKey: mutation.ProcessKey})
+		if attempt == 1 {
+			first.Store(&startReceipt{ID: snapshot.ID, Key: mutation.Key, ProcessKey: mutation.ProcessKey})
+			if deadline {
+				cancel(context.DeadlineExceeded)
+				return
+			}
+		}
 		w.Header().Set("Content-Length", strconv.Itoa(response.Body.Len()+1))
 		w.WriteHeader(response.Code)
 		if _, err := w.Write(response.Body.Bytes()); err != nil {
@@ -405,11 +519,11 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx = owner.WorkerCommandContext(ctx, runner.RunRequest{
+	caller = owner.WorkerCommandContext(caller, runner.RunRequest{
 		Issue:            connector.Issue{ID: string(lease.WorkItemID)},
 		AttemptWorkspace: workspace.AttemptWorkspace{Organization: string(f.Organization), Project: "prj_runner", Attempt: f.Data[index].AttemptID},
 	})
-	launchCtx, finish := (runner.AgentProcessRequest{Workspace: root}).OwnProviderLaunch(ctx)
+	launchCtx, finish := (runner.AgentProcessRequest{Workspace: root}).OwnProviderLaunch(caller)
 	cmd := exec.CommandContext(launchCtx, "git", "init")
 	cmd.Dir = root
 	procgroup.Configure(launchCtx, cmd)
@@ -424,7 +538,7 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 		_ = procgroup.Wait(cmd)
 		t.Fatal("command launched after the start response was lost")
 	}
-	if err := finish(err); !api.NativeTransportUnavailable(err) {
+	if err := finish(err); !api.NativeTransportUnavailable(err) || deadline && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("rollback changed the start error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, ".git")); !errors.Is(err, os.ErrNotExist) {
@@ -442,7 +556,7 @@ func TestPostgresHostSessionReapsAfterLostStartAcknowledgement(t *testing.T) {
 	if err := native.Transport().Request(ctx, http.MethodGet, native.Scope()+"/runner-processes?attempt="+f.Data[index].AttemptID, nil, &processes); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.Revision != 2 || snapshot.Reaped == nil || snapshot.Finish == nil || snapshot.Finish.FinalState != "failed" || len(processes.Workers) != 0 || processes.Unobserved || attempts.Load() != 2 {
+	if snapshot.Revision != 2 || snapshot.Reaped == nil || snapshot.Finish == nil || snapshot.Finish.FinalState != "failed" || len(processes.Workers) != 0 || processes.Unobserved || attempts.Load() != lostResponses+1 {
 		t.Fatalf("rollback did not retire the committed worker: revision=%d finished=%t reaped=%t workers=%d unobserved=%t start requests=%d", snapshot.Revision, snapshot.Finish != nil, snapshot.Reaped != nil, len(processes.Workers), processes.Unobserved, attempts.Load())
 	}
 }
