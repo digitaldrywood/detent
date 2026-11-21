@@ -399,6 +399,7 @@ type RunStop struct {
 }
 
 type SessionStart struct {
+	Worker                       *WorkerProcessRegistration `json:",omitempty"`
 	PRNumber                     int64
 	PRHeadSHA                    string
 	PRBaseSHA                    string
@@ -461,11 +462,7 @@ type WorkerProcess struct {
 	OwnerGeneration int64
 }
 
-type WorkerProcessReap struct {
-	ReapedAt time.Time
-	Outcome  string
-	Reason   string
-}
+type WorkerProcessReap = sessionmodel.WorkerProcessReap
 
 type SessionResumeState struct {
 	ResumedFromSessionID         int64

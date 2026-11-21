@@ -20,66 +20,37 @@ func (s *RunnerSessions) ReconcileSessionFinalization(ctx context.Context, id in
 	if !ok || authority.scope != s.base() || authority.lease.ID == "" {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
-	current, err := s.snapshot(ctx, id)
-	if err != nil {
-		return err
-	}
 	if value == nil {
-		if current.Finalization != nil {
-			value = &current.Finalization.Input
-		} else {
+		current, err := s.snapshot(ctx, id)
+		if err != nil {
+			return err
+		}
+		if current.Finalization == nil {
 			if _, err := s.ValidateLease(ctx, authority.lease); err != nil {
 				return err
 			}
 			return s.verifyLegacyFinalization(ctx, current)
 		}
+		value = &current.Finalization.Input
 	}
-	if value.SessionID != id || current.ID != id {
+	if value.SessionID != id {
 		return errors.New("session finalization identity changed")
 	}
 	if value.Phase == nil {
 		return errors.New("session finalization phase is required")
 	}
-	if current.Finalization != nil && !current.Finalization.Input.Equal(*value) {
-		return errors.New("session finalization inputs changed")
-	}
-	requests := []runnersession.Mutation{{SessionID: id, Finalization: value, Finish: &value.Finish}, {SessionID: id, Finalization: value, Usage: &value.Usage}}
-	if value.Phase != nil {
-		requests = append(requests, runnersession.Mutation{SessionID: id, Finalization: value, Phase: value.Phase})
-	}
-	wrote := false
-	for _, request := range requests {
-		stage := "finish"
-		if request.Usage != nil {
-			stage = "usage"
-		}
-		if request.Phase != nil {
-			stage = "phase"
-		}
-		request.Key, err = value.Key(stage)
-		if err != nil {
-			return err
-		}
-		if current.Finalization != nil && (request.Finish != nil && current.Finalization.Finished || request.Usage != nil && current.Finalization.UsageRecorded || request.Phase != nil && current.Finalization.PhaseRecorded) {
-			continue
-		}
-		current, err = s.mutate(ctx, request)
-		if err != nil {
-			return err
-		}
-		wrote = true
-	}
-	if current.Finalization == nil || !current.Finalization.Finished || !current.Finalization.UsageRecorded || !current.Finalization.PhaseRecorded {
-		return errors.New("session finalization remains incomplete")
-	}
-	if !wrote {
-		request := requests[0]
-		request.Key, err = value.Key("finish")
-		if err != nil {
-			return err
-		}
-		_, err := s.mutate(ctx, request)
+	key, err := value.Key("finish")
+	if err != nil {
 		return err
+	}
+	current, err := s.mutate(ctx, runnersession.Mutation{
+		Key: key, SessionID: id, Finalization: value, Finish: &value.Finish, Usage: &value.Usage, Phase: value.Phase,
+	})
+	if err != nil {
+		return err
+	}
+	if current.ID != id || current.Finalization == nil || !current.Finalization.Input.Equal(*value) || !current.Finalization.Finished || !current.Finalization.UsageRecorded || !current.Finalization.PhaseRecorded {
+		return errors.New("session finalization remains incomplete")
 	}
 	return nil
 }

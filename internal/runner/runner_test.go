@@ -8738,8 +8738,8 @@ func TestReview1973BootstrapValidationOwner(t *testing.T) {
 	if validation == nil {
 		t.Fatal("bootstrap with a session owner and without a cache has no validation owner")
 	}
-	if _, err := validation(ctx, workspace.Info{Path: "checkout"}, workspace.Issue{}, "scratch"); err != nil || len(owner.workerProcesses) != 1 {
-		t.Fatalf("validation scratch reservation=%+v error=%v", owner.workerProcesses, err)
+	if _, err := validation(ctx, workspace.Info{Path: "checkout"}, workspace.Issue{}, "scratch"); err != nil || owner.startCalls != 0 || len(owner.workerProcesses) != 0 {
+		t.Fatalf("validation wrote before the process was inspected: starts=%d processes=%+v error=%v", owner.startCalls, owner.workerProcesses, err)
 	}
 	r.store = nil
 	validation = workspace.ValidationProcessOwnerFromContext(r.withValidationProcessOwner(ctx, issue, 1))

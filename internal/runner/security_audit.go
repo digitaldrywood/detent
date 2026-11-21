@@ -271,7 +271,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, auditWorkspace); err != nil {
 				return err
 			}
-			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
+			if req.usageExecution == nil {
+				r.persistSessionProviderIdentity(updateCtx, sessionID, update)
+			}
 			if update.Type == AgentUpdateMessageDelta {
 				output.WriteString(update.Delta)
 			}
@@ -286,17 +288,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if update.Type == AgentUpdateTokenUsage && update.Tokens.ThreadTotal == nil {
 				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
 			}
-			if update.Type == AgentUpdateTokenUsage {
-				if err := usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, false); err != nil {
-					return err
-				}
-			}
 			if req.OnUsageUpdate != nil {
 				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil {
 					return err
 				}
 			}
-			if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
+			if req.usageExecution == nil && !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
 					return err
 				}

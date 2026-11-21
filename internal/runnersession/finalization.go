@@ -21,12 +21,15 @@ func ApplyFinalization(snapshot *Snapshot, request Mutation) (bool, error) {
 	if phase := value.Phase; phase == nil || phase.SessionID != value.SessionID || phase.IssueID != value.Usage.IssueID || phase.ProjectID != value.Usage.ProjectID || !phase.StartedAt.Equal(value.Usage.StartedAt) || !phase.FinishedAt.Equal(value.Finish.CompletedAt) || phase.PhaseType != "agent_session" || phase.PhaseName != "agent_active" || phase.Status != value.Finish.FinalState {
 		return false, errors.New("session finalization phase differs from its immutable identity")
 	}
+	complete := request.Finish != nil && request.Usage != nil && request.Phase != nil
 	stage := "finish"
-	if request.Usage != nil {
-		stage = "usage"
-	}
-	if request.Phase != nil {
-		stage = "phase"
+	if !complete {
+		if request.Usage != nil {
+			stage = "usage"
+		}
+		if request.Phase != nil {
+			stage = "phase"
+		}
 	}
 	key, err := value.Key(stage)
 	if err != nil || request.Key != key {
@@ -41,6 +44,16 @@ func ApplyFinalization(snapshot *Snapshot, request Mutation) (bool, error) {
 		return false, errors.New("session finalization inputs changed")
 	}
 	state := snapshot.Finalization
+	if complete {
+		if !reflect.DeepEqual(*request.Finish, value.Finish) || !reflect.DeepEqual(*request.Usage, value.Usage) || !reflect.DeepEqual(*request.Phase, *value.Phase) {
+			return false, errors.New("session mutation differs from its finalization")
+		}
+		if state.Finished && state.UsageRecorded && state.PhaseRecorded {
+			return true, nil
+		}
+		state.Finished, state.UsageRecorded, state.PhaseRecorded = true, true, true
+		return false, nil
+	}
 	switch {
 	case request.Finish != nil && reflect.DeepEqual(*request.Finish, value.Finish):
 		if state.Finished {
