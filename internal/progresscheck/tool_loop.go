@@ -88,6 +88,7 @@ type toolDecision struct {
 type toolSteer struct {
 	fingerprint  string
 	period       int
+	sentAt       uint64
 	acknowledged uint64
 }
 
@@ -104,6 +105,9 @@ func (l *ToolLoop) Observe(sequence uint64, fingerprint string) ToolLoopEvidence
 		l.steer = toolSteer{}
 	}
 	if len(l.history) == ToolLoopWindow {
+		if l.steer.acknowledged == 0 && l.steer.sentAt == l.history[0].sequence {
+			l.steer = toolSteer{}
+		}
 		copy(l.history, l.history[1:])
 		l.history = l.history[:ToolLoopWindow-1]
 	}
@@ -128,7 +132,7 @@ func (l *ToolLoop) Evidence() ToolLoopEvidence {
 }
 
 func (l *ToolLoop) SteerSent(evidence ToolLoopEvidence) {
-	l.steer = toolSteer{fingerprint: evidence.Fingerprint, period: evidence.Period}
+	l.steer = toolSteer{fingerprint: evidence.Fingerprint, period: evidence.Period, sentAt: l.history[len(l.history)-1].sequence}
 }
 
 func (l *ToolLoop) Acknowledge(fingerprint string, lastStarted uint64) {
