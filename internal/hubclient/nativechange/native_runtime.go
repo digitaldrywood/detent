@@ -145,7 +145,8 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 		}
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
-	if reservation := e.ProviderCapacity(); reservation != nil {
+	reservation := e.ProviderCapacity()
+	if reservation != nil {
 		identity = tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}
 	}
 	e.mu.Lock()
@@ -166,6 +167,9 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 	}
 	if err := e.ObserveRuntime(ctx, observation); err != nil {
 		return err
+	}
+	if reservation != nil {
+		return e.Start(ctx, identity)
 	}
 	return e.StartPhased(ctx, identity)
 }
