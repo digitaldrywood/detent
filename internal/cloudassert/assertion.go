@@ -248,11 +248,23 @@ func CanonicalPath(u *url.URL) bool {
 	}
 	workBoard := len(parts) == 5 && parts[0] == "api" && parts[1] == "v2" && parts[2] == "organizations" && parts[4] == "work-board"
 	for key, values := range query {
-		if len(values) > 1 && !repeatableQueryKeys[key] && (!workBoard || key != "project" && key != "item") {
-			return false
+		if len(values) <= 1 || repeatableQueryKeys[key] || workBoard && (key == "project" || key == "item") {
+			continue
 		}
+		if (key == "phase" || key == "input_digest") && nativeWorkItemPhasesRoute(parts) {
+			continue
+		}
+		return false
 	}
 	return true
+}
+
+func nativeWorkItemPhasesRoute(parts []string) bool {
+	if len(parts) == 11 && parts[0] == "organizations" && parts[1] == parts[5] {
+		parts = parts[2:]
+	}
+	return len(parts) == 9 && parts[0] == "api" && parts[1] == "v2" && parts[2] == "organizations" &&
+		parts[4] == "projects" && parts[6] == "work-items" && parts[8] == "phases"
 }
 
 var repeatableQueryKeys = map[string]bool{"state": true, "label": true, "assignee": true, "priority": true}
