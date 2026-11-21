@@ -2096,8 +2096,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 				defer cancel()
+				if err := req.Execution.Validate(cleanupCtx); err != nil {
+					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+					return
+				}
 				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
 					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
+					return
+				}
+				if landing := returnValue.NativeLanding; landing != nil && landing.Landed && landing.MergeSHA != "" && landing.HeadSHA == workspaceIssue.Landing.HeadSHA {
+					landing.WorkspaceRetired = true
 				}
 			}()
 		}
