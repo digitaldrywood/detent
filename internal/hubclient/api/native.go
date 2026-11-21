@@ -127,9 +127,12 @@ func (c *NativeClient) ItemPhaseContinuation(ctx context.Context, item tracker.N
 		query.Add("phase", phase.Phase)
 		query.Add("input_digest", phase.InputDigest)
 	}
+	route := c.base() + "/work-items/" + url.PathEscape(string(item)) + "/phases"
 	var output tracker.NativePhaseContinuation
-	err := c.client.request(ctx, http.MethodGet, c.base()+"/work-items/"+url.PathEscape(string(item))+"/phases?"+query.Encode(), nil, &output)
-	return output, err
+	if err := c.client.request(ctx, http.MethodGet, route+"?"+query.Encode(), nil, &output); err != nil {
+		return output, fmt.Errorf("%s %s: %w", http.MethodGet, route, err)
+	}
+	return output, nil
 }
 
 func (c *NativeClient) PublishPhaseReceipt(ctx context.Context, item tracker.NativeWorkItemID, input tracker.NativePhaseReceipt) (tracker.NativePhaseReceipt, error) {

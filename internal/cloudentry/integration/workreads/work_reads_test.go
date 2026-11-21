@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cloudentry/internal/entryfixture"
@@ -175,6 +177,25 @@ func TestHostedHubWorkReads(t *testing.T) {
 			}
 		})
 	}
+	phaseQuery := url.Values{
+		"phase":        {"implement", "project_gate"},
+		"input_digest": {strings.Repeat("a", 64), strings.Repeat("b", 64)},
+		"policy_id":    {"policy-example"},
+	}
+	itemPath := f.base + "/work-items/" + string(issues["Todo"].WorkItemID)
+	for _, test := range []struct{ name, prefix string }{
+		{"phase continuation", ""},
+		{"phase continuation with hosted prefix", "/organizations/org_alpha"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := test.prefix + itemPath + "/phases?" + phaseQuery.Encode()
+			response := f.request(t, http.MethodGet, target, nil)
+			var continuation tracker.NativePhaseContinuation
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &continuation) != nil || continuation.NextPhase != "implement" {
+				t.Fatalf("phase continuation status = %d, want 200 with next phase implement: %s", response.Code, response.Body)
+			}
+		})
+	}
 	for _, test := range []struct {
 		name, target string
 		status       int
@@ -182,6 +203,9 @@ func TestHostedHubWorkReads(t *testing.T) {
 		{"other tenant", "/api/v2/organizations/org_beta/work-items/" + string(issues["Todo"].WorkItemID), http.StatusUnauthorized},
 		{"unregistered tenant", "/api/v2/organizations/org_missing/work-items/" + string(issues["Todo"].WorkItemID), http.StatusNotFound},
 		{"repeated singleton", f.base + "/work-items?limit=1&limit=200", http.StatusNotFound},
+		{"repeated phase on item detail", itemPath + "?phase=implement&phase=project_gate", http.StatusNotFound},
+		{"repeated digest on item detail", itemPath + "?" + url.Values{"input_digest": phaseQuery["input_digest"]}.Encode(), http.StatusNotFound},
+		{"repeated policy on phase continuation", itemPath + "/phases?" + phaseQuery.Encode() + "&policy_id=other", http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := f.request(t, http.MethodGet, test.target, nil)
