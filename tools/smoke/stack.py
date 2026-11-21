@@ -231,8 +231,9 @@ def database(credentials):
     if not (PGDATA / "PG_VERSION").exists():
         command([PG / "initdb", "-D", PGDATA, "-U", "postgres", "--auth-local=trust", "--auth-host=scram-sha-256",
                  "--no-locale", "--encoding=UTF8"], log="postgres-init.log")
+    options = shlex.join(["-h", "127.0.0.1", "-p", port, "-k", str(SOCKETS)])
     command([PG / "pg_ctl", "-D", PGDATA, "start", "-w", "-t", "30", "-l", LOGS / "postgres.log",
-             "-o", f"-h 127.0.0.1 -p {port} -k {SOCKETS}"], log="postgres-control.log", timeout=45)
+             "-o", options], log="postgres-control.log", timeout=45)
     sql = [PG / "psql", "-X", "-v", "ON_ERROR_STOP=1", "-h", SOCKETS, "-p", port, "-U", "postgres"]
     if not complete.exists():
         command(sql + ["-d", "postgres"], log="postgres-init.log", data=r"""
