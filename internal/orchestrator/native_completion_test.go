@@ -1808,6 +1808,11 @@ func (c nativeReviewHostChecker) WorkerHostAvailable(_ context.Context, host str
 	return host != string(c)
 }
 
+type nativeReviewWorkspaceOwner struct {
+	*nativeCompletionPublisher
+	runpkg.AttemptWorkerExecution
+}
+
 func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -1818,6 +1823,8 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 		previousHost      string
 		unavailableHost   string
 		wantHost          string
+		workspaceBranch   string
+		retained          bool
 	}{
 		{name: "quota does not scale provider capacity", running: 3, capacity: 5},
 		{name: "below provider capacity", running: 2, capacity: 5},
@@ -1826,6 +1833,8 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 		{name: "unavailable saved host", capacity: 1, hosts: []string{"worker-a", "worker-b"}, previousHost: "worker-a", unavailableHost: "worker-a", wantHost: "worker-b"},
 		{name: "removed saved host", capacity: 1, hosts: []string{"worker-b"}, previousHost: "worker-a", wantHost: "worker-b"},
 		{name: "no live host", capacity: 1, hosts: []string{"worker-a"}, previousHost: "worker-a", unavailableHost: "worker-a", blocked: true},
+		{name: "retained branch survives review result without a workspace", capacity: 1, workspaceBranch: "existing-item-branch"},
+		{name: "repeated review continuation retains workspace ownership", capacity: 1, retained: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := providerWindowTestConfig()
@@ -1844,7 +1853,11 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 			}
 			orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), workerHostChecker: nativeReviewHostChecker(test.unavailableHost)}
 			source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
-			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: &nativeCompletionPublisher{}}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source"}}
+			var execution runpkg.Execution = &nativeCompletionPublisher{}
+			if test.workspaceBranch != "" || test.retained {
+				execution = &nativeReviewWorkspaceOwner{nativeCompletionPublisher: &nativeCompletionPublisher{}}
+			}
+			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: execution, RetainItemWorkspace: test.retained}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source", WorkspaceBranch: test.workspaceBranch}}
 			runCtx := orch.nativeContinuationContext(t.Context(), &running)
 			t.Cleanup(running.cancel)
 			err = orch.continueNativeRun(runCtx, &state, event, running, true)
@@ -1874,6 +1887,10 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 			defer state.Running[issue.ID].cancel()
 			if landing.Request.NativeReviewContinuation != nil || landing.Request.Mode != runpkg.RunModeMerge {
 				t.Fatal("accepted review continuation replaced native landing")
+			}
+			wantRetained := test.retained || test.workspaceBranch != ""
+			if completion.Request.RetainItemWorkspace != wantRetained || landing.Request.RetainItemWorkspace != wantRetained {
+				t.Fatalf("retained workspace ownership through review=%t and landing=%t, want %t", completion.Request.RetainItemWorkspace, landing.Request.RetainItemWorkspace, wantRetained)
 			}
 		})
 	}
