@@ -745,6 +745,9 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 			}
 			continue
 		}
+		if request.CandidateKnownWait != nil && request.CandidateKnownWait(issueFromNative(recovery.Issue)) {
+			continue
+		}
 		lease, err := source.NativeClient().Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
 		if nativeLeaseLost(err) {
 			continue
