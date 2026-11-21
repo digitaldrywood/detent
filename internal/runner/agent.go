@@ -1934,9 +1934,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue.RequireCheckpoint = sourceErr != nil
 	if reviewRecovery != nil && !repairResume && workspaceIssue.Source != nil {
-		if workspaceIssue.Source.PushedPhase == nil {
-			workspaceIssue.ReviewVersionID = workspaceIssue.Source.Version.ID
-		}
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
 	workspaceIssue.PhaseSource = phaseSource
@@ -2512,10 +2509,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if reviewRecovery != nil {
 				result.reusedDispositionAttemptID = reviewRecovery.AttemptID
 				result.FinalMessage = reviewRecovery.CompletionBody
-				if req.reviewOnly && workspaceIssue.Source.PushedPhase != nil {
-					result.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
-				}
 			}
+		}
+		if result.retainedReview == nil {
+			result.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
+			result.WorkspaceBranch = info.Branch
 		}
 		afterRunPending = false
 		resumeCtx, resumeCancel := r.sourceFinalizationContext(ctx, req, r.nativeWorkTimeout(workflow.Config, backendConfig, 0))
@@ -4134,7 +4132,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	if retained := req.retainedReview; retained != nil {
 		runWorkspace, info, workspaceIssue = retained.backend, retained.info, retained.issue
 		workspaceIssue.IsolateReviewCommands = true
-		req.workspacePrepared = true
 	}
 	if req.NativeVersion != nil {
 		if _, ok := runWorkspace.(workspace.HeadProvider); !ok {
@@ -4145,23 +4142,10 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
 		if req.retainedReview == nil {
-			workspaceIssue.ReviewVersionID = req.NativeVersion.ID
-			workspaceIssue.Source = &workspace.ChangeSource{Version: *req.NativeVersion}
-			if req.source != nil {
-				recovered, err := req.source.RecoverChangeSource(ctx)
-				if err != nil {
-					return gate.ValidatorResult{}, fmt.Errorf("%w: recover native review source: %w", ErrValidatorInfrastructure, err)
-				}
-				if recovered.Version.ID != req.NativeVersion.ID || recovered.Version.ChangeID != req.NativeVersion.ChangeID || recovered.Version.Repository != req.NativeVersion.Repository || recovered.Version.BaseSHA != req.NativeVersion.BaseSHA || recovered.Version.HeadSHA != req.NativeVersion.HeadSHA {
-					return gate.ValidatorResult{}, fmt.Errorf("%w: recovered review source differs from the immutable version", ErrValidatorInfrastructure)
-				}
-				workspaceIssue.Source.Bundle = recovered.Bundle
-				workspaceIssue.Source.PushedPhase = recovered.PushedPhase
-			}
-			req.workspacePrepared = false
+			return gate.ValidatorResult{}, fmt.Errorf("%w: native review requires the held item workspace", ErrValidatorInfrastructure)
 		}
 	}
-	if usage, ok := runWorkspace.(workspace.Usage); ok && !req.workspacePrepared {
+	if usage, ok := runWorkspace.(workspace.Usage); ok && req.retainedReview == nil {
 		release, err := usage.Use(ctx, workspaceIssue)
 		if err != nil {
 			return gate.ValidatorResult{}, err
@@ -4185,9 +4169,6 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 				return gate.ValidatorResult{}, fmt.Errorf("%w: seed validation review head: %w", ErrValidatorInfrastructure, err)
 			}
 		}
-
-	}
-	if !req.workspacePrepared {
 		if err := runWorkspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 			return gate.ValidatorResult{}, fmt.Errorf("workspace before_run: %w", err)
 		}
@@ -4196,12 +4177,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		"workspace_path", info.Path,
 	)
 
-	afterRunPending := !req.workspacePrepared
+	afterRunPending := req.retainedReview == nil
 	defer func() {
 		if afterRunPending {
 			r.afterRun(ctx, runWorkspace, info, workspaceIssue)
 		}
 	}()
+
 	if expected := strings.TrimSpace(workspaceIssue.PullRequestHeadSHA); expected != "" {
 		if provider, ok := runWorkspace.(workspace.HeadProvider); ok {
 			checkedOut, err := provider.Head(ctx, info, workspaceIssue)
@@ -4239,8 +4221,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		configured := gate.Effective(workflow.Config.Gate)
 		if configured.Kind == gate.KindCommand {
 			if !slices.ContainsFunc(commands.results, func(receipt gate.CommandResult) bool {
-				return receipt.Command == configured.Run && (req.retainedReview != nil && validation != nil &&
-					receipt.ReceiptID == validation.ReceiptID || commands.canReuse(ctx, receipt))
+				return receipt.Command == configured.Run && (req.retainedReview.validation != nil &&
+					receipt.ReceiptID == req.retainedReview.validation.ReceiptID || commands.canReuse(ctx, receipt))
 			}) {
 				if _, err := commands.execute(ctx, configured.Run, true); err != nil {
 					return gate.ValidatorResult{}, err

@@ -430,6 +430,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		} else {
 			runErr = fmt.Errorf("%w: native review continuation is unavailable", ErrNativeRecoveryRequired)
 		}
+		if runErr == nil && req.AttemptWorkspace.Key() != "" {
+			var release func()
+			result.retainedReview, release, runErr = r.resumeReviewWorkspace(guarded, req, phaseWorkspace, *continuation)
+			if runErr == nil {
+				defer release()
+				result.WorkspaceBranch = result.retainedReview.info.Branch
+			}
+		}
 	} else {
 		retryDelay := roundRetryDelay(workflow.Config.Agent.MaxRetryBackoffMS)
 		var retries progresscheck.RoundDeadlines
@@ -1388,10 +1396,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, workspacePrepared: req.workspacePrepared, retainedReview: req.retainedReview, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok {
-		request.source = source
-	}
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -1457,10 +1462,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, workspacePrepared: req.workspacePrepared, retainedReview: req.retainedReview, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok {
-		request.source = source
-	}
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

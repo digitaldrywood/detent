@@ -623,7 +623,6 @@ type RunRequest struct {
 	checklistRevision   string
 	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
-	workspacePrepared   bool
 	workspaceBackend    workspace.Backend
 	LandingBatch        *workspace.LandingBatchTicket `json:"-"`
 	RetainItemWorkspace bool
@@ -756,8 +755,6 @@ type ValidatorRequest struct {
 	usageExecution       Execution
 	observationPeer      *SSHPeer
 	complete             func(context.Context, gate.ValidatorResult, *sessionmodel.Finalization) (gate.ValidatorResult, error)
-	source               ChangeSourceExecution
-	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
 	Discussion           NativeReviewDiscussion
 	EvidenceContinuation *tracker.NativeAttemptEvidenceCursor

@@ -649,17 +649,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	}
 	slotIssue := cloneIssue(running.Issue)
 	workerHost := running.WorkerHost
-	if reviewOnly {
-		delete(state.Running, event.IssueID)
-		planner := o.liveDispatchPlanner(ctx, nil)
-		planner.now = o.clockNow()
-		workerHost, available = planner.selectWorkerHost(state, "")
-		available = available && planner.availableSlots(state) > 0 && o.projectStateSlotStats(slotIssue, state).available > 0
-		state.Running[event.IssueID] = running
-		if !available {
-			return runpkg.ErrModelPermitUnavailable
-		}
-	} else if !repair {
+	if !reviewOnly && !repair {
 		slotIssue.State = autoPromoteMergingState
 	}
 	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, o.clockNow(), 0)

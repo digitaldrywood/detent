@@ -72,8 +72,8 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "matching landing receipt has unbound runtime inputs", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
 		{name: "unbound landing receipt reruns after transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
 		{name: "replaced landing linter requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "replaced", wantRuns: 2},
-		{name: "missing landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "missing", gateFailure: true, wantRuns: 1},
-		{name: "unexecutable landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "unexecutable", gateFailure: true, wantRuns: 1},
+		{name: "missing landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "missing", wantRuns: 2},
+		{name: "unexecutable landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "unexecutable", wantRuns: 2},
 		{name: "unsupported wrapper is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, wantRuns: 2},
 		{name: "shadow Makefile is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, shadow: true, wantRuns: 2},
 		{name: "pnpm without Node toolchain evidence requires commands", validator: true, verdict: "pass", command: "pnpm test", wantRuns: 2},
@@ -102,7 +102,7 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MAKEFLAGS", "")
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"} {
+				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py", "scripts/runner-setup.sh"} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)
@@ -141,6 +141,10 @@ elif [ "$1" = build ]; then
     echo build >> .git/invocations
 elif [ "$1" = list ]; then
     printf '{"Dir":"%s","ImportPath":"example.test/project"}\n' "$PWD"
+elif [ "$1" = install ]; then
+    mkdir -p "$GOBIN"
+    printf '#!/bin/sh\nexit 0\n' > "$GOBIN/golangci-lint"
+    chmod 700 "$GOBIN/golangci-lint"
 elif [ "$1" = test ]; then
     python3 - <<'PY'
 import json
@@ -270,7 +274,7 @@ fi
 				criterion = "a real ChatGPT custom connector signs in against production"
 				backend.validatorResponse = fmt.Sprintf(`{"verdict":"pass","score":1,"summary":"Requires production","criteria_evidence":[{"criterion":%q,"kind":"not_verified","unverified_class":"unsatisfiable","reference":"Requires a real third-party client against production"}]}`, criterion)
 			}
-			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}})
+			err = r.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Description: "## Acceptance criteria\n- " + criterion}, retainedReview: &retainedReviewWorkspace{backend: worktree, info: worktree.info}})
 			if (err != nil) != (test.recordError != nil) {
 				t.Fatalf("source verdict became a run failure or recording failure was ignored: %v", err)
 			}
@@ -302,8 +306,8 @@ fi
 			}
 			if test.wrapped {
 				invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "invocations"))
-				if err != nil || string(invocations) != strings.Repeat("build\n", 1+test.wantRuns) {
-					t.Fatalf("landing validation repeated: %q %v", invocations, err)
+				if err != nil || string(invocations) != "build\n" {
+					t.Fatalf("review command wrote into the retained checkout: %q %v", invocations, err)
 				}
 				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
 					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
@@ -313,12 +317,8 @@ fi
 				}
 				if test.linterState == "replaced" || test.wantRuns == 0 {
 					invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "linter-invocations"))
-					want := "original\n"
-					if test.linterState == "replaced" {
-						want += strings.Repeat("replacement\n", test.wantRuns)
-					}
-					if err != nil || string(invocations) != want {
-						t.Fatalf("linter validation invocations = %q, want %q: %v", invocations, want, err)
+					if err != nil || string(invocations) != "original\n" {
+						t.Fatalf("review command used the retained checkout's linter: %q %v", invocations, err)
 					}
 				}
 			}
