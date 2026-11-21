@@ -17,6 +17,7 @@ type RetainedAttemptReadPin struct {
 	At             time.Time `json:"at"`
 	LeaseRenewedAt time.Time `json:"lease_renewed_at"`
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+	LeaseUnexpired *bool     `json:"lease_unexpired,omitempty"`
 }
 
 func (d AttemptDeps) ReadRetainedAttemptTenant(ctx context.Context, scope hubscope.NativeScope, item, id string, pin *RetainedAttemptReadPin) (tracker.NativeAttempt, *RetainedAttemptReadPin, error) {
@@ -45,11 +46,18 @@ func (d AttemptDeps) ReadRetainedAttemptTenant(ctx context.Context, scope hubsco
 	digest := sha256.Sum256(raw)
 	sha := hex.EncodeToString(digest[:])
 	if pin == nil {
-		pin = &RetainedAttemptReadPin{SourceSHA256: sha, At: d.Now().UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt}
+		pin = &RetainedAttemptReadPin{SourceSHA256: sha, At: snapshot.LeaseObservation.At.UTC(), LeaseRenewedAt: snapshot.Lease.RenewedAt, LeaseExpiresAt: snapshot.Lease.ExpiresAt, LeaseUnexpired: &snapshot.LeaseObservation.Unexpired}
 	} else if pin.SourceSHA256 != sha || pin.At.IsZero() || pin.LeaseRenewedAt.IsZero() || !pin.LeaseExpiresAt.After(pin.LeaseRenewedAt) {
 		return tracker.NativeAttempt{}, nil, hubapi.NativeConflict(0)
+	} else {
+		snapshot.Lease.RenewedAt, snapshot.Lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
+		snapshot.LeaseObservation.At = pin.At
+		if pin.LeaseUnexpired != nil {
+			snapshot.LeaseObservation.Unexpired = *pin.LeaseUnexpired
+		} else {
+			snapshot.LeaseObservation.Unexpired = snapshot.Lease.ReleasedAt == nil && !pin.At.Before(pin.LeaseRenewedAt) && pin.At.Before(pin.LeaseExpiresAt)
+		}
 	}
-	snapshot.Lease.RenewedAt, snapshot.Lease.ExpiresAt = pin.LeaseRenewedAt, pin.LeaseExpiresAt
 	attempt, err := d.HydrateNativeAttemptTenant(ctx, snapshot, pin.At)
 	return attempt, pin, err
 }

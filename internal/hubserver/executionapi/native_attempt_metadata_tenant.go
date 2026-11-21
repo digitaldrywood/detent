@@ -35,7 +35,12 @@ func ReadAttemptMetadataSnapshot(ctx context.Context, r tenantstore.Reader, scop
 	return attemptMetadataSnapshotReader{Reader: r, metadata: metadata, organization: scope.Organization}, nil
 }
 
-func (r attemptMetadataSnapshotReader) Lease(_ context.Context, id string) (leasestore.Lease, error) {
+func (r attemptMetadataSnapshotReader) Lease(ctx context.Context, id string) (leasestore.Lease, error) {
+	lease, err := r.LeaseSnapshot(ctx, id)
+	return lease.Lease, err
+}
+
+func (r attemptMetadataSnapshotReader) LeaseSnapshot(_ context.Context, id string) (leasestore.ObservedLease, error) {
 	value, ok := r.metadata.Leases[id]
 	if !ok {
 		return value, corestore.ErrNotFound
