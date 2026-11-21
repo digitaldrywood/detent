@@ -171,6 +171,9 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			issue := connector.Issue{ID: "native", Identifier: "example-project#1", State: "Merging"}
 			work := runworkspace.Issue("project", issue)
+			if test.direct || test.changed {
+				work.AttemptWorkspace = workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			}
 			info, err := backend.Create(t.Context(), work)
 			if err != nil {
 				t.Fatal(err)
@@ -194,7 +197,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			cfg := config.Config{}
 			cfg.Agent.Effort.Merge = test.effort
 			cfg.Gate.Run = command
-			deps := Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
+			deps := Dependencies{ProjectID: "project", ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider}
 			reserved := providercapacity.Requirement{Role: RoleCode, Backend: "held", Model: "held-model"}
 			alternate := &resolutionProvider{}
 			if test.reserved {
@@ -210,6 +213,9 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				deps.AgentBackend = nil
 				deps.AgentBackends = map[string]AgentBackend{reserved.Backend: provider, "merge": alternate}
 			}
+			if test.direct || test.changed {
+				deps.Store = &scratchReapSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 1}}
+			}
 			if test.budgetDenied {
 				deps.Workflow.Config.Budget.BillingMode = config.BillingModeMetered
 				deps.BudgetChecker = &fakeBudgetChecker{refusal: budget.Refusal{Code: budget.ReasonPerDayMaxUSD}}
@@ -220,17 +226,18 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			}
 			validationIssue := work
 			validationIssue.PullRequestHeadSHA = head
-			receipt, err := backend.RunReviewCommand(t.Context(), info, validationIssue, command)
+			commandCtx := r.WorkerCommandContext(t.Context(), RunRequest{Issue: issue, AttemptWorkspace: work.AttemptWorkspace})
+			receipt, err := backend.RunReviewCommand(commandCtx, info, validationIssue, command)
 			if err != nil {
 				t.Fatal(err)
 			}
 			execution := &resolutionExecution{landingRunExecution: landingRunExecution{landingStub: landingStub{target: NativeLandingTarget{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, BaseSHA: strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD^")), BaseRef: "main", Method: "squash", Repository: repository, PublicationRepository: remote, Validation: &receipt}}}}
-			req := RunRequest{Issue: issue, Mode: RunModeMerge, Execution: execution}
+			req := RunRequest{Issue: issue, Mode: RunModeMerge, Execution: execution, AttemptWorkspace: work.AttemptWorkspace}
 			permits := 0
 			req.AcquireModelPermit = func(context.Context) error { permits++; return nil }
 			target := execution.target
 			if !test.direct {
-				first, err := r.landNativeChange(t.Context(), req, execution, backend, info, work, workerGitHubPolicy{}, nil)
+				first, err := r.landNativeChange(commandCtx, req, execution, backend, info, work, workerGitHubPolicy{}, nil)
 				if err != nil || first.NativeLanding == nil || first.NativeLanding.Path != "merge_resolution_pending" || first.NativeLanding.RefusalKind != workspace.LandRefusalConflict || provider.calls != 0 {
 					t.Fatalf("initial conflict did not request merge resolution: %#v, %v, calls %d", first, err, provider.calls)
 				}
@@ -257,7 +264,14 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				}
 			}
 			var result RunResult
+			var itemCheckout os.FileInfo
 			if test.changed {
+				itemCheckout, err = os.Stat(info.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.direct || test.changed {
 				result, err = r.Run(t.Context(), req)
 			} else {
 				result, err = r.landNativeChange(t.Context(), req, execution, backend, info, work, workerGitHubPolicy{}, nil)
@@ -312,6 +326,12 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				} else if ok && signal.HumanAction != "" {
 					t.Fatalf("machine failure asked a human question: %q", result.FinalMessage)
 				}
+				if test.direct {
+					checkout, err := backend.Existing(work)
+					if err != nil || checkout.Path != info.Path {
+						t.Fatalf("unresolved direct landing lost its item checkout: %q, %v", checkout.Path, err)
+					}
+				}
 				if test.gateFailure && (result.NativeLanding.Gate == nil || !result.NativeLanding.GateFailed || result.NativeLanding.Gate.Command != command || result.NativeLanding.Gate.ExitCode == 0) {
 					t.Fatalf("gate failure lost its receipt: %#v", result.NativeLanding)
 				}
@@ -320,12 +340,39 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 					t.Fatalf("changed source bypassed review: %#v, validation %#v", result, execution.validation)
 				}
 				if result.NativeChange.VersionID != "version_2" || execution.source.Source.HeadSHA != result.NativeChange.HeadSHA || execution.source.Source.BaseSHA != base || len(execution.source.Bundle) == 0 {
-					t.Fatalf("resolution source was not captured before cleanup: %#v", result.NativeChange)
+					t.Fatalf("resolution source was not captured for review: %#v", result.NativeChange)
 				}
-				landingIssue := work
-				landingIssue.Landing = &workspace.LandOptions{HeadSHA: head, Repository: repository, TargetBranch: "main"}
-				if _, err := backend.Existing(landingIssue); !errors.Is(err, workspace.ErrMissingWorkspace) {
-					t.Fatalf("published resolution workspace was not cleaned: %v", err)
+				if result.retainedReview == nil || result.retainedReview.info.Path != info.Path || result.WorkspaceBranch != info.Branch {
+					t.Fatalf("published resolution did not carry its item checkout into review: branch=%q workspace=%+v", result.WorkspaceBranch, result.retainedReview)
+				}
+				retained, err := os.Stat(result.retainedReview.info.Path)
+				if err != nil || !os.SameFile(itemCheckout, retained) {
+					t.Fatalf("review did not retain the same item checkout: %v", err)
+				}
+				if got := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); got != result.NativeChange.HeadSHA {
+					t.Fatalf("review checkout head = %q, want %q", got, result.NativeChange.HeadSHA)
+				}
+
+				reviewedSource := tracker.NativeChangeReference{ChangeID: result.NativeChange.ChangeID, VersionID: result.NativeChange.VersionID, HeadSHA: result.NativeChange.HeadSHA}
+				review, release, err := r.resumeReviewWorkspace(commandCtx, req, backend, NativeReviewContinuation{Source: reviewedSource})
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				if review.info.Path != info.Path {
+					t.Fatalf("independent review selected %s, want %s", review.info.Path, info.Path)
+				}
+
+				target.VersionID, target.HeadSHA, target.BaseSHA = result.NativeChange.VersionID, result.NativeChange.HeadSHA, base
+				target.RebaseRequired, target.MergeResolution, target.Validation = false, false, &execution.validation
+				execution.target, execution.publication = target, false
+				req.RetainItemWorkspace = true
+				continued, err := r.Run(t.Context(), req)
+				if err != nil || continued.NativeLanding == nil || !continued.NativeLanding.Landed || continued.NativeLanding.HeadSHA != target.HeadSHA || !continued.NativeLanding.WorkspaceRetired || provider.calls != 1 {
+					t.Fatalf("reviewed continuation did not land and retire the item checkout: landing=%+v provider calls=%d error=%v", continued.NativeLanding, provider.calls, err)
+				}
+				if _, err := backend.Existing(work); !errors.Is(err, workspace.ErrMissingWorkspace) {
+					t.Fatalf("terminal landing did not retire the item checkout: %v", err)
 				}
 			default:
 				landing := result.NativeLanding
@@ -335,7 +382,12 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				if content := runRunnerGit(t, remote, "show", "refs/heads/main:feature.txt"); content != test.content {
 					t.Fatalf("landing lost combined source: %q", content)
 				}
-				if current := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); current != head {
+				if test.direct {
+					_, err := backend.Existing(work)
+					if !landing.WorkspaceRetired || !errors.Is(err, workspace.ErrMissingWorkspace) {
+						t.Fatalf("direct landing did not retire its item checkout: retired=%t, error=%v", landing.WorkspaceRetired, err)
+					}
+				} else if current := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); current != head {
 					t.Fatalf("reviewed source moved: %s", current)
 				}
 			}

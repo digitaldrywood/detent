@@ -3,11 +3,13 @@ package nativechange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -126,6 +128,15 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		if completed.err != nil {
 			t.Fatalf("native completion runner failed: result=%+v error=%v", completed.result, completed.err)
 		}
+		if target == "Blocked" {
+			signal, ok := workpad.SignalFromComment(completed.result.FinalMessage, "", "")
+			if !ok || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || signal.HumanAction == "" {
+				t.Fatal("runner did not produce a typed question")
+			}
+			if size := len(workpad.BlockedDetail("", signal.HumanAction)); size > workpad.MaxFinalSummaryBytes {
+				t.Fatalf("encoded question is %d bytes and cannot be recorded in the Hub transition", size)
+			}
+		}
 	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("native completion runner did not return")
 	}
@@ -169,8 +180,10 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 		name        string
 		disappeared bool
 		cancelled   bool
+		manyFiles   bool
 	}{
 		{name: "unresolved conflict records one typed human question"},
+		{name: "many unresolved paths record one bounded question", manyFiles: true},
 		{name: "disappeared conflict lands without a provider turn", disappeared: true},
 		{name: "cancelled Rework publishes verified empty source for review", cancelled: true},
 	} {
@@ -199,6 +212,25 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 				}
 				return strings.TrimSpace(string(out))
 			}
+			conflictPaths := []string{"README.md"}
+			if test.manyFiles {
+				for i := range 100 {
+					conflictPaths = append(conflictPaths, fmt.Sprintf("conflict-%03d-%s.txt", i, strings.Repeat("x", 90)))
+				}
+			}
+			writeConflicts := func(content string) {
+				t.Helper()
+				for _, name := range conflictPaths {
+					if err := os.WriteFile(filepath.Join(source, name), []byte(content+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.manyFiles {
+				writeConflicts("original source")
+				nativeChangeGit(t, source, "add", "-A")
+				nativeChangeGit(t, source, "commit", "-m", "add conflict fixture")
+			}
 			base := headAt(source)
 			remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
 			h.configureCloneURL(remote)
@@ -207,9 +239,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
 			nativeChangeGit(t, source, "push", "-u", "origin", "main")
 			nativeChangeGit(t, source, "checkout", "-b", "published")
-			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("published source\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeConflicts("published source")
 			nativeChangeGit(t, source, "commit", "-am", "published source")
 			head := headAt(source)
 			capture, err := workspace.CaptureChangeSource(t.Context(), source, base, head)
@@ -223,9 +253,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			}
 			version := h.publishCaptured(t, item, change.ID, head, &capture, "", base)
 			nativeChangeGit(t, source, "checkout", "main")
-			if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("integration source\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			writeConflicts("integration source")
 			nativeChangeGit(t, source, "commit", "-am", "conflicting integration source")
 			nativeChangeGit(t, source, "push", "origin", "main")
 			integrationHead := headAt(source)
@@ -362,6 +390,14 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			if err != nil || provider.calls != 1 || result.NativeLanding == nil || result.NativeLanding.Path != "merge_resolution_failed" || !result.NativeLanding.RequiresRework() || result.NativeLanding.VersionID != version.ID || result.NativeLanding.HeadSHA != head {
 				t.Fatalf("unresolved published source did not reach a typed human wait: result=%+v calls=%d error=%v", result, provider.calls, err)
 			}
+			if !slices.Equal(result.NativeLanding.ConflictFiles, conflictPaths) {
+				t.Fatalf("landing lost conflict paths: got %d, want %d", len(result.NativeLanding.ConflictFiles), len(conflictPaths))
+			}
+			detail, err := h.admin.Change(t.Context(), item, change.ID)
+			if err != nil || len(detail.Versions) == 0 || detail.Versions[0].Landing == nil ||
+				!slices.Equal(detail.Versions[0].Landing.ConflictFiles, conflictPaths) {
+				t.Fatalf("Hub landing receipt lost conflict paths: %v", err)
+			}
 			history, err := h.admin.History(t.Context(), item, "")
 			if err != nil {
 				t.Fatal(err)
@@ -372,6 +408,9 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 					signal, ok := workpad.SignalFromComment(event.Data.ReasonDetail, "", "")
 					if !ok || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || !strings.Contains(signal.HumanAction, "README.md") {
 						t.Fatalf("blocked transition lost the conflict question: %+v", event.Data)
+					}
+					if test.manyFiles && (!strings.Contains(signal.HumanAction, "101") || !strings.Contains(signal.HumanAction, conflictPaths[1]) || strings.Contains(signal.HumanAction, conflictPaths[len(conflictPaths)-1])) {
+						t.Fatalf("question did not describe a bounded sample of the full conflict: %q", signal.HumanAction)
 					}
 					questions++
 				}

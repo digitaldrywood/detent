@@ -185,7 +185,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				if ctx.Err() != nil || !turn.TurnStarted || (!errors.Is(resolveErr, workspace.ErrMergeResolutionInvalid) && !errors.As(resolveErr, &validation)) {
 					err = resolveErr
 				} else {
-					refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "merge resolution did not complete; conflict files: "+strings.Join(resolved.ConflictFiles, ", ")+": "+resolveErr.Error())
+					conflicts := landingConflictSummary(resolved.ConflictFiles)
+					refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, fmt.Sprintf("Merge resolution did not complete. %s. %s", conflicts, resolveErr))
 					refused.NativeLanding.Path = "merge_resolution_failed"
 					refused.NativeLanding.ConflictFiles = resolved.ConflictFiles
 					if resolved.Gate.Command != "" {
@@ -193,7 +194,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 						refused.NativeLanding.GateFailed = resolved.Gate.ExitCode != 0
 					}
 					if !req.RetainItemWorkspace && errors.Is(resolveErr, workspace.ErrLandingConflictUnresolved) {
-						action := fmt.Sprintf("How should the reviewed change be combined with the current base in %s?", strings.Join(resolved.ConflictFiles, ", "))
+						action := "How should the reviewed change be combined with the current base? " + conflicts + "."
 						refused.FinalMessage = workpad.BlockedDetail(refused.FinalMessage, action)
 					}
 					return refused, nil
@@ -388,6 +389,23 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	r.logWorkerEvent(req.Issue, "worker_native_landed",
 		telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "base_ref", result.BaseRef, "method", result.Method)
 	return RunResult{FinalState: FinalStateCompleted, Output: RunOutputNativeLanded, NativeLanding: &landed, ForgeWriteCompleted: target.GitHubPullRequest}, nil
+}
+
+func landingConflictSummary(files []string) string {
+	const maxPaths, maxPathRunes = 3, 120
+	if len(files) == 0 {
+		return "No conflicting paths were recorded"
+	}
+	paths := files[:min(len(files), maxPaths)]
+	sample := make([]string, 0, len(paths))
+	for _, path := range paths {
+		runes := []rune(path)
+		if len(runes) > maxPathRunes {
+			path = string(runes[:maxPathRunes]) + "…"
+		}
+		sample = append(sample, path)
+	}
+	return fmt.Sprintf("Conflicting paths (%d total) include %s", len(files), strings.Join(sample, ", "))
 }
 
 func validateLandingHead(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, options workspace.LandOptions) (*gate.CommandResult, error) {

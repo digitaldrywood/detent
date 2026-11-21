@@ -185,7 +185,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 	if !validLandingHead(opts.HeadSHA) {
 		return info, false, refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
 	}
-	if err := ensurePrivateDirectories(l.root, filepath.Join(l.root, ".detent", "landing", opts.HeadSHA)); err != nil {
+	if err := ensurePrivateDirectories(l.root, filepath.Dir(info.Path)); err != nil {
 		return info, false, err
 	}
 	if opts.External != nil {
