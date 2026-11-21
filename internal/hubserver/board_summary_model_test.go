@@ -319,7 +319,7 @@ func TestBoardCountsFenceOwnershipUntilProjection(t *testing.T) {
 					for _, row := range rows {
 						if row.Kind == "total" {
 							got = row.Total
-							if row.Running != total || row.Shipped1h != total {
+							if row.Running != 0 || row.Shipped1h != total {
 								t.Errorf("summary facts=%+v", row)
 							}
 						}

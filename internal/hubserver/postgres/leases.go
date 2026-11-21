@@ -102,6 +102,15 @@ func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (lease
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
+func (s *session) ActiveLeaseForIssueSnapshot(ctx context.Context, issueID int64) (leasestore.Lease, time.Time, error) {
+	var at time.Time
+	if err := s.db.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&at); err != nil {
+		return leasestore.Lease{}, time.Time{}, mapError(ctx, err)
+	}
+	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID, LeaseClock: &at})
+	return leasestore.Lease(row), at, mapError(ctx, err)
+}
+
 func (s *session) Attempt(ctx context.Context, id string) (leasestore.Attempt, error) {
 	row, err := s.queries.GetLeaseAttempt(ctx, pgquery.GetLeaseAttemptParams{OrganizationID: s.organization, ID: id})
 	return attemptFromPG(row), mapError(ctx, err)

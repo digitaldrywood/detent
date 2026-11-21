@@ -37,9 +37,14 @@ func (s *Service) requireBoardRecordProject(ctx context.Context, scope hubscope.
 func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDelivery, sub *dashboardSubscription, scope hubscope.NativeScope) (bool, error) {
 	frame := tracker.NativeBoardFrame{Deltas: []tracker.NativeBoardDelta{}}
 	var rows []viewstore.BoardDelta
+	status := map[tracker.NativeWorkItemID]viewstore.BoardStatusRecord{}
 	var head int64
 	var projectSlug string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return false, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -65,6 +70,28 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 			return nil
 		}
 		rows, err = r.BoardDeltas(ctx, scope.Project, sub.sequence, min(d.config.PageSize, corestore.MaxPageSize))
+		if err != nil {
+			return err
+		}
+		selection := viewstore.BoardSelection{ProjectID: scope.Project}
+		for _, row := range rows {
+			if row.Topic == "card" {
+				selection.WorkItemIDs = append(selection.WorkItemIDs, row.WorkItemID)
+			}
+		}
+		if len(selection.WorkItemIDs) == 0 {
+			return nil
+		}
+		model, ok := r.(interface {
+			BoardStatusModel(context.Context, viewstore.BoardSelection) ([]viewstore.BoardStatusRecord, error)
+		})
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		values, err := model.BoardStatusModel(ctx, selection)
+		for _, value := range values {
+			status[value.WorkItemID] = value
+		}
 		return err
 	})
 	if err != nil {
@@ -141,6 +168,15 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				}
 				card.Issue.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
 				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
+				current := status[row.WorkItemID]
+				attempt, execution := card.Attempt, card.Execution
+				if attempt != nil && current.Attempt != nil && attempt.ID == current.Attempt.ID && current.Attempt.Status == "running" {
+					attempt = nil
+				}
+				if execution != nil && current.Execution != nil && execution.ID == current.Execution.ID && (current.Execution.Running || current.Execution.Stage != "") {
+					execution = nil
+				}
+				viewstore.ExpireLease(attempt, execution, "")
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card
 			}

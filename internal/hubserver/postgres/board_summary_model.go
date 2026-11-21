@@ -88,8 +88,15 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeM
 		}
 	}
 	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
+ ` + boardviewsql.LiveItems("$1", "$2::text") + `,
+running_counts AS MATERIALIZED (
+ SELECT l.project_id,l.state,count(*) AS running FROM live_items l
+ WHERE l.running AND NOT l.terminal AND ($4='all' OR l.archived::text=$4)
+ AND (NOT $5::boolean OR NOT l.workspace) AND ($3::text='' OR l.actor_principal_id=$3 AND l.current_actor=$3)
+ GROUP BY l.project_id,l.state
+),
 counts AS MATERIALIZED (
- SELECT c.kind,c.state,c.total,c.running,c.projected_at
+ SELECT c.kind,c.state,c.total,` + boardviewsql.RunningCount("c.project_id", "c.kind", "c.state") + ` AS running,c.projected_at
  FROM native_board_page_summaries c
  WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
@@ -156,7 +163,7 @@ func (s *session) BoardStatusModel(ctx context.Context, selection viewstore.Boar
 	for index, id := range selection.WorkItemIDs {
 		ids[index] = string(id)
 	}
-	rows, err := s.db.Query(ctx, "SELECT b.work_item_id,b.page_projected_at,coalesce(seq.sequence,0),b.card_change_principal_id,"+boardModelDisplayColumns+" FROM native_board_items b LEFT JOIN native_board_sequences seq ON seq.organization_id=b.organization_id AND seq.project_id=b.project_id WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=ANY($3::text[]) AND b.page_ready AND (NOT $4::boolean OR (b.actor_principal_id=$5 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$5))) ORDER BY b.work_item_id", s.organization, selection.ProjectID, ids, selection.Reporter, selection.ReporterPrincipalID)
+	rows, err := s.db.Query(ctx, "SELECT b.work_item_id,b.page_projected_at,coalesce(seq.sequence,0),b.card_change_principal_id,"+boardModelDisplayColumns+","+boardviewsql.CurrentCardLease+" FROM native_board_items b LEFT JOIN native_board_sequences seq ON seq.organization_id=b.organization_id AND seq.project_id=b.project_id WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=ANY($3::text[]) AND b.page_ready AND (NOT $4::boolean OR (b.actor_principal_id=$5 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$5))) ORDER BY b.work_item_id", s.organization, selection.ProjectID, ids, selection.Reporter, selection.ReporterPrincipalID)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
@@ -166,12 +173,16 @@ func (s *session) BoardStatusModel(ctx context.Context, selection viewstore.Boar
 		var row viewstore.BoardStatusRecord
 		var display viewstore.BoardDisplay
 		var principal *string
+		var current bool
 		targets, finish := boardviewsql.DisplayTargets(&display)
 		targets = append([]any{&row.WorkItemID, &row.ProjectedAt, &row.Sequence, &principal}, targets...)
-		if err := rows.Scan(targets...); err != nil {
+		if err := rows.Scan(append(targets, &current)...); err != nil {
 			return nil, mapError(ctx, err)
 		}
 		finish()
+		if !current {
+			display.StatusLine = viewstore.ExpireLease(display.Attempt, display.Execution, display.StatusLine)
+		}
 		row.StatusLine, row.Attempt, row.Execution, row.Change = display.StatusLine, display.Attempt, display.Execution, display.Change
 		if selection.Reporter && (principal == nil || *principal != selection.ReporterPrincipalID) {
 			row.Change = nil

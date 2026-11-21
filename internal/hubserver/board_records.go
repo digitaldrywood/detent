@@ -279,7 +279,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	var snapshot viewstore.BoardModelPage
 	var scan workpage.RunnerScan
 	var overlay boardoverlay.Overlay
-	err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return page, nil, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
 			return err
 		}
