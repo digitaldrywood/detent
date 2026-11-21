@@ -25,7 +25,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -51,7 +50,6 @@ type WorkflowTransition struct {
 type ReviewWorkflow struct {
 	Transition  *WorkflowTransition
 	current     eventstore.Change
-	checklist   *reviewedChecklistProjection
 	audits      map[int64][]eventstore.AuditDisposition
 	until       time.Time
 	evaluatedAt time.Time
@@ -182,28 +180,8 @@ func (s *Workflow) prepareChangeEvidenceWorkflow(ctx context.Context, scope hubs
 		dispositions[run.ID], plan.audits[run.ID] = values, rows
 	}
 	policyID, reviewID := changerequest.CurrentPolicyIdentities(&version, approval.Policy, approval.ReviewPolicy)
-	detail.Summary = changerequest.SummarizeCurrentVersionWithAuditDispositions(detail, policyID, reviewID, now, prior, dispositions)
-	if detail.Summary.Status != "reviewed" {
+	if changerequest.SummarizeCurrentVersionWithAuditDispositions(detail, policyID, reviewID, now, prior, dispositions).Status != "reviewed" {
 		return plan, nil
-	}
-	list, err := readReviewedChecklist(ctx, s.deps.Repository, scope, version.AttemptID)
-	if err != nil {
-		return nil, err
-	}
-	if list != nil {
-		row, snapshot, err := s.deps.ReadWorkItemRecord(ctx, scope, string(change.WorkItemID))
-		if err != nil {
-			return nil, err
-		}
-		issue, err := s.deps.HydrateWorkItemRecord(ctx, row, snapshot)
-		if err != nil {
-			return nil, err
-		}
-		changes, ready := progresscheck.ReviewedChecklist(list, issue.Body, detail, version, nil, true)
-		plan.checklist = &reviewedChecklistProjection{list: list, item: row, changes: changes}
-		if !ready {
-			return plan, nil
-		}
 	}
 	for _, expected := range version.Checks {
 		for _, check := range detail.Checks {
@@ -216,8 +194,9 @@ func (s *Workflow) prepareChangeEvidenceWorkflow(ctx context.Context, scope hubs
 			}
 		}
 	}
+	var err error
 	plan.Transition, err = s.PrepareChangeWorkflowTransition(ctx, scope, change, approval, false, now)
-	if err != nil {
+	if err != nil || plan.Transition == nil {
 		return nil, err
 	}
 	return plan, nil
@@ -248,10 +227,7 @@ func (s *Workflow) RecheckChangeReviewWorkflow(ctx context.Context, w tenantstor
 		}
 	}
 	now := s.deps.Clock().UTC()
-	if now.Before(p.evaluatedAt) || !p.until.IsZero() && !now.Before(p.until) {
-		return false, nil
-	}
-	return true, p.checklist.apply(ctx, w, scope, "review:"+current.ID+":"+strconv.FormatInt(current.EvidenceSequence+1, 10), now)
+	return !now.Before(p.evaluatedAt) && (p.until.IsZero() || now.Before(p.until)), nil
 }
 
 type workflowRoute struct {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,10 +21,8 @@ func Target(ctx context.Context, client Reader, item tracker.NativeWorkItemID, d
 		return runner.NativeLandingTarget{}, fmt.Errorf("%w: the item has no Change Request", runner.ErrLandingNotReviewed)
 	}
 	target := runner.NativeLandingTarget{ChangeID: detail.Change.ID, VersionID: detail.Change.CurrentVersion, Title: detail.Change.Title, Method: "squash", SourceIssues: detail.SourceIssues}
-	var source tracker.ChangeVersion
 	for _, version := range detail.Versions {
 		if version.ID == detail.Change.CurrentVersion {
-			source = version
 			target.HeadSHA, target.Number = version.HeadSHA, version.Number
 			target.BaseSHA, target.SecurityAudit = version.BaseSHA, version.Policy.Gates.SecurityAudit
 			target.Repository, target.GitHubPullRequest = version.Repository, version.Policy.Gates.GitHubPullRequest
@@ -59,25 +56,6 @@ func Target(ctx context.Context, client Reader, item tracker.NativeWorkItemID, d
 	if detail.Summary.Status != "reviewed" {
 		target.ReviewPending = true
 		return target, fmt.Errorf("%w: the current version is %s", runner.ErrLandingNotReviewed, detail.Summary.Status)
-	}
-	if reader, ok := client.(interface {
-		ExecutionChecklist(context.Context, tracker.NativeWorkItemID, string) (*tracker.ExecutionChecklist, error)
-		Issue(context.Context, tracker.NativeWorkItemID) (tracker.NativeIssue, error)
-	}); ok && source.AttemptID != "" {
-		list, err := reader.ExecutionChecklist(ctx, item, source.AttemptID)
-		if err != nil {
-			return target, err
-		}
-		if list != nil {
-			issue, err := reader.Issue(ctx, item)
-			if err != nil {
-				return target, err
-			}
-			if _, ready := progresscheck.ReviewedChecklist(list, issue.Body, detail, source, target.CI, true); !ready {
-				target.ReviewPending = true
-				return target, fmt.Errorf("%w: the frozen checklist lacks evidence for the current version", runner.ErrLandingNotReviewed)
-			}
-		}
 	}
 	return target, nil
 }

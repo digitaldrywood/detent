@@ -2451,6 +2451,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		afterRunPending = true
+		if freezer, ok := req.Execution.(interface {
+			FreezeExecutionChecklist(context.Context, tracker.ExecutionChecklist) error
+		}); ok && mode == RunModeImplement && req.phaseReceipts {
+			list, err := progresscheck.FreezeChecklist(req.Issue.Description, workflow.Config)
+			if err == nil {
+				err = freezer.FreezeExecutionChecklist(ctx, list)
+			}
+			if err != nil {
+				r.logger.WarnContext(ctx, "freeze execution checklist", "error", err, "issue_id", req.Issue.ID)
+			} else {
+				req.checklistRevision = list.Revision
+			}
+		}
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 			if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
 				return RunResult{}, err

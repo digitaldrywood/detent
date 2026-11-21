@@ -26,7 +26,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -127,22 +126,6 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 	issue, err := s.deps.HydrateWorkItemRecord(ctx, itemRow, itemVersion)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
-	}
-	list, err := readReviewedChecklist(ctx, s.deps.Repository, scope, version.AttemptID)
-	if err != nil {
-		return s.deps.NativeAPIError(c, err)
-	}
-	var checklist *reviewedChecklistProjection
-	if list != nil {
-		var ci *tracker.NativeLandingCIReceipt
-		if request.Receipt != nil {
-			ci = request.Receipt.CI
-		}
-		changes, ready := progresscheck.ReviewedChecklist(list, issue.Body, detail, version, ci, false)
-		if !ready {
-			return s.deps.NativeAPIError(c, &hubapi.NativeError{Code: "not_reviewed", Message: "The frozen execution checklist lacks evidence for the current version.", Status: http.StatusConflict})
-		}
-		checklist = &reviewedChecklistProjection{list: list, item: itemRow, changes: changes}
 	}
 	var project projectstore.Record
 	err = s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -334,9 +317,6 @@ func (s *Landing) LandChangeRecord(c echo.Context) error {
 				if current.ID != landingAttempt.ID {
 					return corestore.ErrRevisionConflict
 				}
-			}
-			if err := checklist.apply(ctx, w, scope, "landing:"+version.ID, now); err != nil {
-				return err
 			}
 			if landingReceipt != nil {
 				if _, err := w.CreateLandingReceipt(ctx, *landingReceipt); err != nil {

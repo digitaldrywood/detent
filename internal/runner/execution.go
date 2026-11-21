@@ -374,18 +374,6 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts {
 		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
 	}
-	if freezer, ok := req.Execution.(interface {
-		FreezeExecutionChecklist(context.Context, tracker.ExecutionChecklist) error
-	}); ok && mode == RunModeImplement && req.phaseReceipts {
-		list, err := progresscheck.FreezeChecklist(req.Issue.Description, workflow.Config)
-		if err != nil {
-			return RunResult{}, failedStep("publication", err)
-		}
-		if err := freezer.FreezeExecutionChecklist(guarded, list); err != nil {
-			return RunResult{}, failedStep("publication", err)
-		}
-		req.checklistRevision = list.Revision
-	}
 	sourceReviewed := false
 	if runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement {
 		workflow, _, _, _ := r.runtimeSnapshot()
