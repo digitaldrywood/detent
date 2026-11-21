@@ -180,7 +180,7 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 					for _, kind := range []string{"run.observed", "workflow.transitioned"} {
 						data := tracker.CollaborationData{Revision: 1}
 						if kind == "run.observed" {
-							data.Run = &tracker.NativeRunData{AttemptID: "publication-attempt", Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: changeID, VersionID: versionID, HeadSHA: input.HeadSHA}}}
+							data.Run = &tracker.NativeRunData{RunID: "publication-run", AttemptID: "publication-attempt", Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: changeID, VersionID: versionID, HeadSHA: input.HeadSHA}}}
 						} else {
 							data.Change = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: versionID, HeadSHA: input.HeadSHA}
 							data.FromState = "Merging"
@@ -206,7 +206,7 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 			if index != 1 && index != 49 && index != 99 {
 				continue
 			}
-			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkflowStates: []string{"Merging"}}
+			request := tracker.NativeClaim{PolicyID: descriptor.ID, WorkflowStates: []string{"Todo"}}
 			scan, err := service.readNativeClaimCandidates(t.Context(), scope, request, now)
 			if err != nil {
 				t.Fatal(err)
@@ -220,6 +220,9 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, plan := range scan.plans {
+				if plan.Candidate.LaneRank != 3 {
+					t.Fatalf("historical landing acquired a separate lane rank: %d", plan.Candidate.LaneRank)
+				}
 				hydrated, err := service.hydrateNativeClaimPlan(t.Context(), scope, request, now, plan, &descriptor)
 				if err != nil {
 					t.Fatal(err)
@@ -724,7 +727,8 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					waiting := tracker.NativeRunData{AttemptID: attemptID, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: changeID, VersionID: versionID, HeadSHA: published.HeadSHA}}}
+					runID := fmt.Sprintf("intent-run-%d", index)
+					waiting := tracker.NativeRunData{RunID: runID, AttemptID: attemptID, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Waiting: true, ChangeID: changeID, VersionID: versionID, HeadSHA: published.HeadSHA}}}
 					raw, err = json.Marshal(waiting)
 					if err != nil {
 						t.Fatal(err)
@@ -776,7 +780,7 @@ func TestClaimMergingHydrationPreservesSnapshotFacts(t *testing.T) {
 						if err != nil {
 							return err
 						}
-						if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: fmt.Sprintf("intent-run-%d", index), Sequence: 1, Status: "succeeded", StartedAt: now, PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
+						if _, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, Fence: leasestore.Fence{LeaseID: lease.LeaseID, FencingToken: lease.FencingToken}, RunID: runID, Sequence: 1, Status: "succeeded", StartedAt: now, PayloadObjectKey: payload.Key, PayloadReference: payload}); err != nil {
 							return err
 						}
 						if err := w.SetAttemptClaimFacts(t.Context(), leasestore.AttemptClaimFacts{AttemptID: attemptID, Sequence: 1, Status: "succeeded", PayloadObjectKey: payload.Key, Disposition: "progress"}); err != nil {

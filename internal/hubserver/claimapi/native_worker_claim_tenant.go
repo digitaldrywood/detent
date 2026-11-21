@@ -299,8 +299,8 @@ func (d Deps) PlanNativeClaimRecovery(ctx context.Context, scope hubscope.Native
 	plan.Recovery = recovery
 	plan.Item.WorkflowStateName = &recovery.State
 	plan.Candidate.State = recovery.State
-	plan.LatestAttemptFound = false
 	if !strings.EqualFold(recovery.State, "Merging") {
+		plan.LatestAttemptFound = false
 		return plan, nil
 	}
 	plans := []hubrecords.NativeClaimPlan{plan}
@@ -319,7 +319,7 @@ func (d Deps) PlanNativeClaimRecovery(ctx context.Context, scope hubscope.Native
 }
 
 func claimIncludesRecoveredState(claim tracker.NativeClaim, state string) bool {
-	return len(claim.WorkflowStates) == 0 || slices.ContainsFunc(claim.WorkflowStates, func(wanted string) bool {
+	return strings.EqualFold(state, "Merging") || len(claim.WorkflowStates) == 0 || slices.ContainsFunc(claim.WorkflowStates, func(wanted string) bool {
 		return strings.EqualFold(strings.TrimSpace(wanted), state)
 	})
 }
@@ -865,7 +865,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		runnerAPI = workflow.Config.Budget.EffectiveBillingMode() == config.BillingModeMetered
 	}
 	decision := tracker.CollaborationEvent{ID: hubapi.NewID("evt"), OrganizationID: scope.Organization, ProjectID: scope.Project, AggregateType: "issue", AggregateID: plan.Item.NativeID, Type: "scheduler.decision", SchemaVersion: 1, Actor: scope.Actor(), RecordedAt: now, Data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{RunnerID: scope.Credential.Runner.RunnerID, Source: "native_claim", Outcome: "claimed", Reason: "A current fenced lease owns this item", At: now, WorkItemRevision: tracker.Revision(claimRevision)}}}
-	if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && plan.ChangeReady && plan.Change.VersionID != "" {
+	if landing && plan.Change.VersionID != "" {
 		decision.Data.Change = new(plan.Change)
 	}
 	decisionRaw, err := json.Marshal(decision)
@@ -1072,7 +1072,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 				return ErrNoClaimableWork
 			}
 		}
-		if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending {
+		if landing {
 			latest, err := w.LatestChange(ctx, scope.Project, plan.Candidate.WorkItemID)
 			if err != nil || latest.ID != plan.Change.ChangeID || latest.CurrentVersionID == nil || *latest.CurrentVersionID != plan.Change.VersionID {
 				if err != nil {
@@ -1413,7 +1413,7 @@ func nativeClaimSelectionSourceRevision(project projectstore.Record, policy poli
 		CompatibilitySettingsRevision int64 `json:"compatibility_settings_revision,omitempty"`
 		CompatibilityContentRevision  int64 `json:"compatibility_content_revision,omitempty"`
 		CandidateOrder                string
-	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision, "created_before_preferences"})
+	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision, "claim_without_native_landing_priority"})
 }
 
 func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) (providercapacity.Reservation, error) {

@@ -89,7 +89,6 @@ func (e *nativeExecution) RegisterAttemptWorker(ctx context.Context, worker trac
 		recovery.Issue.State = issue.State
 		e.recovery.Store(&recovery)
 		e.data.Identity = &identity
-		e.role = identity.Role
 		e.workerBootstrapping = true
 		event = "run.started"
 	}

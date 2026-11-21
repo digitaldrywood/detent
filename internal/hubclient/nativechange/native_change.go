@@ -19,8 +19,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+func (e *nativeExecution) executionRole() string {
+	if e.landing {
+		return runner.RoleMerge
+	}
+	if e.data.Identity != nil {
+		return e.data.Identity.Role
+	}
+	return ""
+}
+
 func (e *nativeExecution) ownsIssueCompletion() bool {
-	return !e.conversationContinuation && (e.role == runner.RoleCode || e.role == runner.RoleRework)
+	role := e.executionRole()
+	return !e.conversationContinuation && (role == runner.RoleCode || role == runner.RoleRework)
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
@@ -30,7 +41,7 @@ func (e *nativeExecution) ownsChangeCompletion() bool {
 func (e *nativeExecution) PrepareMergeResolution() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.role != runner.RoleMerge || e.recoveredSource == nil {
+	if e.executionRole() != runner.RoleMerge || e.recoveredSource == nil {
 		return errors.New("merge resolution requires recovered reviewed source")
 	}
 	e.mergeResolution = true
@@ -241,7 +252,7 @@ func (e *nativeExecution) SetPublicationSource(source func(context.Context, trac
 }
 
 func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runner.NativeChange) error {
-	result, err := publication.Prepare(ctx, publicationAuthority{e}, publication.State{Client: e.claim.source.NativeClient(), Lease: e.claim.lease, Recovery: e.claim.recovery, Policy: e.scheduler.host.PinnedExecutionPolicy(string(e.claim.lease.WorkItemID)), Data: &e.data, RecoveredSource: e.recoveredSource, Repository: e.repository, Role: e.role, Diff: func() *tracker.AttemptDiffRequest { return e.lastDiff }, Publication: e.publication, WorktreeState: e.worktreeState, Publish: e.publicationSource}, change)
+	result, err := publication.Prepare(ctx, publicationAuthority{e}, publication.State{Client: e.claim.source.NativeClient(), Lease: e.claim.lease, Recovery: e.claim.recovery, Policy: e.scheduler.host.PinnedExecutionPolicy(string(e.claim.lease.WorkItemID)), Data: &e.data, RecoveredSource: e.recoveredSource, Repository: e.repository, Role: e.executionRole(), Diff: func() *tracker.AttemptDiffRequest { return e.lastDiff }, Publication: e.publication, WorktreeState: e.worktreeState, Publish: e.publicationSource}, change)
 	if result.Receipt != nil {
 		e.publication = result.Receipt
 	}

@@ -321,20 +321,22 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched.candidates,
 			autoPromoted.dispatchCandidates,
 		)
-		timing.step("delegate_native_merge_queue")
-		mergeQueueIssues := o.delegateNativeMergeQueueIssues(
-			ctx,
-			state,
-			mergeIssueSlices(fetched.status, fetched.candidates),
-			now,
-		)
-		fetched.status = overlayNativeMergeQueueIssues(fetched.status, mergeQueueIssues)
-		fetched.candidates = overlayNativeMergeQueueIssues(fetched.candidates, mergeQueueIssues)
-		state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, mergeQueueIssues)
-		fetched.candidates = mergeIssueSlices(
-			fetched.candidates,
-			o.mergeWorkerDispatchCandidates(state, mergeQueueIssues, now),
-		)
+		if !o.nativeWorkflow() {
+			timing.step("delegate_native_merge_queue")
+			mergeQueueIssues := o.delegateNativeMergeQueueIssues(
+				ctx,
+				state,
+				mergeIssueSlices(fetched.status, fetched.candidates),
+				now,
+			)
+			fetched.status = overlayNativeMergeQueueIssues(fetched.status, mergeQueueIssues)
+			fetched.candidates = overlayNativeMergeQueueIssues(fetched.candidates, mergeQueueIssues)
+			state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, mergeQueueIssues)
+			fetched.candidates = mergeIssueSlices(
+				fetched.candidates,
+				o.mergeWorkerDispatchCandidates(state, mergeQueueIssues, now),
+			)
+		}
 	}
 	timing.step("reconcile_stale_linked_pull_request_issues")
 	fetched = filterReconciledTickIssues(
