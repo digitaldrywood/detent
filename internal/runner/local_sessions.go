@@ -37,6 +37,11 @@ func (s LocalSessionStore) StartSession(ctx context.Context, start store.Session
 		}
 		return id, s.UpdateSessionWorkerProcess(ctx, id, worker)
 	}
+	worker, err := localWorkerCleanupRegistration(*start.Worker)
+	if err != nil {
+		return 0, err
+	}
+	start.Worker = &worker
 	key := WorkerSessionStartKey(ctx)
 	if key == "" {
 		key = uuid.NewString()
@@ -63,12 +68,17 @@ func (s LocalSessionStore) FinishSession(ctx context.Context, id int64, finish s
 	return s.Peer.Call(ctx, "local.finish", nil, id, finish)
 }
 
-func (s LocalSessionStore) UpdateSessionWorkerProcess(ctx context.Context, id int64, process store.WorkerProcessRegistration) error {
+func localWorkerCleanupRegistration(process store.WorkerProcessRegistration) (store.WorkerProcessRegistration, error) {
 	root, err := workspace.WorkerArtifactCleanupRoot(process.CleanupRoot, process.CleanupPath)
+	process.CleanupRoot = root
+	return process, err
+}
+
+func (s LocalSessionStore) UpdateSessionWorkerProcess(ctx context.Context, id int64, process store.WorkerProcessRegistration) error {
+	process, err := localWorkerCleanupRegistration(process)
 	if err != nil {
 		return err
 	}
-	process.CleanupRoot = root
 	return s.Peer.Call(ctx, "local.register", nil, id, process)
 }
 
