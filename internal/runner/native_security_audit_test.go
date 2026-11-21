@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -33,17 +36,11 @@ type nativeSecurityAuditTestExecution struct {
 	cleanWorkspace bool
 	evidence       []ValidationEvidence
 	diff           string
-	auditProvider  providercapacity.Requirement
-	providerErr    error
+	reservation    *providercapacity.Reservation
 }
 
-func (*nativeSecurityAuditTestExecution) StartPhased(context.Context, tracker.NativeExecutionIdentity) error {
-	return nil
-}
-
-func (e *nativeSecurityAuditTestExecution) SetPhaseProvider(_ context.Context, requirement providercapacity.Requirement) error {
-	e.auditProvider = requirement
-	return e.providerErr
+func (e *nativeSecurityAuditTestExecution) ProviderCapacity() *providercapacity.Reservation {
+	return e.reservation
 }
 
 type nativeSecurityAuditIsolationBackend struct {
@@ -107,7 +104,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 		name                        string
 		kind, authentication        string
 		disabled, blocking, failed  bool
-		landing, providerFull       bool
+		landing                     bool
 		claimPolicy, ambientPolicy  bool
 		nonNative                   bool
 		processClockOffset          time.Duration
@@ -120,7 +117,6 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 	}{
 		{name: "source audit uses claimed native project", localProjectID: "example-local-key"},
 		{name: "landing audit uses claimed native project", landing: true, localProjectID: "example-local-key"},
-		{name: "landing audit waits for provider capacity", landing: true, providerFull: true, failed: true},
 		{name: "default native Codex subscription pass", kind: config.AgentBackendCodex, authentication: "chatgpt_subscription"},
 		{name: "default native Codex metered pass", kind: config.AgentBackendCodex, authentication: "api_key"},
 		{name: "native OS identity clock precedes audit clock", processClockOffset: -2 * time.Second},
@@ -170,7 +166,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				backend.updates[0].WorkerProcess.PID = 0
 			}
 			backend.result.AuthenticationMode = authentication
-			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess && !test.providerFull {
+			if test.failed && !test.ambientPolicy && !test.rejected && !test.missingProcess {
 				backend.err = errors.New("backend unavailable")
 			}
 			cfg := config.Default()
@@ -218,9 +214,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 				execution.publicationErr = errors.New("Hub artifact unavailable")
 			}
 			execution.cleanWorkspace = test.cleanedWorkspace
-			if test.providerFull {
-				execution.providerErr = errors.New("audit provider capacity is full")
-			}
+
 			patch := "+change"
 			if test.large {
 				patch = "diff --git a/file.go b/file.go\n@@ -0,0 +1 @@\n" + strings.Repeat("+record\n", 80000)
@@ -246,12 +240,7 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			} else {
 				approved, err = runner.auditNativeChange(ctx, req)
 			}
-			if test.providerFull {
-				want := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: "audit-model"}
-				if !errors.Is(err, execution.providerErr) || backend.calls != 0 || execution.auditProvider != want {
-					t.Fatalf("audit capacity refusal allowed model work: requirement=%+v, turns=%d, %v", execution.auditProvider, backend.calls, err)
-				}
-			}
+
 			if (err != nil) != test.failed {
 				t.Fatalf("audit error = %v", err)
 			}
@@ -315,6 +304,125 @@ func TestNativeSecurityAuditStage(t *testing.T) {
 			if execution.audit.Run.ProjectID != string(execution.recovery.Issue.ProjectID) {
 				t.Fatalf("audit project = %q, want claimed project %q", execution.audit.Run.ProjectID, execution.recovery.Issue.ProjectID)
 			}
+		})
+	}
+}
+
+type landingAuditDeadlineBackend struct {
+	started bool
+}
+
+func (b *landingAuditDeadlineBackend) RunTurn(ctx context.Context, _ AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.started = true
+	<-ctx.Done()
+	return AgentTurnResult{}, ctx.Err()
+}
+
+func TestLandingAuditKeepsClaimProvider(t *testing.T) {
+	for _, test := range []struct {
+		name, held, alternate string
+		expires, verify       bool
+	}{
+		{name: "first landing with opposite audit route", held: "first", alternate: "second"},
+		{name: "second landing verifies on its held account", held: "second", alternate: "first", verify: true},
+		{name: "deadline leaves no host acquisition to wake", held: "first", alternate: "second", expires: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				lease := tracker.NativeLease{ID: tracker.LeaseID("lease_" + test.held), FencingToken: 7}
+				reserved := providercapacity.Requirement{Role: RoleMerge, Backend: test.held, Model: "reserved-model"}
+				owner := &nativeSecurityAuditTestExecution{reservation: &providercapacity.Reservation{
+					Requirement: reserved, Report: providercapacity.Report{Backend: test.held, SharedAccountAlias: test.held, MaxConcurrent: 1},
+				}}
+				owner.recovery.Lease = lease
+				request := RunRequest{Execution: owner}
+				wire := NewSSHRunRequest(request)
+				wire.Native = true
+				left, right := net.Pipe()
+				t.Cleanup(func() { left.Close(); right.Close() })
+				release := make(chan struct{})
+				var acquisitions, late atomic.Int32
+				callback := NewSSHCallbackHandler(request, nil, nil, nil)
+				hostCtx, stopHost := context.WithCancel(t.Context())
+				defer stopHost()
+				host := NewSSHPeer(hostCtx, left, left, func(ctx context.Context, method string, arguments []json.RawMessage) (any, error) {
+					if method != "execution.SetPhaseProvider" {
+						return callback(ctx, method, arguments)
+					}
+					acquisitions.Add(1)
+					if !test.expires {
+						return nil, errors.New("the opposite landing holds the only slot")
+					}
+					select {
+					case <-release:
+						late.Add(1)
+						return nil, nil
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				})
+				t.Cleanup(host.Close)
+				worker := NewSSHPeer(t.Context(), right, right, nil)
+				t.Cleanup(worker.Close)
+				execution := wire.Bind(t.Context(), worker).Execution
+
+				cfg := config.Default()
+				cfg.Gate.SecurityAudit.TurnTimeoutMS = 250
+				cfg.Agents.ModelSelection.Enabled = new(false)
+				cfg.Agents.ModelSelection.ComplexModel = new("configured-complex-model")
+				cfg.Agents.Backends = []config.AgentBackend{
+					{ID: test.held, Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-held"},
+					{ID: test.alternate, Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-alternate"},
+				}
+				cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: test.alternate, Model: "other-model", Default: true}}
+				success := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
+				alternate := &fakeCodexClient{}
+				deadline := &landingAuditDeadlineBackend{}
+				verification := &verificationAuditBackend{t: t, outputs: []string{
+					`{"verdict":"undetermined","summary":"Potential authorization issue","findings":[{"id":"auth","certainty":"undetermined","body":"Requires caller context","unresolved_fact":"Whether the caller checks access","status":"unresolved"}]}`,
+					`{"verdict":"pass","summary":"Lead disproved","findings":[{"id":"auth","certainty":"disproved","body":"The caller checks access","status":"rejected"}]}`,
+				}}
+				var held AgentBackend = success
+				var sessions SessionStore = &fakeSessionStore{sessionID: 73}
+				switch {
+				case test.expires:
+					held = deadline
+				case test.verify:
+					held = verification
+					sessions = &verificationAuditSessionStore{fakeSessionStore: &fakeSessionStore{sessionID: 73}}
+				}
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg}, Workspace: &fakeWorkspaceBackend{},
+					AgentBackends:     map[string]AgentBackend{test.held: held, test.alternate: alternate},
+					SecurityAuditRoot: t.TempDir(), Store: sessions,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := r.Audit(t.Context(), SecurityAuditRequest{landing: true, usageExecution: execution, Snapshot: securityaudit.Snapshot{
+					ProjectID: "prj_example", IssueID: "wi_example", Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change",
+				}})
+				close(release)
+				synctest.Wait()
+				if acquisitions.Load() != 0 || late.Load() != 0 {
+					t.Fatalf("audit requested another slot: acquisitions=%d after deadline=%d, error=%v", acquisitions.Load(), late.Load(), err)
+				}
+				if test.expires {
+					if !errors.Is(err, context.DeadlineExceeded) || !deadline.started {
+						t.Fatalf("audit deadline did not stop a turn on the held backend: started=%t error=%v", deadline.started, err)
+					}
+				} else if test.verify {
+					if err != nil || result.Verification == nil || len(verification.requests) != 2 || verification.requests[0].Model != reserved.Model || verification.requests[1].Model != reserved.Model || result.RuntimeIdentity.BackendID != reserved.Backend {
+						t.Fatalf("verification left the held backend/model: turns=%d identity=%+v error=%v", len(verification.requests), result.RuntimeIdentity, err)
+					}
+				} else if err != nil || success.calls != 1 || success.request.Model != reserved.Model || result.RuntimeIdentity.BackendID != reserved.Backend {
+					t.Fatalf("audit missed its held backend/model: calls=%d model=%q identity=%+v error=%v", success.calls, success.request.Model, result.RuntimeIdentity, err)
+				}
+				current := execution.Recovery().Lease
+				reservation := execution.(ProviderCapacityExecution).ProviderCapacity()
+				if alternate.calls != 0 || current.ID != lease.ID || current.FencingToken != lease.FencingToken || reservation == nil || reservation.Requirement != reserved {
+					t.Fatalf("audit changed its execution authority: alternate calls=%d lease=%s/%d reservation=%+v", alternate.calls, current.ID, current.FencingToken, reservation)
+				}
+			})
 		})
 	}
 }

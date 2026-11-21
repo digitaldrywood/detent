@@ -139,7 +139,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		resolver, canResolve := backend.(workspace.LandingConflictResolver)
 		publication, canPublish := req.Execution.(MergeResolutionExecution)
 		if canResolve && canPublish {
-			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, resolutionOptions)
+			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, resolutionOptions, startLanding)
 			if !turn.TurnStarted {
 				if startErr := startLanding(); startErr != nil {
 					resolveErr = errors.Join(resolveErr, startErr)

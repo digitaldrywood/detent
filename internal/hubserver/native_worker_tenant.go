@@ -296,18 +296,13 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	if err != nil {
 		return err
 	}
-	facts := policies[pinned.PolicyID]
+	if facts, exists := policies[pinned.PolicyID]; !exists || !facts.Gates.PlanEnabled {
+		return hubapi.PolicyMismatch("The pinned policy does not enable planning")
+	}
 	requirement := phase.Requirement
 	release := requirement == (providercapacity.Requirement{})
-	if !release && (requirement.Validate() != nil || !slices.Contains([]string{"plan", "code", "rework", "security_audit"}, requirement.Role)) {
-		return hubapi.NativePublicInvalid("Provider phase requires a valid execution identity")
-	}
-	if requirement.Role == "security_audit" {
-		if !facts.Gates.SecurityAudit {
-			return hubapi.PolicyMismatch("The pinned policy does not enable security audit")
-		}
-	} else if !facts.Gates.PlanEnabled {
-		return hubapi.PolicyMismatch("The pinned policy does not enable planning")
+	if !release && (requirement.Validate() != nil || !slices.Contains([]string{"plan", "code", "rework"}, requirement.Role)) {
+		return hubapi.NativePublicInvalid("Provider phase requires a valid plan or implementation identity")
 	}
 	current, found, err := readTenantProviderReservation(ctx, w, id)
 	if err != nil {
