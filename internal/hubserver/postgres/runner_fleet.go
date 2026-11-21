@@ -254,7 +254,7 @@ func (s *session) fleetRecordProviderViews(ctx context.Context, record runnersto
 	runnerID := record.Identity.RunnerID
 	views := []providercapacity.View{}
 	for _, report := range record.Reports {
-		account, err := s.readRunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: runnerID, Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now)
+		account, err := s.RunnerProviderAccount(ctx, runnerstore.ProviderAccountKey{RunnerID: runnerID, Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}, now)
 		if err != nil {
 			return nil, err
 		}

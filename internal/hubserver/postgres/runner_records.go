@@ -1151,10 +1151,10 @@ func (s *session) LockRunnerProviderAccount(ctx context.Context, key runnerstore
 	if err := s.lockRunnerProviderSharedAccount(ctx, key.Provider, key.SharedAccountAlias); err != nil {
 		return runnerstore.ProviderAccountCapacity{}, err
 	}
-	return s.readRunnerProviderAccount(ctx, key, now)
+	return s.RunnerProviderAccount(ctx, key, now)
 }
 
-func (s *session) readRunnerProviderAccount(ctx context.Context, key runnerstore.ProviderAccountKey, now time.Time) (runnerstore.ProviderAccountCapacity, error) {
+func (s *session) RunnerProviderAccount(ctx context.Context, key runnerstore.ProviderAccountKey, now time.Time) (runnerstore.ProviderAccountCapacity, error) {
 	var result runnerstore.ProviderAccountCapacity
 	err := s.db.QueryRow(ctx, `SELECT
     COALESCE(bool_or(p.runner_id=$4 AND p.backend=$7 AND p.account_alias=$6),false),

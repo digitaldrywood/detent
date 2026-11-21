@@ -329,6 +329,96 @@ func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 	}
 }
 
+func TestLandingAuditProviderWaitKeepsGuard(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	previous := h.descriptor.ID
+	h.descriptor.Gates.SecurityAudit = true
+	h.descriptor = h.descriptor.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+		t.Fatal(err)
+	}
+
+	merge := providercapacity.Requirement{Role: runner.RoleMerge, Backend: "codex", Model: "test-model"}
+	audit := providercapacity.Requirement{Role: runner.RoleSecurityAudit, Backend: "audit", Model: "test-model"}
+	reports := func() ([]providercapacity.Report, error) {
+		return []providercapacity.Report{
+			{Provider: "openai", Backend: merge.Backend, AccountAlias: "merge", SharedAccountAlias: "merge", Models: []string{merge.Model}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()},
+			{Provider: "openai", Backend: audit.Backend, AccountAlias: "audit", SharedAccountAlias: "audit", Models: []string{audit.Model}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()},
+		}, nil
+	}
+	fixtureConfigureScheduler(t, h, func(cfg *SchedulerConfig) { cfg.ProviderReports = reports })
+	claim := func(scheduler *Scheduler, title string, requirement providercapacity.Requirement) connector.Issue {
+		t.Helper()
+		item := h.createInProgress(t, title)
+		candidates, err := scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{
+			ProjectID: "local", Policy: h.descriptor, WorkflowStates: []string{"In Progress"},
+			CandidateReady: func(_ context.Context, issue connector.Issue) bool { return issue.ID == item.ID },
+			ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+				return requirement, nil
+			},
+		})
+		if err != nil || len(candidates) != 1 || candidates[0].ID != item.ID {
+			t.Fatalf("claim %s: %v, %v", title, candidates, err)
+		}
+		return candidates[0]
+	}
+
+	other := h.otherWorker(t)
+	holder, err := newTestScheduler(other.Transport(), SchedulerConfig{
+		OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
+		Machine:         Machine{ID: testsupport.NativeChangeOtherMachineID, Hostname: "other-host", Capacity: 1, Version: "test"},
+		ProviderReports: reports, Now: h.clock, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupied := claim(holder, "Occupy audit provider", audit)
+	item := claim(h.scheduler, "Landing worker", merge)
+	if _, err := h.scheduler.AdoptClaim(t.Context(), item, h.clock()); err != nil {
+		t.Fatal(err)
+	}
+	execution := h.scheduler.RunExecution(item.ID).(*nativeExecution)
+	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: merge.Role, Backend: merge.Backend, Model: merge.Model}); err != nil {
+		t.Fatal(err)
+	}
+	lease := execution.Recovery().Lease
+	if reservation := execution.ProviderCapacity(); reservation == nil || reservation.Requirement != merge {
+		t.Fatalf("worker did not start with the merge reservation: %+v", reservation)
+	}
+
+	transport := h.failChanges.next
+	refusals := 0
+	h.failChanges.next = executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+		response, err := transport.RoundTrip(req)
+		if err == nil && strings.HasSuffix(req.URL.Path, "/leases/"+string(lease.ID)+"/renew") && response.StatusCode == http.StatusConflict {
+			refusals++
+			if refusals == 1 {
+				if err := holder.ReleaseClaim(t.Context(), occupied.ID, "released"); err != nil {
+					response.Body.Close()
+					return nil, err
+				}
+			}
+		}
+		return response, err
+	})
+	ctx, stop, err := execution.Guard(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if err := execution.SetPhaseProvider(ctx, audit); err != nil || ctx.Err() != nil || refusals != 1 {
+		t.Fatalf("audit capacity wait lost the guarded worker: refusals=%d swap=%v guard=%v", refusals, err, context.Cause(ctx))
+	}
+	current := execution.Recovery().Lease
+	if current.ID != lease.ID || current.FencingToken != lease.FencingToken {
+		t.Fatalf("audit took a different item fence: got %s/%d want %s/%d", current.ID, current.FencingToken, lease.ID, lease.FencingToken)
+	}
+	if reservation := execution.ProviderCapacity(); reservation == nil || reservation.Requirement != audit {
+		t.Fatalf("audit provider was not reserved after the slot freed: %+v", reservation)
+	}
+}
+
 func TestRecordedAttemptChecksProviderBeforeRestart(t *testing.T) {
 	t.Parallel()
 	identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "test"}

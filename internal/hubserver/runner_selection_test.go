@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -62,6 +63,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request", false},
 		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request", false},
 		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied", false},
+		{"foreign landing yields while its shared provider is full", 0, false, "", "shared provider", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			hydrationAttempts := map[string]int{"hydration": 1, "hydration budget": 1}[scenario.contract]
@@ -83,6 +85,74 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			r.reportCapacity(t)
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{preferred.project.ID, general.project.ID}}}
 			requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			if scenario.landing == "shared provider" {
+				approveHubTestPolicy(t, preferred.service, general.base+"/policy", hubTestPolicy())
+				if _, err := usagePostgresAdmin(t, preferred.service).ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=1 WHERE id=$1", general.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				merge := capacityReport(now)
+				merge.Models = []string{"gpt-6.1-sol"}
+				merge.MaxConcurrent = 2
+				other := capacityReport(now)
+				other.Backend, other.AccountAlias, other.SharedAccountAlias = "other", "other", "other"
+				publishCapacity(t, preferred, r, merge, other)
+
+				capacityHolder := newNativeFixture(t, preferred.service, preferred.project.OrganizationID, "capacity-holder")
+				approveHubTestPolicy(t, preferred.service, capacityHolder.base+"/policy", hubTestPolicy())
+				owner := prepareRunner(t, capacityHolder, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+				owner.enroll(t)
+				owner.reportCapacity(t)
+				heldReport := merge
+				heldReport.MaxConcurrent = 1
+				publishCapacity(t, capacityHolder, owner, heldReport)
+				occupied := capacityHolder.create(t, "other runner reserves the merge account")
+				occupy := providerClaim(owner, occupied, "occupy")
+				occupy.ProviderCandidates[0].Requirement.Model = merge.Models[0]
+				response := performHubAPIRequest(t, preferred.service, http.MethodPost, capacityHolder.base+"/claims", owner.redemption.Credential, occupy)
+				requireNativeStatus(t, response, http.StatusOK)
+				var held tracker.NativeLease
+				decodeHubResponse(t, response, &held)
+
+				next := landing.ready(t, "reviewed landing")
+				landing.requirement = providercapacity.Requirement{Role: "merge", Backend: merge.Backend, Model: merge.Models[0]}
+				response = landing.claim(t, r, next, "merge-while-full", 1)
+				requireNativeStatus(t, response, http.StatusConflict)
+				if !strings.Contains(response.Body.String(), "provider_capacity") {
+					t.Fatalf("reviewed landing did not wait for its provider: %s", response.Body.String())
+				}
+
+				item := general.create(t, "work with available provider")
+				claimGeneral := func(session string) *httptest.ResponseRecorder {
+					request := providerClaim(r, item, session)
+					request.LandingCapacity = 1
+					request.ProviderCandidates[0].Requirement.Backend = other.Backend
+					return performHubAPIRequest(t, preferred.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, request)
+				}
+				release := func(f nativeFixture, r runnerFixture, lease tracker.NativeLease) {
+					t.Helper()
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release",
+						r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+				}
+				response = claimGeneral("available provider")
+				requireNativeStatus(t, response, http.StatusOK)
+				var lower tracker.NativeLease
+				decodeHubResponse(t, response, &lower)
+				if lower.ProviderReservation == nil || lower.ProviderReservation.Backend != other.Backend {
+					t.Fatalf("lower-ranked project did not reserve the free provider: %+v", lower)
+				}
+				release(general, r, lower)
+				release(capacityHolder, owner, held)
+				itemResponse := performHubAPIRequest(t, general.service, http.MethodGet, general.base+"/work-items/"+string(item.WorkItemID), general.token, nil)
+				requireNativeStatus(t, itemResponse, http.StatusOK)
+				decodeHubResponse(t, itemResponse, &item)
+				response = claimGeneral("available landing regains precedence")
+				requireNativeStatus(t, response, http.StatusConflict)
+				if !strings.Contains(response.Body.String(), "no_claimable_work") {
+					t.Fatalf("available landing did not regain precedence: %s", response.Body.String())
+				}
+				requireNativeStatus(t, landing.claim(t, r, next, "merge-after-release", 1), http.StatusOK)
+				return
+			}
 			if scenario.landing != "" {
 				approveHubTestPolicy(t, preferred.service, general.base+"/policy", hubTestPolicy())
 				owner := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
