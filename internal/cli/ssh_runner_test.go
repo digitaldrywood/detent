@@ -29,6 +29,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
@@ -69,6 +71,44 @@ func TestSSHServiceProxyKeepsCentralAuthority(t *testing.T) {
 	body, err := io.ReadAll(response.Body)
 	if err != nil || response.StatusCode != http.StatusAccepted || response.Header.Get("X-Owner") != "central" || string(body) != "recorded" {
 		t.Fatalf("service response: %+v %q %v", response, body, err)
+	}
+}
+
+func TestFencedSSHBootstrapReportsTurnStartRefusal(t *testing.T) {
+	scratch := filepath.Join(t.TempDir(), "unusable")
+	if err := os.WriteFile(scratch, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", scratch)
+	left, right := net.Pipe()
+	finished := make(chan error, 1)
+	go func() {
+		finished <- RunSSHWorker(t.Context(), right, right, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+	t.Cleanup(func() {
+		_ = left.Close()
+		_ = right.Close()
+		if err := <-finished; err != nil {
+			t.Error(err)
+		}
+	})
+	peer := runnerpkg.NewSSHPeer(t.Context(), left, left, nil)
+	defer peer.Close()
+	var response runnerpkg.SSHRunResponse
+	err := peer.Call(t.Context(), "run", &response, sshBootstrap{
+		Local: true, Version: runnerpkg.SSHProtocolVersion,
+		Run: runnerpkg.SSHRunRequest{
+			Native: true, AttemptWorker: true, Recovery: &tracker.NativeRecovery{},
+			Request: runnerpkg.RunRequest{AttemptWorkspace: workspace.AttemptWorkspace{
+				Organization: "org_example", Project: "prj_example", Attempt: "attempt_00000000000000000000000000000001",
+			}},
+		},
+	})
+	if err != nil || !errors.Is(response.Err(), runnerpkg.ErrWorkspacePreparation) {
+		t.Fatalf("bootstrap failure = %v, response = %v", err, response.Err())
+	}
+	if !response.Result.TurnStartRefused || response.Result.TurnStarted {
+		t.Fatal("bootstrap failure did not report that no provider turn started")
 	}
 }
 

@@ -409,15 +409,16 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	if err != nil {
 		return response.Result, r.hostFailure("local", fmt.Errorf("execution worker disconnected: %w", err))
 	}
-	responseReceived = true
-	if responseErr := response.Err(); runnerpkg.StopProviderSupervision(request.Execution, responseErr) {
+	responseErr := response.Err()
+	responseReceived = !response.Result.TurnStartRefused || !errors.Is(responseErr, runnerpkg.ErrWorkspacePreparation)
+	if runnerpkg.StopProviderSupervision(request.Execution, responseErr) {
 		return response.Result, responseErr
 	}
 	var reviewErr *runnerpkg.NativeImplementationReviewError
-	reviewFailed := errors.As(response.Err(), &reviewErr)
+	reviewFailed := errors.As(responseErr, &reviewErr)
 	if !request.DeferExecutionFinish && request.Execution != nil {
 		outcome := "succeeded"
-		if response.Err() != nil || response.Result.FinalState != runnerpkg.FinalStateCompleted {
+		if responseErr != nil || response.Result.FinalState != runnerpkg.FinalStateCompleted {
 			outcome = "failed"
 		}
 		if reviewFailed {
@@ -429,7 +430,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			return response.Result, err
 		}
 	}
-	if changes, ok := request.Execution.(runnerpkg.ChangeExecution); ok && (response.Err() == nil || reviewFailed) {
+	if changes, ok := request.Execution.(runnerpkg.ChangeExecution); ok && (responseErr == nil || reviewFailed) {
 		if change := changes.NativeChange(); change != nil {
 			copy := *change
 			if reviewFailed {
@@ -438,5 +439,5 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 			response.Result.NativeChange = &copy
 		}
 	}
-	return response.Result, response.Err()
+	return response.Result, responseErr
 }
