@@ -14,6 +14,7 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
 		manual, automatic  bool
+		disclosure         string
 		staleBody, staleCI bool
 		preparing, withCI  bool
 		want               tracker.ExecutionCheckStatus
@@ -21,6 +22,8 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 		{name: "current independent receipt", automatic: true, want: tracker.CheckPassed},
 		{name: "current authorized human review", manual: true, want: tracker.CheckManual},
 		{name: "summary alone cannot supply proof"},
+		{name: "normalized approved disclosure without embedded policy", automatic: true, disclosure: "approved", want: tracker.CheckDisclosed},
+		{name: "unapproved disclosure cannot supply proof", automatic: true, disclosure: "changes_requested"},
 		{name: "issue amendment invalidates prior approval", manual: true, staleBody: true},
 		{name: "exact required status check", automatic: true, withCI: true, want: tracker.CheckPassed},
 		{name: "stale status check invalidates prior pass", automatic: true, withCI: true, staleCI: true},
@@ -40,8 +43,14 @@ func TestReviewedChecklistCompletion(t *testing.T) {
 			}
 			if tc.automatic {
 				result := checklistValidator(v.ID, v.Repository, v.BaseSHA, v.HeadSHA)
+				decision := "approved"
+				if tc.disclosure != "" {
+					decision = tc.disclosure
+					result.CriteriaEvidence = nil
+					result.NotVerified = []string{"criterion"}
+				}
 				detail.Reviews = append(detail.Reviews, tracker.ChangeReview{ID: "review", Actor: tracker.Actor{Kind: "runner"},
-					VersionID: v.ID, Decision: "approved", Validator: result})
+					VersionID: v.ID, Decision: decision, Validator: result})
 			}
 			var ci *tracker.NativeLandingCIReceipt
 			if tc.withCI {
