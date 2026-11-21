@@ -21,9 +21,6 @@ import (
 type SSHExecutionSources struct {
 	bindProcesses       func(context.Context) context.Context
 	reasonGenerator     DependencyReasonGenerator
-	landingAudit        func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
-	landingRebase       func(context.Context, workspace.Issue, string, string) (sshLandingOutcome, error)
-	landingBatch        func(context.Context, []workspace.LandRequest) []sshLandingOutcome
 	mu                  sync.Mutex
 	diff                AttemptDiffSource
 	directory           string
@@ -61,8 +58,6 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 	s.mu.Lock()
 	diff, directory, evidence, integration, changeSource := s.diff, s.directory, s.evidence, s.integration, s.changeSource
 	publication, publicationIdentity, publicationPeer := s.publication, s.publicationIdentity, s.publicationPeer
-	landingRebase := s.landingRebase
-	landingBatch, landingAudit := s.landingBatch, s.landingAudit
 	reasonGenerator := s.reasonGenerator
 	bind := s.bindProcesses
 	s.mu.Unlock()
@@ -95,18 +90,6 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			}
 			return publication(ctx, version, opts)
 		}, "", args)
-	case "source.landing_rebase":
-		if landingRebase == nil {
-			return nil, errors.New("batch validation owner unavailable")
-		}
-		return invokeSSHMethod(ctx, landingRebase, "", args)
-	case "source.landing_audit":
-		return invokeSSHMethod(ctx, landingAudit, "", args)
-	case "source.landing_batch":
-		if landingBatch == nil {
-			return nil, errors.New("SSH landing batch source is unavailable")
-		}
-		return invokeSSHMethod(ctx, landingBatch, "", args)
 	case "source.change":
 		if changeSource == nil {
 			if directory == "" {
@@ -153,9 +136,6 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 // interpreted as a local path. Finish can use the last checkpoint diff once the
 // channel closes, just as it does after a local checkout is removed.
 func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
-	c.mu.Lock()
-	c.batchLander = &sshBatchLander{peer: peer, callbacks: c}
-	c.mu.Unlock()
 	if source, ok := c.execution.(DependencyReasonExecution); ok {
 		source.SetDependencyReasonGenerator(func(ctx context.Context, prompt string) (string, error) {
 			var result string
@@ -279,7 +259,6 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 }
 
 type sshNativeExecution struct {
-	batchedLanding bool
 	spoolArtifacts bool
 	*sshExecution
 	sources  *SSHExecutionSources

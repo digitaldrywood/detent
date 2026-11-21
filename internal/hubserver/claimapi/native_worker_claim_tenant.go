@@ -68,10 +68,9 @@ type Deps struct {
 	ReadPlacementSnapshot            func(ctx context.Context, scope hubscope.NativeScope, now time.Time, overrides []tracker.NativeCapacityCandidate) (hubrecords.PlacementSnapshot, error)
 	LandingCapacityAvailable         func(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, requested int, now time.Time) (bool, error)
 	ProjectModel                     func(ctx context.Context, settings projectstore.Settings, models ...policystore.OrganizationModels) (projectsettings.ModelSelection, error)
-	PlacementAllowed                 func(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan hubrecords.NativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *hubrecords.PlacementSnapshot) (bool, string, error)
+	PlacementAllowed                 func(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan hubrecords.NativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, now time.Time, snapshot *hubrecords.PlacementSnapshot) (bool, string, error)
 	CutoverSourceReference           func(issue tracker.NativeIssue) (string, int, error)
 	HydrateChangePolicy              func(ctx context.Context, content *eventstore.Content, scope hubscope.NativeScope, rows hubrecords.CurrentChangePolicyRows) (hubrecords.ChangeVersionApproval, error)
-	LandingCapacityKey               func(machine tracker.MachineID, project, session string) string
 	MonthlyBudgetRefusal             func(decision budget.MonthlyDecision) string
 	MonthlyCostExposure              func(machine leasestore.Machine, workspace, runnerAPI bool) budget.CostExposure
 	ChangeLandingClaimable           func(state string, detail *tracker.ChangeDetail) bool
@@ -436,7 +435,7 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 		if err != nil || available <= 0 {
 			return err == nil, err
 		}
-		usage, err := reader.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, "", now)
+		usage, err := reader.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, now)
 		return err == nil && (usage.Runner >= int64(available) || projectConfigured && usage.Project >= int64(projectCapacity)), err
 	case "source_unavailable":
 		item, err := reader.WorkItem(ctx, scope.Project, request.WorkItemID)
@@ -823,7 +822,8 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 	if !d.nativeClaimIssueContractAllowed(plan) {
 		return leasestore.Lease{}, &hubapi.NativeError{Code: "issue_contract_unsatisfied", Message: "Current issue contract does not allow dispatch", Status: http.StatusConflict}
 	}
-	if (hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending) && !plan.ChangeReady {
+	landing := hubapi.StringsEqualFold(plan.Candidate.State, "Merging") || plan.LandingPending
+	if landing && !plan.ChangeReady {
 		return leasestore.Lease{}, ErrNoClaimableWork
 	}
 	if len(request.ProviderCandidates) > 0 && !slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability) {
@@ -988,7 +988,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			return err
 		}
 		workspaceLane := slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability)
-		if workspaceItem && !workspaceLane || !workspaceItem && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) && len(request.ProviderCandidates) == 0 {
+		if workspaceItem && !workspaceLane || !workspaceItem && !landing && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability) && len(request.ProviderCandidates) == 0 {
 			return ErrNoClaimableWork
 		}
 		if workspaceItem && plan.Replay == nil {
@@ -1131,7 +1131,6 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			landingCapacity = capacity
 		}
 		var exposure budget.CostExposure
-		joining := ""
 		if replay == nil {
 			availableCapacity, projectCapacity, projectCapacityConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
 			if err != nil {
@@ -1151,14 +1150,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 				return ProviderWait("runner_capacity", "Runner has no available execution slots")
 			}
 			exposure = d.MonthlyCostExposure(machine, workspaceItem, runnerAPI)
-			batch := ""
-			if hubapi.StringsEqualFold(plan.Candidate.State, "Merging") && plan.ChangeReady && !plan.LandingRequired {
-				parts := strings.Split(request.SessionID, "/")
-				if len(parts) == 3 && parts[0] == "landing" && parts[1] != "" && parts[2] != "" {
-					batch = parts[1]
-				}
-			}
-			usage, err := w.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, scope.Project, batch, authoritativeNow)
+			usage, err := w.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, scope.Project, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -1168,15 +1160,12 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
 				return ProviderWait("runner_capacity", "Runner has no available execution slots")
 			}
-			if batch != "" {
-				joining = d.LandingCapacityKey(identity.MachineID, string(scope.Project), request.SessionID)
-			}
 			if sourceRefusal, err = claimsource.Refusal(ctx, w, scope.Project, item, plan.Source, string(identity.MachineID), identity.RunnerID); !workspaceItem && (err != nil || sourceRefusal != "") {
 				placementRefusal = sourceRefusal
 				return cmp.Or(err, ErrNoClaimableWork)
 			}
 			sourceRefusal = ""
-			allowed, reason, err := d.PlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, joining, authoritativeNow, placement.Snapshot)
+			allowed, reason, err := d.PlacementAllowed(ctx, w, scope, identity, machine, plan, request.ProviderCandidates, workspaceItem, authoritativeNow, placement.Snapshot)
 			if err != nil {
 				return err
 			}
@@ -1225,7 +1214,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		}
 		var selectedReservation *providercapacity.Reservation
 		var selectionRequired error
-		if !workspaceItem && replay == nil {
+		if !workspaceItem && replay == nil && (!landing || len(request.ProviderCandidates) > 0) {
 			if len(request.ProviderCandidates) == 0 {
 				reports, err := w.RunnerProviderReports(ctx, identity.RunnerID)
 				if err != nil {
@@ -1235,7 +1224,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 					selectionRequired = ProviderWait("provider_incompatible", "Work item needs local model selection before a provider reservation can be claimed")
 				}
 			} else {
-				reservation, err := SelectTenantProviderReservation(ctx, w, identity, request, item.NativeID, joining, authoritativeNow)
+				reservation, err := SelectTenantProviderReservation(ctx, w, identity, request, item.NativeID, authoritativeNow)
 				if err != nil {
 					return err
 				}
@@ -1273,7 +1262,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			if err != nil {
 				return err
 			}
-			if !workspaceItem && (len(request.ProviderCandidates) > 0 || slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability)) {
+			if !workspaceItem && (len(request.ProviderCandidates) > 0 || !landing && slices.Contains(request.Capabilities, tracker.NativeProviderCapacityCapability)) {
 				candidate := nativeClaimProviderCandidate(request, item.NativeID)
 				if !foundReservation || candidate == nil || reservation.Reservation.Requirement != candidate.Requirement {
 					return tracker.ErrLeaseConflict
@@ -1427,15 +1416,15 @@ func nativeClaimSelectionSourceRevision(project projectstore.Record, policy poli
 	}{project.Core.WorkflowSourceRevision, policy.PolicyID, policy.PayloadSHA256, query, settingsRevision, contentRevision, "created_before_preferences"})
 }
 
-func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, joining string, now time.Time) (providercapacity.Reservation, error) {
+func SelectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) (providercapacity.Reservation, error) {
 	candidate := nativeClaimProviderCandidate(request, item)
 	if candidate == nil || candidate.Revision <= 0 || candidate.Requirement.Validate() != nil {
 		return providercapacity.Reservation{}, ProviderWait("provider_candidate_changed", "Work item needs a current local provider selection before it can be claimed")
 	}
-	return SelectTenantProviderRequirement(ctx, w, identity.RunnerID, candidate.Requirement, joining, now)
+	return SelectTenantProviderRequirement(ctx, w, identity.RunnerID, candidate.Requirement, now)
 }
 
-func SelectTenantProviderRequirement(ctx context.Context, w tenantstore.Writer, runnerID string, requirement providercapacity.Requirement, joining string, now time.Time) (providercapacity.Reservation, error) {
+func SelectTenantProviderRequirement(ctx context.Context, w tenantstore.Writer, runnerID string, requirement providercapacity.Requirement, now time.Time) (providercapacity.Reservation, error) {
 	reports, err := w.RunnerProviderReports(ctx, runnerID)
 	if err != nil {
 		return providercapacity.Reservation{}, err
@@ -1457,11 +1446,7 @@ func SelectTenantProviderRequirement(ctx context.Context, w tenantstore.Writer, 
 	if !capacity.SelectedReport {
 		return providercapacity.Reservation{}, ProviderWait("provider_incompatible", "Runner no longer advertises the selected backend and model")
 	}
-	group := ""
-	if joining != "" && requirement.Backend == "git" && requirement.Role == "merge" {
-		group = joining + "/" + runnerID
-	}
-	used, err := w.ProviderReservationUsage(ctx, *selected, runnerID, group, now)
+	used, err := w.ProviderReservationUsage(ctx, *selected, runnerID, "", now)
 	if err != nil {
 		return providercapacity.Reservation{}, err
 	}
@@ -1802,6 +1787,9 @@ func (d Deps) HydrateNativeClaimPlan(ctx context.Context, scope hubscope.NativeS
 		state := changerequest.ReviewState(detail, plan.ChangeVersion.ID, plan.ChangeVersion.HeadSHA)
 		currentVersion := hubapi.ValueOrEmpty(plan.ChangeRecord.CurrentVersionID)
 		plan.ChangeReady = plan.ChangeRecord.OrganizationID == scope.Organization && plan.ChangeRecord.ProjectID == scope.Project && plan.ChangeRecord.WorkItemID == plan.Candidate.WorkItemID && detail.Change.ID == plan.ChangeRecord.ID && int64(detail.Change.Revision) == plan.ChangeRecord.Revision && detail.Change.CurrentVersion == currentVersion && currentVersion == plan.ChangeVersion.ID && state.Current && !state.ChangesRequested && !state.RepairPending && d.ChangeLandingClaimable("Merging", &detail)
+		if plan.ChangeReady {
+			plan.Issue.ListChange = &tracker.NativeListChange{LandingPending: true, HeadSHA: plan.ChangeVersion.HeadSHA}
+		}
 	}
 	plan.LandingRequired, err = NativeClaimLandingCapacityRequired(plan)
 	if err != nil {

@@ -23,7 +23,6 @@ import (
 const dispatchCandidateLookahead = 8
 
 type dispatchPlanner struct {
-	nativeLandingBatch   *nativeLandingDispatchBatch
 	nativeWorkflow       bool
 	boundedAdmission     bool
 	workerHostAvailable  func(string) bool
@@ -156,11 +155,11 @@ func (p dispatchPlanner) plan(
 			logDecision(decision)
 			continue
 		}
-		if _, retryDue := dueRetries[issue.ID]; !retryDue && !p.joinsNativeLandingBatch(issue) && p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
+		if _, retryDue := dueRetries[issue.ID]; !retryDue && p.hardAvailableSlots(state) == 0 && !p.readyMergeControlCandidate(state, issue) {
 			logDecision(dispatchPlanDecision{Issue: issue, QueuePosition: queuePosition, SkipReason: dispatchSkipProjectCapacityFull})
 			continue
 		}
-		if evaluated >= evaluationLimit && !p.joinsNativeLandingBatch(issue) {
+		if evaluated >= evaluationLimit {
 			break
 		}
 		evaluated++
@@ -444,9 +443,6 @@ func (p dispatchPlanner) newDispatchAction(
 ) (dispatchAction, bool) {
 	allowMergeControl := !modelPermitRequired && p.readyMergeControlCandidate(state, issue)
 	workerHost, ok := p.selectWorkerHost(state, preferredWorkerHost)
-	if p.joinsNativeLandingBatch(issue) {
-		workerHost, ok = p.nativeLandingBatch.host, true
-	}
 	if !ok && !allowMergeControl {
 		return dispatchAction{}, false
 	}
@@ -758,7 +754,8 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
 	legacyPlanStop := p.boundedAdmission && p.nativeWorkflow && strings.EqualFold(p.cfg.Plan.Stop, issue.State)
-	if !legacyPlanStop && !stateIn(issue.State, p.cfg.ActiveStates) {
+	landingRecovery := p.nativeWorkflow && issue.NativeLandingHeadSHA != ""
+	if !legacyPlanStop && !landingRecovery && (!stateIn(issue.State, p.cfg.ActiveStates) || p.nativeWorkflow && normalizeState(issue.State) == normalizeState(autoPromoteMergingState)) {
 		return dispatchableDecision{reason: dispatchSkipInactiveState}
 	}
 	if stateIn(issue.State, p.cfg.TerminalStates) {
@@ -844,7 +841,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: reason}
 	}
 	mergeControl := !modelPermitRequired && p.readyMergeControlCandidate(state, issue)
-	if !p.joinsNativeLandingBatch(issue) && !mergeControl && p.hardAvailableSlots(state) == 0 {
+	if !mergeControl && p.hardAvailableSlots(state) == 0 {
 		return dispatchableDecision{reason: dispatchSkipProjectCapacityFull}
 	}
 	if modelPermitRequired && p.availableSlots(state) == 0 {
@@ -853,7 +850,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if !p.stateSlotsAvailable(issue, state) {
 		return dispatchableDecision{reason: dispatchSkipLocalSlotUnavailable}
 	}
-	if !p.joinsNativeLandingBatch(issue) && !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
+	if !mergeControl && !p.workerSlotsAvailable(state, preferredWorkerHost) {
 		return dispatchableDecision{reason: dispatchSkipWorkerHostUnavailable}
 	}
 	if p.recordedBlockers != nil {
@@ -941,9 +938,6 @@ func (p dispatchPlanner) slotsAvailableForModelRequirement(
 	preferredWorkerHost string,
 	modelPermitRequired bool,
 ) bool {
-	if p.joinsNativeLandingBatch(issue) {
-		return true
-	}
 	if !modelPermitRequired && p.readyMergeControlCandidate(state, issue) {
 		return p.stateSlotsAvailable(issue, state)
 	}
@@ -1072,16 +1066,6 @@ func providerRateWindowObservation(
 }
 
 func (p dispatchPlanner) stateSlotsAvailable(issue connector.Issue, state *State) bool {
-	if p.joinsNativeLandingBatch(issue) {
-		return true
-	}
-	if p.nativeWorkflow && !p.cfg.Policy.Gates.GitHubPullRequest && mergeWorkerIssue(issue) {
-		for _, running := range state.Running {
-			if mergeWorkerIssue(running.Issue) {
-				return false
-			}
-		}
-	}
 	limit := p.cfg.MaxConcurrentAgents
 	if stateLimit, ok := p.cfg.MaxConcurrentAgentsByState[normalizeState(issue.State)]; ok {
 		limit = stateLimit

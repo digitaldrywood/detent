@@ -321,7 +321,7 @@ func (s *Service) setLeaseProviderPhase(ctx context.Context, w tenantstore.Write
 	if err := w.DropProviderReservation(ctx, id); err != nil || release {
 		return err
 	}
-	reservation, err := claimapi.SelectTenantProviderRequirement(ctx, w, scope.Credential.Runner.RunnerID, requirement, "", s.config.Clock().UTC())
+	reservation, err := claimapi.SelectTenantProviderRequirement(ctx, w, scope.Credential.Runner.RunnerID, requirement, s.config.Clock().UTC())
 	if err != nil {
 		return err
 	}

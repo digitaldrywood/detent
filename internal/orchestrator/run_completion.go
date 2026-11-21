@@ -182,7 +182,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			o.publishRuntimeState(state)
 		}
 	}()
-	if !running.CompletionOwnershipReleased {
+	releaseWorker := func() {
+		if running.CompletionOwnershipReleased {
+			return
+		}
 		o.releaseGlobalDispatchSlot(running.globalSlot)
 		o.logWorkerLifecycle(running.Issue, "worker_capacity_released",
 			telemetry.WorkAttemptIDKey, running.WorkAttemptID,
@@ -196,8 +199,17 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			running.cancel()
 		}
 	}
-	running.globalSlot = scheduler.Slot{}
-	running.CompletionOwnershipReleased = true
+	if nativeCompletion && event.Request.DeferExecutionFinish {
+		defer func() {
+			if current, active := state.Running[event.IssueID]; active && current.done == running.done && !current.CompletionOwnershipReleased {
+				releaseWorker()
+			}
+		}()
+	} else {
+		releaseWorker()
+		running.globalSlot = scheduler.Slot{}
+		running.CompletionOwnershipReleased = true
+	}
 	if !event.Result.RuntimeIdentity.IsZero() {
 		running.RuntimeIdentity = running.RuntimeIdentity.Merge(event.Result.RuntimeIdentity)
 	}

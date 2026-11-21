@@ -695,7 +695,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			if _, err := r.SelectionCursor(t.Context(), binding.RunnerID, project.ID); !errors.Is(err, corestore.ErrNotFound) {
 				return fmt.Errorf("rejected claim cursor: %v", err)
 			}
-			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, "", clock.Now())
+			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, clock.Now())
 			if err != nil || usage != (claimstore.CapacityUsage{}) {
 				return fmt.Errorf("rejected claim capacity=%+v: %v", usage, err)
 			}
@@ -744,7 +744,7 @@ func TestNativeClaimTenantPersistsProviderReservationAtomicallyAndReplaysIt(t *t
 			}
 		}
 		if err := repository.ReadTenant(t.Context(), organization.ID, corestore.Serving, func(r tenantstore.Reader) error {
-			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, "", clock.Now())
+			usage, err := r.ClaimCapacityUsage(t.Context(), string(binding.MachineID), binding.RunnerID, project.ID, clock.Now())
 			if err != nil || usage != (claimstore.CapacityUsage{Host: 1, Runner: 1, Project: 1}) {
 				return fmt.Errorf("concurrent claim capacity=%+v: %v", usage, err)
 			}
@@ -1196,7 +1196,7 @@ func TestTenantClaimUsesConcurrencyNotSubscriptionQuotaState(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			selected, err = selectTenantProviderReservation(t.Context(), w, identity, request, "wi_candidate", "", now)
+			selected, err = selectTenantProviderReservation(t.Context(), w, identity, request, "wi_candidate", now)
 			return err
 		})
 		return selected, err

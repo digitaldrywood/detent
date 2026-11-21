@@ -145,9 +145,6 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 		}
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "merge", Backend: "git", Model: "none"}
-	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
-		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
-	}
 	e.mu.Lock()
 	if e.data.Identity != nil && !e.workerBootstrapping {
 		identity = *e.data.Identity
@@ -166,7 +163,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 	if err := e.ObserveRuntime(ctx, observation); err != nil {
 		return err
 	}
-	if err := e.Start(ctx, identity); err != nil {
+	if err := e.StartPhased(ctx, identity); err != nil {
 		return err
 	}
 	e.mu.Lock()

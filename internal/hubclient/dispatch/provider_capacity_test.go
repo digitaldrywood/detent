@@ -871,26 +871,17 @@ func TestExecutionClaimHandoff(t *testing.T) {
 	for _, test := range []struct {
 		name            string
 		projectCapacity int
-		landing         bool
 		failRecovery    bool
 		rounds          int
 	}{
 		{name: "project one machine three", projectCapacity: 1, rounds: 1},
 		{name: "hydration failure releases exact fence", projectCapacity: 1, failRecovery: true, rounds: 1},
 		{name: "successive handoffs fill capacity", projectCapacity: 3, rounds: 3},
-		{name: "landing batch exceeds execution capacity", projectCapacity: 5, landing: true, rounds: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now()
 			state := "Rework"
-			if test.landing {
-				state = "Merging"
-			}
-			count := 93
-			if test.landing {
-				count = 5
-			}
-			items := make([]tracker.NativeIssue, count)
+			items := make([]tracker.NativeIssue, 93)
 			for i := range items {
 				items[i] = tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: tracker.NativeWorkItemID(fmt.Sprintf("wi_item%d", i)), Revision: 1}, State: state}
 			}
@@ -922,7 +913,7 @@ func TestExecutionClaimHandoff(t *testing.T) {
 						_, _ = w.Write([]byte(`{"code":"no_claimable_work"}`))
 						return
 					}
-					if strings.HasPrefix(request.SessionID, "landing/") != test.landing {
+					if strings.HasPrefix(request.SessionID, "landing/") {
 						t.Error("incorrect landing claim classification")
 					}
 					lease := tracker.NativeLease{ID: tracker.LeaseID(fmt.Sprintf("lease-%d", claims)), WorkItemID: request.WorkItemID, FencingToken: tracker.FencingToken(89555 + claims), ExpiresAt: now.Add(time.Minute)}
@@ -981,8 +972,8 @@ func TestExecutionClaimHandoff(t *testing.T) {
 			for round := range test.rounds {
 				laterReady := make(chan struct{}, 1)
 				unblock := make(chan struct{})
-				request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 3, CandidateLimit: 100, NativeLandingBatch: true, WorkflowStates: []string{state}, CandidateReady: func(ctx context.Context, issue connector.Issue) bool {
-					if !test.landing && len(held) > len(scheduler.nativeClaims) {
+				request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 3, CandidateLimit: 100, WorkflowStates: []string{state}, CandidateReady: func(ctx context.Context, issue connector.Issue) bool {
+					if len(held) > len(scheduler.nativeClaims) {
 						select {
 						case laterReady <- struct{}{}:
 						default:
@@ -1011,9 +1002,6 @@ func TestExecutionClaimHandoff(t *testing.T) {
 					t.Error("next CandidateReady reached before acquired execution claim was hydrated and registered")
 				}
 				want := 1
-				if test.landing {
-					want = len(items)
-				}
 				if test.failRecovery {
 					if got.err == nil || len(got.issues) != 0 || len(held) != 0 || releases != 1 || recoveries != 1 || claims != 1 {
 						t.Fatalf("failed hydration: issues=%d held=%d releases=%d recoveries=%d claims=%d err=%v", len(got.issues), len(held), releases, recoveries, claims, got.err)

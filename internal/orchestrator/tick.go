@@ -803,10 +803,6 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			WorkflowStates:          states,
 			Filter:                  filter,
 		}
-		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
-		if request.NativeLandingBatch {
-			request.CandidateLimit = max(request.CandidateLimit, 100)
-		}
 		request.CandidateKnownWait = func(issue connector.Issue) bool {
 			now := time.Now()
 			if o.now != nil {
@@ -895,9 +891,6 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				}
 				host, _ := planner.selectWorkerHost(&preview, preferredHost)
 				planner.markDispatched(&preview, dispatchAction{issue: selected, workerHost: host, modelPermitRequired: required}, now)
-				if request.NativeLandingBatch && mergeWorkerIssue(selected) {
-					planner.nativeLandingBatch = &nativeLandingDispatchBatch{members: 1, host: host}
-				}
 			}
 			if blocked, exists := preview.Blocked[issue.ID]; exists && blockedFromDependency(blocked) && issue.DependencySource == connector.BlockedRefSourceNative && !issueBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 				delete(preview.Blocked, issue.ID)
@@ -931,14 +924,15 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				return requirement, err
 			}
 			request.ProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-				return resolve(ctx, issue, reports, o.dispatchMode(ctx, state, issue))
+				mode := runpkg.RunModeImplement
+				if !o.nativeWorkflow() {
+					mode = o.dispatchMode(ctx, state, issue)
+				}
+				return resolve(ctx, issue, reports, mode)
 			}
 			request.LegacyPlanStop = gate.EffectivePlan(o.cfg.Plan).Stop
 			if request.Policy.Gates.PlanEnabled {
 				request.PlanProviderRequirement = func(ctx context.Context, issue connector.Issue, reports []providercapacity.Report) (providercapacity.Requirement, error) {
-					if o.dispatchMode(ctx, state, issue) == runpkg.RunModeMerge {
-						return resolve(ctx, issue, reports, runpkg.RunModeMerge)
-					}
 					return resolve(ctx, issue, reports, runpkg.RunModePlan)
 				}
 			}
@@ -1117,20 +1111,7 @@ func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
 
 func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
 	states := append([]string(nil), o.cfg.ActiveStates...)
-	// A hub-native project's landing lane dispatches whether or not the
-	// configuration lists it: the hub names the lane, and a reviewed Change
-	// Request waits there for the runner that lands it.
-	if o.nativeWorkflow() && !stateIn(autoPromoteMergingState, states) {
-		states = append(states, normalizeState(autoPromoteMergingState))
-	}
-	if !o.mergeWorkerLocalSlotsAvailable(state) {
-		states = statesWithoutState(states, autoPromoteMergingState)
-	}
-	now := time.Now()
-	if o.now != nil {
-		now = o.now()
-	}
-	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.nativeWorkflow() && o.dispatchPlanner().githubRESTDependent(connector.Issue{State: autoPromoteMergingState}) {
+	if o.nativeWorkflow() || !o.mergeWorkerLocalSlotsAvailable(state) {
 		states = statesWithoutState(states, autoPromoteMergingState)
 	}
 	return states

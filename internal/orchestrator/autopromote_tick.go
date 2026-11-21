@@ -1630,7 +1630,6 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	if o.dispatchQuiesced() {
 		return nil
 	}
-	o.logMergeWorkerQueueCycle(state, issues, now)
 	candidates := o.staleMergingQueueDispatchCandidates(state, issues, now)
 	if len(candidates) == 0 {
 		return nil
@@ -1682,91 +1681,6 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		out = append(out, issue)
 	}
 	return out
-}
-
-func (o *Orchestrator) logMergeWorkerQueueCycle(state *State, issues []connector.Issue, now time.Time) {
-	if o.logger == nil {
-		return
-	}
-	queueDepth := 0
-	readyCount := 0
-	agedCount := 0
-	oldestLaneAge := time.Duration(0)
-	queueIssueIDs := map[string]struct{}{}
-	for _, issue := range issues {
-		if !mergeWorkerIssue(issue) {
-			continue
-		}
-		queueDepth++
-		queueIssueIDs[strings.TrimSpace(issue.ID)] = struct{}{}
-		if mergeWorkerHeadReady(issue, o.cfg) {
-			readyCount++
-		}
-		laneAge := mergeWorkerIssueLaneAge(issue, now)
-		if laneAge > oldestLaneAge {
-			oldestLaneAge = laneAge
-		}
-		if mergeWorkerIssueAged(issue, now, o.cfg.MergeFairnessAge) {
-			agedCount++
-		}
-	}
-	projectStats := o.projectStateSlotStats(connector.Issue{State: autoPromoteMergingState}, state)
-	occupant, occupantCount := mergeWorkerLaneOccupant(state)
-	queuedBehind := queueDepth
-	for issueID := range queueIssueIDs {
-		if staleMergingPullRequestDispatchActive(state, issueID) {
-			queuedBehind--
-		}
-	}
-	if queuedBehind < 0 {
-		queuedBehind = 0
-	}
-	attrs := []any{
-		"queue_depth", queueDepth,
-		"ready_count", readyCount,
-		"aged_count", agedCount,
-		"oldest_lane_age_seconds", int64(oldestLaneAge / time.Second),
-		"fairness_age_seconds", int64(o.cfg.MergeFairnessAge / time.Second),
-		"lane_occupied", occupantCount > 0,
-		"lane_saturated", projectStats.available <= 0,
-		"lane_occupant_count", occupantCount,
-		"queued_behind", queuedBehind,
-	}
-	if occupantCount > 0 {
-		occupancySeconds := int64(0)
-		if !occupant.StartedAt.IsZero() && !now.Before(occupant.StartedAt) {
-			occupancySeconds = int64(now.Sub(occupant.StartedAt) / time.Second)
-		}
-		attrs = append(attrs,
-			"occupying_issue_id", strings.TrimSpace(occupant.Issue.ID),
-			"occupying_issue_identifier", strings.TrimSpace(occupant.Issue.Identifier),
-			"occupying_issue_number", issueNumberFromIdentifier(occupant.Issue.Identifier),
-			"occupancy_seconds", occupancySeconds,
-		)
-	}
-	if stickyIssueID := stickyMergingIssueID(state, issues, now, o.cfg.MergeFairnessAge); stickyIssueID != "" {
-		attrs = append(attrs, "sticky_issue_id", stickyIssueID)
-	}
-	o.logger.Info("merge_worker_queue_cycle", attrs...)
-}
-
-func mergeWorkerLaneOccupant(state *State) (Running, int) {
-	if state == nil {
-		return Running{}, 0
-	}
-	var occupant Running
-	count := 0
-	for _, running := range state.Running {
-		if !mergeWorkerIssue(running.Issue) {
-			continue
-		}
-		count++
-		if occupant.Issue.ID == "" ||
-			(!running.StartedAt.IsZero() && (occupant.StartedAt.IsZero() || running.StartedAt.Before(occupant.StartedAt))) {
-			occupant = running
-		}
-	}
-	return occupant, count
 }
 
 func prioritizeReadyMergingIssues(issues []connector.Issue, state *State, now time.Time, cfg Config) mergingIssuePriority {

@@ -16,7 +16,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
-	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -509,7 +508,7 @@ func sharedRunner(t *testing.T, first runnerFixture) runnerFixture {
 	return r
 }
 
-func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, joining ...string) runnerauth.Runner {
+func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture) runnerauth.Runner {
 	t.Helper()
 	credential, status, err := f.service.authenticateTenantAPIHash(t.Context(), f.project.OrganizationID, apikey.HashToken(testHubAdminToken), "", "")
 	if err != nil {
@@ -585,37 +584,6 @@ func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, 
 	}
 	if !reflect.DeepEqual(comparable, admission) {
 		t.Fatalf("admission facts differ from full runner read: full=%+v admission=%+v", comparable, admission)
-	}
-	if len(joining) > 0 && joining[0] != "" {
-		batch, found := strings.CutPrefix(joining[0], string(r.binding.MachineID)+"/"+string(scope.Project)+"/")
-		if !found || batch == "" {
-			t.Fatalf("invalid joining group %s", joining[0])
-		}
-		var usage claimstore.CapacityUsage
-		if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
-			var err error
-			usage, err = reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, scope.Project, batch, now)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		remaining := snapshot
-		remaining.Leases = nil
-		for _, lease := range snapshot.Leases {
-			if lease.RunnerID == r.binding.RunnerID && landingCapacityKey(lease.MachineID, lease.CapacityProject, lease.SessionID) == joining[0] {
-				continue
-			}
-			remaining.Leases = append(remaining.Leases, lease)
-		}
-		joined := runtimeRunnersFromSnapshot(remaining, scope, now)[0]
-		if int64(joined.HostUsed) != usage.Host || int64(joined.Used) != usage.Runner || int64(joined.ProjectUsed[scope.Project]) != usage.Project {
-			t.Fatalf("joining capacity differs from retained lease snapshot: expected=%+v usage=%+v", joined, usage)
-		}
-		admission.HostUsed, admission.Used = int(usage.Host), int(usage.Runner)
-		if admission.ProjectUsed == nil {
-			admission.ProjectUsed = map[tracker.ProjectID]int{}
-		}
-		admission.ProjectUsed[scope.Project] = int(usage.Project)
 	}
 	return admission
 }

@@ -164,7 +164,6 @@ type ClaimingConfig struct {
 type SchedulingRequest struct {
 	BeginDiscovery          func(context.Context) (context.Context, context.CancelFunc)
 	LandingCapacity         int
-	NativeLandingBatch      bool
 	DispatchPriorityByState []string
 	DispatchPriorityByLabel []string
 	PrioritizeUnblockers    bool
@@ -265,7 +264,6 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
-	nativeLandingBatch  *nativeLandingDispatchBatch
 	cfg                 Config
 	connector           connector.Connector
 	scheduling          SchedulingSource
@@ -477,7 +475,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if deps.Connector == nil {
 		return nil, ErrMissingConnector
 	}
-	cfg = withNativeLandingLane(cfg, deps.Connector)
 
 	runner := deps.Runner
 	if runner == nil {
@@ -1497,7 +1494,6 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	if update.Connector != nil {
 		o.connector = update.Connector
 	}
-	cfg = withNativeLandingLane(cfg, o.connector)
 	o.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	o.cfg = cfg
 	now := time.Now

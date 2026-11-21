@@ -11,7 +11,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -28,11 +27,6 @@ type SSHCallbacks struct {
 	publicationSequence   uint64
 	publicationAuthorize  func(uint64, string, workspace.GitHubPublication) error
 	publicationEffect     func(uint64, string, workspace.GitHubPublication, string, string, workspace.GitHubPublication) error
-	landingBatch          *workspace.LandingBatchTicket
-	batchLander           *sshBatchLander
-	batchRebases          []func(context.Context, string, string) (sshLandingOutcome, error)
-	batchAudits           []func(context.Context, workspace.FileDiffs) (*tracker.SecurityAuditReview, error)
-	batchValidations      []func(context.Context) error
 	handle                func(context.Context, string, []json.RawMessage) (any, error)
 	store                 SessionStore
 	execution             Execution
@@ -56,7 +50,7 @@ func (r *Runner) LocalRunCallbacks(request RunRequest) *SSHCallbacks {
 }
 
 func (r *Runner) SSHRunCallbacks(request RunRequest) *SSHCallbacks {
-	return &SSHCallbacks{landingBatch: request.LandingBatch, handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]callbackSession)}
+	return &SSHCallbacks{handle: r.SSHCallbackHandler(request), store: r.store, execution: request.Execution, active: make(map[int64]callbackSession)}
 }
 
 func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.RawMessage) (any, error) {
@@ -94,8 +88,6 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 			}
 		}
 		c.publicationCallbackMu.Unlock()
-	case "landing.submit", "landing.finish", "landing.validate", "landing.audit", "landing.rebase":
-		result, err = c.handleLandingBatch(ctx, method, args)
 	default:
 		result, err = c.handle(ctx, method, args)
 	}
