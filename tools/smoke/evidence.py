@@ -99,8 +99,9 @@ def check_reviews(review_policy, reviews, version_id, gates):
     if gates["validator"]:
         expect("independent acceptance approval", True, any(review.get("validator") for review in approved))
     if gates["security_audit"]:
-        expect("independent security audit", True, any(
-            (review.get("security_audit") or {}).get("verdict") == "pass" for review in reviews if review["version_id"] == version_id
+        expect("independent source audit", True, any(
+            audit.get("verdict") == "pass" and not audit.get("landing") and audit["version_id"] == version_id
+            for review in approved if (audit := review.get("security_audit"))
         ))
     if review_policy.get("required_checks"):
         raise stack.Failure("The todo scenario unexpectedly requires an external check")
@@ -132,7 +133,14 @@ def phase_expectations(expected, gates):
     if gates["automated_review"] == "off":
         labels = [label for label in labels if label != "review:approved"]
     if gates["security_audit"]:
-        labels = [value for label in labels for value in ((label, "audit:pass") if label == "gate:pass" else (label,))]
+        result = []
+        for label in labels:
+            if label == "landing:landed":
+                result.append("landing:audit:pass")
+            result.append(label)
+            if label == "gate:pass":
+                result.append("audit:pass")
+        return result
     return labels
 
 
@@ -153,7 +161,7 @@ def check_conflict(project, evidence, labels, versions, reviews, landing, policy
     for version, phases in zip((old, new), (labels[:conflict], labels[conflict + 2:])):
         source = (version["head_sha"], project.git("rev-parse", version["head_sha"] + "^{tree}"))
         sources.append(source)
-        expected.extend((names[phase], *source) for phase in phases)
+        expected.extend((names[phase], *source) for phase in phases if phase != "landing:audit:pass")
         check_reviews(version["review_policy"], reviews, version["version_id"], policy)
     expect("ordered phase receipts on both exact source trees", expected,
            [(phase["phase"], phase["head_sha"], phase["tree_sha"]) for phase in evidence["phases"]])
@@ -192,11 +200,22 @@ def check_landing(project, policy, evidence, attempt, expected, versions, review
                 and span.get("tree_sha") == tree and span.get("exit_code") == 0]
     executed = {span["receipt_id"] for span in receipts if span.get("execution") == "executed"}
     expect("fresh command gate on exact landing tree", True, bool(executed))
-    expect("successful per-landing validation", True, any(
-        span.get("stage") == "landing_validation"
-        and (span.get("execution") == "executed" or span.get("reused_receipt_id") in executed)
-        for span in receipts
-    ))
+    validations = [span for span in receipts if span.get("stage") == "landing_validation"
+                   and (span.get("execution") == "executed" or span.get("reused_receipt_id") in executed)]
+    expect("successful per-landing validation", True, bool(validations))
+    if policy["security_audit"]:
+        audit = landing.get("security_audit") or {}
+        expect("landing audit scope", (True, version["version_id"], "pass"),
+               (audit.get("landing"), audit.get("version_id"), audit.get("verdict")))
+        record = [review for review in reviews if review["version_id"] == version["version_id"]
+                  and review["decision"] == "approved" and review.get("security_audit") == audit]
+        expect("published landing audit receipt", 1, len(record))
+        source_audits = [review["security_audit"] for review in reviews if review["version_id"] == version["version_id"]
+                         and review.get("security_audit") and not review["security_audit"].get("landing")]
+        expect("independent landing audit session", True,
+               bool(audit.get("session_id")) and all(source["session_id"] != audit["session_id"] for source in source_audits))
+        expect("landing audit after integrated gate and before landing", True,
+               time_key(validations[-1]["finished_at"]) <= time_key(record[0]["created_at"]) <= time_key(landing["observed_at"]))
     for name, needle in expected.get("files", {}).items():
         expect(f"landed {name} contains {needle!r}", True, needle in project.git("show", f"{after}:{name}"))
     for name, needle in expected.get("absent", {}).items():
@@ -232,8 +251,9 @@ def phase_events(attempt, receipt_phases, reviews, command):
             add(review["created_at"], f"review:{review['decision']}")
         if review.get("validator") and review["decision"] == "approved":
             add(review["created_at"], "validator:pass")
-        if (review.get("security_audit") or {}).get("verdict") == "pass":
-            add(review["created_at"], "audit:pass")
+        audit = review.get("security_audit") or {}
+        if audit.get("verdict") == "pass":
+            add(review["created_at"], "landing:audit:pass" if audit.get("landing") else "audit:pass")
     if (runtime.get("landing") or {}).get("landed"):
         add(runtime["landing"]["observed_at"], "landing:landed")
     if (attempt.get("disposition") or {}).get("human_action"):
