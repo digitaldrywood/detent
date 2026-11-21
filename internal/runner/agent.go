@@ -1986,7 +1986,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if landingTarget.External != nil && !landingTarget.GitHubPullRequest {
 			return r.refusedLanding(req, landingTarget, workspace.LandRefusalProtected, "the approved policy does not enable GitHub pull request landing"), nil
 		}
-		workspaceIssue.Landing = &workspace.LandOptions{TargetBranch: landingTarget.BaseRef, HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
+		workspaceIssue.Landing = &workspace.LandOptions{Native: !landingTarget.GitHubPullRequest, TargetBranch: landingTarget.BaseRef, HeadSHA: landingTarget.HeadSHA, Repository: landingTarget.Repository, External: landingTarget.External}
 		if landingTarget.GitHubPullRequest {
 			started := time.Now()
 			scope := &connector.RESTScope{Name: "native_landing", ProjectID: r.projectID}
@@ -2011,10 +2011,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			release()
 		}
 	}()
-	var retireRetainedLanding func()
+	var retireItemLanding func()
 	defer func() {
-		if retireRetainedLanding != nil {
-			retireRetainedLanding()
+		if retireItemLanding != nil {
+			retireItemLanding()
 		}
 	}()
 	if usage, ok := runWorkspace.(workspace.Usage); ok {
@@ -2066,9 +2066,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		"workspace_path", info.Path,
 		"workspace_branch", info.Branch,
 	)
-	if retainedLanding {
+	itemLanding := retainedLanding || workspaceIssue.Landing != nil && workspaceIssue.Landing.Native && workspaceIssue.AttemptWorkspace.Key() != ""
+	if itemLanding {
 		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
-			retireRetainedLanding = func() {
+			retireItemLanding = func() {
 				landing := returnValue.NativeLanding
 				if landing == nil || !landing.Landed || landing.MergeSHA == "" || workspaceIssue.Landing == nil || landing.HeadSHA != workspaceIssue.Landing.HeadSHA {
 					return
@@ -2079,7 +2080,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
 					return
 				}
-				workspaceIssue.Terminal, workspaceIssue.LandedHeadSHA = true, landing.HeadSHA
+				workspaceIssue.RetainedLanding, workspaceIssue.Terminal, workspaceIssue.LandedHeadSHA = true, true, landing.HeadSHA
 				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
 					r.logger.Warn("landing workspace left behind", "path", info.Path, "error", err)
 					return
@@ -2091,7 +2092,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
 			defer func() {
 				if returnValue.NativeChange != nil && returnValue.NativeChange.MergeResolution {
-					returnValue.landingCleanup = func(ctx context.Context) error { return cleaner.CleanupLanding(ctx, info, workspaceIssue) }
 					return
 				}
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
@@ -2147,8 +2147,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			_, verdictErr := r.decideRound(ctx, req, runWorkspace, info, workspaceIssue, "merge", "", result, err, false, nil)
 			err = errors.Join(err, verdictErr)
 		}
-		if result.NativeChange != nil && result.NativeChange.MergeResolution {
+		resolvedForReview := result.NativeChange != nil && result.NativeChange.MergeResolution
+		if resolvedForReview {
 			workspaceIssue.BaseRef = result.NativeChange.BaseSHA
+			result.WorkspaceBranch = info.Branch
+			result.retainedReview = &retainedReviewWorkspace{backend: runWorkspace, info: info, issue: workspaceIssue, message: result.FinalMessage}
 			if diffs, ok := req.Execution.(DiffExecution); ok {
 				req.attemptDiffSource = r.attemptDiffSource(ctx, info, workspaceIssue)
 				diffs.SetDiffSource(req.attemptDiffSource)
@@ -2168,7 +2171,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		cleanup, afterErr := r.prepareExecutionCompletion(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false)
-		err = errors.Join(err, r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanup && !retainedLanding))
+		err = errors.Join(err, r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanup && !retainedLanding && !resolvedForReview))
 		return result, errors.Join(err, afterErr)
 	}
 	if mode == RunModeMerge {

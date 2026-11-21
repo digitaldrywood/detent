@@ -1164,8 +1164,12 @@ func (l *LocalGit) workspacePath(key string) (string, error) {
 	return validateWorkspacePath(l.root, filepath.Join(l.root, key))
 }
 
+func (issue Issue) usesVersionLandingCheckout() bool {
+	return issue.Landing != nil && !issue.RetainedLanding && (!issue.Landing.Native || issue.AttemptWorkspace.Key() == "")
+}
+
 func (l *LocalGit) workspacePathForIssue(issue Issue, key string) (string, error) {
-	if issue.Landing == nil || issue.RetainedLanding {
+	if !issue.usesVersionLandingCheckout() {
 		return l.workspacePath(key)
 	}
 	if !validLandingHead(issue.Landing.HeadSHA) {
@@ -1178,7 +1182,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if !l.autoBranch {
 		return ""
 	}
-	if issue.Landing != nil && !issue.RetainedLanding {
+	if issue.usesVersionLandingCheckout() {
 		return autoBranchPrefix + "landing/" + strings.ToLower(key) + "/" + issue.Landing.HeadSHA
 	}
 	if issue.WorkspaceSession {
@@ -1199,7 +1203,7 @@ func (l *LocalGit) publicationBranch(issue Issue, key string) string {
 		return issue.finalizationBranch
 	}
 	scope, _ := splitCheckoutIssueKey(key)
-	if scope == "" || !l.autoBranch || (issue.Landing != nil && !issue.RetainedLanding) || issue.WorkspaceSession || issue.ReviewVersionID != "" {
+	if scope == "" || !l.autoBranch || issue.usesVersionLandingCheckout() || issue.WorkspaceSession || issue.ReviewVersionID != "" {
 		return ""
 	}
 	return l.branchName(issue, issueKey(issue))
