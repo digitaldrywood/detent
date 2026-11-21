@@ -71,7 +71,7 @@ func ModelCard(scope hubscope.NativeScope, row viewstore.BoardRecord) (tracker.N
 	}
 	issue = IssueCollections(issue)
 	card := tracker.NativeBoardCard{Issue: issue, Attempt: row.Display.Attempt, Execution: row.Display.Execution, Change: row.Display.Change}
-	card.StatusLine = StatusLine(card)
+	card.StatusLine = viewstore.StatusLine(card)
 	if !scope.ReporterOwns(tracker.Actor{PrincipalID: row.Display.ChangePrincipalID}) {
 		card.Change = nil
 		card.Issue.Change, card.Issue.ListChange, card.Issue.PullRequest = nil, nil, nil

@@ -45,7 +45,7 @@ func boardModelCard(scope hubscope.NativeScope, row viewstore.BoardRecord) (trac
 }
 
 func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
-	return boardview.StatusLine(card)
+	return viewstore.StatusLine(card)
 }
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope hubscope.NativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
