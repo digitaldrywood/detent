@@ -4705,11 +4705,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		tree = req.NativeVersion.Validation.TreeSHA
 	}
 	if !req.implementationReview {
-		criteria := contract.AcceptanceCriteria(req.Issue.Description)
-		if req.NativeVersion != nil {
-			criteria = progresscheck.NativeReviewCriteria(criteria, req.Issue.Description, gate.Effective(workflow.Config.Gate).Run)
-		}
-		gate.NormalizeCriterionEvidence(&validation, criteria, tree)
+		gate.NormalizeCriterionEvidence(&validation, contract.AcceptanceCriteria(req.Issue.Description), tree)
 		gate.ApplyCriterionPolicy(validator, &validation)
 	}
 	if req.complete != nil {
