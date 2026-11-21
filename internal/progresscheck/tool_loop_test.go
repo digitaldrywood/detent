@@ -18,6 +18,7 @@ func TestToolLoop(t *testing.T) {
 		{name: "unacknowledged", calls: "aaaaaaaaaaa", ackDelay: -1, actions: []int{3}},
 		{name: "late acknowledgement", calls: "aaaaaaaaaa", ackDelay: 2, actions: []int{3, 8}},
 		{name: "outcome changed", calls: "aaabbbbbb", actions: []int{3, 6, 9}},
+		{name: "previous outcome returns in a new streak", calls: "aaabaaaaaa", actions: []int{3, 7, 10}},
 		{name: "unknown breaks cycle", calls: "aaa aa aa aa", actions: []int{3}},
 		{name: "distinct experiments", calls: "abcdefghijklmn"},
 	} {
@@ -37,6 +38,7 @@ func TestToolLoop(t *testing.T) {
 					actions = append(actions, index)
 				}
 				if evidence.Action == ToolLoopSteer {
+					loop.SteerSent(evidence)
 					pending, ackAt = evidence.Fingerprint, index+test.ackDelay
 				}
 				if index == ackAt {
