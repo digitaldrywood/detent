@@ -9,7 +9,11 @@ import (
 )
 
 func SampleDiff(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, logger *slog.Logger) (workspace.DiffStat, error) {
-	stat, err := backend.DiffStat(ctx, info, issue)
+	diffStat := backend.DiffStat
+	if live, ok := backend.(workspace.LiveDiffStatProvider); ok {
+		diffStat = live.LiveDiffStat
+	}
+	stat, err := diffStat(ctx, info, issue)
 	if err != nil {
 		if workspace.IsMissingWorkspaceError(err) {
 			logger.Info(

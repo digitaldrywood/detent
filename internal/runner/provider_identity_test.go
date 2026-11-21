@@ -176,10 +176,17 @@ func (s *delayedProviderIdentityStore) UpdateSessionProviderIdentity(ctx context
 }
 
 func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
-	directory := initRunnerSourceRepo(t)
-	attemptDiffFile(t, directory, "work.go", "package example\n")
-	info := workspace.Info{Path: directory}
-	source := &resourceUsageWorkspace{Backend: &fakeWorkspaceBackend{info: info}}
+	issue := workspace.Issue{Identifier: "resource-observation"}
+	localGit, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: t.TempDir(), SourceRoot: initRunnerSourceRepo(t), AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := localGit.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDiffFile(t, info.Path, "work.go", "package example\n")
+	source := &resourceUsageWorkspace{Backend: localGit}
 	backend := &fakeCodexClient{result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}}
 	for sample := range 5 {
 		backend.updates = append(backend.updates, AgentUpdate{Type: AgentUpdateResourceUsage, RSSBytes: uint64(sample + 1)})
@@ -212,7 +219,7 @@ func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
 		}
 		return nil
 	}}
-	result := r.runAgentTurn(ctx, backend, AgentTurnRequest{}, request, info, workspace.Issue{}, config.Agent{}, "", nil, at, 42, agentidentity.Identity{}, nil, 0, "example-model", "codex")
+	result := r.runAgentTurn(ctx, backend, AgentTurnRequest{}, request, info, issue, config.Agent{}, "", nil, at, 42, agentidentity.Identity{}, nil, 0, "example-model", "codex")
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -226,9 +233,9 @@ type resourceUsageWorkspace struct {
 	samples int
 }
 
-func (w *resourceUsageWorkspace) DiffStat(ctx context.Context, info workspace.Info, _ workspace.Issue) (workspace.DiffStat, error) {
+func (w *resourceUsageWorkspace) LiveDiffStat(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.DiffStat, error) {
 	w.samples++
-	return workspace.GitDiffStat(ctx, info.Path)
+	return w.Backend.(workspace.LiveDiffStatProvider).LiveDiffStat(ctx, info, issue)
 }
 
 func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
