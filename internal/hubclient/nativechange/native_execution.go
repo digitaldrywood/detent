@@ -37,7 +37,7 @@ type nativeExecution struct {
 	phaseSource       *tracker.NativePhaseReceipt
 	phasePlanDigest   string
 	phaseReservation  atomic.Pointer[providercapacity.Reservation]
-	checklistFrozen   atomic.Bool
+	frozenChecklist   atomic.Pointer[tracker.ExecutionChecklist]
 	completionOwner   atomic.Bool
 	preparedPublisher atomic.Bool
 	recovery          atomic.Pointer[tracker.NativeRecovery]
@@ -952,6 +952,9 @@ func (e *nativeExecution) NativeChange() *runner.NativeChange {
 		return nil
 	}
 	change := *e.change
+	if change.NoChange != nil {
+		change.Checklist = e.frozenChecklist.Load()
+	}
 	return &change
 }
 

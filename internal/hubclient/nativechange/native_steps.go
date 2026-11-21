@@ -260,7 +260,7 @@ func (e *nativeExecution) FreezeExecutionChecklist(ctx context.Context, list tra
 		return errors.New("Hub checklist differs from the frozen execution criteria")
 	}
 	if err == nil {
-		e.checklistFrozen.Store(true)
+		e.frozenChecklist.Store(&recorded)
 	}
 	return e.executionError(ctx, err)
 }
