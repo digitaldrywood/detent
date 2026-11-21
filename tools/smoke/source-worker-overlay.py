@@ -19,6 +19,20 @@ def overlay(relative, edits):
     replacements[str(original)] = str(target)
 
 
+overlay("internal/hubclient/api/client.go", [
+    ('\n\t"net/url"\n', '\n\t"net/url"\n\t"os"\n'),
+    ('\tresponse, err := httpClient.Do(request)',
+     '''	if mutation, ok := input.(runnersession.Mutation); ok && method == http.MethodPost && strings.HasSuffix(requestPath, "/runner-sessions") {
+		fmt.Fprintf(os.Stderr, "SMOKE_SESSION_POST %s %d\\n", mutation.LeaseID, mutation.FencingToken)
+	}
+	response, err := httpClient.Do(request)'''),
+    ('\tif result, ok := output.(*responseWithHeaders); ok {',
+     '''	if receipt, ok := input.(tracker.NativePhaseReceipt); ok && method == http.MethodPost && strings.HasSuffix(requestPath, "/phases") {
+		fmt.Fprintf(os.Stderr, "SMOKE_PHASE_ACK %s %s %s\\n", receipt.AttemptID, receipt.Phase, time.Now().UTC().Format(time.RFC3339Nano))
+	}
+	if result, ok := output.(*responseWithHeaders); ok {'''),
+])
+
 overlay("internal/cli/update_runtime.go", [
     ('if !detentupdate.IsDevelopmentVersion(version) {\n\t\tservice, ok',
      '''if sourceRoot := os.Getenv("DETENT_LOCAL_SOURCE_WORKERS"); sourceRoot != "" && detentupdate.IsDevelopmentVersion(version) {

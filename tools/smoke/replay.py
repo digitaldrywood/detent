@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 import stack
 from evidence import compare
 from fault import Fault
+from metrics import collect as collect_metrics
 
 FIXTURE = Path(os.environ["DETENT_SMOKE_FIXTURE"])
 REPO = "digitaldrywood/detent-canary-todo"
@@ -455,12 +456,23 @@ def stop_on_signal(number, frame):
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, stop_on_signal)
+    status = 0
+    errors = (KeyError, IndexError, OSError, ValueError, stack.Failure, subprocess.SubprocessError)
     try:
         profile, path = sys.argv[1:]
         execute(profile, Path(path))
-        print("PASS local smoke", flush=True)
-    except (KeyError, IndexError, OSError, ValueError, stack.Failure, subprocess.SubprocessError) as error:
+    except errors as error:
         print(f"FAIL {error}", flush=True)
-        sys.exit(1)
+        status = 1
     finally:
-        stack.down()
+        try:
+            if (stack.STATE / "hub.json").is_file() and (stack.PGDATA / "postmaster.pid").is_file():
+                stack.write(stack.ROOT / "metrics.json", collect_metrics(stack))
+        except errors as error:
+            print(f"FAIL collect smoke metrics: {error}", flush=True)
+            status = 1
+        finally:
+            stack.down()
+    if status == 0:
+        print("PASS local smoke", flush=True)
+    sys.exit(status)

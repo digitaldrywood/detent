@@ -1,5 +1,6 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from contextlib import contextmanager, suppress
 import fcntl
 import json
@@ -174,6 +175,7 @@ def execute(row, paths, config):
     index, profile, name, case = row
     root = paths["root"] / f"r{index:02}"
     root.mkdir(mode=0o700)
+    started_at = datetime.now(timezone.utc).isoformat()
     started = time.monotonic()
     output = root / "run.log"
     status = 1
@@ -197,7 +199,12 @@ def execute(row, paths, config):
     if status:
         failure = next((line[5:] for line in output.read_text().splitlines() if line.startswith("FAIL ")), None)
         difference = failure or difference or f"replay exited {status}"
-    return (name, profile, "FAIL" if status else "PASS", f"{time.monotonic() - started:.1f}", difference, str(root))
+    result = (name, profile, "FAIL" if status else "PASS", f"{time.monotonic() - started:.1f}", difference, str(root))
+    pending = root / "row.json.pending"
+    pending.write_text(json.dumps({"row": result, "started_at": started_at,
+                                   "ended_at": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n")
+    pending.replace(root / "row.json")
+    return result
 
 
 def table(results):
