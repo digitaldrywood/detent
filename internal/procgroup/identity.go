@@ -123,6 +123,14 @@ type launchRollbackError struct {
 func (e launchRollbackError) Error() string   { return errors.Join(e.launch, e.cleanup).Error() }
 func (e launchRollbackError) Unwrap() []error { return []error{e.launch, e.cleanup} }
 
+func StartRollbackCleanup(err error) error {
+	var rollback launchRollbackError
+	if errors.As(err, &rollback) {
+		return rollback.cleanup
+	}
+	return nil
+}
+
 type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error)
 
 func WithCommandOwner(ctx context.Context, owner CommandOwner, prepareLocalInspection func(*exec.Cmd) bool) context.Context {

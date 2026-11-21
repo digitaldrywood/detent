@@ -446,6 +446,93 @@ func TestSSHCallbackDoesNotPublishRemotePID(t *testing.T) {
 	if _, ok := any(SSHSessionStore{}).(sessionWorkerProcessReaper); ok {
 		t.Fatal("remote store exposes the local process registry")
 	}
+
+	t.Run("combined process lifecycle", func(t *testing.T) {
+		sessions := &fakeSessionStore{sessionID: 77}
+		r := &Runner{store: sessions}
+		remote, local, other := r.SSHRunCallbacks(RunRequest{}), r.LocalRunCallbacks(RunRequest{}), r.LocalRunCallbacks(RunRequest{})
+		call := func(callbacks *SSHCallbacks, method string, values ...any) error {
+			t.Helper()
+			args := make([]json.RawMessage, len(values))
+			for i, value := range values {
+				raw, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				args[i] = raw
+			}
+			_, err := callbacks.Handle(t.Context(), method, args)
+			return err
+		}
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := store.SessionStart{Worker: &store.WorkerProcessRegistration{
+			WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 12345},
+			CleanupRoot:           root, CleanupPath: filepath.Join(root, "scratch"),
+		}}
+		finish := store.SessionFinish{Reap: &store.WorkerProcessReap{Outcome: "already_exited"}}
+		for _, test := range []struct {
+			name      string
+			callbacks *SSHCallbacks
+			method    string
+			values    []any
+		}{
+			{"remote generic registration", remote, "store.StartSession", []any{start}},
+			{"remote generic reap", remote, "store.FinishSession", []any{int64(77), finish}},
+			{"local generic registration", local, "store.StartSession", []any{start}},
+			{"local generic reap", local, "store.FinishSession", []any{int64(77), finish}},
+			{"remote local registration", remote, "local.start", []any{start}},
+			{"remote local reap", remote, "local.finish", []any{int64(77), finish}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				if err := call(test.callbacks, test.method, test.values...); err == nil {
+					t.Errorf("accepted process payload via %s", test.method)
+				}
+			})
+		}
+		escaped := start
+		worker := *start.Worker
+		worker.CleanupPath = filepath.Join(t.TempDir(), "scratch")
+		escaped.Worker = &worker
+		if err := call(local, "local.start", escaped); err == nil || sessions.startCalls != 0 || sessions.finishCalls != 0 {
+			t.Fatalf("rejected payload reached session store: starts=%d finishes=%d cleanup error=%v", sessions.startCalls, sessions.finishCalls, err)
+		}
+
+		a, b := net.Pipe()
+		controller := NewSSHPeer(t.Context(), a, a, local.Handle)
+		client := NewSSHPeer(t.Context(), b, b, nil)
+		t.Cleanup(func() {
+			a.Close()
+			b.Close()
+			<-controller.Context().Done()
+			<-client.Context().Done()
+		})
+		workerStore := LocalSessionStore{SSHSessionStore{Peer: client}}
+		id, err := workerStore.StartSession(t.Context(), start)
+		if err != nil || id != 77 || sessions.startCalls != 1 || sessions.started.Worker == nil || sessions.started.Worker.CleanupRoot != root {
+			t.Fatalf("local registration failed: id=%d calls=%d error=%v", id, sessions.startCalls, err)
+		}
+		if err := call(other, "local.finish", id, finish); err == nil {
+			t.Fatal("another local channel reaped the session")
+		}
+		if err := workerStore.FinishSession(t.Context(), id, finish); err != nil || sessions.finishCalls != 1 || sessions.finished.Reap == nil {
+			t.Fatalf("local reap failed: calls=%d error=%v", sessions.finishCalls, err)
+		}
+		if err := call(local, "local.finish", id, finish); err == nil {
+			t.Fatal("closed local session retained process ownership")
+		}
+
+		sessions.sessionID, sessions.startErr = 78, context.DeadlineExceeded
+		recovered, err := workerStore.StartSession(t.Context(), start)
+		if recovered != 78 || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("local launch did not receive the recovered ID and failure: id=%d error=%v", recovered, err)
+		}
+		if err := workerStore.FinishSession(t.Context(), recovered, finish); err != nil || sessions.finishCalls != 2 {
+			t.Fatalf("recovering channel could not reap its refused worker: calls=%d error=%v", sessions.finishCalls, err)
+		}
+	})
 }
 
 func TestSSHDisconnectKeepsLatestSessionObservation(t *testing.T) {

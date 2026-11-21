@@ -24,11 +24,12 @@ type workerRegistrationStore interface {
 }
 
 type hostValidationProcess struct {
-	store     workerRegistrationStore
-	sessionID int64
-	start     store.SessionStart
-	root      string
-	scratch   string
+	store         workerRegistrationStore
+	sessionID     int64
+	start         store.SessionStart
+	root          string
+	scratch       string
+	launchRefused bool
 }
 
 func (r *Runner) withValidationProcessOwner(ctx context.Context, issue connector.Issue, attemptID int64) context.Context {
@@ -70,6 +71,7 @@ func (p *hostValidationProcess) Started(ctx context.Context, identity procgroup.
 		CleanupRoot:           p.root, CleanupPath: p.scratch,
 	}
 	p.sessionID, err = p.store.StartSession(ctx, p.start)
+	p.launchRefused = err != nil
 	if err == nil && p.sessionID <= 0 {
 		return ErrExecutionAuthorityUnavailable
 	}
@@ -88,7 +90,7 @@ func (p *hostValidationProcess) Finished(ctx context.Context, result gate.Comman
 		finish.Reap = &store.WorkerProcessReap{
 			ReapedAt: now, Outcome: string(procgroup.TerminationOutcomeAlreadyExited), Reason: store.WorkerProcessRoleHostValidation,
 		}
-		if result.ExitCode == 0 {
+		if !p.launchRefused && result.ExitCode == 0 {
 			finish.FinalState = FinalStateCompleted
 		}
 	}
@@ -133,6 +135,7 @@ func (p AgentProcessRequest) OwnProviderLaunch(ctx context.Context) (context.Con
 		root = filepath.Dir(p.TempDir)
 	}
 	var session workspace.ValidationProcess
+	var startErr error
 	launchCtx := procgroup.WithStartAcknowledgement(ctx, func(identity procgroup.Identity) error {
 		if owner == nil || session != nil {
 			return ErrExecutionAuthorityUnavailable
@@ -145,7 +148,8 @@ func (p AgentProcessRequest) OwnProviderLaunch(ctx context.Context) (context.Con
 		if session == nil {
 			return ErrExecutionAuthorityUnavailable
 		}
-		return session.Started(ctx, identity)
+		startErr = session.Started(ctx, identity)
+		return startErr
 	})
 	return launchCtx, func(err error) error {
 		if session == nil {
@@ -153,7 +157,11 @@ func (p AgentProcessRequest) OwnProviderLaunch(ctx context.Context) (context.Con
 		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		return errors.Join(err, session.Finished(cleanup, gate.CommandResult{ExitCode: 0}, err))
+		cleanupErr := err
+		if startErr != nil {
+			cleanupErr = procgroup.StartRollbackCleanup(err)
+		}
+		return errors.Join(err, session.Finished(cleanup, gate.CommandResult{ExitCode: 0}, cleanupErr))
 	}
 }
 

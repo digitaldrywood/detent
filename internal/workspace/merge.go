@@ -445,6 +445,9 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		if owner := issue.hookOwner; owner != nil {
 			status := gate.CommandResult{ExitCode: result.ExitCode, StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, DurationNS: result.DurationNS}
 			owner.OnExit(func(cleanup context.Context) error {
+				if groupCleanupErr != nil {
+					return groupCleanupErr
+				}
 				if err := CleanupWorkerScratch(info.Path, scratch); err != nil {
 					return err
 				}
@@ -533,6 +536,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		})
 	}
 	if err := procgroup.StartAuthorized(launchCtx, cmd); err != nil {
+		groupCleanupErr = procgroup.StartRollbackCleanup(err)
 		return result, fmt.Errorf("start validation command: %w", err)
 	}
 	startedCommand = true

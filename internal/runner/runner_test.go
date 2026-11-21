@@ -8351,6 +8351,7 @@ func (c *cancelingCodexClient) RunTurn(context.Context, AgentTurnRequest, AgentU
 }
 
 type fakeSessionStore struct {
+	startErr        error
 	sessionID       int64
 	started         store.SessionStart
 	finished        store.SessionFinish
@@ -8373,7 +8374,7 @@ type fakeSessionStore struct {
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
 	s.startCalls++
 	s.started = attrs
-	return s.sessionID, nil
+	return s.sessionID, s.startErr
 }
 
 func (s *fakeSessionStore) ReconcileSessionFinalization(ctx context.Context, id int64, value *sessionmodel.Finalization) error {

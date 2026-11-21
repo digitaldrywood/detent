@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -212,21 +215,44 @@ func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
 				defer cancel(nil)
 				var requests [][]byte
 				var accepted []tracker.NativeRunEvent
+				allowObservations := make(chan struct{})
+				releaseObservations := sync.OnceFunc(func() { close(allowObservations) })
+				defer releaseObservations()
+				verdicts := 0
 				client, err := newTestClient(t, Config{URL: "http://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					body, err := io.ReadAll(request.Body)
 					if err != nil {
 						return nil, err
 					}
+					jsonResponse := func(raw []byte) (*http.Response, error) {
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(raw)), Request: request}, nil
+					}
+					switch {
+					case strings.HasSuffix(request.URL.Path, "/validate"):
+						return jsonResponse([]byte("{}"))
+					case strings.HasSuffix(request.URL.Path, "/progress"):
+						var publication progresscheck.Publication
+						if err := json.Unmarshal(body, &publication); err != nil {
+							return nil, err
+						}
+						verdicts++
+						raw, err := json.Marshal(progresscheck.RoundVerdict{RoundInput: publication.RoundInput, AttemptID: publication.AttemptID, PolicyID: publication.PolicyID})
+						if err != nil {
+							return nil, err
+						}
+						return jsonResponse(raw)
+					}
 					requests = append(requests, body)
+					<-allowObservations
 					var event tracker.NativeRunEvent
 					if err := json.Unmarshal(body, &event); err != nil {
 						return nil, err
 					}
 					if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/events") || len(event.Data.Usage) != 1 {
-						t.Fatal("usage did not reach the event publication boundary")
+						return nil, errors.New("usage did not reach the event publication boundary")
 					}
 					if ctx.Err() != nil {
-						t.Fatal("turn was cancelled during usage publication")
+						return nil, context.Cause(ctx)
 					}
 					if len(requests) == 1 {
 						return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget"}`)), Request: request}, nil
@@ -241,13 +267,14 @@ func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				lease := tracker.NativeLease{RunDetailBatching: batched, WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 1}
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{RunDetailBatching: batched, WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}
 				claim := nativeClaim{source: fixtureConnector(native), lease: lease, deadline: now.Add(time.Hour)}
 				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: time.Second, LeaseTTL: time.Hour, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				fixtureInstallClaim(t, scheduler, claim, policy.Descriptor{}, "project")
+				fixtureInstallClaim(t, scheduler, claim, descriptor, "project")
 				execution := &nativeExecution{scheduler: authority(scheduler), claim: claim, runtimePublishedAt: now, cancel: cancel, data: tracker.NativeRunData{AttemptID: "attempt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", RunID: "run_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LeaseID: lease.ID, FencingToken: lease.FencingToken, Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "example", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: now}}}
 				update := func(revision int64) {
 					err := execution.RecordUsage(ctx, tracker.NativeUsage{Provider: "example", Model: "example-model", SourceID: "session_1", Revision: revision, Input: revision * 10, Output: revision})
@@ -263,6 +290,23 @@ func TestNativeUsageBudgetRefusalKeepsTurnLive(t *testing.T) {
 				if len(requests) != 0 {
 					t.Fatalf("%d usage updates made %d writes before an authoritative event", count, len(requests))
 				}
+				verdict := make(chan error, 1)
+				go func() {
+					verdict <- execution.publishRoundVerdict(ctx, progresscheck.RoundInput{RoundID: "round_1", Action: progresscheck.RoundDone})
+				}()
+				synctest.Wait()
+				select {
+				case err := <-verdict:
+					releaseObservations()
+					if err != nil || verdicts != 1 || len(requests) != 0 {
+						t.Fatalf("usage-only verdict made %d observations and %d verdicts: %v", len(requests), verdicts, err)
+					}
+				default:
+					t.Fatal("round verdict waited for a usage-only observation")
+				}
+				execution.RecordPipelineTiming(gate.PipelineTiming{
+					ReceiptID: "timing_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Stage: "finalization", StartedAt: now, FinishedAt: now,
+				})
 				if err := execution.FlushRuntime(ctx); err != nil {
 					t.Fatal(err)
 				}
