@@ -23,6 +23,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 	for _, test := range []struct {
 		name, steerResult, terminalStatus           string
 		toolType, pollResult, command, outcomes     string
+		legacyError, wantCode                       string
 		parallel, wrongScope, changedOutput         bool
 		serializedSiblings, operator, freshEvidence bool
 		methods                                     []string
@@ -49,6 +50,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 		{name: "reasoning markers without closed raw responses", missingResponse: true, terminalStatus: "completed"},
 		{name: "source probe expires after acknowledged steer", unavailableSourceProbe: true, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
 		{name: "legacy interruption confirms stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", legacyTerminal: true, methods: []string{"turn/steer", "turn/interrupt"}, stop: true},
+		{name: "legacy typed failure overrides pending stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", legacyTerminal: true, methods: []string{"turn/steer", "turn/interrupt"}, legacyError: `{"codexErrorInfo":"unauthorized"}`, wantCode: "unauthorized"},
 		{name: "late acknowledgement delays stop", steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/interrupt"}, stop: true, lateAck: true},
 		{name: "rejected steer retries after the decision window", rejectFirstSteer: true, ackAfter: []int{3 + progresscheck.ToolLoopWindow}, sequences: []uint64{67, 70}, steerResult: `{"turnId":"turn"}`, terminalStatus: "interrupted", methods: []string{"turn/steer", "turn/steer", "turn/interrupt"}, stop: true},
 		{name: "unacknowledged steer", steerResult: `{"turnId":"other"}`, terminalStatus: "completed", methods: []string{"turn/steer"}},
@@ -203,7 +205,7 @@ func TestStreamToolLoopControl(t *testing.T) {
 			messages = append(messages, notificationMessage(t, "item/started", marker))
 			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread","turn":{"id":"other","status":"interrupted"}}`))
 			if test.legacyTerminal {
-				messages = append(messages, notificationMessage(t, "codex/event/task_complete", fmt.Sprintf(`{"id":"turn","conversationId":"thread","msg":{"type":"task_complete","status":%q,"error":null}}`, test.terminalStatus)))
+				messages = append(messages, notificationMessage(t, "codex/event/task_complete", fmt.Sprintf(`{"id":"turn","conversationId":"thread","msg":{"type":"task_complete","status":%q,"error":%s}}`, test.terminalStatus, firstNonBlank(test.legacyError, "null"))))
 			} else {
 				messages = append(messages, notificationMessage(t, "turn/completed", fmt.Sprintf(`{"threadId":"thread","turn":{"id":"turn","status":%q}}`, test.terminalStatus)))
 			}
@@ -233,7 +235,12 @@ func TestStreamToolLoopControl(t *testing.T) {
 				return nil
 			}, loop)
 			var stopped *progresscheck.NoProgressError
-			if test.stop {
+			if test.wantCode != "" {
+				var failure *TurnFailedError
+				if !errors.As(err, &failure) || failure.ProviderCode != test.wantCode || len(recorded) != 1 || recorded[0].Action != "steer" {
+					t.Fatalf("error=%v interventions=%v, want provider code %s and only the steer confirmed", err, recorded, test.wantCode)
+				}
+			} else if test.stop {
 				if !errors.As(err, &stopped) || stopped.Evidence.Repeats != stopRepeats || stopped.Evidence.Period != 1 {
 					t.Fatalf("stop = %v, evidence %+v", err, stopped)
 				}

@@ -831,6 +831,7 @@ func TestAgentBackendCompletesOnTaskComplete(t *testing.T) {
 		{name: "retrying envelope snake case", method: "turn/completed", params: `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`,
 			retryFrame: `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","will_retry":true,"error":{"codexErrorInfo":"usageLimitExceeded"}}}`},
 		{name: "typed failure", method: "codex/event/task_complete", params: `{"id":"turn-1","msg":{"type":"task_complete","error":{"codexErrorInfo":"usageLimitExceeded"}}}`, wantCode: "usage_limit_exceeded"},
+		{name: "interrupted with typed failure", method: "task_complete", params: `{"turnId":"turn-1","status":"interrupted","error":{"codexErrorInfo":"unauthorized"}}`, wantCode: "unauthorized"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
