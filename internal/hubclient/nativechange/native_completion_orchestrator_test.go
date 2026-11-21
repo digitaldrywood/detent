@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -169,7 +170,7 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 		disappeared bool
 		cancelled   bool
 	}{
-		{name: "unresolved conflict enters bounded correction then Rework"},
+		{name: "unresolved conflict records one typed human question"},
 		{name: "disappeared conflict lands without a provider turn", disappeared: true},
 		{name: "cancelled Rework publishes verified empty source for review", cancelled: true},
 	} {
@@ -177,8 +178,9 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
-				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging", "Done"}},
-				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging", "Blocked", "Done"}},
+				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Blocked", "Done"}},
+				{Name: "Blocked", Transitions: []string{"Rework"}},
 				{Name: "Done", Terminal: true},
 			}, true)
 			if test.cancelled {
@@ -359,6 +361,23 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 			}
 			if err != nil || provider.calls != 1 || result.NativeLanding == nil || result.NativeLanding.Path != "merge_resolution_failed" || !result.NativeLanding.RequiresRework() || result.NativeLanding.VersionID != version.ID || result.NativeLanding.HeadSHA != head {
 				t.Fatalf("unresolved published source did not reach a typed human wait: result=%+v calls=%d error=%v", result, provider.calls, err)
+			}
+			history, err := h.admin.History(t.Context(), item, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			questions := 0
+			for _, event := range history.Items {
+				if event.Type == "workflow.transitioned" && event.Data.ToState == "Blocked" {
+					signal, ok := workpad.SignalFromComment(event.Data.ReasonDetail, "", "")
+					if !ok || signal.Invalid != nil || signal.Status != workpad.StatusBlocked || !strings.Contains(signal.HumanAction, "README.md") {
+						t.Fatalf("blocked transition lost the conflict question: %+v", event.Data)
+					}
+					questions++
+				}
+			}
+			if questions != 1 {
+				t.Fatalf("blocked transitions carrying a conflict question = %d, want one", questions)
 			}
 		})
 	}
