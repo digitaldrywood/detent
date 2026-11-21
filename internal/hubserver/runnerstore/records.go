@@ -373,6 +373,7 @@ type Reader interface {
 	RunnerHostMetrics(context.Context, string, time.Time, time.Time) ([]hostmetrics.Summary, error)
 	RunnerAdmissionObservation(context.Context, string, tracker.ProjectID) (tracker.NativeAdmissionObservation, error)
 	RunnerProviderReports(context.Context, string) ([]providercapacity.Report, error)
+	RunnerProviderAccount(context.Context, ProviderAccountKey, time.Time) (ProviderAccountCapacity, error)
 	RunnerProblems(context.Context, string) ([]runnerauth.Problem, error)
 	RunnerLocalChecks(context.Context, string, tracker.ProjectID) (runnerauth.LocalChecks, error)
 	RunnerWorkspaceReport(context.Context, string) (workspacesession.Capabilities, string, error)

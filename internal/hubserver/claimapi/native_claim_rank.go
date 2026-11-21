@@ -236,8 +236,9 @@ func (d Deps) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeSco
 		return false, err
 	}
 	var pending []claimstore.SelectionCursor
+	providerAvailable := make(map[string]bool)
 	for _, competitor := range competitors {
-		claimable, excluded, err := d.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, machine, reports, now)
+		claimable, excluded, err := d.nativeClaimRankCompetitorClaimable(ctx, competitor, request, identity, machine, reports, providerAvailable, now)
 		if err != nil || claimable {
 			return claimable, err
 		}
@@ -258,7 +259,7 @@ func (d Deps) nativeClaimOutranked(ctx context.Context, scope hubscope.NativeSco
 	})
 }
 
-func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, machine leasestore.Machine, reports []providercapacity.Report, now time.Time) (bool, bool, error) {
+func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor nativeClaimRankCompetitor, request tracker.NativeClaim, identity runnerstore.Identity, machine leasestore.Machine, reports []providercapacity.Report, providerAvailable map[string]bool, now time.Time) (bool, bool, error) {
 	plans := competitor.plans
 	if err := d.PrepareNativeClaimLegacyAuditFacts(ctx, competitor.scope, plans); err != nil {
 		return false, false, err
@@ -320,8 +321,23 @@ func (d Deps) nativeClaimRankCompetitorClaimable(ctx context.Context, competitor
 					return false, false, err
 				}
 			}
-			if !nativeClaimRankProviderSupported(resolver, plan, request, reports, landing) {
+			index := nativeClaimRankProviderIndex(resolver, plan, request, reports, landing)
+			if index < 0 {
 				continue
+			}
+			if landing {
+				report := reports[index]
+				available, known := providerAvailable[report.Backend]
+				if !known {
+					available, err = d.nativeClaimRankProviderAvailable(ctx, competitor.scope.Organization, identity.RunnerID, report, now)
+					if err != nil {
+						return false, false, err
+					}
+					providerAvailable[report.Backend] = available
+				}
+				if !available {
+					continue
+				}
 			}
 		}
 		allowed, err := d.nativeClaimRankBudgetAllowed(ctx, competitor.scope, plan, machine, now)
@@ -377,7 +393,7 @@ func (d Deps) nativeClaimRankResolver(ctx context.Context, scope hubscope.Native
 	return runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
 }
 
-func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, plan hubrecords.NativeClaimPlan, request tracker.NativeClaim, reports []providercapacity.Report, landing bool) bool {
+func nativeClaimRankProviderIndex(resolver *runner.BoardIdentityResolver, plan hubrecords.NativeClaimPlan, request tracker.NativeClaim, reports []providercapacity.Report, landing bool) int {
 	var requirement providercapacity.Requirement
 	if candidate := nativeClaimProviderCandidate(request, plan.Item.NativeID); candidate != nil && int64(candidate.Revision) == plan.Item.Revision {
 		requirement = candidate.Requirement
@@ -392,14 +408,33 @@ func nativeClaimRankProviderSupported(resolver *runner.BoardIdentityResolver, pl
 			identity, err = resolver.Identity(candidate)
 		}
 		if err != nil {
-			return false
+			return -1
 		}
 		requirement = providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendID, Model: cmp.Or(identity.RequestedModel.Value, "provider_default")}
 	}
 	if requirement.Validate() != nil {
-		return false
+		return -1
 	}
-	return slices.ContainsFunc(reports, func(report providercapacity.Report) bool { return report.Supports(requirement) })
+	return slices.IndexFunc(reports, func(report providercapacity.Report) bool { return report.Supports(requirement) })
+}
+
+func (d Deps) nativeClaimRankProviderAvailable(ctx context.Context, org tracker.OrganizationID, runnerID string, report providercapacity.Report, now time.Time) (bool, error) {
+	key := runnerstore.ProviderAccountKey{RunnerID: runnerID, Provider: report.Provider, Backend: report.Backend, AccountAlias: report.AccountAlias, SharedAccountAlias: report.SharedAccountAlias}
+	var available bool
+	err := d.Repository.ReadTenant(ctx, org, corestore.Serving, func(r tenantstore.Reader) error {
+		capacity, err := r.RunnerProviderAccount(ctx, key, now)
+		if err != nil || !capacity.SelectedReport {
+			return err
+		}
+		if capacity.MaxConcurrent == 0 {
+			available = true
+			return nil
+		}
+		used, err := r.ProviderReservationUsage(ctx, report, runnerID, "", now)
+		available = used < capacity.MaxConcurrent
+		return err
+	})
+	return available, err
 }
 
 func (d Deps) nativeClaimForeignLandingAvailable(ctx context.Context, scope hubscope.NativeScope, request tracker.NativeClaim, now time.Time) (bool, string, error) {
