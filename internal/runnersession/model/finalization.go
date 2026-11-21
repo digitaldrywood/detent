@@ -77,8 +77,10 @@ func (f Finalization) Equal(other Finalization) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
 }
 
+const FinalizationCompleteStage = "complete"
+
 func (f Finalization) Key(stage string) (string, error) {
-	if stage != "finish" && stage != "usage" && stage != "phase" {
+	if stage != "finish" && stage != "usage" && stage != "phase" && stage != FinalizationCompleteStage {
 		return "", errors.New("invalid session finalization stage")
 	}
 	raw, err := json.Marshal(f)

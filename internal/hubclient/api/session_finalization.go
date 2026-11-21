@@ -39,7 +39,7 @@ func (s *RunnerSessions) ReconcileSessionFinalization(ctx context.Context, id in
 	if value.Phase == nil {
 		return errors.New("session finalization phase is required")
 	}
-	key, err := value.Key("finish")
+	key, err := value.Key(sessionmodel.FinalizationCompleteStage)
 	if err != nil {
 		return err
 	}

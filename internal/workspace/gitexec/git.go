@@ -191,29 +191,22 @@ func localInspection(args []string) bool {
 			}
 		}
 		return true
-	case "status":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--porcelain", "--porcelain=v1", "--porcelain=v2", "-z", "--no-renames",
-				"--untracked-files=no", "--untracked-files=normal", "--untracked-files=all":
-			default:
-				return false
-			}
-		}
-		return true
 	case "diff":
+		cached := false
 		for _, arg := range args[1:] {
 			switch arg {
-			case "--cached", "--staged", "--no-ext-diff", "--no-textconv", "--name-only", "--stat", "--numstat", "--raw", "--no-renames", "-z":
+			case "--cached", "--staged":
+				cached = true
+			case "--no-ext-diff", "--no-textconv", "--name-only", "--stat", "--numstat", "--raw", "--no-renames", "-z":
 			case "--":
-				return true
+				return cached
 			default:
 				if strings.HasPrefix(arg, "-") {
 					return false
 				}
 			}
 		}
-		return true
+		return cached
 	}
 	return false
 }

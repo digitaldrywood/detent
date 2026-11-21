@@ -61,7 +61,7 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 	var result any
 	var err error
 	switch method {
-	case "local.processes", "local.register", "local.reaped":
+	case "local.start", "local.finish", "local.processes", "local.register", "local.reaped":
 		result, err = c.handleLocalProcess(ctx, method, args)
 	case "publication.authorize", "publication.effect":
 		c.publicationCallbackMu.Lock()
@@ -94,7 +94,11 @@ func (c *SSHCallbacks) Handle(ctx context.Context, method string, args []json.Ra
 		if id, ok := result.(int64); ok && id > 0 {
 			c.active[id] = UsageUpdate{DetentSessionID: id}
 		}
-	case "store.FinishSession", "store.ReconcileSessionFinalization":
+	case "local.start":
+		if start, ok := result.(localSessionStartResult); ok && start.ID > 0 {
+			c.active[start.ID] = UsageUpdate{DetentSessionID: start.ID}
+		}
+	case "store.FinishSession", "store.ReconcileSessionFinalization", "local.finish":
 		if len(args) > 0 {
 			var id int64
 			if json.Unmarshal(args[0], &id) == nil {
@@ -151,19 +155,23 @@ func (c *SSHCallbacks) RegisterOverlappingWorker(ctx context.Context, request Ru
 		IssueURL: request.Issue.URL, WorkAttemptID: request.WorkAttemptID, StartedAt: worker.StartedAt,
 		AgentBackendKind: "host", AgentRole: "execution_worker", Worker: &worker,
 	})
+	if id <= 0 {
+		return nil, errors.Join(err, ErrExecutionAuthorityUnavailable)
+	}
+	state := FinalStateCompleted
 	if err != nil {
-		return nil, err
+		state = FinalStateFailed
 	}
 	return func(ctx context.Context) error {
 		ctx = bindSessionExecution(ctx, c.store, c.execution)
 		now := time.Now().UTC()
 		err := owner.FinishSession(ctx, id, store.SessionFinish{
-			CompletedAt: now, FinalState: FinalStateCompleted,
+			CompletedAt: now, FinalState: state,
 			Reap: &store.WorkerProcessReap{ReapedAt: now, Outcome: "already_exited", Reason: "execution worker exited"},
 		})
 		if errors.Is(err, ErrExecutionAuthorityUnavailable) {
 			return nil
 		}
 		return err
-	}, nil
+	}, err
 }

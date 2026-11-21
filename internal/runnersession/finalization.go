@@ -3,6 +3,8 @@ package runnersession
 import (
 	"errors"
 	"reflect"
+
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 )
 
 var ErrFinalizationIncomplete = errors.New("session finalization is incomplete")
@@ -23,13 +25,13 @@ func ApplyFinalization(snapshot *Snapshot, request Mutation) (bool, error) {
 	}
 	complete := request.Finish != nil && request.Usage != nil && request.Phase != nil
 	stage := "finish"
-	if !complete {
-		if request.Usage != nil {
-			stage = "usage"
-		}
-		if request.Phase != nil {
-			stage = "phase"
-		}
+	switch {
+	case complete:
+		stage = sessionmodel.FinalizationCompleteStage
+	case request.Phase != nil:
+		stage = "phase"
+	case request.Usage != nil:
+		stage = "usage"
 	}
 	key, err := value.Key(stage)
 	if err != nil || request.Key != key {
