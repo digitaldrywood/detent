@@ -193,7 +193,7 @@ type Reader interface {
 	ProviderReservationUsage(context.Context, providercapacity.Report, string, string, time.Time) (int, error)
 	LandingCapacityUsage(context.Context, tracker.ProjectID, time.Time) (LandingCapacityUsage, error)
 	LandingCapacityUsageExcludingLease(context.Context, tracker.ProjectID, time.Time, string) (LandingCapacityUsage, error)
-	ClaimCapacityUsage(context.Context, string, string, tracker.ProjectID, string, time.Time) (CapacityUsage, error)
+	ClaimCapacityUsage(context.Context, string, string, tracker.ProjectID, time.Time) (CapacityUsage, error)
 }
 
 type Writer interface {

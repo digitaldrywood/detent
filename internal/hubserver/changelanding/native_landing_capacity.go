@@ -153,7 +153,7 @@ func (s *Capacity) ReserveRenewal(ctx context.Context, w tenantstore.Writer, sco
 		if err != nil {
 			return 0, err
 		}
-		usage, err := w.ClaimCapacityUsage(ctx, lease.MachineID, identity.RunnerID, scope.Project, "", now)
+		usage, err := w.ClaimCapacityUsage(ctx, lease.MachineID, identity.RunnerID, scope.Project, now)
 		if err != nil {
 			return 0, err
 		}

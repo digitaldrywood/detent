@@ -2053,8 +2053,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if heldErr, held := workspaceBranchHeldError(err, req.Issue); held {
 			return RunResult{}, heldErr
 		}
-		if retainedLanding {
-			err = errors.Join(errRetainedLandingSetup, err)
+		if nativeLanding {
+			err = errors.Join(errNativeLandingSetup, err)
 		}
 		return RunResult{}, fmt.Errorf("%w: create workspace: %w", ErrWorkspacePreparation, err)
 	}

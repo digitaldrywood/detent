@@ -687,7 +687,6 @@ func runNativeDependencyTransfer(t *testing.T, factories Constructors, transfer 
 		t.Fatal(err)
 	}
 	request.LandingCapacity = 1
-	request.NativeLandingBatch = transfer == "merge"
 	candidates, err := h.scheduler.FetchCandidateIssues(ctx, request)
 	if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
 		t.Fatalf("initial candidates=%+v error=%v", candidates, err)

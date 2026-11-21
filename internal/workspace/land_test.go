@@ -1033,125 +1033,112 @@ func verifyPinnedItemPhase(t *testing.T) {
 func TestLocalGitNativeLanding(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name                    string
-		count                   int
-		conflict, invalid, skip int
-		moved                   bool
-		rolling                 bool
-		receiptMismatch         string
-		audit                   string
-		advanced                bool
-		patchBytes              int
-		alreadyContains         string
+		name            string
+		invalid         int
+		moved           bool
+		rolling         bool
+		receiptMismatch string
+		audit           string
+		advanced        bool
+		patchBytes      int
+		alreadyContains string
 	}{
-		{name: "AlreadyContains ancestor does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "ancestor"},
-		{name: "AlreadyContains squash trailer does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "squash"},
-		{name: "audited ancestor does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "ancestor", audit: "pass"},
-		{name: "audited squash trailer does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "squash", audit: "pass"},
-		{name: "audited incorporated delta does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "pass"},
-		{name: "blocking incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "rework"},
-		{name: "stale incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "stale"},
-		{name: "failed incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "failure"},
-		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
-		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
-		{name: "clean validated head skips gate", count: 1, conflict: -1, invalid: -1, skip: -1},
-		{name: "ten heads share one push", count: 10, conflict: -1, invalid: -1, skip: -1},
-		{name: "conflict does not hold later members", count: 4, conflict: 1, invalid: -1, skip: -1},
-		{name: "preparation failure releases batch", count: 4, conflict: -1, invalid: -1, skip: 1},
-		{name: "missing validation refuses", count: 1, conflict: -1, invalid: 0, skip: -1},
-		{name: "wrong head receipt refuses", count: 1, conflict: -1, invalid: 0, skip: -1, receiptMismatch: "head"},
-		{name: "wrong tree receipt refuses", count: 1, conflict: -1, invalid: 0, skip: -1, receiptMismatch: "tree"},
-		{name: "moved base resquashes without a gate", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true},
-		{name: "audit refreshed after approval base advances", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", advanced: true},
-		{name: "audit each batch member exact base and landed head", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass"},
-		{name: "audit refreshed after rejected push", count: 2, conflict: -1, invalid: -1, skip: -1, audit: "pass", moved: true},
-		{name: "audit captures above prompt limit", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", patchBytes: 300 << 10},
-		{name: "audit captures above tracker limit", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "pass", patchBytes: 21 << 20},
-		{name: "stale audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "stale"},
-		{name: "blocking audit refuses push", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "rework"},
-		{name: "backend failure refuses push without finding", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "failure"},
+		{name: "AlreadyContains ancestor returns the existing landing", invalid: -1, alreadyContains: "ancestor"},
+		{name: "AlreadyContains squash trailer returns the existing landing", invalid: -1, alreadyContains: "squash"},
+		{name: "audited ancestor returns the existing landing", invalid: -1, alreadyContains: "ancestor", audit: "pass"},
+		{name: "audited squash trailer returns the existing landing", invalid: -1, alreadyContains: "squash", audit: "pass"},
+		{name: "audited incorporated delta returns the existing landing", invalid: -1, alreadyContains: "content", audit: "pass"},
+		{name: "blocking incorporated audit refuses receipt", invalid: -1, alreadyContains: "content", audit: "rework"},
+		{name: "stale incorporated audit refuses receipt", invalid: -1, alreadyContains: "content", audit: "stale"},
+		{name: "failed incorporated audit refuses receipt", invalid: -1, alreadyContains: "content", audit: "failure"},
+		{name: "legacy rolling preserves the validated head", invalid: -1, rolling: true},
+		{name: "legacy rolling moved base resquashes", invalid: -1, moved: true, rolling: true},
+		{name: "clean validated head skips gate", invalid: -1},
+		{name: "missing validation refuses", invalid: 0},
+		{name: "wrong head receipt refuses", invalid: 0, receiptMismatch: "head"},
+		{name: "wrong tree receipt refuses", invalid: 0, receiptMismatch: "tree"},
+		{name: "moved base resquashes without a gate", invalid: -1, moved: true},
+		{name: "audit refreshed after approval base advances", invalid: -1, audit: "pass", advanced: true},
+		{name: "audit refreshed after rejected push", invalid: -1, audit: "pass", moved: true},
+		{name: "audit captures above prompt limit", invalid: -1, audit: "pass", patchBytes: 300 << 10},
+		{name: "audit captures above tracker limit", invalid: -1, audit: "pass", patchBytes: 21 << 20},
+		{name: "stale audit refuses push", invalid: -1, audit: "stale"},
+		{name: "blocking audit refuses push", invalid: -1, audit: "rework"},
+		{name: "backend failure refuses push without finding", invalid: -1, audit: "failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newLandingFixture(t)
 			fixtureBase := f.remoteMain(t)
-			requests := make([]LandRequest, test.count)
-			audits := make([][]securityaudit.Run, test.count)
-			for i := range requests {
-				issue := Issue{Identifier: fmt.Sprintf("native-%d", i)}
-				info, err := f.backend.Create(t.Context(), issue)
-				if err != nil {
-					t.Fatal(err)
+			var audits []securityaudit.Run
+			issue := Issue{Identifier: "native"}
+			info, err := f.backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file := "change.txt"
+			if err := os.WriteFile(filepath.Join(info.Path, file), []byte("feature\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.patchBytes > 0 {
+				writeFileDiffFile(t, info.Path, file, strings.Repeat("feature line\n", test.patchBytes/13+1))
+				writeFileDiffFile(t, info.Path, "zz-late.txt", "late security change\n")
+			}
+			runGit(t, info.Path, "add", ".")
+			runGit(t, info.Path, "commit", "-m", file)
+			head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			tree := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
+			originalPatch := runGit(t, info.Path, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", fixtureBase, head, "--")
+			originalHash := sha256.Sum256([]byte(originalPatch))
+			options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
+			options.ChangeID = "change_native"
+			options.SourceBaseSHA = fixtureBase
+			if test.rolling {
+				options.LandingMode = gate.LandingRollingBarrier
+			}
+			if test.invalid == 0 {
+				switch test.receiptMismatch {
+				case "head":
+					options.Validation.HeadSHA = strings.Repeat("a", 40)
+				case "tree":
+					options.Validation.TreeSHA = strings.Repeat("a", 40)
+				default:
+					options.Validation = nil
 				}
-				file := fmt.Sprintf("change-%d.txt", i)
-				if err := os.WriteFile(filepath.Join(info.Path, file), []byte("feature\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if test.patchBytes > 0 {
-					writeFileDiffFile(t, info.Path, file, strings.Repeat("feature line\n", test.patchBytes/13+1))
-					writeFileDiffFile(t, info.Path, "zz-late.txt", "late security change\n")
-				}
-				runGit(t, info.Path, "add", ".")
-				runGit(t, info.Path, "commit", "-m", file)
-				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
-				tree := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
-				originalPatch := runGit(t, info.Path, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", fixtureBase, head, "--")
-				originalHash := sha256.Sum256([]byte(originalPatch))
-				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
-				options.ChangeID = fmt.Sprintf("change_%d", i)
-				options.SourceBaseSHA = fixtureBase
-				if test.rolling {
-					options.LandingMode = gate.LandingRollingBarrier
-				}
-				if i == test.invalid {
-					switch test.receiptMismatch {
-					case "head":
-						options.Validation.HeadSHA = strings.Repeat("a", 40)
-					case "tree":
-						options.Validation.TreeSHA = strings.Repeat("a", 40)
-					default:
-						options.Validation = nil
+			}
+			if test.audit != "" {
+				options.Repository = RepositoryURL(t.Context(), info.Path)
+				options.SecurityAuditRequired = true
+				options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
+					if test.audit == "failure" {
+						return nil, errors.New("backend unavailable")
 					}
-				}
-				if test.audit != "" {
-					options.Repository = RepositoryURL(t.Context(), info.Path)
-					options.SecurityAuditRequired = true
-					options.SecurityAudit = func(_ context.Context, diff FileDiffs) (*tracker.SecurityAuditReview, error) {
-						if test.audit == "failure" {
-							return nil, errors.New("backend unavailable")
-						}
-						var captured strings.Builder
-						for _, changed := range diff.Files {
-							captured.WriteString(changed.Patch)
-						}
-						if diff.Truncated || sha256.Sum256([]byte(captured.String())) != originalHash {
-							t.Errorf("audit captured %d of %d bytes; truncated=%v", captured.Len(), len(originalPatch), diff.Truncated)
-						}
-						if test.patchBytes > 0 && (len(originalPatch) <= test.patchBytes || !strings.Contains(captured.String(), "+late security change")) {
-							t.Error("large audit lost the late-file change")
-						}
-						now := time.Now()
-						run := securityaudit.Run{ID: 1, InvocationID: fmt.Sprintf("audit-%d-%d", i, len(audits[i])), ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}
-						audits[i] = append(audits[i], run)
-						if test.audit == "stale" {
-							run.BaseSHA = f.head
-						}
-						verdict := "pass"
-						if test.audit == "rework" {
-							run.Verdict = "fail"
-							run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Missing authorization"}}
-							verdict = "rework"
-						}
-						return &tracker.SecurityAuditReview{Landing: true, Verdict: verdict, Run: run}, nil
+					var captured strings.Builder
+					for _, changed := range diff.Files {
+						captured.WriteString(changed.Patch)
 					}
-				}
-				requests[i] = LandRequest{Info: info, Issue: issue, Options: options}
-				if i == test.conflict {
-					f.advanceMain(t, file, "base conflicts\n")
+					if diff.Truncated || sha256.Sum256([]byte(captured.String())) != originalHash {
+						t.Errorf("audit captured %d of %d bytes; truncated=%v", captured.Len(), len(originalPatch), diff.Truncated)
+					}
+					if test.patchBytes > 0 && (len(originalPatch) <= test.patchBytes || !strings.Contains(captured.String(), "+late security change")) {
+						t.Error("large audit lost the late-file change")
+					}
+					now := time.Now()
+					run := securityaudit.Run{ID: 1, InvocationID: fmt.Sprintf("audit-%d", len(audits)), ProjectID: "project", Repository: options.Repository, BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), ExitStatus: securityaudit.ExitStatusSuccess, OutputDigest: securityaudit.OutputDigest("pass"), OutputBytes: 4, Verdict: "pass", Summary: "No findings", WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now}
+					audits = append(audits, run)
+					if test.audit == "stale" {
+						run.BaseSHA = f.head
+					}
+					verdict := "pass"
+					if test.audit == "rework" {
+						run.Verdict = "fail"
+						run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Missing authorization"}}
+						verdict = "rework"
+					}
+					return &tracker.SecurityAuditReview{Landing: true, Verdict: verdict, Run: run}, nil
 				}
 			}
 			if test.alreadyContains != "" {
-				options := requests[0].Options
 				integrated := options.HeadSHA
 				if test.alreadyContains == "squash" || test.alreadyContains == "content" {
 					message := fmt.Sprintf("Prior delivery\n\nChange Request %s, round 1, head %s.", options.ChangeID, options.HeadSHA)
@@ -1187,111 +1174,58 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
-			batch := NewLandingBatch(ctx)
-			tickets := make([]*LandingBatchTicket, len(requests))
-			for i := range tickets {
-				tickets[i] = batch.Add()
-			}
-			type completion struct {
-				i       int
-				outcome LandOutcome
-			}
-			done := make(chan completion, len(requests))
-			for i := len(requests) - 1; i >= 0; i-- {
-				go func() {
-					if i == test.skip {
-						tickets[i].Finish()
-						done <- completion{i, LandOutcome{Err: context.Canceled}}
-						return
-					}
-					result, err := tickets[i].Land(f.backend, requests[i])
-					done <- completion{i, LandOutcome{Result: result, Err: err}}
-				}()
-			}
-			batch.Seal()
-			outcomes := make([]LandOutcome, len(requests))
-			for range requests {
-				select {
-				case result := <-done:
-					outcomes[result.i] = result.outcome
-				case <-ctx.Done():
-					t.Fatalf("landing batch did not finish: %v", ctx.Err())
+			result, err := f.backend.LandChange(ctx, info, issue, options)
+			if test.invalid == 0 || test.audit != "" && test.audit != "pass" {
+				if err == nil || result.MergeSHA != "" || f.remoteMain(t) != base {
+					t.Fatalf("refused work advanced the target: %+v, %v", result, err)
 				}
-			}
-			landed := 0
-			for i, outcome := range outcomes {
-				if i == test.conflict || i == test.invalid || i == test.skip || test.audit != "" && test.audit != "pass" {
-					if i == test.conflict && test.count > 1 {
-						if outcome.Result.BaseBefore != "" || outcome.Result.BaseRef != "" || outcome.Result.Method != "" || outcome.Result.Gate.Command != "" || outcome.Result.Path != "batch_member" {
-							t.Fatalf("conflict replaced untouched result fields: %+v", outcome.Result)
-						}
-						found := false
-						for _, timing := range outcome.Result.Pipeline {
-							if timing.Stage == "conflict_resolution" && timing.Outcome == "conflict" {
-								found = true
-							}
-						}
-						if !found {
-							t.Fatal("missing conflict timing")
-						}
-					}
-					if outcome.Err == nil || outcome.Result.MergeSHA != "" {
-						t.Fatalf("member %d was not refused: %#v", i, outcome)
-					}
-					continue
+				if _, err := os.Stat(pushes); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("refused work pushed: %v", err)
 				}
-				wantBase := base
-				if test.alreadyContains != "" && i == 0 && test.audit != "" {
+				return
+			}
+			wantBase, wantPath := base, "clean_push"
+			if test.alreadyContains != "" {
+				wantPath = ""
+				if result.MergeSHA != base {
+					t.Fatalf("already delivered change did not reuse the base: %+v", result)
+				}
+				if test.audit != "" {
 					wantBase = fixtureBase
 				}
-				if outcome.Err != nil || outcome.Result.Gate.Command != "" || outcome.Result.MergeSHA == "" || outcome.Result.BaseBefore != wantBase {
-					t.Fatalf("member %d = %#v, base %s", i, outcome, wantBase)
-				}
-				wantPath := "clean_push"
-				if test.count > 1 && test.alreadyContains == "" {
-					wantPath = "batch_member"
-				}
-				if test.alreadyContains != "" && i == 0 {
-					wantPath = ""
-					if outcome.Result.MergeSHA != base {
-						t.Fatalf("already delivered member did not reuse the base: %+v", outcome.Result)
-					}
-				}
-				if outcome.Result.Path != wantPath {
-					t.Fatalf("path = %q", outcome.Result.Path)
-				}
-				if test.audit == "pass" {
-					wantAudits := 1
-					if test.moved {
-						wantAudits = 2
-					}
-					wantAuditHead := outcome.Result.MergeSHA
-					if test.alreadyContains == "content" && i == 0 {
-						wantAuditHead = requests[i].Options.HeadSHA
-					}
-					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != wantBase || outcome.Result.SecurityAudit.Run.HeadSHA != wantAuditHead {
-						t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits[i], outcome.Result)
-					}
-					if test.moved && audits[i][0].BaseSHA == audits[i][1].BaseSHA {
-						t.Fatal("rejected push reused the previous audit base")
-					}
-				}
-				landed++
-				base = outcome.Result.MergeSHA
 			}
-			if f.remoteMain(t) != base {
-				t.Fatal("remote did not advance to final batch head")
+			if err != nil || result.Gate.Command != "" || result.MergeSHA == "" || result.BaseBefore != wantBase || result.Path != wantPath {
+				t.Fatalf("landing = %+v, base %s, path %s: %v", result, wantBase, wantPath, err)
+			}
+			if test.audit == "pass" {
+				wantAudits, wantAuditHead := 1, result.MergeSHA
+				if test.moved {
+					wantAudits = 2
+				}
+				if test.alreadyContains == "content" {
+					wantAuditHead = options.HeadSHA
+				}
+				if len(audits) != wantAudits || result.SecurityAudit == nil || result.SecurityAudit.Run.BaseSHA != wantBase || result.SecurityAudit.Run.HeadSHA != wantAuditHead {
+					t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits, result)
+				}
+				if test.moved && audits[0].BaseSHA == audits[1].BaseSHA {
+					t.Fatal("rejected push reused the previous audit base")
+				}
+			}
+			if f.remoteMain(t) != result.MergeSHA {
+				t.Fatal("remote did not advance to the landing head")
 			}
 			data, err := os.ReadFile(pushes)
 			wantPushes := 1
 			if test.moved {
 				wantPushes = 2
 			}
-			if landed > 0 && (err != nil || strings.Count(string(data), "push\n") != wantPushes) {
+			if test.alreadyContains != "" {
+				if !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("already delivered change pushed again: %q, %v", data, err)
+				}
+			} else if err != nil || strings.Count(string(data), "push\n") != wantPushes {
 				t.Fatalf("pushes = %q, %v", data, err)
-			}
-			if landed == 0 && !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("refused work pushed: %q, %v", data, err)
 			}
 		})
 	}

@@ -283,7 +283,11 @@ func (s *session) CandidatePage(ctx context.Context, query claimstore.CandidateQ
 		{normalizedClaimValues(query.Repositories), "f.repository"},
 	}
 	if states := normalizedClaimValues(query.States); len(states) > 0 {
-		statement += " AND (lower(trim(ws.name))=ANY(" + bind(states) + "::text[]) OR " + recovery + ")"
+		landingRecovery := "false"
+		if query.RunnerSelection && !query.WorkspaceLane {
+			landingRecovery = "(NOT ws.operator_only AND lower(trim(ws.name))='merging')"
+		}
+		statement += " AND (lower(trim(ws.name))=ANY(" + bind(states) + "::text[]) OR " + recovery + " OR " + landingRecovery + ")"
 	}
 	var filterSQL strings.Builder
 	for _, filter := range filters {

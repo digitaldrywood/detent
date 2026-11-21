@@ -169,6 +169,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			issue := completionTransitionIssue("Merging", "")
+			issue.NativeLandingHeadSHA = strings.Repeat("a", 40)
 			if test.codingLane {
 				issue.State = "In Progress"
 			}
@@ -673,62 +674,22 @@ func TestNativeLandingComment(t *testing.T) {
 	}
 }
 
-func TestNativeCandidateStatesIncludeTheLandingLane(t *testing.T) {
+func TestNativeCandidateStatesExcludeTheLandingLane(t *testing.T) {
 	t.Parallel()
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}})
 	tick := &autoPromoteTickConnector{}
-	for _, test := range []struct {
-		name      string
-		connector connector.Connector
-		want      []string
-	}{
-		{name: "native adds Merging", connector: &nativeWorkflowConnector{autoPromoteTickConnector: tick}, want: []string{"todo", "in progress", "merging"}},
-		{name: "other trackers keep their configuration", connector: tick, want: []string{"todo", "in progress"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			orch := &Orchestrator{cfg: cfg, connector: test.connector}
-			state := newState(cfg)
-			got := orch.candidateFetchStatesForTick(&state)
-			if strings.Join(got, ",") != strings.Join(test.want, ",") {
-				t.Fatalf("candidate states = %v, want %v", got, test.want)
-			}
-			issue := completionTransitionIssue("Merging", "")
-			mode := orch.dispatchMode(t.Context(), &state, issue)
-			wantMode := runpkg.RunModeImplement
-			if test.name == "native adds Merging" {
-				wantMode = runpkg.RunModeMerge
-			}
-			if mode != wantMode {
-				t.Fatalf("dispatchMode(Merging) = %q, want %q", mode, wantMode)
-			}
-		})
+	orch := &Orchestrator{cfg: cfg, connector: &nativeWorkflowConnector{autoPromoteTickConnector: tick}}
+	state := newState(cfg)
+	if got := strings.Join(orch.candidateFetchStatesForTick(&state), ","); got != "todo,in progress" {
+		t.Fatalf("native candidate states = %s", got)
 	}
-}
-
-// TestNativeMergingLaneIsNotReconciledAsAStalePullRequest checks that a
-// native item waiting to land is left to the landing run: the stale-Merging
-// reconciliation reads pull request state, and a native item has none.
-
-func TestWithNativeLandingLane(t *testing.T) {
-	t.Parallel()
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress"}, TerminalStates: []string{"Done"}})
-	tick := &autoPromoteTickConnector{}
-	native := withNativeLandingLane(cfg, &nativeWorkflowConnector{autoPromoteTickConnector: tick})
-	if strings.Join(native.ActiveStates, ",") != "todo,in progress,merging" {
-		t.Fatalf("native active states = %v", native.ActiveStates)
-	}
-	if again := withNativeLandingLane(native, &nativeWorkflowConnector{autoPromoteTickConnector: tick}); len(again.ActiveStates) != 3 {
-		t.Fatalf("the lane was added twice: %v", again.ActiveStates)
-	}
-	if plain := withNativeLandingLane(cfg, tick); strings.Join(plain.ActiveStates, ",") != "todo,in progress" {
-		t.Fatalf("a tracker with pull requests gained a lane: %v", plain.ActiveStates)
-	}
-	planner := dispatchPlanner{cfg: native}
 	issue := completionTransitionIssue("Merging", "")
-	state := newState(native)
-	if decision := planner.dispatchableIssueDecisionForModelRequirement(issue, &state, false, time.Now(), "", false); decision.reason == dispatchSkipInactiveState {
-		t.Fatalf("a native Merging item is skipped as inactive: %#v", decision)
+	if mode := orch.dispatchMode(t.Context(), &state, issue); mode != runpkg.RunModeImplement {
+		t.Fatalf("bare Merging lane chose mode %q", mode)
+	}
+	issue.NativeLandingHeadSHA = "reviewed-head"
+	if mode := orch.dispatchMode(t.Context(), &state, issue); mode != runpkg.RunModeMerge {
+		t.Fatalf("evidenced landing chose mode %q", mode)
 	}
 }
 
@@ -783,6 +744,7 @@ func TestNativeLandingQuotaWait(t *testing.T) {
 			}
 			usage := client.FlushRESTRateLimitUsage()
 			issue := completionTransitionIssue("Merging", "")
+			issue.NativeLandingHeadSHA = strings.Repeat("a", 40)
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "In Progress", "Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 4})
 			cfg.Policy.Gates.GitHubPullRequest = true
 			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}

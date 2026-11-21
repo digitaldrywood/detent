@@ -443,11 +443,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		var retries progresscheck.RoundDeadlines
 		for {
 			result, runErr = r.run(guarded, req)
-			if !req.phaseReceipts || !errors.Is(runErr, errRetainedLandingSetup) || StopProviderSupervision(req.Execution, runErr) ||
+			if req.phaseContinuation == nil || !errors.Is(runErr, errNativeLandingSetup) || StopProviderSupervision(req.Execution, runErr) ||
 				errors.Is(runErr, ErrWorkerProcessReap) || errors.Is(runErr, ErrExecutionAuthorityUnavailable) || cooperativeStopError(runErr) {
 				break
 			}
-			r.logWorkerEvent(req.Issue, "worker_retained_landing_setup_retry", "error", runErr)
+			r.logWorkerEvent(req.Issue, "worker_native_landing_setup_retry", "error", runErr)
 			err := retries.Wait(guarded, retryDelay)
 			if err == nil {
 				err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(guarded)

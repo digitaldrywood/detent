@@ -23,7 +23,6 @@ type SSHRunRequest struct {
 	SourceIteration bool
 	StepReceipts    bool
 	IsolationPolicy *isolation.Policy
-	BatchedLanding  bool
 	ExecutionTools  []AgentTool
 	Request         RunRequest
 	Callbacks       []string
@@ -50,7 +49,7 @@ func (r *Runner) SSHHosts() []string {
 }
 
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
-	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
+	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request}
 	callbacks := map[string]bool{
 		"usage": true, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
@@ -118,8 +117,8 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 				sources = &SSHExecutionSources{}
 			}
 			native := &sshNativeExecution{
-				batchedLanding: wire.BatchedLanding, spoolArtifacts: slices.Contains(wire.Callbacks, "artifact_spool"),
-				sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools,
+				spoolArtifacts: slices.Contains(wire.Callbacks, "artifact_spool"),
+				sshExecution:   execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools,
 			}
 			request.Execution = native
 			if wire.SourceIteration {

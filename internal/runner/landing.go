@@ -88,7 +88,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	workflow, _, _, _ := r.runtimeSnapshot()
 	effectiveGate := gate.Effective(workflow.Config.Gate)
-	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RebaseRequired: target.RebaseRequired, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
+	options := workspace.LandOptions{ReviewDispositions: target.ReviewDispositions, TargetBranch: target.BaseRef, LandingMode: effectiveGate.LandingMode, Native: !target.GitHubPullRequest, Validation: target.Validation, RequiredStatusChecks: effectiveGate.RequiredStatusChecks, CITriggerLabel: effectiveGate.CITriggerLabel, PreviousCI: target.CI, ValidationCommand: effectiveGate.Run, HeadSHA: target.HeadSHA, Method: target.Method, Message: message, PushAttemptBranch: true, Repository: target.Repository, External: target.External, SourceIssues: target.SourceIssues}
 	options.ChangeID = target.ChangeID
 	options.PublicationRepository = target.PublicationRepository
 	options.SourceBaseSHA = target.BaseSHA
@@ -250,30 +250,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			}
 			result, err = githubLander.LandChangeViaGitHub(ctx, info, issue, options)
 		} else if options.Validation, err = validateLandingHead(gate.WithPipelineRecorder(ctx, "landing_validation", func(timing gate.PipelineTiming) { r.recordPipeline(req, timing) }), backend, info, issue, options); err == nil {
-			batchLander, batched := backend.(workspace.BatchLander)
-			remoteBatch, remoteBatched := req.Execution.(BatchLandingExecution)
-			remoteBatched = remoteBatched && remoteBatch.BatchLandingEnabled()
-			if target.RebaseRequired && req.LandingBatch != nil {
-				req.LandingBatch.Finish()
-				result, err = lander.LandChange(ctx, info, issue, options)
-			} else if batched && remoteBatched {
-				if target.RebaseRequired {
-					if err = remoteBatch.FinishLandingBatch(ctx); err == nil {
-						result, err = lander.LandChange(ctx, info, issue, options)
-					}
-				} else {
-					result, err = remoteBatch.LandBatch(ctx, batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options})
-				}
-			} else if batched && req.LandingBatch != nil {
-				result, err = req.LandingBatch.Land(batchLander, workspace.LandRequest{Info: info, Issue: issue, Options: options, Validate: func(batchCtx context.Context) error {
-					if err := ctx.Err(); err != nil {
-						return err
-					}
-					return authorizeLanding(batchCtx)
-				}}.WithProcessOwner(ctx))
-			} else {
-				result, err = lander.LandChange(ctx, info, issue, options)
-			}
+			result, err = lander.LandChange(ctx, info, issue, options)
 		}
 	}
 	if target.MergeResolution && !target.GitHubPullRequest && result.MergeSHA != "" && result.Gate.Command == "" && workspace.ValidationCoversHead(options.Validation, options.ValidationCommand, options.HeadSHA) {

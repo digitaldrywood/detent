@@ -765,7 +765,7 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope hubscope.NativeSco
 			floor, threshold := int(pool.MinRunners), time.Duration(pool.IdleSeconds)*time.Second
 			busy := false
 			if identity.RunnerID != "" {
-				usage, err := w.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, "", now)
+				usage, err := w.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, now)
 				if err != nil {
 					return err
 				}

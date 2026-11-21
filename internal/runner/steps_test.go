@@ -200,7 +200,7 @@ func TestNativeReviewPublicationRetry(t *testing.T) {
 						return e
 					}
 					invoke := func(e *receiptReviewExecution) error {
-						req := RunRequest{Execution: e, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}}
+						req := RunRequest{Execution: e, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1"}, retainedReview: &retainedReviewWorkspace{backend: worktree, info: worktree.info}}
 						switch step {
 						case "security_audit":
 							_, err := r.auditNativeChange(t.Context(), req)

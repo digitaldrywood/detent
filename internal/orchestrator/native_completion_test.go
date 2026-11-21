@@ -1802,97 +1802,39 @@ func (p *nativeCompletionPublisher) NativeChange() *runpkg.NativeChange {
 	return p.change
 }
 
-type nativeReviewHostChecker string
-
-func (c nativeReviewHostChecker) WorkerHostAvailable(_ context.Context, host string) bool {
-	return host != string(c)
-}
-
-type nativeReviewWorkspaceOwner struct {
-	*nativeCompletionPublisher
-	runpkg.AttemptWorkerExecution
-}
-
-func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
+func TestNativeContinuationRetainsWorkerSlot(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name              string
-		running, capacity int
-		blocked           bool
-		hosts             []string
-		previousHost      string
-		unavailableHost   string
-		wantHost          string
-		workspaceBranch   string
-		retained          bool
-	}{
-		{name: "quota does not scale provider capacity", running: 3, capacity: 5},
-		{name: "below provider capacity", running: 2, capacity: 5},
-		{name: "one slot replaces restored owner", capacity: 1},
-		{name: "hard capacity", running: 1, capacity: 1, blocked: true},
-		{name: "unavailable saved host", capacity: 1, hosts: []string{"worker-a", "worker-b"}, previousHost: "worker-a", unavailableHost: "worker-a", wantHost: "worker-b"},
-		{name: "removed saved host", capacity: 1, hosts: []string{"worker-b"}, previousHost: "worker-a", wantHost: "worker-b"},
-		{name: "no live host", capacity: 1, hosts: []string{"worker-a"}, previousHost: "worker-a", unavailableHost: "worker-a", blocked: true},
-		{name: "retained branch survives review result without a workspace", capacity: 1, workspaceBranch: "existing-item-branch"},
-		{name: "repeated review continuation retains workspace ownership", capacity: 1, retained: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := providerWindowTestConfig()
-			cfg.MaxConcurrentAgents = test.capacity
-			cfg.WorkerHosts = test.hosts
-			if len(test.hosts) > 0 {
-				cfg.MaxConcurrentAgentsPerHost = 1
-			}
-			state := providerWindowState(cfg, test.running)
-			issue := dispatchTestIssue("review-owner", "In Progress")
-			running := Running{Issue: issue, Mode: runpkg.RunModeImplement, CompletionOwnershipReleased: true, WorkerHost: test.previousHost}
-			state.Running[issue.ID] = running
-			supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), workerHostChecker: nativeReviewHostChecker(test.unavailableHost)}
-			source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
-			var execution runpkg.Execution = &nativeCompletionPublisher{}
-			if test.workspaceBranch != "" || test.retained {
-				execution = &nativeReviewWorkspaceOwner{nativeCompletionPublisher: &nativeCompletionPublisher{}}
-			}
-			event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: execution, RetainItemWorkspace: test.retained}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source", WorkspaceBranch: test.workspaceBranch}}
-			runCtx := orch.nativeContinuationContext(t.Context(), &running)
-			t.Cleanup(running.cancel)
-			err = orch.continueNativeRun(runCtx, &state, event, running, true)
-			if test.blocked {
-				if !errors.Is(err, runpkg.ErrModelPermitUnavailable) || !state.Running[issue.ID].CompletionOwnershipReleased {
-					t.Fatalf("capacity did not retain deferred owner: %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			completion := <-orch.runResults
-			<-state.Running[issue.ID].done
-			continuation := completion.Request.NativeReviewContinuation
-			if completion.Request.WorkerHost != test.wantHost || state.Running[issue.ID].WorkerHost != test.wantHost {
-				t.Fatalf("review dispatched on request host %q and running host %q, want %q", completion.Request.WorkerHost, state.Running[issue.ID].WorkerHost, test.wantHost)
-			}
-			if continuation == nil || continuation.Source.VersionID != source.VersionID || continuation.Source.HeadSHA != source.HeadSHA || continuation.FinalMessage != event.Result.FinalMessage || state.Running[issue.ID].ModelPermitExempt || state.Running[issue.ID].CompletionOwnershipReleased {
-				t.Fatal("review continuation lost source or capacity ownership")
-			}
-			if err := orch.continueNativeRun(t.Context(), &state, completion, state.Running[issue.ID], false); err != nil {
-				t.Fatal(err)
-			}
-			landing := <-orch.runResults
-			<-state.Running[issue.ID].done
-			defer state.Running[issue.ID].cancel()
-			if landing.Request.NativeReviewContinuation != nil || landing.Request.Mode != runpkg.RunModeMerge {
-				t.Fatal("accepted review continuation replaced native landing")
-			}
-			wantRetained := test.retained || test.workspaceBranch != ""
-			if completion.Request.RetainItemWorkspace != wantRetained || landing.Request.RetainItemWorkspace != wantRetained {
-				t.Fatalf("retained workspace ownership through review=%t and landing=%t, want %t", completion.Request.RetainItemWorkspace, landing.Request.RetainItemWorkspace, wantRetained)
-			}
-		})
+	cfg := providerWindowTestConfig()
+	cfg.MaxConcurrentAgents = 1
+	state := newState(cfg)
+	issue := dispatchTestIssue("review-owner", "In Progress")
+	running := Running{Issue: issue, Mode: runpkg.RunModeImplement, WorkerHost: "worker-a"}
+	state.Running[issue.ID] = running
+	supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := &countingProjectDispatchGate{}
+	orch := &Orchestrator{cfg: cfg, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1), globalDispatchGate: dispatch}
+	source := &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+	event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Execution: &nativeCompletionPublisher{}}, Result: runpkg.RunResult{NativeChange: source, FinalMessage: "completed source"}}
+	if err := orch.continueNativeRun(t.Context(), &state, event, running, true); err != nil {
+		t.Fatal(err)
+	}
+	review := <-orch.runResults
+	<-state.Running[issue.ID].done
+	continuation := review.Request.NativeReviewContinuation
+	if continuation == nil || continuation.Source.VersionID != source.VersionID || continuation.Source.HeadSHA != source.HeadSHA || review.Request.WorkerHost != running.WorkerHost {
+		t.Fatalf("deferred review lost its source or worker: %+v", review.Request)
+	}
+	if err := orch.continueNativeRun(t.Context(), &state, review, state.Running[issue.ID], false); err != nil {
+		t.Fatal(err)
+	}
+	landing := <-orch.runResults
+	<-state.Running[issue.ID].done
+	defer state.Running[issue.ID].cancel()
+	if landing.Request.NativeReviewContinuation != nil || landing.Request.Mode != runpkg.RunModeMerge || landing.Request.WorkerHost != running.WorkerHost || dispatch.tryAcquireCalls != 0 {
+		t.Fatalf("landing replaced the worker slot: dispatch acquisitions=%d request=%+v", dispatch.tryAcquireCalls, landing.Request)
 	}
 }
 

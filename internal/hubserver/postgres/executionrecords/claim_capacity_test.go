@@ -15,18 +15,16 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func TestClaimCapacityGroupsNativeLandingLeases(t *testing.T) {
+func TestClaimCapacityCountsEachLease(t *testing.T) {
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, setup := range []struct {
-		name     string
-		github   bool
-		occupied claimstore.CapacityUsage
-		joining  claimstore.CapacityUsage
+		name   string
+		github bool
 	}{
-		{name: "native", occupied: claimstore.CapacityUsage{Host: 1, Runner: 1, Project: 1}},
-		{name: "github", github: true, occupied: claimstore.CapacityUsage{Host: 2, Runner: 2, Project: 2}, joining: claimstore.CapacityUsage{Host: 2, Runner: 2, Project: 2}},
+		{name: "native"},
+		{name: "github", github: true},
 	} {
 		for _, tenant := range []tracker.OrganizationID{"org_first", "org_second"} {
 			org := tracker.OrganizationID(string(tenant) + "_" + setup.name)
@@ -70,19 +68,16 @@ func TestClaimCapacityGroupsNativeLandingLeases(t *testing.T) {
 				}
 			}
 			for _, test := range []struct {
-				name  string
-				batch string
-				now   time.Time
-				want  claimstore.CapacityUsage
+				name string
+				now  time.Time
+				want claimstore.CapacityUsage
 			}{
-				{name: "batch occupies one slot", now: now, want: setup.occupied},
-				{name: "joining batch", batch: "batch", now: now, want: setup.joining},
-				{name: "another batch cannot reuse slot", batch: "other", now: now, want: setup.occupied},
+				{name: "each lease occupies a slot", now: now, want: claimstore.CapacityUsage{Host: 2, Runner: 2, Project: 2}},
 				{name: "expired leases free slot", now: now.Add(2 * time.Hour)},
 			} {
 				t.Run(string(org)+"/"+test.name, func(t *testing.T) {
 					if err := repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-						usage, err := r.ClaimCapacityUsage(t.Context(), "machine_capacity", "runner_capacity", "prj_first", test.batch, test.now)
+						usage, err := r.ClaimCapacityUsage(t.Context(), "machine_capacity", "runner_capacity", "prj_first", test.now)
 						if err == nil && usage != test.want {
 							t.Errorf("capacity = %+v, want %+v", usage, test.want)
 						}

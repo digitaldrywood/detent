@@ -466,17 +466,13 @@ func (o *Orchestrator) completeNativeChangeRun(
 				terminal = true
 			}
 		}
-		if terminal && (canContinue || !landingLane) {
+		if terminal && canContinue {
 			if err := o.continueNativeRun(ctx, state, event, running, false); err != nil {
 				return handoff(err)
 			}
 			return true
 		}
-		if landingLane {
-			target, ok = landing, true
-		} else {
-			return handoff(fmt.Errorf("native workflow allows no landing path from %s", strings.TrimSpace(issue.State)))
-		}
+		return handoff(fmt.Errorf("native workflow allows no held landing path from %s", strings.TrimSpace(issue.State)))
 	}
 	if !ok {
 		if change != nil && change.VersionError != "" {
@@ -647,14 +643,15 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	if !available || o.supervisor == nil {
 		return errors.New("native landing execution is unavailable")
 	}
-	slotIssue := cloneIssue(running.Issue)
-	workerHost := running.WorkerHost
-	if !reviewOnly && !repair {
-		slotIssue.State = autoPromoteMergingState
+	if running.CompletionOwnershipReleased {
+		slot, acquired, decision := o.acquireGlobalDispatchSlot(ctx, running.Issue, running.WorkerHost, o.clockNow(), 0)
+		if !acquired {
+			return fmt.Errorf("native worker capacity unavailable: %s", decision.Reason)
+		}
+		running.globalSlot = slot
 	}
-	slot, available, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, o.clockNow(), 0)
-	if !available {
-		return fmt.Errorf("native landing capacity unavailable: %s", decision.Reason)
+	if running.cancel != nil {
+		running.cancel()
 	}
 	request.Issue = running.Issue
 	request.Policy = running.Policy
@@ -676,13 +673,16 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.Attempt = running.Attempt
 	request.WorkAttemptID = running.WorkAttemptID
 	request.Generation = running.Generation
-	request.WorkerHost = workerHost
+	request.WorkerHost = running.WorkerHost
 	request.DeferExecutionFinish = true
 	request.AcquireModelPermit = nil
 	if repair {
 		request.AcquireModelPermit = o.modelPermitAcquirer(event.IssueID)
 	}
-	if !reviewOnly {
+	if reviewOnly {
+		ctx, running.cancel = context.WithCancel(ctx)
+		ctx, running.stop = context.WithCancelCause(ctx)
+	} else {
 		ctx = o.nativeContinuationContext(ctx, &running)
 	}
 	if request.OnUsageUpdate != nil {
@@ -692,9 +692,7 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 		request.OnActivityUpdate = o.activityUpdateHandler(ctx, running.Issue)
 	}
 	running.Mode = request.Mode
-	running.WorkerHost = workerHost
 	running.ModelPermitExempt = !reviewOnly
-	running.globalSlot = slot
 	running.CompletionOwnershipReleased = false
 	state.Running[event.IssueID] = running
 	o.trackRunningHeartbeat(state, running, state.Claimed[event.IssueID], event.CompletedAt)

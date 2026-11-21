@@ -587,7 +587,6 @@ func (s *Service) runnerClaimDeps() claimapi.Deps {
 		PlacementAllowed:                 claimPlacementAllowed,
 		CutoverSourceReference:           cutoverSourceReference,
 		HydrateChangePolicy:              hydrateChangeSummaryPolicy,
-		LandingCapacityKey:               landingCapacityKey,
 		MonthlyBudgetRefusal:             monthlyBudgetRefusal,
 		MonthlyCostExposure:              monthlyCostExposure,
 		ChangeLandingClaimable:           nativeChangeLandingClaimable,
@@ -638,8 +637,8 @@ func claimCandidateCursor(candidate claimstore.Candidate) claimstore.CandidateCu
 	return claimapi.ClaimCandidateCursor(candidate)
 }
 
-func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, joining string, now time.Time) (providercapacity.Reservation, error) {
-	return claimapi.SelectTenantProviderReservation(ctx, w, identity, request, item, joining, now)
+func selectTenantProviderReservation(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, request tracker.NativeClaim, item tracker.NativeWorkItemID, now time.Time) (providercapacity.Reservation, error) {
+	return claimapi.SelectTenantProviderReservation(ctx, w, identity, request, item, now)
 }
 
 func readTenantProviderReservation(ctx context.Context, r claimstore.Reader, lease tracker.LeaseID) (claimstore.ProviderReservation, bool, error) {

@@ -435,6 +435,9 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		result.ChangeDetail = &detail
 		if changeVersion != nil {
 			result.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: changeVersion.ID, HeadSHA: changeVersion.HeadSHA}
+			if strings.EqualFold(result.Issue.State, "Merging") && nativeChangeLandingClaimable(result.Issue.State, &detail) {
+				result.Issue.ListChange = &tracker.NativeListChange{LandingPending: true, HeadSHA: changeVersion.HeadSHA}
+			}
 			for _, snapshot := range snapshots {
 				if snapshot.Attempt.ID != latestAttemptID {
 					continue

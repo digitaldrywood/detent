@@ -1012,39 +1012,3 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		})
 	}
 }
-
-func TestNativeLandingBatchDispatch(t *testing.T) {
-	now := time.Now()
-	cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1, MaxConcurrentAgentsByState: map[string]int{"merging": 1}, WorkerHosts: []string{"local"}})
-	backend := &nativeHubSchedulingConnector{&hubSchedulingConnector{}}
-	runner := &hubSchedulingRunner{requests: make(chan RunRequest, 10)}
-	admission := &countingProjectDispatchGate{}
-	orch, err := New(cfg, Dependencies{Connector: backend, Runner: runner, GlobalDispatchGate: admission})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	state := newState(cfg)
-	state.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
-	issues := make([]connector.Issue, 10)
-	for i := range issues {
-		issues[i] = dispatchTestIssue(fmt.Sprintf("wi_%d", i), "Merging")
-		issues[i].Fields["detent_hub_work_item_id"] = strconv.Itoa(i + 1)
-		issues[i].CreatedAt = new(now.Add(time.Duration(10-i) * time.Second))
-	}
-	orch.dispatchReadyIssues(ctx, &state, issues, now)
-	if len(state.Running) != 10 || admission.tryAcquireCalls != 1 {
-		t.Fatalf("running %d, merge acquisitions %d", len(state.Running), admission.tryAcquireCalls)
-	}
-	for range issues {
-		select {
-		case request := <-runner.requests:
-			if request.LandingBatch == nil || request.Mode != runpkg.RunModeMerge {
-				t.Fatalf("unbatched native request: %#v", request)
-			}
-		case <-t.Context().Done():
-			t.Fatal("batch member not started")
-		}
-	}
-}
