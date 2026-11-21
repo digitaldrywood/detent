@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -602,7 +603,13 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumedCandidates, err := resumedScheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor})
+	request := orchestrator.SchedulingRequest{ProjectID: "native", Policy: descriptor}
+	request.CandidateKnownWait = func(candidate connector.Issue) bool { return candidate.ID == string(issue.WorkItemID) }
+	if waiting, err := resumedScheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(waiting) != 0 {
+		t.Fatalf("reconnect admitted a lease while the item was waiting: candidates=%+v error=%v", waiting, err)
+	}
+	request.CandidateKnownWait = nil
+	resumedCandidates, err := resumedScheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(resumedCandidates) != 1 || resumedCandidates[0].ID != string(issue.WorkItemID) {
 		var owner runnerauth.Runner
 		readErr := admin.Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &owner)
