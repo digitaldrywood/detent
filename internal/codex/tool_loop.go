@@ -7,11 +7,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const loopSteerRequestID = 11
@@ -39,8 +37,6 @@ type turnToolLoop struct {
 	thread, turn   string
 	workspace      string
 	logger         *slog.Logger
-	source         func(context.Context, string) string
-	probeContext   context.Context
 	sequence       uint64
 	decisions      []string
 	decisionCalls  int
@@ -140,9 +136,6 @@ func (l *turnToolLoop) observe(ctx context.Context, transport Transport, message
 	delete(l.active, item.ID)
 	if l.decisionCalls == 1 {
 		if experiment, ok := item.experiment(l.workspace); ok {
-			probeCtx, cancel := context.WithTimeout(l.probeContext, time.Second)
-			experiment.Source = l.source(probeCtx, l.workspace)
-			cancel()
 			l.decisionResult = experiment.Fingerprint()
 			l.decisionToolID = item.ID
 		}
@@ -344,5 +337,5 @@ func newTurnToolLoop(req RunTurnRequest, thread, turn string, logger *slog.Logge
 	if !req.DetectToolLoops {
 		return nil
 	}
-	return &turnToolLoop{thread: thread, turn: turn, workspace: req.Workspace, logger: logger, source: workspace.ToolSourceFingerprint, record: req.RecordLoopIntervention}
+	return &turnToolLoop{thread: thread, turn: turn, workspace: req.Workspace, logger: logger, record: req.RecordLoopIntervention}
 }

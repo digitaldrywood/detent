@@ -1399,21 +1399,12 @@ func (s *AppServer) streamTurn(
 	toolLoop *turnToolLoop,
 ) error {
 	ctx := lifetime.Context()
-	receive := transport.Receive
-	if toolLoop != nil {
-		probeCtx, cancelProbe := context.WithCancel(ctx)
-		defer cancelProbe()
-		toolLoop.probeContext = probeCtx
-		var stop func()
-		receive, stop = readTurnStream(ctx, transport, threadID, turnID, cancelProbe)
-		defer stop()
-	}
 	var snapshotRequested bool
 	for {
 		var msg Message
 		err := context.Cause(ctx)
 		if err == nil {
-			msg, err = receive(ctx)
+			msg, err = transport.Receive(ctx)
 		}
 		if err != nil {
 			if toolLoop != nil && authority.Err() == nil {
