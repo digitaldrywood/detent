@@ -3,6 +3,7 @@ package progresscheck
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
@@ -20,6 +21,8 @@ func TestFreezeChecklist(t *testing.T) {
 		kinds              []tracker.ExecutionCheckKind
 	}{
 		{name: "deduplicate policy reference", verification: "Run `make check`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate}},
+		{name: "bare command only", verification: "make check", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckProjectGate}},
+		{name: "retains compound verification with a single command", verification: "Run `make check` and confirm the exported report contains both tenants.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
 		{name: "retains additional named verification", verification: "Run `make check` and confirm `TestRecovery` fails on the old version.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
 		{name: "unmapped command is review only", verification: "Run `make other`.", kinds: []tracker.ExecutionCheckKind{tracker.CheckAcceptance, tracker.CheckAcceptance, tracker.CheckVerification, tracker.CheckProjectGate}},
 	} {
@@ -32,6 +35,10 @@ func TestFreezeChecklist(t *testing.T) {
 			if len(list.Checks) != len(test.kinds) {
 				t.Fatalf("checks=%+v, want kinds %v", list.Checks, test.kinds)
 			}
+			criteria := NativeReviewCriteria([]string{"Same text", "Same text"}, body, cfg.Gate.Run)
+			if slices.Contains(criteria, test.verification) != slices.Contains(test.kinds, tracker.CheckVerification) {
+				t.Fatalf("native review criteria do not match the checklist: %v", criteria)
+			}
 			for i, check := range list.Checks {
 				if check.Ordinal != i+1 || check.Kind != test.kinds[i] {
 					t.Fatalf("check[%d]=%+v; want kind %s", i, check, test.kinds[i])
@@ -43,12 +50,42 @@ func TestFreezeChecklist(t *testing.T) {
 				} else if check.CheckDigest != "" || check.Status != tracker.CheckNeedsReview {
 					t.Fatalf("unmapped criterion acquired execution authority: %+v", check)
 				}
+				if check.Kind == tracker.CheckVerification {
+					if check.Text != test.verification {
+						t.Fatalf("verification text = %q, want %q", check.Text, test.verification)
+					}
+					assertIndependentVerification(t, list, check)
+				}
 			}
 			changed, err := FreezeChecklist(body+" changed", cfg)
 			if err != nil || changed.Revision == list.Revision {
 				t.Fatalf("issue edit preserved its checklist revision: %+v, %v", changed, err)
 			}
 		})
+	}
+}
+
+func assertIndependentVerification(t *testing.T, list tracker.ExecutionChecklist, check tracker.ExecutionCheck) {
+	t.Helper()
+	list.Checks = slices.Clone(list.Checks)
+	command := gate.CommandResult{Command: "make check", ReceiptID: "gate", HeadSHA: "head", TreeSHA: "tree"}
+	verdict := RoundVerdict{RoundInput: RoundInput{HeadSHA: command.HeadSHA, TreeSHA: command.TreeSHA}, PolicyID: list.PolicyID}
+	changes := ChecklistChanges(list.Checks, verdict, &command, nil)
+	ApplyChecklistChanges(list.Checks, changes)
+	if len(changes) != 1 || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != command.ReceiptID || list.Checks[check.Ordinal-1].Status != tracker.CheckNeedsReview {
+		t.Fatalf("generic gate changed independent verification: %+v", list.Checks)
+	}
+	proof := gate.CommandResult{Command: "verify exported tenant report", ReceiptID: "report-proof", HeadSHA: "head", TreeSHA: "tree"}
+	criterion := gate.CriterionEvidence{Criterion: check.Text, Kind: gate.EvidenceReceipt, HeadSHA: "head", TreeSHA: "tree", ReceiptIDs: []string{command.ReceiptID}, Behavior: "verified required result"}
+	validator := &gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, HeadSHA: "head", CriteriaEvidence: []gate.CriterionEvidence{criterion}, Commands: []gate.CommandResult{command, proof}}
+	steps := []tracker.NativeStepReceipt{{Step: "validator", PolicyID: list.PolicyID, Source: tracker.NativeCheckpoint{HeadSHA: "head"}, Change: tracker.NativeChangeReference{HeadSHA: "head"}, Validator: validator}}
+	if changes = ChecklistChanges(list.Checks, verdict, &command, steps); len(changes) != 0 {
+		t.Fatalf("verifier citing only the generic gate changed the criterion: %+v", changes)
+	}
+	validator.CriteriaEvidence[0].ReceiptIDs = []string{proof.ReceiptID}
+	changes = ChecklistChanges(list.Checks, verdict, &command, steps)
+	if len(changes) != 1 || changes[0].Ordinal != check.Ordinal || changes[0].Status != tracker.CheckPassed || changes[0].Receipt != proof.ReceiptID {
+		t.Fatalf("independent evidence must pass its own verification row: %+v", changes)
 	}
 }
 

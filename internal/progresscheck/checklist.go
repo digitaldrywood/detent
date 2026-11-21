@@ -41,7 +41,7 @@ func FreezeChecklist(body string, cfg config.Config) (tracker.ExecutionChecklist
 	}
 	var gateReferences []string
 	for _, criterion := range config.VerificationCriteria(body) {
-		if gateConfig.Run != "" && referencesOnlyCheck(criterion, gateConfig.Run) {
+		if referencesOnlyCheck(criterion, gateConfig.Run) {
 			gateReferences = append(gateReferences, criterion)
 			continue
 		}
@@ -74,12 +74,28 @@ func ChecklistRevision(body, policyID string) string {
 	return policy.Digest([]byte(policyID + "\x00" + body))
 }
 
-func referencesOnlyCheck(criterion, command string) bool {
-	if strings.TrimSpace(criterion) == command {
-		return true
+func NativeReviewCriteria(acceptance []string, body, projectCommand string) []string {
+	criteria := slices.Clone(acceptance)
+	for _, criterion := range config.VerificationCriteria(body) {
+		if !referencesOnlyCheck(criterion, projectCommand) && !slices.Contains(criteria, criterion) {
+			criteria = append(criteria, criterion)
+		}
 	}
-	fields := strings.Split(criterion, "`")
-	return len(fields) == 3 && fields[1] == command
+	return criteria
+}
+
+func referencesOnlyCheck(criterion, command string) bool {
+	if command == "" {
+		return false
+	}
+	criterion = strings.TrimSpace(criterion)
+	quoted := "`" + command + "`"
+	for _, form := range []string{command, quoted, "Run " + command, "Run " + quoted} {
+		if criterion == form || criterion == form+"." {
+			return true
+		}
+	}
+	return false
 }
 
 func RunChecklistEvidence(previous *tracker.NativeRunData, current tracker.NativeRunData) (RoundInput, *gate.CommandResult) {
