@@ -175,7 +175,7 @@ func seedPlanWithImplementation(t *testing.T, local *scenariotest.Scheduler, adm
 	if err != nil || len(receipts) != 2 {
 		t.Fatalf("did not retain both receipts: %v, %v", receipts, err)
 	}
-	resolved, err := admin.ResolvePlan(ctx, current, request.Policy.ID, receipts[1:])
+	resolved, err := admin.ResolvePlan(ctx, current, request.Policy, receipts[1:])
 	if err != nil || resolved == nil || resolved.Accepted || !resolved.NeedsProvider() {
 		t.Errorf("plan survived edit to a comment outside the projection: %+v, %v", resolved, err)
 	}

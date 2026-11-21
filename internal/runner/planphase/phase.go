@@ -78,8 +78,8 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 		return req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, "")
 	}
 	phase, approval := "plan_draft", ""
-	if !state.NeedsProvider() && state.Answer != "" {
-		phase, approval = "plan", "human:"+state.AnswerID+":"+state.Answer
+	if !state.NeedsProvider() && state.AnswerID != "" && state.AnswerAttemptID != "" {
+		phase, approval = "plan", "human:"+state.AnswerAttemptID+":"+state.AnswerID
 	}
 	if state.NeedsProvider() {
 		generate, err := req.OpenAgent()
@@ -112,6 +112,9 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 					return "", "", preserveReview(err)
 				}
 				draft = workpad.PlainSummary(draft)
+				if req.HumanReview {
+					draft = workpad.PlainSummary(workpad.QuestionDetail(draft, tracker.PlanApprovalQuestion))
+				}
 				if draft == "" {
 					return "", "", errors.New("planner did not produce an implementation plan")
 				}
@@ -133,7 +136,9 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 			decision, detail, _ := strings.Cut(review, "\n")
 			switch strings.ToLower(strings.TrimSpace(decision)) {
 			case "approved":
-				phase, approval = "plan", "automated:"+review
+				if !req.HumanReview {
+					phase, approval = "plan", "automated:"+review
+				}
 			case "human review":
 				if !req.HumanReview {
 					return "", "", errors.New("independent plan review returned no valid decision")

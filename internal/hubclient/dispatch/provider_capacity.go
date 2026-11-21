@@ -88,7 +88,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 						if err != nil {
 							return leases, err
 						}
-						plan, err := client.ResolvePlan(discoveryCtx, recovery, request.Policy.ID, receipts)
+						plan, err := client.ResolvePlan(discoveryCtx, recovery, request.Policy, receipts)
 						if err != nil {
 							return leases, err
 						}
