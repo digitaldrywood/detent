@@ -41,7 +41,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 		}
 	}
 	pendingResolution := landing.Path == "merge_resolution_pending" && landing.RefusalKind == workspace.LandRefusalConflict
-	if !landing.Landed && pendingResolution && !mergeWorkerIssue(issue) && event.Request.DeferExecutionFinish && event.Request.RetainItemWorkspace && o.supervisor != nil {
+	if !landing.Landed && pendingResolution && event.Request.DeferExecutionFinish && event.Request.RetainItemWorkspace && o.supervisor != nil {
 		if state.Draining || running.CompletionLane != "" || running.Cancellation != nil {
 			return false
 		}
@@ -161,6 +161,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
 	if !landing.Landed {
 		issue.State = target
+		issue.NativeLandingHeadSHA = ""
 		delete(state.Completed, issueID)
 		attempt := nextAttempt(running.Attempt)
 		o.scheduleRetryAfter(state, issue, attempt, event.CompletedAt, o.machineRetryDelay(attempt), landing.Refusal, running.WorkerHost)
