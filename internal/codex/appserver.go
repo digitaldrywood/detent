@@ -1418,14 +1418,17 @@ func (s *AppServer) streamTurn(
 			return fmt.Errorf("stream turn: %w", err)
 		}
 
-		if update, matched := legacyTurnCompletion(msg, threadID, turnID); matched {
-			if failure := earlyTurnFailure(msg, threadID, turnID); failure != nil {
-				return failure
+		if legacy := legacyTurnCompletion(msg, threadID, turnID); legacy != nil {
+			if legacy.retry {
+				continue
 			}
-			if err := emitUpdate(update, onUpdate); err != nil {
+			if legacy.failure != nil {
+				return legacy.failure
+			}
+			if err := emitUpdate(legacy.update, onUpdate); err != nil {
 				return err
 			}
-			return finishProviderTurn(ctx, update, toolLoop)
+			return finishProviderTurn(ctx, legacy.update, toolLoop)
 		}
 
 		if toolLoop != nil {

@@ -179,12 +179,25 @@ func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffSt
 	return GitDiffStat(ctx, normalized.Path)
 }
 
+type LiveDiffStatProvider interface {
+	LiveDiffStat(context.Context, Info, Issue) (DiffStat, error)
+}
+
+func (l *LocalGit) LiveDiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return DiffStat{}, err
+	}
+	observation, err := observeGitDiff(ctx, normalized.Path, false, gitexec.WithDiffInspection)
+	return observation.stat, err
+}
+
 func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (RecoveryState, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	observation, err := observeGitDiff(ctx, normalized.Path, true)
+	observation, err := observeGitDiff(ctx, normalized.Path, true, nil)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -247,7 +260,7 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 }
 
 func gitDiffStat(ctx context.Context, workspacePath string, includeIndex bool) (DiffStat, error) {
-	observation, err := observeGitDiff(ctx, workspacePath, includeIndex)
+	observation, err := observeGitDiff(ctx, workspacePath, includeIndex, nil)
 	return observation.stat, err
 }
 
@@ -257,7 +270,9 @@ type gitDiffObservation struct {
 	untrackedPaths []string
 }
 
-func observeGitDiff(ctx context.Context, workspacePath string, includeIndex bool) (gitDiffObservation, error) {
+type gitDiffInspection func(context.Context, string, string, string, func(context.Context) error) error
+
+func observeGitDiff(ctx context.Context, workspacePath string, includeIndex bool, inspect gitDiffInspection) (gitDiffObservation, error) {
 	if strings.TrimSpace(workspacePath) == "" {
 		return gitDiffObservation{}, errors.New("workspace path is required")
 	}
@@ -268,7 +283,7 @@ func observeGitDiff(ctx context.Context, workspacePath string, includeIndex bool
 		return gitDiffObservation{}, fmt.Errorf("stat workspace path: %w", err)
 	}
 
-	return gitDiffStatOutput(ctx, workspacePath, includeIndex)
+	return gitDiffStatOutput(ctx, workspacePath, includeIndex, inspect)
 }
 
 func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, error) {
@@ -326,7 +341,7 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 	return Diff{Stat: stat, Patch: patch, Truncated: truncated}, nil
 }
 
-func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex bool) (gitDiffObservation, error) {
+func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex bool, inspect gitDiffInspection) (gitDiffObservation, error) {
 	index, err := gitIndexLookup(ctx, workspacePath, true)
 	if err != nil {
 		return gitDiffObservation{}, err
@@ -337,11 +352,11 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 	}
 	defer cleanup()
 
-	if includeIndex {
-		return gitDiffWithIndex(ctx, workspacePath, tempIndex, index, true)
+	if inspect == nil {
+		return gitDiffWithIndex(ctx, workspacePath, tempIndex, index, includeIndex)
 	}
 	var observation gitDiffObservation
-	err = gitexec.WithDiffInspection(ctx, workspacePath, tempIndex, index.HeadSHA, func(inspectionCtx context.Context) error {
+	err = inspect(ctx, workspacePath, tempIndex, index.HeadSHA, func(inspectionCtx context.Context) error {
 		var err error
 		observation, err = gitDiffWithIndex(inspectionCtx, workspacePath, tempIndex, index, false)
 		return err

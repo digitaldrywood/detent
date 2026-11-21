@@ -817,25 +817,39 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 
 func TestAgentBackendCompletesOnTaskComplete(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		method string
-		params string
+		name       string
+		method     string
+		params     string
+		retryFrame string
+		wantCode   string
 	}{
-		{"direct", "task_complete", `{"threadId":"thread-1","turn_id":"turn-1"}`},
-		{"legacy envelope", "codex/event/task_complete", `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","turn_id":"turn-1"}}`},
+		{name: "direct", method: "task_complete", params: `{"threadId":"thread-1","turn_id":"turn-1"}`},
+		{name: "legacy envelope", method: "codex/event/task_complete", params: `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","turn_id":"turn-1"}}`},
+		{name: "null error", method: "task_complete", params: `{"turn_id":"turn-1","error":null}`},
+		{name: "retrying envelope", method: "turn/completed", params: `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`,
+			retryFrame: `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","willRetry":true,"error":{"codexErrorInfo":"usageLimitExceeded"}}}`},
+		{name: "retrying envelope snake case", method: "turn/completed", params: `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`,
+			retryFrame: `{"id":"turn-1","conversationId":"thread-1","msg":{"type":"task_complete","will_retry":true,"error":{"codexErrorInfo":"usageLimitExceeded"}}}`},
+		{name: "typed failure", method: "codex/event/task_complete", params: `{"id":"turn-1","msg":{"type":"task_complete","error":{"codexErrorInfo":"usageLimitExceeded"}}}`, wantCode: "usage_limit_exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				transport := &blockingAppServerTransport{newFakeAppServerTransport([]Message{
+				messages := []Message{
 					responseMessage(t, 1, `{"userAgent":"codex-cli/0.155.1"}`),
 					rolloutResponseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1","model":"example-model"}}`, nil),
 					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 					notificationMessage(t, "codex/event/task_complete", `{"id":"old-turn","conversationId":"thread-1","msg":{"type":"task_complete"}}`),
 					notificationMessage(t, "task_complete", `{"thread_id":"another-thread","turn_id":"turn-1"}`),
 					notificationMessage(t, "task_complete", `{"type":"task_complete"}`),
+				}
+				if test.retryFrame != "" {
+					messages = append(messages, notificationMessage(t, "codex/event/task_complete", test.retryFrame))
+				}
+				messages = append(messages,
 					notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":"ready"}`),
 					notificationMessage(t, test.method, test.params),
-				})}
+				)
+				transport := &blockingAppServerTransport{newFakeAppServerTransport(messages)}
 				server, err := NewAppServer(staticTransportFactory{transport}, WithTurnTimeout(time.Minute))
 				if err != nil {
 					t.Fatal(err)
@@ -858,6 +872,13 @@ func TestAgentBackendCompletesOnTaskComplete(t *testing.T) {
 					}
 					return nil
 				})
+				if test.wantCode != "" {
+					var failure *TurnFailedError
+					if !errors.As(err, &failure) || failure.ProviderCode != test.wantCode || completions != 0 {
+						t.Fatalf("failure=%v completions=%d, want %s without completion", err, completions, test.wantCode)
+					}
+					return
+				}
 				if err != nil || result.TurnID != "turn-1" || answer != "ready" || completions != 1 || time.Since(started) != 0 {
 					t.Fatalf("result=%+v err=%v answer=%q completions=%d elapsed=%s", result, err, answer, completions, time.Since(started))
 				}

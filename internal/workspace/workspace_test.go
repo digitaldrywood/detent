@@ -1689,15 +1689,17 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		validate      bool
-		command       string
-		wantStatus    MergePrepareStatus
-		wantValidated bool
-		wantPublished bool
-		mode          string
+		name           string
+		validate       bool
+		dirtySubmodule bool
+		command        string
+		wantStatus     MergePrepareStatus
+		wantValidated  bool
+		wantPublished  bool
+		mode           string
 	}{
 		{name: "gate passes on the rebased head", validate: true, command: "test -f main.txt", wantStatus: MergePrepareStatusClean, wantValidated: true, wantPublished: true},
+		{name: "gate modifies a tracked submodule file", validate: true, dirtySubmodule: true, command: "printf changed > modules/example/README.md"},
 		{name: "gate fails on the rebased head", validate: true, command: "test ! -f main.txt", wantStatus: MergePrepareStatusConflict},
 		{name: "legacy rolling mode rejects failed validation", mode: gate.LandingRollingBarrier, validate: true, command: "false", wantStatus: MergePrepareStatusConflict},
 		{name: "validation not requested", validate: false, command: "false", wantStatus: MergePrepareStatusClean, wantPublished: true},
@@ -1706,6 +1708,11 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			source := initSourceRepo(t)
+			if tt.dirtySubmodule {
+				submodule := initSourceRepo(t)
+				runGit(t, source, "-c", "protocol.file.allow=always", "submodule", "add", submodule, "modules/example")
+				runGit(t, source, "commit", "-m", "add submodule")
+			}
 			remote := initBareRemote(t)
 			runGit(t, source, "remote", "add", "origin", remote)
 			runGit(t, source, "push", "-u", "origin", "main")
@@ -1718,6 +1725,9 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 			info, err := backend.Create(context.Background(), issue)
 			if err != nil {
 				t.Fatalf("Create() error = %v", err)
+			}
+			if tt.dirtySubmodule {
+				runGit(t, info.Path, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
 			}
 			if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
 				t.Fatalf("write feature: %v", err)
@@ -1734,6 +1744,13 @@ func TestLocalGitPrepareMergeValidatesTheCleanHeadItPushes(t *testing.T) {
 			runGit(t, source, "push", "origin", "main")
 
 			result, err := preparer.PrepareMerge(context.Background(), info, issue, MergePrepareOptions{LandingMode: tt.mode, ValidateHead: tt.validate, ValidationCommand: tt.command, ExpectedRemoteHead: published})
+			if tt.dirtySubmodule {
+				remoteHead := strings.Fields(runGit(t, source, "ls-remote", "origin", "refs/heads/"+info.Branch))[0]
+				if !errors.Is(err, ErrMergeResolutionInvalid) || result.Validated || remoteHead != published {
+					t.Fatalf("dirty submodule: result=%+v err=%v published=%s, want rejection and %s", result, err, remoteHead, published)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("PrepareMerge() error = %v", err)
 			}

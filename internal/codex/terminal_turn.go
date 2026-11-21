@@ -86,43 +86,71 @@ func finishProviderTurn(ctx context.Context, update Update, toolLoop *turnToolLo
 	return &TurnFailedError{Status: update.Status, Message: update.BackendErrorMessage, Body: update.BackendErrorBody}
 }
 
-func legacyTurnCompletion(message Message, thread, turn string) (Update, bool) {
+type legacyTaskCompletion struct {
+	update  Update
+	failure *TurnFailedError
+	retry   bool
+}
+
+type legacyTurnEvent struct {
+	Type           string
+	ID             string
+	ThreadID       string
+	WireThreadID   string `json:"thread_id"`
+	ConversationID string
+	TurnID         string
+	WireTurnID     string `json:"turn_id"`
+	WillRetry      bool
+	WireWillRetry  bool `json:"will_retry"`
+	Status         any
+	Error          json.RawMessage
+	Code           json.RawMessage `json:"codex_error_info"`
+	Turn           struct {
+		ID     string
+		Status string
+		Error  json.RawMessage
+	}
+}
+
+func legacyTurnCompletion(message Message, thread, turn string) *legacyTaskCompletion {
 	switch message.Method {
 	case "task_complete", "codex/event/task_complete":
 	default:
-		return Update{}, false
+		return nil
 	}
 	var event struct {
-		ID             string
-		ThreadID       string
-		WireThreadID   string `json:"thread_id"`
-		ConversationID string
-		TurnID         string
-		WireTurnID     string `json:"turn_id"`
-		Msg            struct {
-			Type         string
-			ThreadID     string
-			WireThreadID string `json:"thread_id"`
-			TurnID       string
-			WireTurnID   string `json:"turn_id"`
-		}
+		legacyTurnEvent
+		Msg legacyTurnEvent
 	}
 	if json.Unmarshal(message.Params, &event) != nil || (event.Msg.Type != "" && event.Msg.Type != "task_complete") {
-		return Update{}, false
+		return nil
 	}
-	turnIDs := []string{event.TurnID, event.WireTurnID, event.Msg.TurnID, event.Msg.WireTurnID, event.ID}
+	turnIDs := []string{event.TurnID, event.WireTurnID, event.Turn.ID, event.Msg.TurnID, event.Msg.WireTurnID, event.Msg.Turn.ID, event.ID}
 	if firstNonBlank(turnIDs...) == "" {
-		return Update{}, false
+		return nil
 	}
 	for _, id := range turnIDs {
 		if id != "" && id != turn {
-			return Update{}, false
+			return nil
 		}
 	}
-	for _, id := range []string{event.ThreadID, event.WireThreadID, event.ConversationID, event.Msg.ThreadID, event.Msg.WireThreadID} {
+	for _, id := range []string{event.ThreadID, event.WireThreadID, event.ConversationID, event.Msg.ThreadID, event.Msg.WireThreadID, event.Msg.ConversationID} {
 		if id != "" && id != thread {
-			return Update{}, false
+			return nil
 		}
 	}
-	return Update{Type: UpdateTurnCompleted, Method: message.Method, ThreadID: thread, TurnID: turn, Status: "completed"}, true
+	if event.WillRetry || event.WireWillRetry || event.Msg.WillRetry || event.Msg.WireWillRetry {
+		return &legacyTaskCompletion{retry: true}
+	}
+	body := firstNonBlank(compactNonNullJSON(event.Msg.Error), compactNonNullJSON(event.Msg.Turn.Error), compactNonNullJSON(event.Error), compactNonNullJSON(event.Turn.Error))
+	status := firstNonBlank(event.Msg.Turn.Status, turnCompletedTopLevelStatus(event.Msg.Status, nil, ""), event.Turn.Status, turnCompletedTopLevelStatus(event.Status, nil, ""), "completed")
+	code := firstNonBlank(turnErrorCode(json.RawMessage(body)), decodeTurnErrorCode(event.Msg.Code), decodeTurnErrorCode(event.Code))
+	if status != "interrupted" && (status != "completed" || code != "" || body != "") {
+		code = firstNonBlank(code, "other")
+		return &legacyTaskCompletion{failure: &TurnFailedError{Status: "failed", ProviderCode: code, Operation: "turn/start", Message: code}}
+	}
+	return &legacyTaskCompletion{update: Update{
+		Type: UpdateTurnCompleted, Method: message.Method, ThreadID: thread, TurnID: turn, Status: status,
+		BackendErrorBody: body, BackendErrorMessage: errorMessageFromJSON(json.RawMessage(body)),
+	}}
 }
