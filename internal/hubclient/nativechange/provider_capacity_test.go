@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,19 +106,20 @@ func TestLocalProviderRevalidation(t *testing.T) {
 func TestReviewedMergingClaimReservesProvider(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		conflict bool
+		name                     string
+		conflict, accountChanged bool
 	}{
 		{name: "registers and lands"},
 		{name: "pending conflict waits for capacity", conflict: true},
+		{name: "conflict refuses account changed after registration", conflict: true, accountChanged: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			testReviewedMergingClaimReservesProvider(t, test.conflict)
+			testReviewedMergingClaimReservesProvider(t, test.conflict, test.accountChanged)
 		})
 	}
 }
 
-func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
+func testReviewedMergingClaimReservesProvider(t *testing.T, conflict, accountChanged bool) {
 	h := newNativeChangeHubTransport(t, "Merging", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Merging"}},
@@ -125,8 +127,13 @@ func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 		{Name: "Done", Terminal: true},
 	}, true)
 	requirement := providercapacity.Requirement{Role: runner.RoleMerge, Backend: "codex", Model: "test-model"}
+	var changedAccount atomic.Bool
 	reports := func() ([]providercapacity.Report, error) {
-		return []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: "local", SharedAccountAlias: "team",
+		account, shared := "local", "team"
+		if changedAccount.Load() {
+			account, shared = "other", "other-team"
+		}
+		return []providercapacity.Report{{Provider: "openai", Backend: "codex", AccountAlias: account, SharedAccountAlias: shared,
 			Models: []string{"test-model"}, MaxConcurrent: 1, Availability: "available", ObservedAt: h.clock()}}, nil
 	}
 	fixtureConfigureScheduler(t, h, func(cfg *SchedulerConfig) { cfg.ProviderReports = reports })
@@ -288,7 +295,7 @@ func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 		t.Fatalf("register reviewed landing worker: primary=%t error=%v", primary, err)
 	}
 	identity := tracker.NativeExecutionIdentity{Role: requirement.Role, Backend: requirement.Backend, Model: requirement.Model}
-	if conflict {
+	if conflict && !accountChanged {
 		if err := execution.StartLanding(t.Context(), observation.LocalAttemptID, observation.Generation); err != nil {
 			t.Fatalf("start the pending conflict landing: %v", err)
 		}
@@ -296,6 +303,18 @@ func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 			t.Fatalf("start merge resolution with the reserved provider: %v", err)
 		}
 		return
+	}
+	if accountChanged {
+		if err := os.WriteFile(filepath.Join(source, "README.md"), []byte("conflicting upstream change\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		nativeChangeGit(t, source, "commit", "-am", "change the same file on main")
+		nativeChangeGit(t, source, "push", "origin", "main")
+		target, err := execution.LandingTarget(t.Context())
+		if err != nil || !target.MergeResolution {
+			t.Fatalf("fixture did not select conflict resolution: %+v, %v", target, err)
+		}
+		changedAccount.Store(true)
 	}
 	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
 		ProcessSource: emptyProcessSource, Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true,
@@ -315,6 +334,13 @@ func testReviewedMergingClaimReservesProvider(t *testing.T, conflict bool) {
 		ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge, Execution: execution,
 		AttemptWorkspace: execution.AttemptWorkspace(), WorkAttemptID: observation.LocalAttemptID, Generation: observation.Generation, DeferExecutionFinish: true,
 	})
+	if accountChanged {
+		if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !strings.Contains(err.Error(), "local provider account or model capability changed after dispatch") ||
+			result.TurnStarted || provider.calls != 0 || headAt(remote, "refs/heads/main") != headAt(source, "HEAD") {
+			t.Fatalf("conflict resolution did not refuse the changed account before its first turn: turns=%d error=%v", provider.calls, err)
+		}
+		return
+	}
 	landed := result.NativeLanding
 	if err != nil || landed == nil || !landed.Landed || landed.HeadSHA != head || landed.MergeSHA != headAt(remote, "refs/heads/main") || provider.calls != 0 {
 		t.Fatalf("registered landing did not publish the reviewed source: %+v, provider turns=%d, %v", landed, provider.calls, err)
