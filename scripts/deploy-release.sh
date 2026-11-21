@@ -58,12 +58,17 @@ if [ "$mode" = postgres-cutover ]; then
   source_bundle_dir="$(mktemp -d "$scratch/release-source.XXXXXX")"
   payload="$(mktemp "$scratch/release-postgres-cutover.XXXXXX")"
   trap 'rm -rf "$ssh_dir" "$source_bundle_dir"; rm -f "$payload"' EXIT
-  git -C "$source_bundle_dir" init -q
-  git -C "$source_bundle_dir" fetch --no-tags --depth=1 "$source_root" "$commit"
-  git -C "$source_bundle_dir" checkout --quiet --detach FETCH_HEAD
-  [ "$(git -C "$source_bundle_dir" rev-parse --verify 'HEAD^{commit}')" = "$commit" ] || { echo "cutover source bundle commit does not match the release" >&2; exit 1; }
-  git -C "$source_bundle_dir" bundle create "$source_bundle_dir/source.bundle" HEAD
-  [ "$(git -C "$source_bundle_dir" bundle list-heads "$source_bundle_dir/source.bundle")" = "$commit HEAD" ] || { echo "cutover source bundle is not bound to the release commit" >&2; exit 1; }
+  source_bundle_dir="$(cd "$source_bundle_dir" && pwd -P)"
+  source_bundle_git() (
+    for key in "${!GIT_@}"; do unset "$key"; done
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$source_bundle_dir" "$@"
+  )
+  source_bundle_git init -q --template= -- "$source_bundle_dir"
+  source_bundle_git fetch --no-tags --depth=1 "$source_root" "$commit"
+  source_bundle_git checkout --quiet --detach FETCH_HEAD
+  [ "$(source_bundle_git rev-parse --verify 'HEAD^{commit}')" = "$commit" ] || { echo "cutover source bundle commit does not match the release" >&2; exit 1; }
+  source_bundle_git bundle create "$source_bundle_dir/source.bundle" HEAD
+  [ "$(source_bundle_git bundle list-heads "$source_bundle_dir/source.bundle")" = "$commit HEAD" ] || { echo "cutover source bundle is not bound to the release commit" >&2; exit 1; }
   source_bundle_size="$(python3 -c 'import os,sys; print(os.path.getsize(sys.argv[1]))' "$source_bundle_dir/source.bundle")"
   [ "$source_bundle_size" -le 419430400 ] || { echo "cutover source bundle exceeds the upload limit" >&2; exit 1; }
   COPYFILE_DISABLE=1 tar -cf "$payload" -C "$scratch/release-hub" detent -C "$source_root/deploy/hub" cutover-postgres.sh -C "$source_bundle_dir" source.bundle

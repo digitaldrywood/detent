@@ -61,8 +61,19 @@ func withInputCommand(ctx context.Context, dir string, env []string, fileOutput 
 }
 
 func withCommandEnvironment(ctx context.Context, dir string, env []string, fileOutput bool, input string, run func(context.Context, *exec.Cmd) error, args ...string) (string, error) {
+	initializing := len(args) != 0 && args[0] == "init"
+	if initializing {
+		if !filepath.IsAbs(dir) {
+			return "", errors.New("git init requires an absolute target directory")
+		}
+		env = IsolatedEnvironment()
+		args = append(slices.Clone(args), "--", dir)
+	}
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
+	if initializing {
+		cmd.Dir = dir
+	}
 	cmd.Args = gitArgs
 	if input != "" {
 		cmd.Stdin = strings.NewReader(input)
@@ -184,8 +195,7 @@ func WithDiffInspection(ctx context.Context, path, index, head string, inspect f
 	if len(head) == 64 {
 		format = "sha256"
 	}
-	env := publicationEnvironment()
-	if _, err := withCommandEnvironment(ctx, scratch, env, false, "", runLocalInspection, "init", "--bare", "--template=", "--object-format="+format); err != nil {
+	if _, err := withCommandEnvironment(ctx, scratch, nil, false, "", runLocalInspection, "init", "--bare", "--template=", "--object-format="+format); err != nil {
 		return err
 	}
 	if shared = strings.TrimSuffix(shared, "\n"); shared != "" {
@@ -197,7 +207,7 @@ func WithDiffInspection(ctx context.Context, path, index, head string, inspect f
 			return err
 		}
 	}
-	env = append(env, "GIT_DIR="+scratch, "GIT_WORK_TREE="+path, "GIT_INDEX_FILE="+index,
+	env := append(IsolatedEnvironment(), "GIT_DIR="+scratch, "GIT_WORK_TREE="+path, "GIT_INDEX_FILE="+index,
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+strconv.Quote(objects), "GIT_ATTR_NOSYSTEM=1")
 	options := []string{"-c", "core.excludesFile=" + filepath.Join(filepath.Dir(objects), "info", "exclude")}
 	return inspect(commandshell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
@@ -302,13 +312,28 @@ func ErrorOutput(err error) string {
 	return strings.TrimSpace(err.Error())
 }
 
+func InitScratch(ctx context.Context, dir string, options ...string) error {
+	args := append([]string{"init", "--template="}, options...)
+	_, err := withCommandEnvironment(ctx, dir, nil, false, "", func(ctx context.Context, cmd *exec.Cmd) error {
+		procgroup.Configure(ctx, cmd)
+		return RunCommand(ctx, cmd)
+	}, args...)
+	return err
+}
+
 func Scratch() (string, error) {
+	root := os.TempDir()
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		if root := os.Getenv(key); root != "" {
-			return os.MkdirTemp(root, "detent-change-source-*")
+		if value := os.Getenv(key); value != "" {
+			root = value
+			break
 		}
 	}
-	return os.MkdirTemp("", "detent-change-source-*")
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve Git scratch root: %w", err)
+	}
+	return os.MkdirTemp(root, "detent-change-source-*")
 }
 
 func ValidHead(head string) bool {

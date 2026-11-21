@@ -56,4 +56,29 @@ func TestCaptureChangeSourceCompressesRevisions(t *testing.T) {
 		})
 	}
 }
+func TestVerifyChangeSourceKeepsSourceWorktree(t *testing.T) {
+	source := gitfixture.SourceRepo(t)
+	base := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	gitfixture.WriteFile(t, source, "README.md", "edited source\n")
+	gitfixture.Git(t, source, "commit", "-am", "edit source")
+	head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	capture, err := Capture(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(source)
+	gitDir := filepath.Join(source, ".git")
+	t.Setenv("GIT_DIR", gitDir)
+	t.Setenv("GIT_COMMON_DIR", gitDir)
+	t.Setenv("GIT_WORK_TREE", source)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(gitDir, "index"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(gitDir, "objects"))
+	if err := Verify(t.Context(), capture.Source, capture.Bundle); err != nil {
+		t.Error(err)
+	}
+	if bare := strings.TrimSpace(gitfixture.Git(t, source, "config", "--file", filepath.Join(gitDir, "config"), "--get", "core.bare")); bare != "false" {
+		t.Errorf("source core.bare = %q, want false", bare)
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }

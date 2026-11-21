@@ -177,23 +177,18 @@ func Verify(ctx context.Context, source tracker.ChangeSource, bundle []byte) (er
 		return err
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	if err := gitexec.InitScratch(ctx, scratch, "--bare", "--object-format=sha1"); err != nil {
+		return err
+	}
 	git := func(input []byte, args ...string) error {
 		command := exec.CommandContext(ctx, "git")
 		command.Args = append([]string{"git"}, args...)
 		command.Dir = scratch
-		for _, value := range os.Environ() {
-			if !strings.HasPrefix(value, "GIT_") {
-				command.Env = append(command.Env, value)
-			}
-		}
-		command.Env = append(command.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_NO_REPLACE_OBJECTS=1")
+		command.Env = gitexec.IsolatedEnvironment()
 		command.Stdin = bytes.NewReader(input)
 		command.WaitDelay = gitexec.WaitDelay
 		procgroup.Configure(ctx, command)
 		return commandshell.RunCommand(ctx, command)
-	}
-	if err := git(nil, "init", "--bare", "--object-format=sha1", "--template="); err != nil {
-		return err
 	}
 	if err := git(pack, "-c", "pack.threads=1", "-c", "core.deltaBaseCacheLimit=16m", "index-pack", "--stdin", "--fsck-objects"); err != nil {
 		return errors.Join(ctx.Err(), errors.New("source bundle pack is invalid; recreate it with git bundle create <path> HEAD ^<base>"))

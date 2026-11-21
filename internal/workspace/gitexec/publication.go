@@ -38,7 +38,7 @@ func ReadPublicationRefs(ctx context.Context, repository string, symref bool, re
 	return output, err
 }
 
-func publicationEnvironment() []string {
+func IsolatedEnvironment() []string {
 	source := os.Environ()
 	env := make([]string, 0, len(source)+6)
 	for _, entry := range source {
@@ -50,7 +50,7 @@ func publicationEnvironment() []string {
 }
 
 func ReadPublicationSource(ctx context.Context, path string, args ...string) (string, error) {
-	return withCommandEnvironment(ctx, path, publicationEnvironment(), true, "", RunCommand, args...)
+	return withCommandEnvironment(ctx, path, IsolatedEnvironment(), true, "", RunCommand, args...)
 }
 
 func pushPublication(ctx context.Context, scratch, repository, refspec string, options ...string) error {
@@ -156,7 +156,7 @@ func withPublicationGit(ctx context.Context, path, owner string, use func(string
 			err = errors.Join(err, fmt.Errorf("remove publication repository: %w", cleanupErr))
 		}
 	}()
-	if _, err := ReadPublicationSource(ctx, scratch, "init", "--bare", "--template=", "--object-format="+source.format); err != nil {
+	if err := InitScratch(ctx, scratch, "--bare", "--object-format="+source.format); err != nil {
 		return err
 	}
 	if objects != "" {
@@ -183,7 +183,7 @@ func WithPublicationCheckout(ctx context.Context, path, owner string, use func(r
 		if entry, err := os.Lstat(index); err != nil || !entry.Mode().IsRegular() {
 			return errors.Join(errors.New("publication checkout requires a local Git index"), err)
 		}
-		env := append(publicationEnvironment(), "GIT_INDEX_FILE="+index)
+		env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+index)
 		read := func(args ...string) (string, error) {
 			options := []string{"--git-dir=" + scratch, "--work-tree=" + path, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.excludesFile=" + filepath.Join(source.common, "info", "exclude")}
 			return withCommandEnvironment(ctx, path, env, true, "", RunCommand, append(options, args...)...)
