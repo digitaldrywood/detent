@@ -379,7 +379,7 @@ def execute(profile, case):
     if action == "pause_runner":
         clock = {"heartbeat_interval_seconds": scenario["heartbeat_seconds"],
                  "lease_ttl_seconds": scenario["lease_ttl_seconds"]}
-    if action == "restart_runner":
+    if scenario.get("action") in {"restart_hub", "restart_runner"}:
         clock = {"heartbeat_interval_seconds": 5, "lease_ttl_seconds": 75}
     stack.up(capacity, clock, scripted_codex=scenario.get("scripted_codex", False))
     org, admin = stack.current()
@@ -393,20 +393,20 @@ def execute(profile, case):
         Project(org, admin, index, spec["name"], policy_fields, scenario.get("source_patch"))
         for index, spec in enumerate(projects, 1)
     ]
+    control = None
+    if scenario.get("control"):
+        control = Project(org, admin, len(seeded) + 1, "Single-item control", policy_fields, scenario.get("source_patch"))
     ids = [project.id for project in seeded]
-    stack.route(ids, admin, org, capacity=capacity)
+    onboarding = seeded if control is None else [*seeded, control]
+    stack.route([project.id for project in onboarding], admin, org, capacity=capacity)
     stack.start_runner()
-    policy = [project.approve_policy() for project in seeded]
+    policy = [project.approve_policy() for project in onboarding]
     stack.route([], admin, org, capacity=capacity)
     print(f"Replay seed ready in {time.monotonic() - started:.1f}s", flush=True)
     if action:
         mode = "phase-receipt" if action == "pause_runner" else "default"
         seconds = run_next(seeded[0], case, scenario, mode, capacity)
-        if scenario.get("control"):
-            control = Project(org, admin, 2, "Single-item control", policy_fields, scenario.get("source_patch"))
-            stack.route([control.id], admin, org)
-            control.approve_policy()
-            stack.route([], admin, org)
+        if control is not None:
             single = run_next(control, case, scenario, "control", 1)
             print(f"Parallel {seconds:.1f}s, single-item control {single:.1f}s", flush=True)
         return
