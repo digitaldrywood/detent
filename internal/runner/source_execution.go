@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
@@ -81,4 +83,37 @@ func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, ver
 		identity = version.ID
 	}
 	return publishItemPhase(ctx, req, source.backend, source.info, source.issue, phase, identity)
+}
+
+func (r *Runner) resumeReviewWorkspace(ctx context.Context, req RunRequest, backend workspace.Backend, continuation NativeReviewContinuation) (*retainedReviewWorkspace, func(), error) {
+	target, known := req.workspaceTarget(ctx, r.projectID)
+	worktree, ok := backend.(interface {
+		workspace.Usage
+		workspace.HeadProvider
+		workspace.ReviewTreeVerifier
+		Existing(workspace.Issue) (workspace.Info, error)
+	})
+	if !known || !ok {
+		return nil, nil, fmt.Errorf("%w: held review workspace is unavailable", ErrNativeRecoveryRequired)
+	}
+	release, err := worktree.Use(ctx, target)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: hold review workspace: %w", ErrNativeRecoveryRequired, err)
+	}
+	info, err := worktree.Existing(target)
+	if err == nil {
+		var head string
+		head, err = worktree.Head(ctx, info, target)
+		if err == nil && head != continuation.Source.HeadSHA {
+			err = errors.New("held review workspace differs from the published head")
+		}
+	}
+	if err == nil {
+		err = worktree.VerifyReviewTree(ctx, info, target)
+	}
+	if err != nil {
+		release()
+		return nil, nil, fmt.Errorf("%w: verify held review workspace: %w", ErrNativeRecoveryRequired, err)
+	}
+	return &retainedReviewWorkspace{backend: backend, info: info, issue: target, message: continuation.FinalMessage}, release, nil
 }
