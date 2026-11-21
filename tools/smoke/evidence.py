@@ -91,14 +91,14 @@ def check_workspace(project, evidence, attempt, expected, service):
     return checkout
 
 
-def check_reviews(review_policy, reviews, version_id, gates, final):
+def check_reviews(review_policy, reviews, version_id, gates):
     approved = [review for review in reviews if review["version_id"] == version_id and review["decision"] == "approved"]
     if gates["automated_review"] in {"required", "off"}:
         expect("implementation review approval", gates["automated_review"] == "required",
                any(review.get("implementation_review") for review in approved))
     if gates["validator"]:
         expect("independent acceptance approval", True, any(review.get("validator") for review in approved))
-    if final and gates["security_audit"]:
+    if gates["security_audit"]:
         expect("independent security audit", True, any(
             (review.get("security_audit") or {}).get("verdict") == "pass" for review in reviews if review["version_id"] == version_id
         ))
@@ -131,8 +131,8 @@ def phase_expectations(expected, gates):
     labels = list(expected["phases"])
     if gates["automated_review"] == "off":
         labels = [label for label in labels if label != "review:approved"]
-    if gates["security_audit"] and "landing:landed" in labels:
-        labels.insert(labels.index("landing:landed"), "audit:pass")
+    if gates["security_audit"]:
+        labels = [value for label in labels for value in ((label, "audit:pass") if label == "gate:pass" else (label,))]
     return labels
 
 
@@ -154,7 +154,7 @@ def check_conflict(project, evidence, labels, versions, reviews, landing, policy
         source = (version["head_sha"], project.git("rev-parse", version["head_sha"] + "^{tree}"))
         sources.append(source)
         expected.extend((names[phase], *source) for phase in phases)
-        check_reviews(version["review_policy"], reviews, version["version_id"], policy, version == new)
+        check_reviews(version["review_policy"], reviews, version["version_id"], policy)
     expect("ordered phase receipts on both exact source trees", expected,
            [(phase["phase"], phase["head_sha"], phase["tree_sha"]) for phase in evidence["phases"]])
     check_gate_orders(evidence["details"][0]["runtime"]["pipeline"], *sources, landing["observed_at"], command)
@@ -186,7 +186,7 @@ def check_landing(project, policy, evidence, attempt, expected, versions, review
     phases = evidence["phases"]
     expect("merge phase exact source", ("merge", head, tree),
            (phases[-1]["phase"], phases[-1]["head_sha"], phases[-1]["tree_sha"]))
-    check_reviews(version["review_policy"], reviews, version["version_id"], policy, True)
+    check_reviews(version["review_policy"], reviews, version["version_id"], policy)
     receipts = [span for span in attempt["runtime"]["pipeline"] if
                 span.get("command") == command and span.get("head_sha") == head
                 and span.get("tree_sha") == tree and span.get("exit_code") == 0]
