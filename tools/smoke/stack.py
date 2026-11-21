@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -73,6 +74,12 @@ def write(path, value):
     swap = path.with_suffix(path.suffix + ".new")
     swap.write_text(json.dumps(value, indent=2) + "\n")
     swap.replace(path)
+
+
+def log_fields(line):
+    if line.startswith("{"):
+        return json.loads(line)
+    return dict(field.split("=", 1) for field in shlex.split(line) if "=" in field)
 
 
 def command(args, cwd=ROOT, env=None, log=None, data=None, timeout=600):

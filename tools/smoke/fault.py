@@ -1,5 +1,4 @@
 import importlib.util
-import json
 import socket
 import time
 
@@ -48,9 +47,9 @@ class Fault:
             return None
         with (stack.LOGS / "runner.log").open() as log:
             for line in log:
-                if "injected local worker startup refusal" in line and line.startswith("{"):
-                    entry = json.loads(line)
-                    return {"at": entry["observed_at"], "action": self.action, "pid": entry["pid"]}
+                if "injected local worker startup refusal" in line:
+                    entry = stack.log_fields(line)
+                    return {"at": entry["observed_at"], "action": self.action, "pid": int(entry["pid"])}
         return None
 
     def active_validator(self, attempt):

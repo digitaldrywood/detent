@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
-import json
 import re
 from pathlib import Path
-import shlex
 import subprocess
 
 import stack
@@ -63,9 +61,7 @@ def check_workspace(project, evidence, attempt, expected, service, retained):
                 continue
             if not any(value in line for value in (reference, marker, item["work_item_id"])):
                 continue
-            row = json.loads(line) if line.startswith("{") else dict(
-                field.split("=", 1) for field in shlex.split(line) if "=" in field
-            )
+            row = stack.log_fields(line)
             if not begin <= instant(row["time"]) <= released:
                 continue
             if row.get("hook") == "after_create" and row["msg"] == "running workspace hook":
