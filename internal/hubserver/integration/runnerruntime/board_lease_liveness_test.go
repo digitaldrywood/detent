@@ -46,9 +46,6 @@ func testPostgresBoardLeaseReads(t *testing.T, renewDuringProjection bool) {
 		return at
 	}
 	f = hubfixture.SeedLeasedRunners(t, hubfixture.OpenStartup(t, cfg), hubfixture.StartupOrganization)
-	hosted := &hubfixture.Hosted{Hub: f.Hub, Provider: f.Hub.Config.Hosted.Provider.(*hubfixture.HostedProvider)}
-	viewer := hosted.User(t, "viewer", "viewer", "viewer@example.test", "", "")
-	hosted.Grant(t, viewer, "prj_runner", false, false)
 	f.Hub.RefreshPages(t, f.Organization)
 	renew.Store(renewDuringProjection)
 	f.Hub.RefreshBoard(t, f.Organization)
@@ -69,6 +66,13 @@ func testPostgresBoardLeaseReads(t *testing.T, renewDuringProjection bool) {
 	if _, err := f.Admin.ExecContext(t.Context(), "UPDATE leases SET expires_at=clock_timestamp() WHERE organization_id=$1 AND lease_id=$2", f.Organization, f.Leases[1].ID); err != nil {
 		t.Fatal(err)
 	}
+	if renewDuringProjection {
+		checkBoardWorkPlan(t, f)
+		return
+	}
+	hosted := &hubfixture.Hosted{Hub: f.Hub, Provider: f.Hub.Config.Hosted.Provider.(*hubfixture.HostedProvider)}
+	viewer := hosted.User(t, "viewer", "viewer", "viewer@example.test", "", "")
+	hosted.Grant(t, viewer, "prj_runner", false, false)
 	base := hubfixture.ProjectBase(f.Organization, "prj_runner")
 	get := func(path string, out any) {
 		t.Helper()
@@ -180,84 +184,86 @@ func testPostgresBoardLeaseReads(t *testing.T, renewDuringProjection bool) {
 			t.Errorf("explain %s attempt=%+v, want %s with matching current lease", lease.WorkItemID, value.Attempt, want)
 		}
 	}
-	if !renewDuringProjection {
-		item := f.Leases[0].WorkItemID
-		if err := f.Hub.Repository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-			row, err := w.WorkItem(t.Context(), "prj_runner", item)
-			if err != nil {
-				return err
-			}
-			row.WorkflowStateName = new("In Progress")
-			_, err = w.UpdateWorkItem(t.Context(), row)
+	item := f.Leases[0].WorkItemID
+	if err := f.Hub.Repository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		row, err := w.WorkItem(t.Context(), "prj_runner", item)
+		if err != nil {
 			return err
-		}); err != nil {
-			t.Fatal(err)
 		}
-		if err := f.Hub.Repository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			row, err := r.BoardItem(t.Context(), "prj_runner", item)
-			if err == nil && row.Position.State != "Todo" {
-				t.Errorf("fixture projected the move before the read: %s", row.Position.State)
+		row.WorkflowStateName = new("In Progress")
+		_, err = w.UpdateWorkItem(t.Context(), row)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Hub.Repository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		row, err := r.BoardItem(t.Context(), "prj_runner", item)
+		if err == nil && row.Position.State != "Todo" {
+			t.Errorf("fixture projected the move before the read: %s", row.Position.State)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = hosted.Request(t, viewer, http.MethodGet, hubfixture.OrganizationBase(f.Organization)+"/work-board?project=prj_runner", nil)
+	hubfixture.RequireStatus(t, response, http.StatusOK)
+	hostedPage.Cards, hostedPage.Projects = nil, nil
+	hubfixture.Decode(t, response, &hostedPage)
+	var lane string
+	for _, card := range hostedPage.Cards {
+		if card.Issue.WorkItemID == item {
+			lane = card.Issue.State
+		}
+	}
+	if lane != "In Progress" {
+		t.Errorf("moved card lane=%q, want In Progress", lane)
+	}
+	get("/board/counts", &counts)
+	want := tracker.NativeWorkLane{State: "In Progress", Total: 1, Running: 1}
+	var projectLane, hostedLane tracker.NativeWorkLane
+	for _, row := range counts.Rows {
+		if row.Kind == "lane" && row.State == want.State {
+			projectLane = tracker.NativeWorkLane{State: row.State, Total: int(row.Total), Running: int(row.Running)}
+		}
+	}
+	for _, project := range hostedPage.Projects {
+		for _, lane := range project.Work.Lanes {
+			if lane.State == want.State {
+				hostedLane = lane
 			}
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		response := hosted.Request(t, viewer, http.MethodGet, hubfixture.OrganizationBase(f.Organization)+"/work-board?project=prj_runner", nil)
-		hubfixture.RequireStatus(t, response, http.StatusOK)
-		hostedPage.Cards, hostedPage.Projects = nil, nil
-		hubfixture.Decode(t, response, &hostedPage)
-		var lane string
-		for _, card := range hostedPage.Cards {
-			if card.Issue.WorkItemID == item {
-				lane = card.Issue.State
-			}
-		}
-		if lane != "In Progress" {
-			t.Errorf("moved card lane=%q, want In Progress", lane)
-		}
-		get("/board/counts", &counts)
-		want := tracker.NativeWorkLane{State: "In Progress", Total: 1, Running: 1}
-		var projectLane, hostedLane tracker.NativeWorkLane
-		for _, row := range counts.Rows {
-			if row.Kind == "lane" && row.State == want.State {
-				projectLane = tracker.NativeWorkLane{State: row.State, Total: int(row.Total), Running: int(row.Running)}
-			}
-		}
-		for _, project := range hostedPage.Projects {
-			for _, lane := range project.Work.Lanes {
-				if lane.State == want.State {
-					hostedLane = lane
-				}
-				if lane.State == "Todo" && (lane.Total != 1 || lane.Running != 0) {
-					t.Errorf("hosted source lane after move: %+v", lane)
-				}
-			}
-		}
-		if projectLane != want || hostedLane != want {
-			t.Errorf("destination lane before refresh: project=%+v hosted=%+v want=%+v", projectLane, hostedLane, want)
-		}
-		for _, filter := range []string{"", "&open=true", "&open=true&state=In+Progress"} {
-			var moved tracker.NativeIssuePage
-			get("/work-items?include=work&limit=1"+filter, &moved)
-			checkFirstWorkItem(t, "moved work list"+filter, moved.Work, item)
-			if moved.Work != nil && len(moved.Work.Items) == 1 && moved.Work.Items[0].State != want.State {
-				t.Errorf("work item before refresh (%q): lane=%q, want %q", filter, moved.Work.Items[0].State, want.State)
-			}
-			var workLane tracker.NativeWorkLane
-			for _, lane := range moved.Work.Lanes {
-				if lane.State == want.State {
-					workLane = lane
-				}
-				if lane.State == "Todo" && (lane.Total != 1 || lane.Running != 0) {
-					t.Errorf("work source lane before refresh (%q): %+v", filter, lane)
-				}
-			}
-			if workLane != want {
-				t.Errorf("work destination lane before refresh (%q): %+v, want %+v", filter, workLane, want)
+			if lane.State == "Todo" && (lane.Total != 1 || lane.Running != 0) {
+				t.Errorf("hosted source lane after move: %+v", lane)
 			}
 		}
-	} else {
-		checkBoardWorkPlan(t, f)
+	}
+	if projectLane != want || hostedLane != want {
+		t.Errorf("destination lane before refresh: project=%+v hosted=%+v want=%+v", projectLane, hostedLane, want)
+	}
+	for _, filter := range []string{"", "&open=true", "&open=true&state=In+Progress", "&q=Example", "&open=true&state=In+Progress&q=Example"} {
+		var moved tracker.NativeIssuePage
+		get("/work-items?include=work&limit=1"+filter, &moved)
+		checkFirstWorkItem(t, "moved work list"+filter, moved.Work, item)
+		if moved.Work != nil && len(moved.Work.Items) == 1 && moved.Work.Items[0].State != want.State {
+			t.Errorf("work item before refresh (%q): lane=%q, want %q", filter, moved.Work.Items[0].State, want.State)
+		}
+		if strings.Contains(filter, "q=") {
+			if strings.Contains(filter, "state=") && (len(moved.Items) != 1 || moved.Items[0].WorkItemID != item || moved.Items[0].State != want.State) {
+				t.Errorf("filtered search items before refresh (%q): want %s in %q", filter, item, want.State)
+			}
+			continue
+		}
+		var workLane tracker.NativeWorkLane
+		for _, lane := range moved.Work.Lanes {
+			if lane.State == want.State {
+				workLane = lane
+			}
+			if lane.State == "Todo" && (lane.Total != 1 || lane.Running != 0) {
+				t.Errorf("work source lane before refresh (%q): %+v", filter, lane)
+			}
+		}
+		if workLane != want {
+			t.Errorf("work destination lane before refresh (%q): %+v, want %+v", filter, workLane, want)
+		}
 	}
 }
 

@@ -1,6 +1,34 @@
 package boardviewsql
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
+
+var ProjectDirtyItems = DirtyItems("SELECT $2::text AS id")
+
+const DirtyItemMatch = "d.project_id=b.project_id AND d.work_item_id=b.work_item_id"
+
+const (
+	effectiveState    = "coalesce(d.state,b.state)"
+	effectiveArchived = "coalesce(d.archived,b.archived)"
+	effectiveTerminal = "coalesce(d.terminal,b.terminal)"
+)
+
+var effectiveDirtyFields = strings.NewReplacer(
+	"b.lane_rank", "coalesce(d.board_rank,b.lane_rank)",
+	"b.state", effectiveState,
+	"b.archived", effectiveArchived,
+	"b.terminal", effectiveTerminal,
+	"b.dispatchable", "coalesce(d.dispatchable,b.dispatchable)",
+	"b.page_state", effectiveState, "b.list_state", effectiveState,
+	"b.page_archived", effectiveArchived, "b.list_archived", effectiveArchived,
+	"b.page_terminal", effectiveTerminal, "b.list_terminal", effectiveTerminal,
+)
+
+func EffectiveDirtyFields(query string) string {
+	return effectiveDirtyFields.Replace(query)
+}
 
 func DirtyItems(projects string) string {
 	return `dirty AS MATERIALIZED (
