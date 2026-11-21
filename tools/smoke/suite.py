@@ -1,6 +1,6 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 import fcntl
 import json
 import os
@@ -29,12 +29,23 @@ class Failure(ValueError):
 
 
 def command(*args, cwd=REPOSITORY, log=None, env=None):
-    result = subprocess.run([str(arg) for arg in args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                            stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE, text=True, timeout=900)
-    if result.returncode:
-        raise Failure(f"{Path(args[0]).name} {args[1]} exited {result.returncode}"
+    with subprocess.Popen([str(arg) for arg in args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                          stdout=log or subprocess.PIPE, stderr=log or subprocess.PIPE, text=True,
+                          start_new_session=True) as process:
+        try:
+            output, _ = process.communicate(timeout=900)
+        except BaseException:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            raise
+    if process.returncode:
+        raise Failure(f"{Path(args[0]).name} {args[1]} exited {process.returncode}"
                       + (f". See {log.name}" if log else ""))
-    return (result.stdout or "").strip()
+    return (output or "").strip()
+
+
+def stop_setup(number, _frame):
+    raise Failure(f"setup interrupted by signal {number}")
 
 
 def checkout_fixture(root):
@@ -205,6 +216,8 @@ def main():
     config = parser.parse_args()
     if not 1 <= config.parallel <= 16 or not 1024 < config.port <= 65000 or not 1 <= config.timeout <= 3600:
         parser.error("Invalid parallelism, base port or replay timeout")
+    for event in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(event, stop_setup)
     os.umask(0o077)
     archive = Path(os.environ.get("DETENT_SMOKE_ARTIFACTS", "/tmp")).expanduser().resolve()
     archive.mkdir(parents=True, exist_ok=True)
