@@ -903,10 +903,10 @@ func (f restRecoveryHTTPClient) Do(r *http.Request) (*http.Response, error) { re
 
 func TestNativeLandingConflictContinuesHeldAttempt(t *testing.T) {
 	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress", "Merging"}, TerminalStates: []string{"Done"}})
-	issue := completionTransitionIssue("In Progress", "")
+	issue := completionTransitionIssue("Merging", "")
 	tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}}
 	supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
