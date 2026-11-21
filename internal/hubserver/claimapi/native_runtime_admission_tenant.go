@@ -356,7 +356,7 @@ func (d AdmissionDeps) ReadRuntimeAdmissionTenant(ctx context.Context, scope hub
 		case landingRequired && !landingReady:
 			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Unavailable = append(entry.Unavailable, "project_landing_capacity")
-		case len(runner.ProviderCapacity) > 0:
+		case !landingRequired && len(runner.ProviderCapacity) > 0:
 			entry.SelectorObservedAt = &selected.ObservedAt
 			entry.Unavailable = append(entry.Unavailable, "provider_candidate_requirement")
 		default:
