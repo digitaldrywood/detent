@@ -2535,7 +2535,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 		}
 		afterRunPending = false
-		resumeCtx, resumeCancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backendConfig, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+		resumeCtx, resumeCancel := r.sourceFinalizationContext(ctx, req, r.nativeWorkTimeout(workflow.Config, backendConfig, 0))
 		defer resumeCancel()
 		err := r.afterExecution(resumeCtx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
 		var sessionErr error
@@ -3088,7 +3088,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				// finalized head. It needs the work budget, not the cleanup budget.
 				timeout = r.nativeWorkTimeout(workflow.Config, backendConfig, 0)
 			}
-			afterRunCtx, afterRunCancel = r.finalizationContext(context.WithoutCancel(ctx), timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+			afterRunCtx, afterRunCancel = r.sourceFinalizationContext(ctx, req, timeout)
 		}
 		defer afterRunCancel()
 		disposition := NativeDispositionFromMessage(result.FinalMessage)
