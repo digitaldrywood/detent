@@ -73,10 +73,13 @@ def build(ref, root):
     commit = command("git", "rev-parse", "--verify", "--end-of-options", revision + "^{commit}", cwd=checkout)
     source = root / "source"
     target = root / "detent"
+    app_env = os.environ | {"npm_config_audit": "false", "npm_config_fund": "false"}
+    if sys.platform == "linux":
+        app_env.setdefault("UV_THREADPOOL_SIZE", "1")
+        app_env.setdefault("MALLOC_ARENA_MAX", "2")
     with (root / "build.log").open("w") as log:
         command("git", "worktree", "add", "--detach", source, commit, cwd=checkout, log=log)
-        command("make", "app", cwd=source, log=log,
-                env=os.environ | {"npm_config_audit": "false", "npm_config_fund": "false"})
+        command("make", "app", cwd=source, log=log, env=app_env)
         overlay = root / "overlay"
         command(sys.executable, TOOLS / "source-worker-overlay.py", source, overlay, log=log)
         command("go", "build", "-p", "4", "-overlay", overlay / "overlay.json",
