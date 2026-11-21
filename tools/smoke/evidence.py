@@ -230,7 +230,7 @@ def check_landing(project, policy, evidence, attempt, expected, versions, review
         expect(f"landed {name} omits {needle!r}", True, needle not in project.git("show", f"{after}:{name}"))
 
 
-def phase_events(attempt, receipt_phases, reviews, command):
+def phase_events(attempt, receipt_phases, reviews, command, interrupted_at=None):
     runtime = attempt["runtime"]
     events = set()
 
@@ -246,6 +246,8 @@ def phase_events(attempt, receipt_phases, reviews, command):
             add(phase["started_at"], "plan")
         if not implemented and phase["name"] in {"implementation", "rework"}:
             add(phase["started_at"], "implement")
+    if interrupted_at:
+        add(interrupted_at, "implement")
     for phase in implemented:
         source = (phase["head_sha"], phase["tree_sha"])
         matching = [span["started_at"] for span in commands if source == (span.get("head_sha"), span.get("tree_sha"))]
@@ -339,7 +341,9 @@ def compare(project, policy, evidence, expected, definition, advanced):
     if advanced:
         check_conflict(project, evidence, labels, versions, reviews, landing, gates, command, advanced)
     else:
-        phases = phase_events(attempt, evidence["phases"], reviews, command)
+        if (expected.get("fault") or {}).get("resumed_implementation") and not admission_restore:
+            labels.insert(0, "implement")
+        phases = phase_events(attempt, evidence["phases"], reviews, command, evidence.get("interrupted_implementation_at"))
         if definition.get("retained_service"):
             phases = ["hook:accepted", *phases, "hook:retired"]
         if actions == ["no_progress"]:

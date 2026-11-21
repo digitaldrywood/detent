@@ -124,6 +124,12 @@ class Fault:
         stack.write(stack.ROOT / "fault.evidence.json", {"fault": proof, "samples": self.samples, "difference": difference})
         if difference:
             raise stack.Failure(difference)
+        if self.action == "kill_worker" or self.specification.get("resumed_implementation") and len(evidence["details"]) == 1:
+            attempt_id = evidence["details"][0]["attempt_id"]
+            interrupted = next((event for event in self.operator.instance_failure(evidence["history"])
+                                if event["data"]["run"]["attempt_id"] == attempt_id), None)
+            expect("interrupted implementation on the resumed attempt", True, bool(interrupted))
+            evidence["interrupted_implementation_at"] = interrupted["recorded_at"]
         if self.action != "refuse_loopback" or len(evidence["details"]) != 2:
             return
         first, successor = sorted(evidence["details"], key=lambda row: time_key(row["started_at"]))

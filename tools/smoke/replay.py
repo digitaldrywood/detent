@@ -277,9 +277,9 @@ def run_case(project, case, policy, routed, original=None, advanced=None, item=N
         raise stack.Failure("required isolated target advance did not occur")
     if service:
         evidence["service"] = service
-    stack.write(stack.ROOT / (case.name + ".evidence.json"), evidence)
     if fault:
         fault.verify(evidence)
+    stack.write(stack.ROOT / (case.name + ".evidence.json"), evidence)
     compare(project, policy, evidence, expected, definition, advanced)
     return item, evidence
 
