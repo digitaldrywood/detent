@@ -23,11 +23,10 @@ type ToolExperiment struct {
 	Status       string
 	ExitCode     *int
 	Result       json.RawMessage
-	Source       string
 }
 
 func (e ToolExperiment) Fingerprint() string {
-	if e.Tool == "" || e.Status == "" || e.Source == "" || len(e.Arguments)+len(e.Result) > maxFingerprintBytes {
+	if e.Tool == "" || e.Status == "" || len(e.Arguments)+len(e.Result) > maxFingerprintBytes {
 		return ""
 	}
 	var ok bool

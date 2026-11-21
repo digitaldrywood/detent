@@ -17,7 +17,7 @@ func TestToolLoop(t *testing.T) {
 		{name: "four calls", calls: "abcdabcdabcdabcdabcdabcd", actions: []int{12, 24}},
 		{name: "unacknowledged", calls: "aaaaaaaaaaa", ackDelay: -1, actions: []int{3}},
 		{name: "late acknowledgement", calls: "aaaaaaaaaa", ackDelay: 2, actions: []int{3, 8}},
-		{name: "source or outcome changed", calls: "aaabbbbbb", actions: []int{3, 6, 9}},
+		{name: "outcome changed", calls: "aaabbbbbb", actions: []int{3, 6, 9}},
 		{name: "unknown breaks cycle", calls: "aaa aa aa aa", actions: []int{3}},
 		{name: "distinct experiments", calls: "abcdefghijklmn"},
 	} {
@@ -57,7 +57,7 @@ func TestToolLoop(t *testing.T) {
 }
 
 func TestToolExperimentFingerprint(t *testing.T) {
-	base := ToolExperiment{Tool: "example", Source: "source-1", Status: "completed", Arguments: []byte(`{"a":1,"b":2}`), Result: []byte(`{"ok":true}`)}
+	base := ToolExperiment{Tool: "example", Status: "completed", Arguments: []byte(`{"a":1,"b":2}`), Result: []byte(`{"ok":true}`)}
 	key := base.Fingerprint()
 	if key == "" {
 		t.Fatal("complete experiment has no fingerprint")
@@ -71,8 +71,7 @@ func TestToolExperimentFingerprint(t *testing.T) {
 		{name: "argument value", change: func(e *ToolExperiment) { e.Arguments = []byte(`{"a":2,"b":1}`) }},
 		{name: "working directory", change: func(e *ToolExperiment) { e.WorkspaceDir = "subdir" }},
 		{name: "outcome", change: func(e *ToolExperiment) { e.Result = []byte(`{"ok":false}`) }},
-		{name: "source", change: func(e *ToolExperiment) { e.Source = "source-2" }},
-		{name: "missing source", change: func(e *ToolExperiment) { e.Source = "" }, incomplete: true},
+		{name: "exit code", change: func(e *ToolExperiment) { e.ExitCode = new(1) }},
 		{name: "missing result", change: func(e *ToolExperiment) { e.Result = nil }, incomplete: true},
 		{name: "partial result", change: func(e *ToolExperiment) { e.Result = []byte(`{"ok":`) }, incomplete: true},
 	} {
