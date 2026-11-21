@@ -8,7 +8,7 @@ The fixture defaults to the published `test/smoke-scenarios` branch of the todo 
 
 The baseline profile uses tagged todo policy. The pyro profile uses the same todo source and command with the acceptance, promotion and security-audit configuration declared by the fixture. The review rejection scenario uses the baseline implementation reviewer and the Pyro acceptance validator.
 
-The live `loop-bait` case accepts one typed question or a confirmed detector stop with one fenced claim and no lane bounce. It saves any Hub intervention records. `loop-bait-scripted` runs a local App Server fixture in the same runner and Hub path and requires Hub steer and stop records at repeats three and six. The scripted case uses no Codex credentials.
+The live `loop-bait` case accepts one typed question or a confirmed detector stop with one fenced claim and no lane bounce. It saves any Hub intervention records. `loop-bait-scripted` runs a local App Server fixture in the same runner and Hub path and requires Hub steer and stop records at repeats three and six. The scripted case repeats the read-only `/bin/pwd` command and uses no Codex credentials.
 
 The six extended scenarios use the same isolated stack and the fixture's replay verifier. Lease expiry requires a plan receipt before pausing the runner and checks the replacement's implementation checkpoint. Runner restart and gate flake arm the one-shot source gate fault. The parallel scenario records a capacity-one control from a fresh project in the same stack. Dependency order and the operator's typed answer are verified from the recorded item history.
 

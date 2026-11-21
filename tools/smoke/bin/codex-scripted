@@ -36,12 +36,12 @@ def emit_probes(scope, cwd, ordinals):
         call = f"call-{ordinal}"
         notification("item/started", item={"id": f"reason-{ordinal}", "type": "reasoning"}, **scope)
         item = {"id": call, "type": "commandExecution", "source": "agent",
-                "command": "go run . list | wc -c", "cwd": cwd}
+                "command": "/bin/pwd", "cwd": cwd}
         notification("item/started", item=item | {"status": "inProgress"}, **scope)
         notification("rawResponseItem/completed", item={"type": "function_call", "call_id": call}, **scope)
         notification("rawResponse/completed", responseId=f"response-{ordinal}", **scope)
         notification("item/completed", item=item | {"status": "completed", "exitCode": 0,
-                                                    "aggregatedOutput": "3\n"}, **scope)
+                                                    "aggregatedOutput": cwd + "\n"}, **scope)
 
 
 def run():
