@@ -57,6 +57,7 @@ func RunLandingScenarios(t *testing.T, factories Constructors) {
 		{name: "plain git by default"},
 		{name: "failed checklist row is report only", refusal: "report_only_checklist"},
 		{name: "audited landing under the implementation lease", audited: "held"},
+		{name: "review sessions retain independent identities", audited: "review_identity"},
 		{name: "retained landing cleans up after a phase receipt error", audited: "cleanup_epilogue"},
 		{name: "audited clean landing after publisher reclaim", audited: "clean"},
 		{name: "audited landing integrates an advanced target", audited: "target"},
@@ -126,6 +127,9 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 	h := newPlannerHub(t, "In Review", states, factories)
 	next := h.descriptor
 	next.Gates.SecurityAudit, next.Gates.Validator = true, true
+	if scenario == "review_identity" {
+		next.Gates.AutomatedReview = gate.AutomatedReviewRequired
+	}
 	next = next.WithID()
 	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
 		t.Fatal(err)
@@ -166,7 +170,7 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		return agent
 	}
 	agent := newAgent(backend)
-	held := scenario == "held" || epilogueFailure
+	held := scenario == "held" || scenario == "review_identity" || epilogueFailure
 	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: held})
 	var publishingAttempt, reviewAttempt string
 	if scenario == "clean" {
@@ -215,6 +219,42 @@ func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string, facto
 		t.Fatalf("source did not pass review: %+v, %v", result.NativeChange, err)
 	}
 	change := result.NativeChange
+	if scenario == "review_identity" {
+		evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+		if err != nil || evidence.Attempt == nil || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Activity == nil || evidence.Attempt.Runtime.Activity.SessionID <= 0 {
+			t.Fatalf("missing implementing session evidence: %+v, %v", evidence.Attempt, err)
+		}
+		implementation := evidence.Attempt.Runtime.Activity.SessionID
+		detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		threads := map[int64]string{}
+		h.seed(func(w tenantstore.Writer) error {
+			for _, review := range detail.Reviews {
+				check, thread := review.ImplementationReview, "thread-source-review"
+				if review.Validator != nil {
+					check, thread = review.Validator, "thread-validator"
+				}
+				if check == nil {
+					continue
+				}
+				session, err := w.(runnersession.Reader).RunnerSession(t.Context(), h.project, check.SessionID)
+				if err != nil {
+					return err
+				}
+				if session.ProviderThreadID != thread || session.AttemptID != evidence.Attempt.AttemptID || session.CompletedAt == nil || session.CompletedAt.After(review.CreatedAt) || session.FinalState != runner.FinalStateCompleted || session.ID == implementation {
+					return fmt.Errorf("review session %d did not record its own identity before publication: %+v", session.ID, session)
+				}
+				threads[session.ID] = thread
+			}
+			return nil
+		})
+		if len(threads) != 2 {
+			t.Fatalf("implementation review and acceptance require distinct sessions: %v", threads)
+		}
+		return
+	}
 	if held {
 		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Merging"); err != nil {
 			t.Fatal(err)
