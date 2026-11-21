@@ -231,7 +231,8 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return page, nil, err
 	}
-	selection.WindowAsOf = new(s.config.Clock())
+	selection.CardLiveness = includeBoard || includeWork
+	selection.WindowAsOf = new(time.Time)
 	selection.SearchText = strings.TrimSpace(params.Get("q"))
 	selection.SearchRanked = !includeBoard && (selection.SearchText != "" || selection.Fingerprint != "")
 	if len(selection.SearchText) > searchstore.MaxQueryTextBytes {
@@ -261,8 +262,8 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	if !legacy {
 		limit = min(limit, 200)
 	}
-	selection.Summary = (legacy || includeWork && selection.Terminal == nil) && selection.SupportsSummary()
-	selection.CountLanes = includeWork && !legacy && !selection.Summary && selection.SearchText == "" && selection.Fingerprint == ""
+	selection.Summary = (legacy || (includeBoard || includeWork) && selection.Terminal == nil) && selection.SupportsSummary()
+	selection.CountLanes = (includeBoard || includeWork && selection.Terminal == nil) && !legacy && !selection.Summary && selection.SearchText == "" && selection.Fingerprint == ""
 	selection.Limit = limit + 1
 	selection.Compact = includeSummary || includeWork
 	if position := cursor.Issues; position != nil {
@@ -295,6 +296,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
+		*selection.WindowAsOf = s.config.Clock()
 		var work *viewstore.BoardSelection
 		if includeWork {
 			value := selection
@@ -342,9 +344,9 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 	}
 	page.Total = -1
 	if (includeBoard || includeWork) && (!legacy || selection.Summary) {
-		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: s.config.Clock()}
+		page.Work = &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, ShippedWindows: []tracker.NativeShippedWindow{}, AsOf: *selection.WindowAsOf}
 	}
-	if includeWork && (!selection.Summary || snapshot.Pending) {
+	if page.Work != nil && (!selection.Summary || snapshot.Pending) {
 		page.Work.Lanes = nil
 		if selection.CountLanes && !snapshot.Pending {
 			page.Work.Lanes = make([]tracker.NativeWorkLane, 0, len(snapshot.Lanes))
@@ -358,7 +360,7 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		windows := []tracker.NativeShippedWindow{{Window: "1h"}, {Window: "24h"}, {Window: "7d"}}
 		filterCompletionStates := !includeBoard && len(selection.States) > 0
 		for _, summary := range snapshot.Summaries {
-			if summary.Kind == "lane" && (!includeWork || len(selection.States) == 0 || slices.Contains(selection.States, summary.State)) {
+			if summary.Kind == "lane" && (!includeBoard && !includeWork || len(selection.States) == 0 || slices.Contains(selection.States, summary.State)) {
 				page.Work.Lanes = append(page.Work.Lanes, tracker.NativeWorkLane{State: summary.State, Total: int(summary.Total), Running: int(summary.Running)})
 				if len(selection.States) > 0 && slices.Contains(selection.States, summary.State) {
 					total += int(summary.Total)
@@ -475,6 +477,11 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		page.Items = append(page.Items, card.Issue)
 		returned = append(returned, row)
 		if includeBoard {
+			if card.Issue.Terminal {
+				row.Liveness = viewstore.BoardLiveness{}
+			}
+			card.Attempt, card.Execution, card.LivenessExpiresAt = row.Liveness.Apply(card.Attempt, card.Execution, *selection.WindowAsOf)
+			card.StatusLine = nativeBoardStatusLine(card)
 			if card.Change != nil {
 				change := *card.Change
 				change.Status = overlay.Status(row)
@@ -485,11 +492,6 @@ func (s *Service) readBoardRecordSnapshot(ctx context.Context, scope hubscope.Na
 		if oversized {
 			hasMore = len(returned) < len(records) || hasMore
 			break
-		}
-	}
-	if includeBoard {
-		if err := s.readBoardCardLiveness(ctx, scope.Organization, *selection.WindowAsOf, boardCardPointers(page.Cards)); err != nil {
-			return page, nil, err
 		}
 	}
 	if includeWork {

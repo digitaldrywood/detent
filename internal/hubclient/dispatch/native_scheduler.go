@@ -82,7 +82,7 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 	projectOwner := s.projectConfiguration
 	s.mu.Unlock()
 	for _, source := range s.nativeProjectSnapshot() {
-		if err := s.heartbeatNativeMachine(ctx, source, projectOwner); err != nil {
+		if err := s.heartbeatNativeMachine(ctx, source, projectOwner, true); err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
@@ -93,10 +93,10 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 }
 
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
-	return s.heartbeatNativeMachine(ctx, source, nil)
+	return s.heartbeatNativeMachine(ctx, source, nil, false)
 }
 
-func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
+func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration, scheduled bool) error {
 	if s.controlPaused.Load() {
 		return nil
 	}
@@ -135,7 +135,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
 	s.mu.Unlock()
-	if ownerView == nil && !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
+	if !scheduled && ownerView == nil && !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
 		return nil
 	}
 	var update *runnerauth.UpdateObservation
@@ -272,6 +272,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 			}
 		}
 	}
+	sentAt := s.now()
 	if err := s.sendNativeMachineHeartbeat(ctx, source, machine, s.client.Enrollment() == nil || last.IsZero()); err != nil {
 		return err
 	}
@@ -282,7 +283,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
-	s.nativeHeartbeats[project] = s.now()
+	s.nativeHeartbeats[project] = sentAt
 	if projectConfig != nil {
 		if s.configHeartbeats == nil {
 			s.configHeartbeats = make(map[tracker.ProjectID]time.Time)
@@ -336,7 +337,6 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.machine.CapacityConfig = appliedCapacity
 		s.machine.Capacity = min(appliedCapacity.RuntimeLimit, appliedCapacity.ClientLimit, appliedCapacity.LocalLimit)
 	}
-	s.nativeHeartbeats[project] = s.now()
 	return nil
 }
 

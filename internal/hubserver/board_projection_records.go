@@ -525,8 +525,11 @@ func (s *Service) refreshBoardRecord(ctx context.Context, organization tracker.O
 		issue.WebURL = hubrecords.IssueBrowserPath(snapshot.organizationSlug, snapshot.project.Core.Slug, issue.Number)
 		s.prepareNativeIssueChangeRecord(snapshot, &issue)
 		projected, reporter := s.boardProjectedRelationshipIssues(organization, candidate.ProjectID, issue, snapshot)
-		if record.ExpiresAt != nil && now.Before(*record.ExpiresAt) {
-			record.RefreshAfter = record.ExpiresAt
+		if record.ExpiresAt != nil {
+			refreshAt := hubapi.MinTime(*record.ExpiresAt, card.Execution.ExpiresAt)
+			if now.Before(refreshAt) {
+				record.RefreshAfter = &refreshAt
+			}
 		}
 		projected = s.nativeIssueResponse(projected)
 		board, list, boundedReporter, listBytes, err := boundBoardProjection(projected, reporter)
@@ -617,7 +620,7 @@ func boardProjectionRecord(snapshot boardProjectionSnapshot, card tracker.Native
 	record.Display.Exact = boardview.ExactDisplay(record, card)
 	if card.Execution != nil {
 		record.Running = !issue.Terminal && card.Execution.Running
-		record.ExpiresAt = &card.Execution.ExpiresAt
+		record.ExpiresAt = &snapshot.lease.ExpiresAt
 		record.ExecutionFence = snapshot.lease.FencingToken
 	}
 	return record
@@ -660,7 +663,7 @@ func applyBoardExecutionDiagnostics(execution *tracker.NativeBoardExecution, lea
 			execution.ID = claim.NativeAttemptID
 		}
 		execution.Running, execution.Stage = true, local.Stage
-		execution.ExpiresAt = hubapi.MinTime(execution.ExpiresAt, asOf.Add(runnerauth.HeartbeatTimeout))
+		execution.ExpiresAt = hubapi.MinTime(asOf, d.ObservedAt).Add(runnerauth.HeartbeatTimeout)
 	}
 	if count != 1 {
 		local = nil
@@ -670,6 +673,7 @@ func applyBoardExecutionDiagnostics(execution *tracker.NativeBoardExecution, lea
 		execution.Running, execution.Stage = false, ""
 		if fresh && (claim != nil && claim.OperationPending && claim.HostOperation == "workspace.finalize_native_work" || local != nil && local.OperationPending && local.HostOperation == "workspace.finalize_native_work") {
 			execution.Stage = "finalizing"
+			execution.ExpiresAt = hubapi.MinTime(asOf, d.ObservedAt).Add(runnerauth.HeartbeatTimeout)
 		}
 	}
 }

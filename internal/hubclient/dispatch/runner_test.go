@@ -1005,3 +1005,61 @@ func TestBlockedMachineReportDoesNotSerializeLeaseRenewal(t *testing.T) {
 		t.Fatalf("blocked project heartbeat not committed: %v", reported)
 	}
 }
+
+func TestScheduledHeartbeatKeepsSixtySecondCadence(t *testing.T) {
+	const hubURL = "https://runner-hub.example.test"
+	interval := runnerauth.HeartbeatTimeout / 2
+	start := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	now := start
+	var observed []time.Time
+	transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			now = now.Add(time.Second)
+			observed = append(observed, now)
+		}
+		response := httptest.NewRecorder()
+		if strings.HasSuffix(request.URL.Path, "/capabilities") {
+			if err := json.NewEncoder(response).Encode(nativeCapabilities{ProtocolMajors: []int{2}, EventSchemas: []int{1}, Features: []string{"native_issues", "scoped_collaboration", "repository_policy"}}); err != nil {
+				return nil, err
+			}
+		} else if request.Method == http.MethodGet {
+			if err := json.NewEncoder(response).Encode(tracker.NativeProject{ID: "prj_example", OrganizationID: "org_example", Profile: "native"}); err != nil {
+				return nil, err
+			}
+		} else {
+			response.WriteHeader(http.StatusNoContent)
+		}
+		return response.Result(), nil
+	})
+	client, err := newTestClient(t, Config{URL: hubURL, TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: transport}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := client.Native("org_example", "prj_example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := &Scheduler{
+		client: client, machine: Machine{ID: "machine_example", Hostname: "example", Capacity: 1, Version: "test"},
+		now: func() time.Time { return now }, heartbeatInterval: interval, nativeHeartbeats: make(map[tracker.ProjectID]time.Time),
+	}
+	source := fixtureConnector(native)
+	for _, elapsed := range []time.Duration{0, interval, 2 * interval, 3 * interval} {
+		now = start.Add(elapsed)
+		if err := scheduler.heartbeatNativeMachine(t.Context(), source, nil, true); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Second)
+		if err := scheduler.ensureNativeMachine(t.Context(), source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(observed) != 4 {
+		t.Fatalf("received %d reports, want one at each of four ticks", len(observed))
+	}
+	for i := 1; i < len(observed); i++ {
+		if elapsed := observed[i].Sub(observed[i-1]); elapsed != interval || elapsed >= runnerauth.HeartbeatTimeout {
+			t.Fatalf("reports %d and %d separated by %s, want %s", i-1, i, elapsed, interval)
+		}
+	}
+}

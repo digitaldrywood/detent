@@ -268,9 +268,6 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 		issue.BlockedReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[0]), Basis: boardViewText(reason.Text[1]), CurrentBasis: boardViewText(reason.Text[2]), Revision: boardViewNumber(reason.Int[0])}, blocked, slices.ContainsFunc(issue.Blockers, cross))
 		issue.UnblocksReason = workitemread.VisibleDependencyReason(tracker.DependencyReason{Text: boardViewText(reason.Text[3]), Basis: boardViewText(reason.Text[4]), CurrentBasis: boardViewText(reason.Text[5]), Revision: boardViewNumber(reason.Int[1])}, unblocks, slices.ContainsFunc(issue.Dependents, cross))
 		card := tracker.NativeBoardCard{Issue: issue}
-		if boardViewFlag(c.Running) {
-			view.Running[issue.WorkItemID] = true
-		}
 		if boardViewText(c.AttemptID) != "" {
 			card.Attempt = &tracker.NativeBoardAttempt{ID: boardViewText(c.AttemptID), Count: int(boardViewNumber(c.AttemptCount)), Status: boardViewText(c.AttemptStatus), RunnerID: boardViewText(c.AttemptRunnerID), MachineID: boardViewText(c.AttemptMachineID), StartedAt: boardViewStamp(c.AttemptStartedAt), ExpiresAt: boardViewStamp(c.AttemptExpiresAt)}
 			if identity := (tracker.NativeExecutionIdentity{Role: boardViewText(c.AttemptRole), Backend: boardViewText(c.AttemptBackend), Model: boardViewText(c.AttemptModel), ReasoningEffort: boardViewText(c.AttemptEffort)}); identity != (tracker.NativeExecutionIdentity{}) {
@@ -282,6 +279,14 @@ func Assemble(scope hubscope.NativeScope, items bool, rows viewstore.BoardViewRo
 			if identity := (tracker.NativeExecutionIdentity{Role: boardViewText(c.ExecutionRole), Backend: boardViewText(c.ExecutionBackend), Model: boardViewText(c.ExecutionModel), ReasoningEffort: boardViewText(c.ExecutionEffort)}); identity != (tracker.NativeExecutionIdentity{}) {
 				card.Execution.Identity = &identity
 			}
+		}
+		liveness := viewstore.BoardLiveness{AttemptID: boardViewText(row.Text[0]), ExecutionID: boardViewText(row.Text[1]), AttemptUntil: row.Time[0], ExecutionUntil: row.Time[1], LeaseExpiresAt: row.Time[2]}
+		if issue.Terminal {
+			liveness = viewstore.BoardLiveness{}
+		}
+		card.Attempt, card.Execution, card.LivenessExpiresAt = liveness.Apply(card.Attempt, card.Execution, now)
+		if card.Execution != nil && card.Execution.Running || card.Execution == nil && card.Attempt != nil && card.Attempt.Status == "running" {
+			view.Running[issue.WorkItemID] = true
 		}
 		owned := scope.ReporterOwns(tracker.Actor{PrincipalID: boardViewText(c.ChangePrincipalID)})
 		visible := boardViewText(c.ChangeID) != "" && changes[string(project)+"\x00"+boardViewText(c.ChangeID)] && owned

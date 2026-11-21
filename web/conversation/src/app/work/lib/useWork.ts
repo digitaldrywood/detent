@@ -2,6 +2,7 @@ import React from "react";
 import { subscribeProjectEvents } from "./projectEvents.ts";
 
 import { useClient } from "../../client.ts";
+import { clockSnapshot, subscribeClock } from "./workClock.ts";
 import { useRunnerNames, shortRunnerId } from "./runnerNames.ts";
 import { toWorkItemView } from "./fromWire.ts";
 import { boardAccountKey, confirmWorkItem, getBoardRead, rejectBoardCache, retainLiveBoard, type BoardData } from "./boardStore.ts";
@@ -134,33 +135,6 @@ export async function moveItem(
       message: cause instanceof Error ? cause.message : String(cause),
     };
   }
-}
-
-/** A ticking clock for the age and elapsed labels, at one update a second. */
-let clockNow = Date.now();
-let clockTimer: ReturnType<typeof setInterval> | null = null;
-const clockListeners = new Set<() => void>();
-
-function subscribeClock(listener: () => void): () => void {
-  if (clockTimer === null) {
-    clockNow = Date.now();
-    clockTimer = setInterval(() => {
-      clockNow = Date.now();
-      for (const notify of clockListeners) notify();
-    }, 1_000);
-  }
-  clockListeners.add(listener);
-  return () => {
-    clockListeners.delete(listener);
-    if (clockListeners.size === 0 && clockTimer !== null) {
-      clearInterval(clockTimer);
-      clockTimer = null;
-    }
-  };
-}
-
-function clockSnapshot(): number {
-  return clockNow;
 }
 
 export function useNow(): number {

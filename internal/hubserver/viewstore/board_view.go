@@ -166,7 +166,7 @@ type BoardViewRow struct {
 	Text    [8]*string
 	Int     [8]*int64
 	Bool    [8]*bool
-	Time    [2]*time.Time
+	Time    [3]*time.Time
 }
 
 func (r *BoardViewRow) Targets() []any {

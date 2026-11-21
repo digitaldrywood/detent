@@ -42,6 +42,8 @@ export function statusPill(item: WorkItemView, terminal = item.terminal): { tone
       tone: "err",
       label: waitingLabel(item),
     };
+  if (item.reserveWorkerSpace && item.observations?.worker === "unavailable")
+    return { tone: "mute", label: "Runner status unknown" };
   const stage = EXECUTION_STAGE_LABELS.get(item.attempt?.stage ?? "");
   if (stage) return { tone: isLive(item, terminal) ? "ok" : "mute", label: stage };
   if (isLive(item, terminal)) return { tone: "ok", label: "Running" };

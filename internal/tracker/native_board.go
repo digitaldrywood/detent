@@ -31,11 +31,12 @@ type NativeBoardExecution struct {
 }
 
 type NativeBoardCard struct {
-	Issue      NativeIssue           `json:"issue"`
-	StatusLine string                `json:"status_line"`
-	Attempt    *NativeBoardAttempt   `json:"attempt"`
-	Execution  *NativeBoardExecution `json:"execution,omitempty"`
-	Change     *NativeBoardChange    `json:"change"`
+	LivenessExpiresAt *time.Time            `json:"liveness_expires_at,omitempty"`
+	Issue             NativeIssue           `json:"issue"`
+	StatusLine        string                `json:"status_line"`
+	Attempt           *NativeBoardAttempt   `json:"attempt"`
+	Execution         *NativeBoardExecution `json:"execution,omitempty"`
+	Change            *NativeBoardChange    `json:"change"`
 }
 
 type NativeBoardDelta struct {

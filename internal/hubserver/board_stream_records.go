@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"reflect"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -39,7 +40,14 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 	var rows []viewstore.BoardDelta
 	var head int64
 	var projectSlug string
-	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	var now time.Time
+	var liveness map[tracker.NativeWorkItemID]viewstore.BoardLiveness
+	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+	if !ok {
+		return false, hubapi.NativeWorkItemStorageUnavailable()
+	}
+	err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		now = s.config.Clock()
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -65,6 +73,25 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 			return nil
 		}
 		rows, err = r.BoardDeltas(ctx, scope.Project, sub.sequence, min(d.config.PageSize, corestore.MaxPageSize))
+		if err != nil || len(rows) == 0 {
+			return err
+		}
+		var items []tracker.NativeWorkItemID
+		for _, row := range rows {
+			if row.Topic == "card" {
+				items = append(items, row.WorkItemID)
+			}
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		reader, ok := r.(interface {
+			BoardCardLiveness(context.Context, tracker.ProjectID, []tracker.NativeWorkItemID, time.Time) (map[tracker.NativeWorkItemID]viewstore.BoardLiveness, error)
+		})
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		liveness, err = reader.BoardCardLiveness(ctx, scope.Project, items, now)
 		return err
 	})
 	if err != nil {
@@ -141,6 +168,7 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 				}
 				card.Issue.WebURL = hubrecords.IssueBrowserPath(organizationSlug, projectSlug, card.Issue.Number)
 				card.Issue = s.nativeIssueResponse(scope.ReporterIssue(card.Issue))
+				card.Attempt, card.Execution, card.LivenessExpiresAt = liveness[row.WorkItemID].Apply(card.Attempt, card.Execution, now)
 				card.StatusLine = nativeBoardStatusLine(card)
 				*item.card = &card
 			}
@@ -176,18 +204,6 @@ func (s *Service) dashboardBoardRecordPage(ctx context.Context, d *dashboardDeli
 	frame.CountsIndependent = true
 	if summary.ChangeSequence != head || summary.GrantVersion != frame.GrantVersion {
 		frame.Gap, frame.Sequence, frame.GrantVersion, frame.Deltas = true, summary.ChangeSequence, summary.GrantVersion, []tracker.NativeBoardDelta{}
-	}
-	var cards []*tracker.NativeBoardCard
-	for _, delta := range frame.Deltas {
-		if delta.Previous != nil {
-			cards = append(cards, delta.Previous)
-		}
-		if delta.Current != nil {
-			cards = append(cards, delta.Current)
-		}
-	}
-	if err := s.readBoardCardLiveness(ctx, scope.Organization, s.config.Clock(), cards); err != nil {
-		return false, err
 	}
 	raw, err := json.Marshal(frame)
 	if err != nil {

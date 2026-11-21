@@ -244,12 +244,13 @@ export function retainOmittedRelations(previous: NativeIssue, updated: NativeIss
 }
 
 export function toBoardCardView(card: NativeBoardCard, projectName: string): WorkItemView {
-  const item = toWorkItemView(card.issue, projectName, { observations: { worker: "known", change: "known" } });
-  const attempt = card.attempt;
-  const execution = card.execution;
+  const expired = card.liveness_expires_at === null;
+  const item = toWorkItemView(card.issue, projectName, { observations: { worker: expired ? "unavailable" : "known", change: "known" } });
+  const attempt = expired ? null : card.attempt;
+  const execution = expired ? undefined : card.execution;
   const change = card.change;
   const externalNumber = change?.external === undefined ? null : Number.parseInt(change.external.id, 10);
-  return { ...item, reserveWorkerSpace: attempt !== null || execution !== undefined,
+  return { ...item, reserveWorkerSpace: expired || attempt !== null || execution !== undefined,
     attempt: execution !== undefined ? {
       id: execution.id, status: execution.running ? "running" : execution.id === attempt?.attempt_id ? attempt.status : "", running: execution.running, stage: execution.stage ?? null,
       runner: runnerDisplay(undefined, execution.runner_id ?? null),

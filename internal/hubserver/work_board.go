@@ -196,7 +196,7 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 	if err != nil {
 		return workBoardView{}, err
 	}
-	now := s.config.Clock()
+	var now time.Time
 	selection := viewstore.BoardViewSelection{WindowAsOf: &now, Items: request.items, Archived: request.state.Archived, CredentialID: scope.Credential.ID, PrincipalID: scope.Credential.HostedPrincipal,
 		ClosedPage: workBoardClosedPage, LanePreset: request.lanes.Preset, IncludeLanes: request.lanes.Include, ExcludeLanes: request.lanes.Exclude}
 	if scope.Credential.Hosted != nil {
@@ -256,7 +256,12 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		if len(selection.Projects) > viewstore.BoardViewMaxProjects {
 			return workBoardView{}, hubapi.NativePublicInvalid("Name at most 500 projects")
 		}
-		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+		repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
+		if !ok {
+			return workBoardView{}, hubapi.NativeWorkItemStorageUnavailable()
+		}
+		err = repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
+			now = s.config.Clock()
 			model, ok := reader.(interface {
 				BoardView(context.Context, viewstore.BoardViewSelection) (viewstore.BoardViewRows, error)
 			})
@@ -290,15 +295,9 @@ func (s *Service) readWorkBoard(ctx context.Context, scope hubscope.NativeScope,
 		}
 	}
 	view := workBoardView{Projects: assembled.Projects, Cards: assembled.Cards, Lanes: []boardview.Lane{}}
-	if err := s.readBoardCardLiveness(ctx, scope.Organization, now, boardCardPointers(view.Cards)); err != nil {
-		return workBoardView{}, err
-	}
 	for i := range view.Cards {
-		card := &view.Cards[i]
-		card.Issue = boardview.IssueCollections(card.Issue)
-		if card.Execution == nil || !card.Execution.Running {
-			delete(assembled.Running, card.Issue.WorkItemID)
-		}
+		view.Cards[i].Issue = boardview.IssueCollections(view.Cards[i].Issue)
+		view.Cards[i].StatusLine = nativeBoardStatusLine(view.Cards[i])
 	}
 	raw, err := json.Marshal([]any{scope.Organization, scope.Credential.ID, selection.UserID, scope.Credential.HostedRole, entry.revisions, scope.Credential.EntryKey})
 	if err != nil {

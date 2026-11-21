@@ -4,11 +4,13 @@ import (
 	"context"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func (s *session) replaceBoardSummary(ctx context.Context, previous, current *viewstore.BoardRecord) error {
@@ -87,9 +89,23 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeM
 			return "", nil, corestore.ErrNotFound
 		}
 	}
-	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
+	args := []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace, selection.WindowAsOf}
+	prefixSQL, running := "", "c.running"
+	if selection.CardLiveness {
+		args = append(args, int64(runnerauth.HeartbeatTimeout/time.Second))
+		prefixSQL = boardviewsql.Liveness("$1", "$2::text", "$6", "$7") + `,
+ running_counts AS MATERIALIZED (
+ SELECT bl.state,count(*) AS running FROM board_liveness bl
+ WHERE bl.page_ready AND NOT bl.terminal AND ($4='all' OR bl.archived::text=$4)
+ AND (NOT $5::boolean OR NOT bl.workspace)
+ AND ($3::text='' OR bl.actor_principal_id=$3 AND bl.current_actor=$3)
+ AND ` + boardviewsql.Running("bl.card_attempt_status", "bl.card_execution_id", "bl.card_execution_running", "bl", "$6") + `
+ GROUP BY bl.state),`
+		running = "CASE WHEN c.kind='lane' THEN coalesce((SELECT running FROM running_counts rc WHERE rc.state=c.state),0) WHEN c.kind='closed' THEN 0 ELSE coalesce((SELECT sum(running) FROM running_counts),0) END"
+	}
+	query := `WITH ` + prefixSQL + `metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
 counts AS MATERIALIZED (
- SELECT c.kind,c.state,c.total,c.running,c.projected_at
+ SELECT c.kind,c.state,c.total,` + running + ` AS running,c.projected_at
  FROM native_board_page_summaries c
  WHERE c.organization_id=$1 AND c.project_id=$2 AND c.audience=$3 AND c.archive_scope=$4 AND c.exclude_workspace=$5 AND NOT (SELECT pending FROM metadata)
  ORDER BY c.kind,c.state LIMIT 204
@@ -121,7 +137,7 @@ windows AS MATERIALIZED (` + boardviewsql.CompletionCountsSQL("(SELECT $2::text 
 		query += `SELECT * FROM summary
 UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM metadata)`
 	}
-	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace, selection.WindowAsOf}, nil
+	return query, args, nil
 }
 
 func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {

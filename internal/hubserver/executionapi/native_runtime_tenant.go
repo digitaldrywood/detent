@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -146,12 +147,13 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 	if !ok || d.DetailsFor(ctx) == nil {
 		return tracker.NativeRuntimeEvidence{}, 0, false, hubapi.NativeRunEventStorageUnavailable()
 	}
-	now := d.Now().UTC()
+	var now time.Time
 	var snapshot nativeRuntimeTenantSnapshot
 	err := snapshotRepository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
+		now = d.Now().UTC()
 		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
 			return err
@@ -300,7 +302,13 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		}
 		snapshot.attemptPolicy, snapshot.currentPolicy, snapshot.policyFound = attemptPolicy, currentPolicy, policyFound
 		snapshot.leasePolicy = leasePolicy
-		activeLease, activeErr := r.ActiveLeaseForIssue(ctx, row.ID)
+		leases, ok := r.(interface {
+			ActiveLeaseForIssueAt(context.Context, int64, time.Time) (leasestore.Lease, error)
+		})
+		if !ok {
+			return hubapi.NativeRunEventStorageUnavailable()
+		}
+		activeLease, activeErr := leases.ActiveLeaseForIssueAt(ctx, row.ID, now)
 		if activeErr == nil {
 			if activeLease.OrganizationID != scope.Organization || activeLease.IssueID != row.ID {
 				return corestore.ErrNotFound
@@ -337,7 +345,7 @@ func (d RuntimeDeps) ReadSelectedNativeRuntimeTenant(ctx context.Context, scope 
 		if err := ProjectAttemptEvidence(&attempt, selected); err != nil {
 			return tracker.NativeRuntimeEvidence{}, 0, false, err
 		}
-		return tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: snapshot.item.NativeID}}, Attempt: &attempt, ObservedAt: d.Now().UTC()}, snapshot.boardSequence, true, nil
+		return tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.Organization, ProjectID: scope.Project, WorkItemID: snapshot.item.NativeID}}, Attempt: &attempt, ObservedAt: now}, snapshot.boardSequence, true, nil
 	}
 	issue, err := d.HydrateWorkItem(ctx, snapshot.item, snapshot.version)
 	if err != nil {

@@ -246,6 +246,7 @@ export const NativeExecutionIdentity = Schema.Struct({
 export type NativeExecutionIdentity = typeof NativeExecutionIdentity.Type;
 
 export const NativeBoardCard = Schema.Struct({
+  liveness_expires_at: Schema.optional(Schema.NullOr(Schema.String)),
   execution: Schema.optional(Schema.Struct({ id: Schema.String, running: Schema.Boolean, stage: Schema.optional(Schema.String),
     runner_id: Schema.optional(Schema.String), identity: Schema.optional(NativeExecutionIdentity), started_at: Schema.optional(Schema.String), expires_at: Schema.String })),
   status_line: Schema.optional(Schema.String),

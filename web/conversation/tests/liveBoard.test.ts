@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { NativeBoardCard } from "../src/contracts/work.ts";
+import { statusPill } from "../src/app/work/components/IssueCard.tsx";
 import * as disk from "../src/app/work/lib/boardDisk.ts";
 import { boardAccountKey, clearBoardCache, confirmWorkItem, getBoardRead, rejectBoardCache } from "../src/app/work/lib/boardStore.ts";
 import { LIVE_DELTA_WINDOW_MS, LIVE_FALLBACK_MS } from "../src/app/work/lib/liveBoard.ts";
@@ -19,7 +21,15 @@ class Source extends EventTarget {
 }
 
 const PROJECTS = [{ id: "proj_alpha", name: "alpha" }, { id: "proj_beta", name: "beta" }, { id: "proj_gamma", name: "gamma" }];
-type BoardBody = { projects: { project: { project_id: string }; sequence: number; projection_pending: boolean; work?: unknown }[]; cards: { issue: { work_item_id: string; project_id: string; actor: { kind: string } } }[] };
+type BoardBody = {
+  projects: { project: { project_id: string }; sequence: number; projection_pending: boolean; work?: unknown }[];
+  cards: {
+    issue: { work_item_id: string; project_id: string; actor: { kind: string } };
+    liveness_expires_at?: NativeBoardCard["liveness_expires_at"];
+    execution?: NativeBoardCard["execution"];
+    attempt?: NativeBoardCard["attempt"];
+  }[];
+};
 
 let visibility: DocumentVisibilityState = "visible";
 beforeEach(() => {
@@ -138,6 +148,55 @@ describe("the live board", () => {
     expect(boards[1]!.searchParams.getAll("item").toSorted()).toEqual(burst.map(([, id]) => id).toSorted());
     expect(boards[1]!.searchParams.getAll("project")).toEqual(["proj_alpha", "proj_beta"]);
     expect(read.snapshot().items.length).toBeGreaterThan(0);
+  });
+
+  it("expires and refreshes visible workers together on an unchanged connected board", async () => {
+    const deadline = Date.now() + 2_000;
+    const expires = new Date(deadline).toISOString();
+    const ids = new Map<string, string>();
+    const sequences: number[][] = [];
+    const { read, boards, openAll, gate } = await liveBoard((body, url) => {
+      sequences.push(body.projects.filter((entry) => entry.project.project_id !== "proj_gamma").map((entry) => entry.sequence));
+      if (!url.searchParams.has("item")) {
+        for (const card of body.cards) {
+          const project = card.issue.project_id;
+          if (project === "proj_gamma" || ids.has(project)) continue;
+          ids.set(project, card.issue.work_item_id);
+          card.liveness_expires_at = expires;
+          card.execution = { id: card.issue.work_item_id, running: true, stage: "implementation", expires_at: new Date(deadline + 90_000).toISOString() };
+        }
+      } else {
+        for (const card of body.cards) {
+          const recovered = card.issue.project_id === "proj_alpha";
+          card.attempt = { attempt_id: card.issue.work_item_id, status: recovered ? "running" : "interrupted", started_at: expires };
+          if (recovered) card.liveness_expires_at = new Date(deadline + 60_000).toISOString();
+        }
+      }
+    });
+    const held = deferred();
+    read.start();
+    openAll();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const worker = (project: string) => read.snapshot().items.find((item) => item.id === ids.get(project));
+      expect(worker("proj_alpha")?.attempt?.running).toBe(true);
+      expect(worker("proj_beta")?.attempt?.running).toBe(true);
+      gate.next = held.promise;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(statusPill(worker("proj_alpha")!)?.label).toBe("Runner status unknown");
+      expect(worker("proj_beta")?.attempt).toBeNull();
+      await vi.advanceTimersByTimeAsync(LIVE_DELTA_WINDOW_MS);
+      expect(boards).toHaveLength(2);
+      expect(boards[1]!.searchParams.getAll("item").toSorted()).toEqual([...ids.values()].toSorted());
+      expect(sequences[1]).toEqual(sequences[0]);
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(worker("proj_alpha")?.attempt?.running).toBe(true);
+      expect(worker("proj_beta")?.attempt?.status).toBe("interrupted");
+    } finally {
+      held.release();
+      await vi.advanceTimersByTimeAsync(0);
+    }
   });
 
   it("checks the board on a timer only while a stream is disconnected and the tab is visible", async () => {

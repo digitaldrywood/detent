@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/searchsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/searchstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const boardModelDisplayColumns = `b.card_display_ready,b.card_display_exact,b.card_provenance_provider IS NOT NULL,coalesce(b.card_provenance_provider,''),coalesce(b.card_provenance_external_id,''),coalesce(b.card_provenance_author_id,''),coalesce(b.card_provenance_author_display_name,''),coalesce(b.card_provenance_created_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_updated_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_provenance_observed_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_principal_id,''),coalesce(b.card_title,''),coalesce(b.card_actor_kind,''),coalesce(b.card_actor_via_key,''),coalesce(b.card_actor_display_name,''),coalesce(b.card_actor_agent,''),coalesce(b.card_reason,''),coalesce(b.card_status_line,''),coalesce(b.card_attempt_id,''),coalesce(b.card_attempt_count,0),coalesce(b.card_attempt_status,''),coalesce(b.card_attempt_runner_id,''),coalesce(b.card_attempt_machine_id,''),coalesce(b.card_attempt_started_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_attempt_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_execution_id,''),coalesce(b.card_execution_running,false),coalesce(b.card_execution_stage,''),coalesce(b.card_execution_runner_id,''),b.card_execution_started_at,coalesce(b.card_execution_expires_at,'0001-01-01 00:00:00+00'::timestamptz),coalesce(b.card_change_id,''),coalesce(b.card_change_title,''),coalesce(b.card_change_status,''),coalesce(b.card_change_external_provider,''),coalesce(b.card_change_external_id,''),coalesce(b.card_change_external_url,''),coalesce(b.card_attempt_identity_role,''),coalesce(b.card_attempt_identity_backend,''),coalesce(b.card_attempt_identity_model,''),coalesce(b.card_attempt_identity_effort,''),coalesce(b.card_execution_identity_role,''),coalesce(b.card_execution_identity_backend,''),coalesce(b.card_execution_identity_model,''),coalesce(b.card_execution_identity_effort,''),coalesce(b.issue_number,0),b.card_change_base_status IS NOT NULL,coalesce(b.card_change_version_id,''),coalesce(b.card_change_policy_id,''),coalesce(b.card_change_review_policy_id,''),coalesce(b.card_change_base_status,'')`
@@ -106,9 +108,24 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, authority accessst
 		columns = boardListColumns
 	}
 	model := allowed + ",b.source_revision,b.source_event_sequence,b.source_project_revision,b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at,b.running,b.dispatchable,b.issue_number,b.page_list_bytes," + boardModelDisplayColumns + "," + columns + "," + publicActorNameSQL("b.organization_id", "b.page_actor_principal_id")
-	query := "WITH page AS MATERIALIZED (SELECT b.* FROM native_board_items b WHERE " + where + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d", limitArg) + ") SELECT " + model + " FROM page b ORDER BY " + order
+	prefixSQL := ""
+	liveness := ",''::text,''::text,NULL::timestamptz,NULL::timestamptz,NULL::timestamptz"
+	join := ""
+	if f.CardLiveness {
+		args, prefixSQL, _ = boardModelLiveness(args, f.WindowAsOf)
+		prefixSQL += ","
+		liveness = ",coalesce(bl.card_attempt_id,''),coalesce(bl.card_execution_id,''),bl.lease_expires_at,bl.attempt_until,bl.execution_until"
+		join = " LEFT JOIN board_liveness bl ON bl.project_id=b.project_id AND bl.work_item_id=b.work_item_id"
+	}
+	query := "WITH " + prefixSQL + "page AS MATERIALIZED (SELECT b.* FROM native_board_items b WHERE " + where + " ORDER BY " + order + fmt.Sprintf(" LIMIT $%d", limitArg) + ") SELECT " + model + liveness + " FROM page b" + join + " ORDER BY " + order
 
 	return query, args, nil
+}
+
+func boardModelLiveness(args []any, at *time.Time) ([]any, string, string) {
+	args = append(args, at, int64(runnerauth.HeartbeatTimeout/time.Second))
+	now, timeout := fmt.Sprintf("$%d", len(args)-1), fmt.Sprintf("$%d", len(args))
+	return args, boardviewsql.Liveness("$1", "$2::text", now, timeout), now
 }
 
 var boardModelParameter = regexp.MustCompile(`\$[0-9]+`)
@@ -173,7 +190,18 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 		if err != nil {
 			return result, err
 		}
-		batch.Queue("SELECT b.state,count(*),count(*) FILTER (WHERE b.running) FROM native_board_items b WHERE "+where+" GROUP BY b.state ORDER BY b.state LIMIT 201", laneArgs...).Query(func(rows pgx.Rows) error {
+		prefixSQL, current, join := "", "b.running", ""
+		if selection.CardLiveness {
+			var now string
+			laneArgs, prefixSQL, now = boardModelLiveness(laneArgs, selection.WindowAsOf)
+			prefixSQL = "WITH " + prefixSQL + " "
+			current = "NOT b.terminal AND " + boardviewsql.Running("b.card_attempt_status", "b.card_execution_id", "b.card_execution_running", "bl", now)
+			join = " LEFT JOIN board_liveness bl ON bl.project_id=b.project_id AND bl.work_item_id=b.work_item_id"
+			if selection.Reporter {
+				current += " AND bl.current_actor=b.actor_principal_id"
+			}
+		}
+		batch.Queue(prefixSQL+"SELECT b.state,count(*),count(*) FILTER (WHERE "+current+") FROM native_board_items b"+join+" WHERE "+where+" GROUP BY b.state ORDER BY b.state LIMIT 201", laneArgs...).Query(func(rows pgx.Rows) error {
 			defer rows.Close()
 			result.Lanes = []viewstore.BoardLane{}
 			for rows.Next() {
@@ -201,7 +229,8 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 			page, finishPage := boardPageTargets(&row)
 			targets = append(targets, display...)
 			targets = append(targets, page...)
-			targets = append(targets, row.ActorDisplayName)
+			targets = append(targets, row.ActorDisplayName, &row.Liveness.AttemptID, &row.Liveness.ExecutionID,
+				&row.Liveness.LeaseExpiresAt, &row.Liveness.AttemptUntil, &row.Liveness.ExecutionUntil)
 			if err := rows.Scan(targets...); err != nil {
 				return err
 			}
@@ -322,6 +351,19 @@ func (s *session) boardSearchModelPages(ctx context.Context, selection viewstore
 	result.Records, err = s.boardPage(ctx, selection, true, nil)
 	if err != nil {
 		return result, err
+	}
+	if selection.CardLiveness && selection.WindowAsOf != nil && len(result.Records) != 0 {
+		items := make([]tracker.NativeWorkItemID, 0, len(result.Records))
+		for _, record := range result.Records {
+			items = append(items, record.WorkItemID)
+		}
+		facts, err := s.BoardCardLiveness(ctx, selection.ProjectID, items, *selection.WindowAsOf)
+		if err != nil {
+			return result, err
+		}
+		for i := range result.Records {
+			result.Records[i].Liveness = facts[result.Records[i].WorkItemID]
+		}
 	}
 	if work != nil {
 		result.WorkRecords, err = s.boardPage(ctx, *work, true, new(!numberPending))

@@ -57,6 +57,7 @@ type BoardReporterRelations struct {
 }
 
 type BoardRecord struct {
+	Liveness              BoardLiveness
 	ListIssue             *tracker.NativeIssue
 	ListBytes             int
 	LegacyWindowMask      int
@@ -99,6 +100,7 @@ type BoardCandidate struct {
 }
 
 type BoardSelection struct {
+	CardLiveness        bool
 	WindowAsOf          *time.Time
 	Summary             bool
 	CountLanes          bool

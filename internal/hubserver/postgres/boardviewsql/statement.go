@@ -45,7 +45,7 @@ var boardViewGenericColumns = []boardViewColumn{
 	{"t1", "text"}, {"t2", "text"}, {"t3", "text"}, {"t4", "text"}, {"t5", "text"}, {"t6", "text"}, {"t7", "text"}, {"t8", "text"},
 	{"i1", "bigint"}, {"i2", "bigint"}, {"i3", "bigint"}, {"i4", "bigint"}, {"i5", "bigint"}, {"i6", "bigint"}, {"i7", "bigint"}, {"i8", "bigint"},
 	{"b1", "boolean"}, {"b2", "boolean"}, {"b3", "boolean"}, {"b4", "boolean"}, {"b5", "boolean"}, {"b6", "boolean"}, {"b7", "boolean"}, {"b8", "boolean"},
-	{"d1", "timestamptz"}, {"d2", "timestamptz"},
+	{"d1", "timestamptz"}, {"d2", "timestamptz"}, {"d3", "timestamptz"},
 }
 
 var boardViewArrayColumns = []boardViewColumn{
@@ -72,6 +72,9 @@ func boardViewCardRow(kind, alias string) string {
 	for _, column := range boardViewCardColumns {
 		values[column.name] = alias + "." + column.name
 	}
+	values["t1"], values["t2"] = "bl.card_attempt_id", "bl.card_execution_id"
+	values["d1"], values["d2"] = "bl.attempt_until", "bl.execution_until"
+	values["d3"] = "bl.lease_expires_at"
 	values["actor_public_name"] = PublicActorName("$1", alias+".actor_principal_id")
 	return boardViewRow(kind, alias+".project_id", alias+".work_item_id", values)
 }
@@ -207,7 +210,15 @@ completion AS MATERIALIZED (SELECT v.id AS project_id,w.* FROM visible v
  CROSS JOIN LATERAL (` + CompletionCountsSQL("v.id", "$4", "true", "$18") + `) w` + affected + `),
 linked AS MATERIALIZED (SELECT project_id,work_item_id FROM cards WHERE has_links UNION SELECT project_id,work_item_id FROM closed WHERE has_links),
 evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_policy_id FROM cards WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'
- UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed')
+ UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'),` + Liveness("$1", "SELECT id FROM visible", "$18", "$19") + `,
+ running_counts AS MATERIALIZED (
+ SELECT bl.project_id,coalesce(d.state,bl.state) AS state,count(*) AS running
+ FROM board_liveness bl LEFT JOIN dirty d ON d.project_id=bl.project_id AND d.work_item_id=bl.work_item_id
+ WHERE bl.page_ready AND NOT bl.workspace AND coalesce(d.archived,bl.archived)=$5
+ AND ($4::text='' OR bl.actor_principal_id=$4 AND bl.current_actor=$4) AND NOT coalesce(d.terminal,bl.terminal)
+ AND ($11::boolean OR (bl.project_id,coalesce(d.state,bl.state)) IN (SELECT project_id,name FROM lanes WHERE NOT terminal))
+ AND ` + Running("bl.card_attempt_status", "bl.card_execution_id", "bl.card_execution_running", "bl", "$18") + `
+ GROUP BY bl.project_id,coalesce(d.state,bl.state))
 `
 	readiness := `(EXISTS(SELECT 1 FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id OFFSET ` + strconv.Itoa(dirtyOverlayLimit) + `)
   OR EXISTS(SELECT 1 FROM (SELECT d.work_item_id FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id LIMIT ` + strconv.Itoa(dirtyOverlayLimit) + `) d
@@ -221,7 +232,7 @@ evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_poli
 		boardViewStateRows(),
 		boardViewRow("sequence", "v.id", "NULL", map[string]string{"i1": "coalesce((SELECT s.sequence FROM native_board_sequences s WHERE s.organization_id=$1 AND s.project_id=v.id),0)", "b1": readiness,
 			"d1": "(SELECT d.queued_at FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id ORDER BY d.queued_at LIMIT 1)"}) + ` FROM visible v` + affected,
-		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'scope'", "i1": "o.total", "i2": "o.running", "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
+		boardViewRow("count", "o.project_id", "o.state", map[string]string{"t1": "o.kind", "t2": "'scope'", "i1": "o.total", "i2": "CASE WHEN o.kind='lane' THEN coalesce((SELECT running FROM running_counts rc WHERE rc.project_id=o.project_id AND rc.state=o.state),0) WHEN o.kind='closed' THEN 0 ELSE coalesce((SELECT sum(running) FROM running_counts rc WHERE rc.project_id=o.project_id),0) END", "i3": "coalesce(w.shipped_1h,0)", "i4": "coalesce(w.shipped_24h,0)",
 			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
 			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope=$5::text AND o.exclude_workspace
  LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=o.archive_scope` + affected,
@@ -229,8 +240,8 @@ evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_poli
 			"i5": "coalesce(w.shipped_7d,0)", "i6": "coalesce(w.cancelled_1h,0)", "i7": "coalesce(w.cancelled_24h,0)", "i8": "coalesce(w.cancelled_7d,0)", "d1": "o.projected_at"}) +
 			` FROM visible v JOIN native_board_page_summaries o ON o.organization_id=$1 AND o.project_id=v.id AND o.audience=$4 AND o.archive_scope='all' AND o.exclude_workspace AND o.kind IN ('total','lane') AND $5::text<>'all'
  LEFT JOIN completion w ON w.project_id=o.project_id AND w.kind=CASE WHEN o.kind='closed' THEN 'total' ELSE o.kind END AND w.state=o.state AND w.archive_scope=o.archive_scope` + affected,
-		boardViewCardRow("card", "c") + ` FROM cards c`,
-		boardViewCardRow("closed", "c") + ` FROM closed c`,
+		boardViewCardRow("card", "c") + ` FROM cards c LEFT JOIN board_liveness bl USING (project_id,work_item_id)`,
+		boardViewCardRow("closed", "c") + ` FROM closed c LEFT JOIN board_liveness bl USING (project_id,work_item_id)`,
 		boardViewLinkRows(reporter), boardViewDependencyRows(reporter), boardViewReasonRows(reporter),
 		boardViewRow("change", "c.project_id", "c.id", nil) + ` FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 WHERE c.organization_id=$1 AND (c.project_id,c.id) IN (SELECT project_id,change_id FROM cards WHERE change_id<>'' UNION SELECT project_id,change_id FROM closed WHERE change_id<>'') AND ($4::text='' OR i.actor_principal_id=$4)`,

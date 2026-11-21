@@ -91,14 +91,22 @@ func (s *session) LeaseBySession(ctx context.Context, sessionID string) (leasest
 }
 
 func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (leasestore.Lease, error) {
-	if issueID <= 0 {
-		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
-	}
 	var clock *time.Time
 	if s.leaseClock != nil {
 		clock = new(s.leaseClock().UTC())
 	}
-	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID, LeaseClock: clock})
+	return s.activeLeaseForIssue(ctx, issueID, clock)
+}
+
+func (s *session) ActiveLeaseForIssueAt(ctx context.Context, issueID int64, at time.Time) (leasestore.Lease, error) {
+	return s.activeLeaseForIssue(ctx, issueID, &at)
+}
+
+func (s *session) activeLeaseForIssue(ctx context.Context, issueID int64, at *time.Time) (leasestore.Lease, error) {
+	if issueID <= 0 {
+		return leasestore.Lease{}, tracker.ErrInvalidWorkItemID
+	}
+	row, err := s.queries.GetActiveIssueLease(ctx, pgquery.GetActiveIssueLeaseParams{OrganizationID: s.organization, IssueID: issueID, LeaseClock: at})
 	return leasestore.Lease(row), mapError(ctx, err)
 }
 
