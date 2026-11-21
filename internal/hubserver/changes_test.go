@@ -1798,9 +1798,9 @@ func (f landingCapacityFixture) ready(t *testing.T, name string) tracker.NativeI
 	return issue
 }
 
-func (f landingCapacityFixture) claim(t *testing.T, r runnerFixture, issue tracker.NativeIssue, session string, capacity int) *httptest.ResponseRecorder {
+func (f landingCapacityFixture) claim(t *testing.T, r runnerFixture, issue tracker.NativeIssue, session string, capacity int, states ...string) *httptest.ResponseRecorder {
 	t.Helper()
-	claim := tracker.NativeClaim{LandingCapacity: capacity, PolicyID: f.descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+	claim := tracker.NativeClaim{LandingCapacity: capacity, WorkflowStates: states, PolicyID: f.descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: session, TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 	if f.requirement.Backend != "" {
 		claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: f.requirement}}
 	}
@@ -1833,7 +1833,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 		{name: "expired changed-lane owner cannot renew an occupied slot", ownerCapacity: 1, contenderCapacity: 1, expired: true, laneChanged: true},
 		{name: "negative capacity is invalid", ownerCapacity: -1},
 		{name: "separate project proceeds", ownerCapacity: 1, contenderCapacity: 1, otherProject: true, admission: "ready"},
-		{name: "native-only landing is unchanged", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "ready"},
+		{name: "native-only landing with provider reports", ownerCapacity: 1, contenderCapacity: 1, nativeOnly: true, admission: "ready"},
 		{name: "concurrent claims acquire one slot", ownerCapacity: 1, contenderCapacity: 1, concurrent: true},
 		{name: "expired renewal races a new claim", ownerCapacity: 1, contenderCapacity: 1, concurrent: true, renewRace: true},
 		{name: "busy landing permits other ready work", ownerCapacity: 1, contenderCapacity: 1, fallback: true},
@@ -1877,6 +1877,9 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events, runnerauth.Heartbeat)
 			waiter.enroll(t)
 			reportRunnerCapacity(t, secondFixture.service, secondFixture.base, waiter.redemption.Credential, waiter.binding.MachineID, waiter.redemption.DisplayName, waiter.redemption.BackendIsolation, waiter.redemption.Capacity)
+			if test.nativeOnly {
+				publishCapacity(t, secondFixture.nativeFixture, waiter, capacityReport(f.service.config.Clock()))
+			}
 			ownerSession, waiterSession := "first-landing", "waiting-landing"
 			if test.ownerCapacity < 0 {
 				requireNativeStatus(t, f.claim(t, owner, first, ownerSession, test.ownerCapacity), http.StatusUnprocessableEntity)
@@ -2151,7 +2154,15 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					}
 				}
 			}
-			requireNativeStatus(t, secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity), want)
+			claimed := secondFixture.claim(t, waiter, second, waiterSession, test.contenderCapacity, claimStates...)
+			requireNativeStatus(t, claimed, want)
+			if test.nativeOnly {
+				var lease tracker.NativeLease
+				decodeHubResponse(t, claimed, &lease)
+				if lease.ProviderReservation != nil {
+					t.Fatalf("Git-only landing acquired a provider reservation: %+v", lease.ProviderReservation)
+				}
+			}
 			if want == http.StatusConflict && test.ownerCapacity == 1 {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(second.WorkItemID)+"/runtime", f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
