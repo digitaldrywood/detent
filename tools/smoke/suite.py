@@ -41,6 +41,8 @@ def checkout_fixture(root):
     configured = os.environ.get("DETENT_SMOKE_FIXTURE", FIXTURE_REMOTE)
     tag = "canary-baseline-v2"
     ref = os.environ.get("DETENT_SMOKE_FIXTURE_REF")
+    if not ref and configured == FIXTURE_REMOTE:
+        ref = "test/smoke-scenarios"
     target = root / "fixture"
     clone = ["git", "clone", "--quiet", "--no-local"]
     if ref:
