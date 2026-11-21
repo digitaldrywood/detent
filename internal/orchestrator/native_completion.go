@@ -653,14 +653,23 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 		return errors.New("native landing execution is unavailable")
 	}
 	if running.CompletionOwnershipReleased {
+		delete(state.Running, event.IssueID)
+		planner := o.dispatchPlanner()
+		if planner.hardAvailableSlots(state) == 0 || !planner.stateSlotsAvailable(running.Issue, state) ||
+			!dispatchHostConfig(o.cfg).SlotsAvailable(running.WorkerHost, workerHostCounts{state}.count) {
+			return runpkg.ErrModelPermitUnavailable
+		}
 		slot, acquired, decision := o.acquireGlobalDispatchSlot(ctx, running.Issue, running.WorkerHost, o.clockNow(), 0)
 		if !acquired {
 			return fmt.Errorf("native worker capacity unavailable: %s", decision.Reason)
 		}
 		running.globalSlot = slot
 	}
-	if running.cancel != nil {
-		running.cancel()
+	if !reviewOnly {
+		if running.cancel != nil {
+			running.cancel()
+		}
+		ctx = o.nativeContinuationContext(ctx, &running)
 	}
 	request.Issue = running.Issue
 	request.Policy = running.Policy
@@ -687,12 +696,6 @@ func (o *Orchestrator) continueNativeRun(ctx context.Context, state *State, even
 	request.AcquireModelPermit = nil
 	if repair {
 		request.AcquireModelPermit = o.modelPermitAcquirer(event.IssueID)
-	}
-	if reviewOnly {
-		ctx, running.cancel = context.WithCancel(ctx)
-		ctx, running.stop = context.WithCancelCause(ctx)
-	} else {
-		ctx = o.nativeContinuationContext(ctx, &running)
 	}
 	if request.OnUsageUpdate != nil {
 		request.OnUsageUpdate = o.usageUpdateHandler(ctx, event.IssueID, nil, running.progress)
