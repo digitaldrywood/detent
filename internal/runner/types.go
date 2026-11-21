@@ -624,7 +624,6 @@ type RunRequest struct {
 	AttemptWorkspace    workspace.AttemptWorkspace               `json:",omitzero"`
 	PrepareRun          func(context.Context, *RunRequest) error `json:"-"`
 	workspaceBackend    workspace.Backend
-	LandingBatch        *workspace.LandingBatchTicket `json:"-"`
 	RetainItemWorkspace bool
 	// DeferExecutionFinish leaves terminal publication with the claim owner so
 	// native collaboration and lane writes finish under the execution lease.

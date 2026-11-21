@@ -69,7 +69,7 @@ func TestNativeDiscoveryAvailableCapacity(t *testing.T) {
 			}
 			now := time.Now()
 			scheduler := &Scheduler{client: client, now: func() time.Time { return now }, sessionID: func() (string, error) { return "session", nil }, machine: Machine{Capacity: 4}, heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now}}
-			request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 4, CandidateLimit: 100, NativeLandingBatch: true, CandidateReady: func(context.Context, connector.Issue) bool { readiness <- struct{}{}; return true }}
+			request := orchestrator.SchedulingRequest{ProjectID: "local", AdmissionLimit: 4, CandidateLimit: 100, CandidateReady: func(context.Context, connector.Issue) bool { readiness <- struct{}{}; return true }}
 			for _, full := range []bool{true, false} {
 				if !full {
 					owner.HostUsed = 0

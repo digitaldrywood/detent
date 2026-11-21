@@ -1043,7 +1043,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		t.Fatalf("claim=%s want=%s", lease.WorkItemID, issues[0].WorkItemID)
 	}
 	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(reader tenantstore.Reader) error {
-		capacity, err := reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, f.project.ID, "", f.service.config.Clock())
+		capacity, err := reader.ClaimCapacityUsage(t.Context(), string(r.binding.MachineID), r.binding.RunnerID, f.project.ID, f.service.config.Clock())
 		if err != nil {
 			return err
 		}

@@ -255,7 +255,7 @@ func (*landingAdmissionExecution) ObserveLanding(context.Context, runner.NativeL
 
 func (*landingAdmissionExecution) Finish(context.Context, string) error { return nil }
 
-func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Constructors) {
+func RunReviewedItemsUseOneLeaseSlot(t *testing.T, factories Constructors) {
 	repositoryRootOnce.Do(func() { nativeChangeFixtureRoot = os.Getenv("TMPDIR") })
 	t.Parallel()
 	h := newPlannerHub(t, "Human Review", []tracker.NativeState{
@@ -269,10 +269,10 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 	if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: api.NativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
 		t.Fatal(err)
 	}
-	for range 10 {
-		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Batch source", Body: issueContractTestSections, State: "Todo"})
+	for range 4 {
+		issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Reviewed source", Body: issueContractTestSections, State: "Todo"})
 		item := issue.WorkItemID
-		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Batch source"})
+		change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: api.NativeMutationKey(), Title: "Reviewed source"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -289,26 +289,25 @@ func RunNativeLandingBatchClaimsOneCapacityUnit(t *testing.T, factories Construc
 			t.Fatal(err)
 		}
 	}
-	request := orchestrator.SchedulingRequest{ProjectID: "local", WorkflowStates: []string{"Merging"}, Policy: h.descriptor, AdmissionLimit: 1, CandidateLimit: 10, NativeLandingBatch: true, CandidateReady: func(context.Context, connector.Issue) bool { return true }}
+	request := orchestrator.SchedulingRequest{ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}, Policy: h.descriptor, AdmissionLimit: 1, CandidateLimit: 10, CandidateReady: func(context.Context, connector.Issue) bool { return true }}
 	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
-	if err != nil || len(candidates) != 10 {
-		t.Fatalf("batch claims = %d, %v", len(candidates), err)
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("reviewed claims = %d, %v", len(candidates), err)
 	}
-	for _, candidate := range candidates {
-		if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
-			t.Fatal(err)
-		}
-		target, err := h.scheduler.RunExecution(candidate.ID).(runner.LandingExecution).LandingTarget(t.Context())
-		if err != nil || target.HeadSHA != nativeChangeFixtureHead("c") {
-			t.Fatalf("target = %#v, %v", target, err)
-		}
+	candidate := candidates[0]
+	if candidate.State != "Merging" || candidate.NativeLandingHeadSHA != nativeChangeFixtureHead("c") {
+		t.Fatalf("claim omitted reviewed landing evidence: %+v", candidate)
 	}
-	issue := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: api.NativeMutationKey(), Title: "Ordinary Code remains bounded", Body: issueContractTestSections, State: "Todo"})
-	request.NativeLandingBatch = false
-	request.WorkflowStates = []string{"Todo"}
+	if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	target, err := h.scheduler.RunExecution(candidate.ID).(runner.LandingExecution).LandingTarget(t.Context())
+	if err != nil || target.HeadSHA != candidate.NativeLandingHeadSHA {
+		t.Fatalf("target = %#v, %v", target, err)
+	}
 	candidates, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(candidates) != 0 {
-		t.Fatalf("Code %s claimed beside full landing slot: %v, %v", issue.WorkItemID, candidates, err)
+		t.Fatalf("claimed beside the active lease: %v, %v", candidates, err)
 	}
 }
 

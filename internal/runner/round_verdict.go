@@ -21,7 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-var errRetainedLandingSetup = errors.New("retained landing setup is unavailable")
+var errNativeLandingSetup = errors.New("native landing setup is unavailable")
 
 type RoundVerdictExecution interface {
 	LatestRoundVerdict(context.Context) (*progresscheck.RoundVerdict, error)

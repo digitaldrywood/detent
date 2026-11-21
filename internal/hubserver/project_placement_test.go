@@ -597,7 +597,7 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 			var usage int
 			err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 				var err error
-				usage, err = readPlacementSpriteUsage(t.Context(), r, scope, f.service.config.Clock())
+				usage, err = readPlacementSpriteUsage(t.Context(), r, f.service.config.Clock())
 				return err
 			})
 			wantUsage := 0

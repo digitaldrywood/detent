@@ -4637,7 +4637,6 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
 	}
 	for _, fragment := range []string{
-		"merge_worker_queue_cycle",
 		"queue_depth=2",
 		"ready_count=1",
 	} {
@@ -4793,115 +4792,6 @@ func TestPrioritizeReadyMergingIssuesFairness(t *testing.T) {
 			}
 			if priority.stickyIssueID != tt.wantSticky {
 				t.Fatalf("sticky issue = %q, want %q", priority.stickyIssueID, tt.wantSticky)
-			}
-		})
-	}
-}
-
-func TestLogMergeWorkerQueueCycle(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 3,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		ActiveStates:   []string{"Merging"},
-		TerminalStates: []string{"Done"},
-	})
-	readyIssue := func(id, identifier string, number int) connector.Issue {
-		issue := autoPromoteTickIssue(id, []string{"bug"}, &connector.PullRequest{
-			Number:         number,
-			URL:            fmt.Sprintf("https://github.test/digitaldrywood/detent/pull/%d", number),
-			State:          "OPEN",
-			MergeableState: "clean",
-			CIStatus:       "success",
-			HeadSHA:        fmt.Sprintf("head-%d", number),
-		})
-		issue.State = autoPromoteMergingState
-		issue.Identifier = identifier
-		return issue
-	}
-	occupant := readyIssue("issue-occupant", "digitaldrywood/detent#1540", 1550)
-	firstWaiting := readyIssue("issue-first-waiting", "digitaldrywood/detent#1541", 1551)
-	secondWaiting := readyIssue("issue-second-waiting", "digitaldrywood/detent#1542", 1552)
-	firstWaiting.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
-
-	tests := []struct {
-		name        string
-		state       State
-		issues      []connector.Issue
-		want        []string
-		doesNotWant []string
-	}{
-		{
-			name: "saturated lane with backlog",
-			state: func() State {
-				state := newState(cfg)
-				state.Running[occupant.ID] = Running{
-					Issue:     cloneIssue(occupant),
-					StartedAt: now.Add(-5 * time.Minute),
-				}
-				return state
-			}(),
-			issues: []connector.Issue{occupant, firstWaiting, secondWaiting},
-			want: []string{
-				"queue_depth=3",
-				"ready_count=3",
-				"aged_count=1",
-				"oldest_lane_age_seconds=10800",
-				"fairness_age_seconds=7200",
-				"lane_occupied=true",
-				"lane_saturated=true",
-				"lane_occupant_count=1",
-				"queued_behind=2",
-				"occupying_issue_id=issue-occupant",
-				"occupying_issue_identifier=digitaldrywood/detent#1540",
-				"occupying_issue_number=1540",
-				"occupancy_seconds=300",
-			},
-		},
-		{
-			name:   "free lane with empty queue",
-			state:  newState(cfg),
-			issues: nil,
-			want: []string{
-				"queue_depth=0",
-				"ready_count=0",
-				"aged_count=0",
-				"oldest_lane_age_seconds=0",
-				"fairness_age_seconds=7200",
-				"lane_occupied=false",
-				"lane_saturated=false",
-				"lane_occupant_count=0",
-				"queued_behind=0",
-			},
-			doesNotWant: []string{"occupying_issue_id", "occupancy_seconds"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var logs strings.Builder
-			orch := &Orchestrator{
-				cfg:    cfg,
-				logger: slog.New(slog.NewTextHandler(&logs, nil)),
-			}
-
-			orch.logMergeWorkerQueueCycle(&tt.state, tt.issues, now)
-
-			for _, fragment := range tt.want {
-				if !strings.Contains(logs.String(), fragment) {
-					t.Errorf("logs %q missing fragment %q", logs.String(), fragment)
-				}
-			}
-			for _, fragment := range tt.doesNotWant {
-				if strings.Contains(logs.String(), fragment) {
-					t.Errorf("logs %q contain fragment %q", logs.String(), fragment)
-				}
 			}
 		})
 	}

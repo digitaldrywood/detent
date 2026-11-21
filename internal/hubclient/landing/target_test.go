@@ -16,8 +16,8 @@ func TestNativeExecutionLandingTargetRefusesUnreviewed(t *testing.T) {
 func TestNativeExecutionOperatorLandingTarget(t *testing.T) {
 	scenariotest.RunNativeExecutionOperatorLandingTarget(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
-func TestNativeLandingBatchClaimsOneCapacityUnit(t *testing.T) {
-	scenariotest.RunNativeLandingBatchClaimsOneCapacityUnit(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
+func TestReviewedItemsUseOneLeaseSlot(t *testing.T) {
+	scenariotest.RunReviewedItemsUseOneLeaseSlot(t, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution})
 }
 
 func TestNativeLandingScenarios(t *testing.T) {

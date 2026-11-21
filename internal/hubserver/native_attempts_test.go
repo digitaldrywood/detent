@@ -1728,7 +1728,7 @@ func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
 				if mode != "superseded" && mode != "superseded imported" {
 					if err := repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 						now := clock.Now()
-						usage, err := r.ClaimCapacityUsage(ctx, string(owner.binding.MachineID), owner.binding.RunnerID, project, "", now)
+						usage, err := r.ClaimCapacityUsage(ctx, string(owner.binding.MachineID), owner.binding.RunnerID, project, now)
 						if err != nil {
 							return err
 						}

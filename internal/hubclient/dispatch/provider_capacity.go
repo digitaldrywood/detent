@@ -20,7 +20,6 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		defer finish()
 	}
 	leases := make([]tracker.NativeLease, 0, limit)
-	batchSession := claim.SessionID
 	providerEnabled := s.providerReports != nil
 	if providerEnabled && request.ProviderRequirement == nil {
 		return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider dispatch needs the local runner's model resolver"))
@@ -74,7 +73,10 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if request.CandidateReady != nil && !request.CandidateReady(discoveryCtx, candidate) {
 				continue
 			}
-			if providerEnabled {
+			needsProvider := providerEnabled && candidate.NativeLandingHeadSHA == ""
+			claim.ProviderCandidates = nil
+			claim.WorkItemID = issue.WorkItemID
+			if needsProvider {
 				resolve := request.ProviderRequirement
 				if request.PlanProviderRequirement != nil {
 					client := source.NativeClient()
@@ -102,19 +104,6 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 					continue
 				}
 				claim.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: issue.WorkItemID, Revision: issue.Revision, Requirement: requirement}}
-			} else {
-				claim.WorkItemID = issue.WorkItemID
-			}
-			claim.SessionID = batchSession
-			if len(leases) > 0 {
-				session, err := s.sessionID()
-				if err != nil {
-					return leases, err
-				}
-				claim.SessionID = session
-			}
-			if request.NativeLandingBatch && candidate.State == "Merging" {
-				claim.SessionID = "landing/" + batchSession + "/" + claim.SessionID
 			}
 			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, candidate)
 			if !admitted {
@@ -133,20 +122,14 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				request.CandidateClaimObserved(ctx, candidate, err == nil, predicate, requirement)
 			}
 			if err == nil {
-				if providerEnabled && lease.ProviderReservation == nil {
+				if needsProvider && lease.ProviderReservation == nil {
 					return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub omitted the required provider reservation"), source.NativeClient().Release(context.WithoutCancel(ctx), lease, "failed"))
 				}
 				leases = append(leases, lease)
 				if request.CandidateAdmitted != nil {
 					request.CandidateAdmitted(candidate)
 				}
-				if request.NativeLandingBatch && candidate.State != "Merging" || !request.NativeLandingBatch && len(leases) >= limit {
-					return leases, nil
-				}
-				if len(leases) >= max(limit, request.CandidateLimit) {
-					return leases, nil
-				}
-				continue
+				return leases, nil
 			}
 			var failure *APIError
 			leaseConflict := errors.As(err, &failure) && failure != nil && failure.Code == "lease_conflict"
@@ -161,6 +144,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		}
 		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
 			claim.ProviderCandidates = nil
+			claim.WorkItemID = ""
 			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
 			if !admitted {
 				return leases, nil

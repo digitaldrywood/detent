@@ -87,7 +87,6 @@ type LandOptions struct {
 	SecurityAuditRequired bool
 	SecurityAudit         func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
 	Native                bool
-	RebaseRequired        bool
 	Validation            *gate.CommandResult
 	LandingMode           string
 	Authorize             func(context.Context) error                                    `json:"-"`
@@ -314,8 +313,7 @@ func (l *LocalGit) verifyLandingWorktree(ctx context.Context, info Info, issue I
 
 func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts LandOptions) (LandResult, error) {
 	if opts.Native {
-		outcome := l.LandChanges(ctx, []LandRequest{{Info: info, Issue: issue, Options: opts}})[0]
-		return outcome.Result, outcome.Err
+		return l.landNativeChange(ctx, info, issue, opts)
 	}
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {

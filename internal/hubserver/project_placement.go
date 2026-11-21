@@ -47,16 +47,12 @@ func readPlacementPolicy(ctx context.Context, r tenantstore.Reader) (policy.Plac
 	return placement.Resolved(), int(row.MaxRunners), placement.Validate()
 }
 
-func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, now time.Time, joining ...string) (int, error) {
+func readPlacementSpriteUsage(ctx context.Context, r tenantstore.Reader, now time.Time) (int, error) {
 	owner, ok := r.(postgres.SpriteReader)
 	if !ok {
 		return 0, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	group := ""
-	if len(joining) > 0 && joining[0] != "" {
-		group = joining[0] + "/" + scope.Credential.Runner.RunnerID
-	}
-	return owner.SpriteLeaseUsage(ctx, now, group)
+	return owner.SpriteLeaseUsage(ctx, now, "")
 }
 
 func readSpriteMembers(ctx context.Context, owner postgres.SpriteReader) ([]postgres.SpriteMember, error) {
@@ -167,7 +163,7 @@ func (s *Service) readPlacementSource(ctx context.Context, scope hubscope.Native
 		if err != nil {
 			return err
 		}
-		source.spriteUsed, err = readPlacementSpriteUsage(ctx, r, scope, now)
+		source.spriteUsed, err = readPlacementSpriteUsage(ctx, r, now)
 		if err != nil {
 			return err
 		}
@@ -527,7 +523,7 @@ func (s *Service) readPlacementSnapshotWithCapacity(ctx context.Context, scope h
 
 var errClaimPlacementSnapshotRequired = errors.New("local-first claim placement requires a placement snapshot")
 
-func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan hubrecords.NativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, joining string, now time.Time, snapshot *hubrecords.PlacementSnapshot) (bool, string, error) {
+func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, identity runnerstore.Identity, machine leasestore.Machine, plan hubrecords.NativeClaimPlan, overrides []tracker.NativeCapacityCandidate, workspace bool, now time.Time, snapshot *hubrecords.PlacementSnapshot) (bool, string, error) {
 	allowed, err := spriteAllocationRunnerAllowedFacts(ctx, r, scope, identity, machine, true)
 	if err != nil {
 		return false, "", err
@@ -545,7 +541,7 @@ func claimPlacementAllowed(ctx context.Context, r tenantstore.Reader, scope hubs
 	if machine.SpriteName != machine.Hostname || !validSpritesSlug(machine.SpriteName) {
 		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
 	}
-	used, err := readPlacementSpriteUsage(ctx, r, scope, now, joining)
+	used, err := readPlacementSpriteUsage(ctx, r, now)
 	if err != nil {
 		return false, "", err
 	}
@@ -703,7 +699,7 @@ func (s *Service) readOrganizationPlacementSnapshot(ctx context.Context, scope h
 	}
 	err = s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		var err error
-		result.SpriteUsed, err = readPlacementSpriteUsage(ctx, r, scope, now)
+		result.SpriteUsed, err = readPlacementSpriteUsage(ctx, r, now)
 		return err
 	})
 	if err != nil {
