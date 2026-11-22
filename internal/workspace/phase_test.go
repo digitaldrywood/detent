@@ -134,6 +134,8 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 		unrelated bool
 		override  string
 		advance   bool
+		diverges  bool
+		wrongTree bool
 		want      string
 	}{
 		{name: "receipted descendant of the current Change", receipted: true},
@@ -141,7 +143,9 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 		{name: "receipt from unrelated Change", receipted: true, unrelated: true, want: "does not descend"},
 		{name: "replacement object forges ancestry", receipted: true, unrelated: true, override: "replace", want: "does not descend"},
 		{name: "graft forges ancestry", receipted: true, unrelated: true, override: "graft", want: "does not descend"},
-		{name: "newer Git tip without a receipt", receipted: true, advance: true, want: "differs from its latest phase receipt"},
+		{name: "newer Git tip without a receipt", receipted: true, advance: true},
+		{name: "divergent Git tip without a receipt", receipted: true, diverges: true, want: "does not descend from its latest phase receipt"},
+		{name: "newer Git tip with mismatched receipt tree", receipted: true, advance: true, wrongTree: true, want: "tree differs from its latest phase receipt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLandingFixture(t)
@@ -153,9 +157,19 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 				Branch: branch, HeadSHA: f.head,
 				TreeSHA: strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}")),
 			}
+			wantHead := receipt.HeadSHA
 			if tc.advance {
-				runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "unreceipted phase")
+				writeFileDiffFile(t, f.info.Path, "unreceipted.txt", "pushed before lease loss\n")
+				runGit(t, f.info.Path, "add", "unreceipted.txt")
+				runGit(t, f.info.Path, "commit", "-m", "unreceipted phase")
 				runGit(t, f.info.Path, "push", "origin", "HEAD:"+ref)
+				wantHead = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+			}
+			if tc.diverges {
+				runGit(t, f.remote, "update-ref", ref, base, receipt.HeadSHA)
+			}
+			if tc.wrongTree {
+				receipt.TreeSHA = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
 			}
 			source := initSourceRepo(t)
 			runGit(t, source, "remote", "add", "origin", f.remote)
@@ -201,8 +215,11 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if head, err := replacement.Head(t.Context(), info, issue); err != nil || head != receipt.HeadSHA {
-				t.Fatalf("replacement head = %s, error = %v, want %s", head, err, receipt.HeadSHA)
+			if head, err := replacement.Head(t.Context(), info, issue); err != nil || head != wantHead {
+				t.Fatalf("replacement head = %s, error = %v, want %s", head, err, wantHead)
+			}
+			if err := replacement.VerifyItemPhaseCheckout(t.Context(), info, issue); err != nil {
+				t.Fatalf("verify replacement checkout: %v", err)
 			}
 			runGit(t, info.Path, "commit", "--allow-empty", "-m", "complete next phase")
 			_, head, _, err := replacement.PushItemPhase(t.Context(), info, issue, func(context.Context) error { return nil })

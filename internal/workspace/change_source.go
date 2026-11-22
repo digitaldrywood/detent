@@ -59,7 +59,8 @@ func (l *LocalGit) importWorkspaceChangeSource(ctx context.Context, issue Issue)
 	if err != nil {
 		return err
 	}
-	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, *source.PushedPhase); err != nil {
+	phase := source.PushedPhase
+	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, PhaseSource{Branch: phase.Branch, HeadSHA: phase.HeadSHA, TreeSHA: phase.TreeSHA}); err != nil {
 		return err
 	}
 	if version.Source != nil {

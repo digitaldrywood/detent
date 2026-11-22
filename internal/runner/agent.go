@@ -2218,10 +2218,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	attempt := req.Attempt
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
-	if workspaceIssue.VerifyPhaseBranch && itemPhaseFromPriorLease(workspaceIssue.PhaseSource, req.Execution.Recovery().Lease.ID) {
+	if workspaceIssue.VerifyPhaseBranch && (info.RecoveredPhase.HeadSHA != "" || itemPhaseFromPriorLease(workspaceIssue.PhaseSource, req.Execution.Recovery().Lease.ID)) {
 		if err := verifyReplacementItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if info.RecoveredPhase.HeadSHA != "" {
+		*req.publishedPhaseSource = info.RecoveredPhase
+		turnRecovery, repairResume = nil, false
+		req.ResumeState = store.AgentResumeState{}
 	}
 	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
 		if !req.phaseReceipts {
