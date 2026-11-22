@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -47,6 +48,7 @@ type sshMessage struct {
 	Arguments []json.RawMessage `json:",omitempty"`
 	Result    json.RawMessage   `json:",omitempty"`
 	Error     *sshError         `json:",omitempty"`
+	Timeout   time.Duration     `json:",omitempty"`
 }
 
 func NewSSHPeer(ctx context.Context, input io.Reader, output io.Writer, handle func(context.Context, string, []json.RawMessage) (any, error)) *SSHPeer {
@@ -82,6 +84,15 @@ func (p *SSHPeer) Call(ctx context.Context, method string, result any, args ...a
 	p.pending[message.ID] = reply
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, message.ID); p.mu.Unlock() }()
+	switch method {
+	case "execution.Checkpoint", "source.diff", "source.change":
+		if deadline, ok := ctx.Deadline(); ok {
+			message.Timeout = time.Until(deadline)
+			if message.Timeout <= 0 {
+				return context.DeadlineExceeded
+			}
+		}
+	}
 	if err := p.send(message); err != nil {
 		return err
 	}
@@ -120,12 +131,18 @@ func (p *SSHPeer) read() {
 		// Callbacks may issue another call in the opposite direction. A separate
 		// handler keeps the read loop available for that nested response.
 		go func() {
+			ctx := p.ctx
+			if message.Timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, message.Timeout)
+				defer cancel()
+			}
 			var result any
 			var err error
 			if p.handle == nil {
 				err = fmt.Errorf("unsupported SSH method %q", message.Method)
 			} else {
-				result, err = p.handle(p.ctx, message.Method, message.Arguments)
+				result, err = p.handle(ctx, message.Method, message.Arguments)
 			}
 			response := sshMessage{ID: message.ID, Error: encodeSSHError(err)}
 			if err == nil {
@@ -206,7 +223,7 @@ type sshError struct {
 }
 
 func sshErrorTypes() []error {
-	return []error{&sessiontimeout.Error{}, &backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &shell.UnavailableError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
+	return []error{&CancellationCause{}, &sessiontimeout.Error{}, &backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &shell.UnavailableError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
 }
 
 func sshSentinels() []error {

@@ -11,7 +11,7 @@ import (
 type CancellationCause struct {
 	Reason string `json:"reason"`
 	Source string `json:"source"`
-	err    error
+	Err    error  `json:"-"`
 }
 
 func (c *CancellationCause) Error() string {
@@ -19,7 +19,7 @@ func (c *CancellationCause) Error() string {
 }
 
 func (c *CancellationCause) Unwrap() error {
-	return c.err
+	return c.Err
 }
 
 func (c *CancellationCause) IsAvailabilityInterruption() bool {
@@ -63,7 +63,7 @@ func NewCancellationCause(cause error, source string) *CancellationCause {
 	if cause == nil {
 		cause = context.Canceled
 	}
-	return &CancellationCause{Reason: reason, Source: source, err: cause}
+	return &CancellationCause{Reason: reason, Source: source, Err: cause}
 }
 
 func preserveCancellation(ctx context.Context, err error, source string) error {

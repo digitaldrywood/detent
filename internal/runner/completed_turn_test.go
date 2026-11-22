@@ -1039,19 +1039,23 @@ func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspa
 
 type deadlineRoundBackend struct {
 	fakeCodexClient
-	run func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
+	detectToolLoops bool
+	run             func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
 }
+
+func (b *deadlineRoundBackend) SupportsToolLoopDetection() bool { return b.detectToolLoops }
 
 func (b *deadlineRoundBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	return b.run(ctx, request, update)
 }
 
 type deadlineRoundScenario struct {
-	judgeTempDir   string
-	judgeFailure   error
-	loseFence      bool
-	loseFinalReply bool
-	answer         string
+	detectToolLoops bool
+	judgeTempDir    string
+	judgeFailure    error
+	loseFence       bool
+	loseFinalReply  bool
+	answer          string
 }
 
 func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
@@ -1074,7 +1078,7 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	timeoutRecordedBeforeJudge := false
 	var judgeScratch string
 	resume := AgentResume{ThreadID: "thread-impl", SessionID: "session-impl"}
-	agent := &deadlineRoundBackend{run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	agent := &deadlineRoundBackend{detectToolLoops: scenario.detectToolLoops, run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 		if req.TextOnly {
 			judgments++
 			if scenario.answer != "" && (!strings.Contains(req.Prompt, scenario.answer) || strings.Contains(req.Prompt, "Deleted wording") || strings.Contains(req.Prompt, "Superseded worker question")) {
@@ -1107,6 +1111,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 			if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: resume.ThreadID, TurnID: "round-1"}); err != nil {
 				return AgentTurnResult{}, err
 			}
+			if scenario.detectToolLoops {
+				if _, ok := ctx.Deadline(); ok || !req.DetectToolLoops || req.TurnTimeout != deadline || req.MaxDuration != 0 {
+					t.Fatalf("provider turn received a runner deadline or lost its own timeout: deadline=%v detection=%v provider timeout=%v runner timeout=%v", ok, req.DetectToolLoops, req.TurnTimeout, req.MaxDuration)
+				}
+				return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, &sessiontimeout.Error{Kind: sessiontimeout.TurnDeadline, Limit: deadline}
+			}
 			limit.Expire()
 			return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, context.Cause(ctx)
 		}
@@ -1118,8 +1128,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	if scenario.judgeTempDir != "" {
 		t.Setenv("TMPDIR", scenario.judgeTempDir)
 	}
+	agentConfig := config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}
+	if scenario.detectToolLoops {
+		agentConfig.MaxSessionDurationMS = int(deadline / time.Millisecond)
+	}
 	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: agent, turnLimit: limit.Context, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}}, Prompt: "Complete the native issue"},
+		Workflow: config.Workflow{Config: config.Config{Agent: agentConfig}, Prompt: "Complete the native issue"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1156,6 +1170,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
 		t.Fatalf("round evidence = %+v", verdict)
 	}
+}
+
+func TestResultAwareReworkUsesProviderDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runNativeDeadlineRounds(t, deadlineRoundScenario{detectToolLoops: true})
+	})
 }
 
 func TestRoundJudgeReadsOperatorAnswer(t *testing.T) {

@@ -186,10 +186,13 @@ func (r *Runner) startCheckpointRefs(ctx context.Context, c *checkpointRefs, req
 			if !r.pushCheckpointRef(loopCtx, c, req, reason) {
 				continue
 			}
-			state := r.workspaceRecoveryState(backend, loopCtx, c.info, c.issue, "checkpoint_ref")
+			recordCtx, cancel := context.WithTimeout(loopCtx, r.afterRunTimeout)
+			state := r.workspaceRecoveryState(backend, recordCtx, c.info, c.issue, "checkpoint_ref")
 			checkpoint := executionCheckpointPreservingPublication(c.execution, state)
 			c.apply(&checkpoint)
-			if err := recordCheckpointRef(loopCtx, c, c.execution, checkpoint); err != nil && loopCtx.Err() == nil {
+			err := recordCheckpointRef(recordCtx, c, c.execution, checkpoint)
+			cancel()
+			if err != nil && loopCtx.Err() == nil {
 				r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_checkpoint_ref_unrecorded", "error", err)
 			}
 		}
@@ -231,7 +234,7 @@ func recordCheckpointRef(ctx context.Context, c *checkpointRefs, execution Execu
 			c.saved = &checkpoint
 		}
 	}
-	return err
+	return preserveCancellation(ctx, err, "runner.checkpoint_recovery")
 }
 
 func cleanLocalCheckpoint(checkpoint *tracker.NativeCheckpoint) bool {
