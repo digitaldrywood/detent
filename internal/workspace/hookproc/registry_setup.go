@@ -112,12 +112,12 @@ func recordWorkspaceSetupStatus(root, path, status string) error {
 }
 
 type retainedSetup struct {
-	DescriptorDir string               `json:"descriptor_dir"`
-	Descriptor    lifetimeFileIdentity `json:"descriptor"`
-	Processes     map[int]string       `json:"processes"`
+	DescriptorDir string         `json:"descriptor_dir"`
+	Descriptor    string         `json:"descriptor"`
+	Processes     map[int]string `json:"processes"`
 }
 
-func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) error {
+func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) (returnErr error) {
 	processes := make(map[int]string, len(lifetime.witnesses)+len(lifetime.starts))
 	maps.Copy(processes, lifetime.witnesses)
 	maps.Copy(processes, lifetime.starts)
@@ -130,7 +130,7 @@ func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer func() { returnErr = errors.Join(returnErr, dir.Close()) }()
 	marker := pendingWorkspaceSetupPath(path)
 	temporary := filepath.Join(marker, record.DescriptorDir, "ready")
 	file, err := dir.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -146,18 +146,18 @@ func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) error {
 	return nil
 }
 
-func verifyWorkspaceSetupExited(dir *os.Root, marker string) error {
+func verifyWorkspaceSetupExited(dir *os.Root, marker string) (returnErr error) {
 	file, err := dir.Open(filepath.Join(marker, "ready"))
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 	var record retainedSetup
-	if err := json.NewDecoder(io.LimitReader(file, 128<<10)).Decode(&record); err != nil {
+	decodeErr := json.NewDecoder(io.LimitReader(file, 128<<10)).Decode(&record)
+	if err := errors.Join(decodeErr, file.Close()); err != nil {
 		return fmt.Errorf("read retained hook lifetime: %w", err)
 	}
 	if !filepath.IsLocal(record.DescriptorDir) || filepath.Base(record.DescriptorDir) != record.DescriptorDir ||
-		!strings.HasPrefix(record.DescriptorDir, "detent-hook-") || len(record.Processes) == 0 {
+		!strings.HasPrefix(record.DescriptorDir, "detent-hook-") || record.Descriptor == "" || len(record.Processes) == 0 {
 		return errors.New("invalid retained hook lifetime")
 	}
 	for pid, start := range record.Processes {
@@ -176,7 +176,7 @@ func verifyWorkspaceSetupExited(dir *os.Root, marker string) error {
 	if err != nil {
 		return err
 	}
-	defer lifetime.reader.Close()
+	defer func() { returnErr = errors.Join(returnErr, lifetime.reader.Close()) }()
 	identity, err := lifetime.fileIdentity()
 	if err != nil {
 		return err

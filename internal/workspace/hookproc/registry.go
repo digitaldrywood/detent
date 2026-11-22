@@ -120,9 +120,9 @@ func (u *Registry) Start(ctx context.Context, path string) (*Owner, error) {
 		return nil, nil
 	}
 	lifetime := hookLifetimeFromContext(ctx)
-	setup, _ := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
+	setup, hasSetup := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
 	parent := ""
-	if setup != nil {
+	if hasSetup {
 		parent = filepath.Join(setup.root, pendingWorkspaceSetupPath(path))
 	}
 	descriptor, err := newLifetime(parent)

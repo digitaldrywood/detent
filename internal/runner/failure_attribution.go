@@ -3,12 +3,13 @@ package runner
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"os/exec"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
