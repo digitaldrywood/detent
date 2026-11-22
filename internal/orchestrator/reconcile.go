@@ -305,25 +305,12 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 			if o.logger != nil {
 				o.logger.Warn("running lane observation failed", "issue_id", id, "error", err)
 			}
-			if (running.Mode == runpkg.RunModeMerge || running.Mode == "" && running.CompletionLane == "" && mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
-				eligibilityRunning := running
-				eligibilityRunning.Issue = refreshed
-				o.revokeRunningMergeIfIneligible(ctx, state, eligibilityRunning, now)
-				state.Running[id] = running
-			}
 			continue
 		}
 		if normalizeState(running.Issue.State) != normalizeState(refreshed.State) {
 			running.CompletionLane = refreshed.State
 		}
 		running.Issue = refreshed
-		if (running.Mode == runpkg.RunModeMerge || running.Mode == "" && running.CompletionLane == "" && mergeWorkerIssue(running.Issue)) && normalizeState(refreshed.State) == normalizeState(autoPromoteMergingState) {
-			var revoked bool
-			running, revoked = o.revokeRunningMergeIfIneligible(ctx, state, running, now)
-			if revoked {
-				continue
-			}
-		}
 		state.Running[id] = running
 
 		if claimed, ok := state.Claimed[id]; ok {

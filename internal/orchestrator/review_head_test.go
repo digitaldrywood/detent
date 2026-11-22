@@ -115,9 +115,6 @@ func TestReviewHeadMergeAdmission(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := autoPromoteTickIssue("merge-review", nil, &connector.PullRequest{Number: 42, URL: "https://github.test/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", MergeableState: "clean", CodexReviewState: tt.review, LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300"})
 			issue.State = "Merging"
-			if got := nativeMergeQueueCandidate(issue, Config{}); got != tt.want {
-				t.Fatalf("native queue admission = %v, want %v", got, tt.want)
-			}
 			if got := mergeWorkerProgrammaticMergeReady(issue, Config{}); got != tt.want {
 				t.Fatalf("programmatic merge ready = %v, want %v", got, tt.want)
 			}
@@ -125,18 +122,18 @@ func TestReviewHeadMergeAdmission(t *testing.T) {
 	}
 }
 
-func TestReviewGateQueueAndRequest(t *testing.T) {
+func TestReviewGateRequest(t *testing.T) {
 	for _, tt := range []struct {
-		name             string
-		gate             gate.Config
-		reviewed         bool
-		enqueue, request bool
+		name     string
+		gate     gate.Config
+		reviewed bool
+		request  bool
 	}{
-		{"human pending", gate.Config{Kind: gate.KindHumanReview}, false, true, false},
-		{"human quota reply", gate.Config{Kind: gate.KindHumanReview}, true, true, false},
-		{"disabled", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}, false, true, false},
-		{"optional", gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOptional}, false, true, false},
-		{"required pending", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}, false, false, true},
+		{"human pending", gate.Config{Kind: gate.KindHumanReview}, false, false},
+		{"human quota reply", gate.Config{Kind: gate.KindHumanReview}, true, false},
+		{"disabled", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}, false, false},
+		{"optional", gate.Config{Kind: gate.KindCommand, AutomatedReview: gate.AutomatedReviewOptional}, false, false},
+		{"required pending", gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}, false, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{AutoPromote: AutoPromoteConfig{Gate: tt.gate}, ActiveStates: []string{"Merging"}})
@@ -146,15 +143,8 @@ func TestReviewGateQueueAndRequest(t *testing.T) {
 			if tt.reviewed {
 				issue.PullRequest.CodexReviewState = "COMMENTED"
 			}
-			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
-			orch := &Orchestrator{cfg: cfg, connector: tracker}
-			state := newState(cfg)
-			orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
-			if got := len(tracker.enqueued) > 0; got != tt.enqueue {
-				t.Fatalf("enqueued = %v, want %v", got, tt.enqueue)
-			}
 			requests := &reviewHeadConnector{}
-			orch.connector = requests
+			orch := &Orchestrator{cfg: cfg, connector: requests}
 			orch.requestAutomatedReview(t.Context(), issue)
 			if got := len(requests.prComments) > 0; got != tt.request {
 				t.Fatalf("requested = %v, want %v", got, tt.request)

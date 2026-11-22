@@ -91,12 +91,6 @@ func reconcileMergeReservations(state *State, issues []connector.Issue, cfg Conf
 				reason = "conflict"
 			case pr.MergeQueueEntry != nil:
 				reason = "native_queue"
-			default:
-				if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
-					reason = "approval_withdrawn"
-				} else if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
-					reason = "ci_trigger_withdrawn"
-				}
 			}
 		}
 		if reason != "" {

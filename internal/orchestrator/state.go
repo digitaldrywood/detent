@@ -109,11 +109,6 @@ type State struct {
 	mergeRecoveryChecked     map[string]bool
 	mergeSlotAcquisitions    []mergeSlotAcquisition
 	mergeSlotWarnings        map[string]time.Time
-	nativeMergeQueueEntries  map[string]nativeMergeQueueEntry
-	nativeMergeQueueRepos    map[string]nativeMergeQueueRepository
-	nativeMergeQueueDeferred map[string]struct{}
-	nativeMergeQueueExcluded map[string]string
-	nativeMergeQueueRemovals map[string][]string
 	TransientCheckRetries    map[string]TransientCheckRetry
 	DependencyAutoUnblocks   map[string]DependencyAutoUnblockRecord
 	dependencyUnblockCursor  string
@@ -414,11 +409,6 @@ func newState(cfg Config) State {
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
 		mergeSlotWarnings:        map[string]time.Time{},
-		nativeMergeQueueEntries:  map[string]nativeMergeQueueEntry{},
-		nativeMergeQueueRepos:    map[string]nativeMergeQueueRepository{},
-		nativeMergeQueueDeferred: map[string]struct{}{},
-		nativeMergeQueueExcluded: map[string]string{},
-		nativeMergeQueueRemovals: map[string][]string{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		DependencyAutoUnblocks:   map[string]DependencyAutoUnblockRecord{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
@@ -522,11 +512,6 @@ func (s State) clone() State {
 		mergeRecoveryChecked:     maps.Clone(s.mergeRecoveryChecked),
 		mergeSlotAcquisitions:    append([]mergeSlotAcquisition(nil), s.mergeSlotAcquisitions...),
 		mergeSlotWarnings:        maps.Clone(s.mergeSlotWarnings),
-		nativeMergeQueueEntries:  cloneNativeMergeQueueEntries(s.nativeMergeQueueEntries),
-		nativeMergeQueueRepos:    maps.Clone(s.nativeMergeQueueRepos),
-		nativeMergeQueueDeferred: maps.Clone(s.nativeMergeQueueDeferred),
-		nativeMergeQueueExcluded: maps.Clone(s.nativeMergeQueueExcluded),
-		nativeMergeQueueRemovals: cloneNativeMergeQueueRemovals(s.nativeMergeQueueRemovals),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		DependencyAutoUnblocks:   maps.Clone(s.DependencyAutoUnblocks),
 		dependencyUnblockCursor:  s.dependencyUnblockCursor,
@@ -750,7 +735,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest := *issue.PullRequest
 		pullRequest.HeadCommittedAt = cloneTimePointer(issue.PullRequest.HeadCommittedAt)
 		if issue.PullRequest.MergeQueueEntry != nil {
-			entry := clonePullRequestMergeQueueEntry(*issue.PullRequest.MergeQueueEntry)
+			entry := *issue.PullRequest.MergeQueueEntry
 			pullRequest.MergeQueueEntry = &entry
 		}
 		if issue.PullRequest.MergedAt != nil {

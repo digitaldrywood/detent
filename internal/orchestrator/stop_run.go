@@ -150,10 +150,6 @@ func (o *Orchestrator) handleStopRunRequest(ctx context.Context, state *State, e
 		event.reply <- stopRunReply{err: ErrStopRunStale}
 		return
 	}
-	if _, pending := o.pendingMergeRevocations[request.IssueID]; pending {
-		event.reply <- stopRunReply{err: ErrStopRunStale}
-		return
-	}
 	running, ok := state.Running[request.IssueID]
 	if !ok {
 		if blocked, found := state.Blocked[request.IssueID]; found && blocked.Source == BlockedSourceOperatorStop && blockedMatchesStopRequest(blocked, request) {

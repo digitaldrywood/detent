@@ -607,9 +607,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if grant != nil {
 		defer func() { o.releaseGlobalDispatchSlot(grant.Slot) }()
 	}
-	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
-		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "waiting for native merge queue"}
-	}
 	if err := o.checkDispatchPolicy(ctx); err != nil {
 		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
 	}

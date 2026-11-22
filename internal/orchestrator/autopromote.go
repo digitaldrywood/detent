@@ -226,11 +226,6 @@ func EvaluateAutoPromote(
 		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
 	gateInput := gateSummary(summary)
-	if normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState) && issue.PullRequest != nil &&
-		summary.NativeQueueEligibleHeadSHA != "" && summary.NativeQueueEligibleHeadSHA == strings.TrimSpace(issue.PullRequest.HeadSHA) &&
-		nativeMergeQueueChecksReady(issue.PullRequest) {
-		gateInput.QueueEligibleCI = true
-	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateInput, now, gate.EvaluationOptions{
 		QuietDuration:              cfg.QuietDuration,
 		AutomatedReviewWaitExpired: summary.AutomatedReviewWaitExpired,
