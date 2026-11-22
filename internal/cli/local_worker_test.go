@@ -745,6 +745,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 	defer cancel()
 	var events []tracker.NativeRunEvent
 	var registration runnersession.Mutation
+	var registeredSessionID int64
 	var acked, reconnectReads int
 	var inventory func() []runnerauth.AttemptWorker
 	var reconnectSource *hubclient.NativeConnector
@@ -777,10 +778,21 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			if err := json.Unmarshal(raw, &mutation); err != nil {
 				return nil, err
 			}
-			if mutation.Worker != nil && mutation.Worker.CleanupPath != "" {
+			if mutation.Start != nil && mutation.Worker != nil && mutation.Worker.CleanupPath != "" {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				if recorder.Code != http.StatusOK {
+					return recorder.Result(), nil
+				}
+				var session runnersession.Snapshot
+				if err := json.Unmarshal(recorder.Body.Bytes(), &session); err != nil {
+					return nil, err
+				}
 				mu.Lock()
 				registration = mutation
+				registeredSessionID = session.ID
 				mu.Unlock()
+				return recorder.Result(), nil
 			}
 		}
 		if event.Worker != nil {
@@ -1046,13 +1058,13 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			return
 		}
 		sessionWorker := registration.Worker
-		if len(events) != 1 || after[0] != before[0] || sessionWorker == nil || registration.SessionID <= 0 ||
+		if len(events) != 1 || after[0] != before[0] || sessionWorker == nil || registeredSessionID <= 0 ||
 			registration.LeaseID != events[0].Data.LeaseID || registration.FencingToken != events[0].Data.FencingToken ||
 			sessionWorker.PID == int(before[0].Worker.PID) || filepath.Dir(filepath.Dir(sessionWorker.CleanupPath)) != bestEffortTestPath(t, workspaceRoot) {
 			t.Fatalf("overlap lost primary ownership or fenced session registration: owners=%+v session=%+v", after, sessionWorker)
 		}
 		var snapshot runnersession.Snapshot
-		path := fmt.Sprintf("%s/runner-sessions/%d", workerClient.Scope(), registration.SessionID)
+		path := fmt.Sprintf("%s/runner-sessions/%d", workerClient.Scope(), registeredSessionID)
 		err = workerClient.Transport().Request(ctx, http.MethodGet, path, nil, &snapshot)
 		if err != nil || snapshot.Worker == nil || *snapshot.Worker != *sessionWorker {
 			t.Fatalf("overlapping worker was not durable on its session: %+v %v", snapshot.Worker, err)

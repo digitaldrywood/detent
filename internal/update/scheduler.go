@@ -928,7 +928,13 @@ func (s *Scheduler) SetLifecycleReporter(report func(context.Context, runnerauth
 		s.cfg.RequestRestart = func(binary string) bool {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", ""); err != nil {
+			s.mu.RLock()
+			var target string
+			if s.enrolledReceipt != nil {
+				target = s.enrolledReceipt.Request.Version
+			}
+			s.mu.RUnlock()
+			if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", target); err != nil {
 				s.cfg.Logger.Warn("report update shutdown", "error", err)
 				return false
 			}
