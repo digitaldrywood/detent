@@ -273,9 +273,12 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	if err == nil && recorded != request {
 		return errors.New("Hub phase receipt differs from the published source")
 	}
-	if err == nil && phase == "plan" {
+	if err == nil {
 		e.mu.Lock()
-		e.phasePlanDigest = digest
+		e.phaseSource = &recorded
+		if phase == "plan" {
+			e.phasePlanDigest = digest
+		}
 		e.mu.Unlock()
 	}
 	return e.executionError(ctx, err)

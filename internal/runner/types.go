@@ -677,7 +677,6 @@ type RunRequest struct {
 	finalizeNativeWork        bool
 	reviewOnly                bool
 	repairResume              bool
-	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
 	attemptDiffBase           string
 	validationEvidenceSource  AttemptDiffSource

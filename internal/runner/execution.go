@@ -701,6 +701,10 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	return checkpoint
 }
 
+func recordExecutionCheckpoint(ctx context.Context, execution Execution, checkpoint tracker.NativeCheckpoint) error {
+	return preserveCancellation(ctx, execution.Checkpoint(ctx, checkpoint), "runner.checkpoint")
+}
+
 func executionCheckpointPreservingPublication(execution Execution, state *workspace.RecoveryState) tracker.NativeCheckpoint {
 	if execution != nil {
 		if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint.UncertainForgeEffect() {
@@ -745,7 +749,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 }
 
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
-	req.checkpointRefs.halt()
 	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
 		artifactCtx, cancel := r.artifactCompletionContext(ctx, req.Execution)
 		defer cancel()
@@ -773,26 +776,21 @@ func (r *Runner) artifactCompletionContext(ctx context.Context, execution Execut
 	return ctx, func() {}
 }
 
-func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
-	if finalize && req.phaseReceipts && req.checkpointRefs == nil {
-		req.checkpointRefs = newCheckpointRefs(backend, req.Execution, info, issue, nil)
-	}
-	req.checkpointRefs.halt()
+func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume) error {
 	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
 	preserver, ok := backend.(workspace.IssuePreserver)
 	if ok {
 		if _, err := preserver.PreserveIssue(captureCtx, issue); err != nil {
-			return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+			return errors.Join(ErrWorkerProcessReap, err)
 		}
 	}
-	if req.Execution == nil {
-		return workspace.Info{}, issue, nil
+	if req.Execution == nil || req.phaseReceipts {
+		return nil
 	}
 	if !ok {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, ErrWorkspacePreservationUnavailable)
+		return errors.Join(ErrWorkerProcessReap, ErrWorkspacePreservationUnavailable)
 	}
-	r.pushCheckpointRef(captureCtx, req.checkpointRefs, req, "stage_finished")
 	state := r.workspaceRecoveryState(backend, captureCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
 	if !agentResumeEmpty(resume) {
@@ -800,38 +798,13 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 	} else {
 		checkpoint.Resume = "fresh_checkout"
 	}
-	req.checkpointRefs.apply(&checkpoint)
-	if refs := req.checkpointRefs; refs != nil && !refs.lastPushFailed() && refs.last.CommitSHA != "" {
-		checkpoint.Storage, checkpoint.Availability = "git_ref", "available"
-		checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = refs.last.Ref, refs.last.CommitSHA, refs.last.BaseSHA, refs.last.TreeSHA
-		checkpoint.HeadSHA = refs.last.HeadSHA
-	}
-	if err := recordCheckpointRef(captureCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
-	}
-	if !finalize {
-		return workspace.Info{}, issue, nil
-	}
-	if req.checkpointRefs == nil || !checkpoint.GitRef() || checkpoint.UncertainForgeEffect() || req.checkpointRefs.lastPushFailed() {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired)
-	}
-	restorer, ok := backend.(workspace.CheckpointWorktree)
-	if !ok {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired)
-	}
-	ref := workspace.CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, HeadSHA: checkpoint.HeadSHA, BaseSHA: checkpoint.BaseSHA, TreeSHA: checkpoint.TreeSHA}
-	restored, restoredIssue, err := restorer.RestoreCheckpointForFinalization(ctx, info, issue, ref)
-	if err != nil {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
-	}
-	return restored, restoredIssue, nil
+	return recordExecutionCheckpoint(captureCtx, req.Execution, checkpoint)
 }
 
 func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (_ bool, resultErr error) {
 	if req.artifactSpool != nil {
 		req.artifactSpool.directory = ""
 	}
-	req.checkpointRefs.halt()
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
 			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
@@ -1007,9 +980,6 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
-	finalPushCtx, finalPushCancel := r.finalizationContext(context.WithoutCancel(ctx), checkpointTimeout, context.DeadlineExceeded)
-	r.finishCheckpointRef(finalPushCtx, req.checkpointRefs, req)
-	finalPushCancel()
 	recoveryCtx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.afterRunTimeout, context.DeadlineExceeded)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()
@@ -1018,10 +988,6 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		checkpoint.Resume = "resume_session"
 	} else if turnStarted {
 		checkpoint.Resume = "fresh_checkout"
-	}
-	phase := req.publishedPhaseSource
-	if checkpoint.WorktreeState != "unpushed" || phase == nil || phase.HeadSHA == "" || phase.HeadSHA != checkpoint.HeadSHA {
-		req.checkpointRefs.apply(&checkpoint)
 	}
 	artifactCtx, cancelArtifacts := r.artifactCompletionContext(ctx, req.Execution)
 	defer cancelArtifacts()
@@ -1045,14 +1011,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	var diffErr error
-	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
+	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && state != nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		base := req.attemptDiffBase
 		if base == "" {
 			base = attemptDiffBase(ctx, info, issue)
 		}
-		finalDiff, err := workspace.GitCommitFileDiffs(ctx, info.Path, base, checkpoint.HeadSHA, tracker.MaxDiffBytes)
+		finalDiff, err := workspace.GitCommitFileDiffs(ctx, info.Path, base, state.HeadSHA, tracker.MaxDiffBytes)
 		if err != nil {
-			diffErr = failedStep("checkpoint_recovery", errors.Join(ErrNativeRecoveryRequired, err))
+			diffErr = failedStep("publication", fmt.Errorf("capture finalized diff: %w", err))
 		} else {
 			request := attemptDiffRequest(finalDiff)
 			var superseded atomic.Pointer[string]
@@ -1096,8 +1062,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return false, errors.Join(completionErr, err)
 	}
-	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
-		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
+	if err := recordExecutionCheckpoint(checkpointCtx, req.Execution, checkpoint); err != nil {
+		return false, errors.Join(completionErr, err)
 	}
 	cancellation := executionCancellation(req)
 	completionErr = errors.Join(completionErr, cancellation)
@@ -1311,6 +1277,10 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 	if req.Execution == nil {
 		return state, nil
 	}
+	if req.phaseReceipts {
+		req.ResumeState, req.RetryMode = store.AgentResumeState{}, RetryModeFresh
+		return req.ResumeState, nil
+	}
 	if state.DetentSessionID == 0 && req.ResumeState.DetentSessionID > 0 {
 		state = req.ResumeState
 	}
@@ -1321,14 +1291,8 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 		}
 	}
 	startHead := info.StartHeadSHA
-	if issue.PhaseSource != nil {
-		startHead = issue.PhaseSource.HeadSHA
-	}
 	recovery := req.Execution.Recovery()
-	action, reason := "fresh_checkout", "verified_pushed_phase"
-	if info.RecoveredPhase.HeadSHA == "" && (!issue.VerifyPhaseBranch || !itemPhaseFromPriorLease(issue.PhaseSource, recovery.Lease.ID)) {
-		action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
-	}
+	action, reason := nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
@@ -1634,4 +1598,30 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 		landing := phaserecovery.Landing(recovery)
 		return landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework()
 	}, completedSourceDisposition)
+}
+
+func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.NativeRecovery, issue workspace.Issue) bool {
+	previous := recovery.SourceAttempt()
+	if previous == nil || previous.MachineID == "" || previous.MachineID != recovery.Lease.MachineID {
+		return false
+	}
+	local, ok := backend.(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+	})
+	if !ok {
+		return false
+	}
+	if issue.AttemptWorkspace.Key() == "" || issue.AttemptWorkspace.Attempt != previous.AttemptID {
+		return false
+	}
+	_, err := local.Existing(issue)
+	return err == nil
+}
+
+func cleanLocalCheckpoint(checkpoint *tracker.NativeCheckpoint) bool {
+	return checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "clean" && checkpoint.HeadSHA != "" && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none"
+}
+
+func checkpointRefCoversChangeSource(err error, checkpoint *workspace.CheckpointRef, landing, fresh bool) bool {
+	return !landing && !fresh && errors.Is(err, ErrNativeRecoveryRequired) && checkpoint != nil
 }

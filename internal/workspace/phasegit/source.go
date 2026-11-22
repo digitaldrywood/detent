@@ -1,7 +1,6 @@
 package phasegit
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -57,7 +56,7 @@ func verifyCheckout(read func(...string) (string, error), expectedHead, expected
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHead string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead, replayFrom *string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -85,12 +84,19 @@ func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHe
 		if err != nil {
 			return err
 		}
-		expected := cmp.Or(expectedRemoteHead, previous)
+		expected := previous
+		if expectedRemoteHead != nil {
+			expected = *expectedRemoteHead
+		}
 		if previous != expected && previous != head {
 			return moved()
 		}
-		if expected != "" && expected != head {
-			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
+		ancestor := expected
+		if replayFrom != nil {
+			ancestor = *replayFrom
+		}
+		if ancestor != "" && ancestor != head {
+			if _, err := read("merge-base", "--is-ancestor", ancestor, head); err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}
@@ -129,7 +135,7 @@ func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHe
 	return branch, head, tree, nil
 }
 
-func PreserveHistory(ctx context.Context, path, identifier string, previous model.PhaseSource, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
+func PreserveHistory(ctx context.Context, path, identifier string, previous model.PhaseSource, expectedRemote string, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
 	head, tree, err := Head(ctx, path)
 	if err != nil || head == previous.HeadSHA {
 		return "", err
@@ -149,7 +155,7 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous mode
 	if err != nil {
 		return "", err
 	}
-	if !exists || remote != previous.HeadSHA {
+	if !exists || remote != expectedRemote {
 		return "", moved
 	}
 	if err := authorize(ctx); err != nil {

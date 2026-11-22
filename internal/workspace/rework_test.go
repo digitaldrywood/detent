@@ -91,10 +91,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				writeCheckpointFile(t, info.Path, "retained.txt", "staged work\n")
 				runGit(t, info.Path, "add", "retained.txt")
 				writeCheckpointFile(t, info.Path, "retained.txt", "latest uncommitted work\n")
-				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
-				if err != nil || !changed {
-					t.Fatalf("capture dirty checkpoint: changed=%v error=%v", changed, err)
-				}
+				checkpoint := publishLegacyCheckpointFixture(t, info, issue)
 				runGit(t, source, "worktree", "remove", "--force", info.Path)
 				checkpoint.HeadSHA = ""
 				issue.Checkpoint = &checkpoint
@@ -158,9 +155,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				if _, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrMergeResolutionInvalid) {
 					t.Fatalf("unpublished legacy replay finalized: %v", err)
 				}
-				if _, _, err := owner.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() }); !errors.Is(err, ErrCheckpointUnsafe) {
-					t.Fatalf("unpublished legacy replay published without source authority: %v", err)
-				}
+
 				if _, err := owner.Existing(issue); !errors.Is(err, ErrMissingWorkspace) {
 					t.Fatalf("unpublished legacy replay discovered: %v", err)
 				}

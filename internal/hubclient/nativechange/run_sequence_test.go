@@ -119,6 +119,72 @@ func TestCheckpointDoesNotCaptureAnOlderDiffHead(t *testing.T) {
 	}
 }
 
+func TestCaptureDiffRejectsPreviousHead(t *testing.T) {
+	oldHead, finalizedHead := nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b")
+	for _, available := range []bool{false, true} {
+		t.Run(map[bool]string{false: "capture unavailable", true: "merge advanced the head"}[available], func(t *testing.T) {
+			execution := &nativeExecution{
+				lastDiff:      &tracker.AttemptDiffRequest{HeadSHA: oldHead},
+				worktreeHead:  oldHead,
+				worktreeState: "clean",
+				diffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					if !available {
+						return tracker.AttemptDiffRequest{}, false
+					}
+					return tracker.AttemptDiffRequest{HeadSHA: finalizedHead}, true
+				},
+			}
+			err := execution.captureDiff(t.Context())
+			if available {
+				if err != nil || execution.lastDiff.HeadSHA != finalizedHead {
+					t.Fatalf("finalized diff = %+v, error = %v", execution.lastDiff, err)
+				}
+			} else if err == nil {
+				t.Fatal("accepted a previous diff after fresh capture failed")
+			}
+		})
+	}
+}
+
+func TestEmptyReworkRequiresMatchingPhaseReceiptOrBundle(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase string
+		sameHead    bool
+		want        bool
+	}{
+		{name: "implementation receipt", phase: "implement", sameHead: true, want: true},
+		{name: "project gate receipt", phase: "project_gate", sameHead: true, want: true},
+		{name: "plan receipt", phase: "plan", sameHead: true},
+		{name: "different head", phase: "implement"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head := nativeChangeFixtureHead("b")
+			receiptHead := nativeChangeFixtureHead("c")
+			if tc.sameHead {
+				receiptHead = head
+			}
+			execution := &nativeExecution{
+				claim: nativeClaim{
+					lease:    tracker.NativeLease{ID: "lease_current", FencingToken: 2},
+					recovery: tracker.NativeRecovery{Change: &tracker.NativeChangeReference{VersionID: "version_prior"}},
+				},
+				data: tracker.NativeRunData{
+					AttemptID: "attempt_current", PolicyID: "policy_current",
+					Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleRework},
+				},
+				phaseSource: &tracker.NativePhaseReceipt{
+					Mutation: tracker.Mutation{LeaseID: "lease_prior", FencingToken: 1},
+					Phase:    tc.phase, AttemptID: "attempt_prior", PolicyID: "policy_current", HeadSHA: receiptHead,
+				},
+			}
+			diff := tracker.AttemptDiffRequest{BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head}
+			if got := execution.verifiedEmptyRework(diff); got != tc.want {
+				t.Fatalf("verified empty rework = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNativePublicationRetainsSourceAfterRunProgress(t *testing.T) {
 	for _, progress := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gate passed", true: "progress after final diff"}[progress], func(t *testing.T) {

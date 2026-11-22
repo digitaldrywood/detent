@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/hubclient/nochange"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -68,7 +70,8 @@ func (e *nativeExecution) PrepareNoChange(ctx context.Context, base string) (str
 	if base == "" || e.claim.recovery.Issue.ReleaseDelivery != nil || e.data.Handoff.UncertainForgeEffect() {
 		return "", false, nil
 	}
-	detail, err := e.claim.source.NativeClient().CurrentChange(ctx, e.claim.lease.WorkItemID)
+	client, item := e.claim.source.NativeClient(), e.claim.lease.WorkItemID
+	detail, err := client.CurrentChange(ctx, item)
 	if err != nil {
 		return "", false, err
 	}
@@ -76,13 +79,34 @@ func (e *nativeExecution) PrepareNoChange(ctx context.Context, base string) (str
 		return "", false, nil
 	}
 	for _, version := range detail.Versions {
-		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID || version.Source == nil || version.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
+		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID {
 			continue
 		}
 		for _, review := range detail.Reviews {
 			v := review.Validator
 			if review.VersionID != version.ID || review.Decision != "approved" || review.Actor.Kind != "runner" || v == nil || !v.Submitted || v.SessionID <= 0 || v.Verdict != "pass" || v.HeadSHA != base {
 				continue
+			}
+			if version.Source != nil {
+				if version.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
+					continue
+				}
+			} else {
+				phase := e.phaseSource
+				if phase == nil || phase.HeadSHA != version.HeadSHA || phase.PolicyID != version.PolicyID || version.AttemptID == "" {
+					continue
+				}
+				diff, err := client.StoredDiff(ctx, item, version.AttemptID, tracker.DiffSourceAttempt, 0)
+				var refusal *api.APIError
+				if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound {
+					continue
+				}
+				if err != nil {
+					return "", false, err
+				}
+				if diff == nil || diff.BaseSHA != version.BaseSHA || diff.HeadSHA != version.HeadSHA || diff.FileCount != 0 || diff.Truncated {
+					continue
+				}
 			}
 			evidence, err := json.Marshal(v)
 			if err != nil {
