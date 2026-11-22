@@ -181,9 +181,11 @@ func TestNativeCheckpointProviderReservation(t *testing.T) {
 	const normal, complex, previous = "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol"
 	for _, test := range []struct {
 		name, checkpointModel, label, want string
+		claimedLane, workerLane            string
 		resume                             bool
 	}{
 		{name: "fresh", want: normal},
+		{name: "rework lease retried in progress", claimedLane: "Rework", workerLane: "In Progress", want: normal},
 		{name: "pre-upgrade checkpoint", checkpointModel: previous, want: normal},
 		{name: "complex issue with pre-upgrade checkpoint", checkpointModel: previous, label: "complexity:complex", want: complex},
 		{name: "authorized checkpoint", checkpointModel: normal, want: normal, resume: true},
@@ -204,8 +206,13 @@ func TestNativeCheckpointProviderReservation(t *testing.T) {
 				t.Fatal(err)
 			}
 			req := RunRequest{ProjectID: "example", Issue: connector.Issue{ID: "work", State: "In Progress", Labels: []string{test.label}}, Policy: cfg.Policy, Mode: RunModeImplement, ProviderReports: []providercapacity.Report{report}}
+			wantRole := RoleCode
+			if test.claimedLane != "" {
+				req.Issue.State = test.claimedLane
+				wantRole = RoleRework
+			}
 			reserved, err := r.DispatchCapacity(t.Context(), req)
-			if err != nil || reserved != (providercapacity.Requirement{Role: RoleCode, Backend: "codex", Model: test.want}) {
+			if err != nil || reserved != (providercapacity.Requirement{Role: wantRole, Backend: "codex", Model: test.want}) {
 				t.Fatalf("preview = %+v, %v", reserved, err)
 			}
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine"}}}
@@ -219,6 +226,9 @@ func TestNativeCheckpointProviderReservation(t *testing.T) {
 				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: "failed", Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{AttemptID: "previous", MachineID: "machine", Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: model, ReasoningEffort: effort}}}}
 			}
 			req.Execution = &capacityTestExecution{Execution: execution, reservation: &providercapacity.Reservation{Requirement: reserved, Report: report}}
+			if test.workerLane != "" {
+				req.Issue.State = test.workerLane
+			}
 			_, err = r.Run(t.Context(), req)
 			got := execution.identity
 			t.Logf("reserved=%s/%s/%s start=%s/%s/%s", reserved.Role, reserved.Backend, reserved.Model, got.Role, got.Backend, got.Model)

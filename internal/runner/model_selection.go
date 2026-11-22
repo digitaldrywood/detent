@@ -102,7 +102,7 @@ func resolveRequestAgentSelection(ctx context.Context, req RunRequest, process A
 }
 
 func resolveAttemptAgentSelection(ctx context.Context, req RunRequest, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
-	backend = capacitySelectionBackend(req, backend)
+	backend = capacitySelectionBackend(req, role, backend)
 	if hasResumeIdentity(req) {
 		identity := req.ResumeState.RuntimeIdentity
 		model := effectiveModel("", identity.RequestedModel.Value, identity.ResolvedModel.Value)
