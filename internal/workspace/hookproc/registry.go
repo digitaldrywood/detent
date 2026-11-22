@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
@@ -119,13 +120,17 @@ func (u *Registry) Start(ctx context.Context, path string) (*Owner, error) {
 		return nil, nil
 	}
 	lifetime := hookLifetimeFromContext(ctx)
-	descriptor, err := NewLifetime()
+	setup, _ := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
+	parent := ""
+	if setup != nil {
+		parent = filepath.Join(setup.root, pendingWorkspaceSetupPath(path))
+	}
+	descriptor, err := newLifetime(parent)
 	if err != nil {
 		return nil, fmt.Errorf("open hook lifetime: %w", err)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	setup, _ := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
 	owner := &Owner{lock: make(chan struct{}, 1), uses: u, path: path, token: rand.Text(), lifetime: lifetime, descriptor: descriptor, running: true, setup: setup}
 	if u.hooks == nil {
 		u.hooks = make(map[string]map[*Owner]struct{})
@@ -214,7 +219,7 @@ func (o *Owner) CommandFinished(ctx context.Context, commandErr error) error {
 	}
 	if active {
 		if o.setup != nil {
-			if err := recordWorkspaceSetupStatus(o.setup.root, o.path, "ready"); err != nil {
+			if err := recordWorkspaceSetupReady(o.setup.root, o.path, o.descriptor); err != nil {
 				return err
 			}
 			o.setup.retained.Store(true)
