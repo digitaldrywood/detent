@@ -236,6 +236,13 @@ func TestNativeSourceGateStopsWhenSSHOwnerDisconnects(t *testing.T) {
 	if !errors.Is(gateCtx.Err(), context.Canceled) {
 		t.Fatalf("gate kept running after controller disconnect: %v", gateCtx.Err())
 	}
+	localCtx, cancelLocal := context.WithCancelCause(t.Context())
+	localGateCtx, stopLocal := runner.sourceFinalizationContext(localCtx, RunRequest{Execution: &testExecution{}}, time.Minute)
+	defer stopLocal()
+	cancelLocal(ErrExecutionAuthorityUnavailable)
+	if !errors.Is(context.Cause(localGateCtx), ErrExecutionAuthorityUnavailable) {
+		t.Fatalf("local gate kept running after lease loss: err=%v cause=%v", localGateCtx.Err(), context.Cause(localGateCtx))
+	}
 }
 
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
