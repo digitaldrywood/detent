@@ -751,6 +751,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 				ref := "HEAD"
 				if issue.Source != nil {
 					ref = issue.Source.Version.HeadSHA
+				} else if issue.VerifyPhaseBranch {
+					ref, err = l.newBranchBaseRef(ctx)
 				} else if info.PublicationBranch != "" {
 					ref, err = l.newBranchStartRef(ctx, info.PublishBranch())
 				}
@@ -804,7 +806,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			}
 			head = receipt.HeadSHA
 		}
-		created, err = l.createWorktree(ctx, &info, issue.FreshCheckout, head, issue.PinStartHead)
+		created, err = l.createWorktree(ctx, &info, issue, head)
 	}
 	preservationAttempted := false
 	if issue.Landing != nil && created {
@@ -874,7 +876,7 @@ func (l *LocalGit) runAfterCreate(ctx context.Context, info Info, issue Issue) e
 	})
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, info *Info, fresh bool, baseRef string, pinStartHead bool) (bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, info *Info, issue Issue, baseRef string) (bool, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
 	release, err := l.acquireSourceOperation(ctx)
@@ -887,20 +889,28 @@ func (l *LocalGit) createWorktree(ctx context.Context, info *Info, fresh bool, b
 	if err != nil {
 		return false, err
 	}
-	if baseRef == "HEAD" && (fresh || (!exists || pinStartHead) && info.PublicationBranch != "") {
-		baseRef, err = l.newBranchStartRef(ctx, info.PublishBranch())
+	if baseRef == "HEAD" {
+		switch {
+		case issue.VerifyPhaseBranch:
+			baseRef, err = l.newBranchBaseRef(ctx)
+			if err == nil {
+				baseRef, err = l.resolveWorktreeStartHead(ctx, baseRef)
+			}
+		case issue.FreshCheckout || (!exists || issue.PinStartHead) && info.PublicationBranch != "":
+			baseRef, err = l.newBranchStartRef(ctx, info.PublishBranch())
+		}
 		if err != nil {
 			return false, err
 		}
 	}
-	if pinStartHead {
+	if issue.PinStartHead {
 		info.StartHeadSHA, err = l.resolveWorktreeStartHead(ctx, baseRef)
 		if err != nil {
 			return false, err
 		}
 		baseRef = info.StartHeadSHA
 	}
-	if fresh {
+	if issue.FreshCheckout {
 		if scope, _ := splitCheckoutIssueKey(info.Key); scope == "" {
 			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
 				return false, err

@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -211,5 +215,92 @@ func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T
 	}
 	if !backend.issue.VerifyPhaseBranch || backend.issue.PhaseChangeHeadSHA != change.HeadSHA {
 		t.Fatalf("checkout must verify the branch and the current Change ancestry: %+v", backend.issue)
+	}
+}
+
+func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hook      string
+		movesHead bool
+	}{
+		{name: "unchanged"},
+		{name: "hook changed HEAD", hook: "git switch --detach ", movesHead: true},
+		{name: "hook detached the same HEAD", hook: "git switch --detach HEAD"},
+		{name: "hook changed tracked contents", hook: "printf 'changed\\n' >> README.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
+			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			hooks := workspace.Hooks{BeforeRun: tc.hook}
+			if tc.movesHead {
+				hooks.BeforeRun += base
+			}
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+				ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"),
+				SourceRoot: source, AutoBranch: true, Hooks: hooks,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			replacement := prior
+			replacement.Attempt = "attempt_22222222222222222222222222222222"
+			issue := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress"}
+			target := runworkspace.Issue(prior.Project, issue)
+			target.AttemptWorkspace = prior
+			seed, err := backend.Create(t.Context(), target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runRunnerGit(t, seed.Path, "commit", "--allow-empty", "-m", "complete phase")
+			head := strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD"))
+			tree := strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD^{tree}"))
+			branch := seed.PublishBranch()
+			runRunnerGit(t, seed.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+
+			execution := &phaseCheckoutExecution{
+				testExecution: &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "replacement-lease"}}},
+				continuation: tracker.NativePhaseContinuation{
+					RepositoryURL: remote, NextPhase: "implement",
+					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
+				},
+			}
+			agent := &fakeCodexClient{
+				updates: []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "implementation-turn"}},
+				err:     errors.New("stop after starting the verified turn"),
+			}
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			r, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, ProjectID: prior.Project,
+				Workspace: backend, AgentBackend: agent, ProcessSource: emptyProcessSource,
+				Store: newNativeSessionOwner(policy.Descriptor{}).client(replacement.Attempt), Logger: slog.New(slog.DiscardHandler),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{ProjectID: prior.Project, Mode: RunModeImplement, Execution: execution, Issue: issue, AttemptWorkspace: replacement})
+			if tc.hook == "" {
+				if agent.calls != 1 || !result.TurnStarted {
+					t.Fatalf("verified phase checkout did not reach execution: calls=%d error=%v", agent.calls, err)
+				}
+			} else if !errors.Is(err, ErrNativeRecoveryRequired) || agent.calls != 0 || agent.failureCalls != 0 || result.TurnStarted {
+				t.Fatalf("changed phase checkout reached execution: calls=%d failure calls=%d error=%v", agent.calls, agent.failureCalls, err)
+			}
+			target.AttemptWorkspace = replacement
+			info, err := backend.Existing(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantHead := head
+			if tc.movesHead {
+				wantHead = base
+			}
+			if observed, err := backend.Head(t.Context(), info, target); err != nil || observed != wantHead {
+				t.Fatalf("hook checkout = %s, error = %v, want %s", observed, err, wantHead)
+			}
+		})
 	}
 }
