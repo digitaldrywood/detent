@@ -1249,7 +1249,7 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 	}
 	recovery := req.Execution.Recovery()
 	action, reason := "fresh_checkout", "verified_pushed_phase"
-	if issue.PhaseSource == nil || issue.PhaseSource.LeaseID == "" || issue.PhaseSource.LeaseID == recovery.Lease.ID || !issue.VerifyPhaseBranch {
+	if !issue.VerifyPhaseBranch || !itemPhaseFromPriorLease(issue.PhaseSource, recovery.Lease.ID) {
 		action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 	}
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {

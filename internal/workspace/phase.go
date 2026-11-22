@@ -49,6 +49,23 @@ func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (s
 	return phasegit.Head(ctx, info.Path)
 }
 
+func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue Issue) error {
+	info, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return err
+	}
+	if issue.PhaseSource == nil {
+		return ErrItemPhaseSource
+	}
+	if l.autoBranch {
+		ref, err := gitexec.ReadPublicationSource(ctx, info.Path, "symbolic-ref", "--quiet", "HEAD")
+		if err != nil || strings.TrimSpace(ref) != "refs/heads/"+info.Branch {
+			return errors.Join(errors.New("checkout is no longer on the assigned item branch"), err)
+		}
+	}
+	return phasegit.VerifyCleanCheckout(ctx, info.Path, l.sourceRoot, *issue.PhaseSource)
+}
+
 func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue Issue) error {
 	branch := info.PublishBranch()
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
@@ -78,14 +95,14 @@ func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue I
 	if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-recurse-submodules", defaultGitRemote, ref)...); err != nil {
 		return fmt.Errorf("fetch published item branch: %w", withCommandOutput(err))
 	}
-	fetched, err := l.resolveWorktreeStartHead(ctx, "FETCH_HEAD")
+	fetched, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	if err != nil {
 		return err
 	}
-	if fetched != head {
+	if strings.TrimSpace(fetched) != head {
 		return fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
 	}
-	tree, err := l.runGit(ctx, "rev-parse", head+"^{tree}")
+	tree, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", head+"^{tree}")
 	if err != nil {
 		return fmt.Errorf("read published phase tree: %w", err)
 	}
@@ -93,10 +110,7 @@ func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue I
 		return fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource)
 	}
 	if changeHead := issue.PhaseChangeHeadSHA; changeHead != "" {
-		if !gitexec.ValidHead(changeHead) {
-			return fmt.Errorf("%w: invalid current Change head", ErrItemPhaseSource)
-		}
-		if _, err := l.runGit(ctx, "merge-base", "--is-ancestor", changeHead, head); err != nil {
+		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, changeHead, head); err != nil {
 			return fmt.Errorf("%w: published item phase does not descend from the current Change head: %w", ErrItemPhaseSource, err)
 		}
 	}

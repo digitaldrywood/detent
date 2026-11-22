@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -131,12 +132,15 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 		name      string
 		receipted bool
 		unrelated bool
+		override  string
 		advance   bool
 		want      string
 	}{
 		{name: "receipted descendant of the current Change", receipted: true},
 		{name: "existing ref without a receipt", want: "no matching phase receipt"},
 		{name: "receipt from unrelated Change", receipted: true, unrelated: true, want: "does not descend"},
+		{name: "replacement object forges ancestry", receipted: true, unrelated: true, override: "replace", want: "does not descend"},
+		{name: "graft forges ancestry", receipted: true, unrelated: true, override: "graft", want: "does not descend"},
 		{name: "newer Git tip without a receipt", receipted: true, advance: true, want: "differs from its latest phase receipt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,6 +174,21 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 				runGit(t, source, "add", "unrelated.txt")
 				runGit(t, source, "commit", "-m", "publish different Change source")
 				issue.PhaseChangeHeadSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			}
+			if tc.override != "" {
+				runGit(t, source, "fetch", "origin", ref)
+				switch tc.override {
+				case "replace":
+					forged := strings.TrimSpace(runGit(t, source, "commit-tree", receipt.TreeSHA, "-p", issue.PhaseChangeHeadSHA, "-m", "forge parent"))
+					runGit(t, source, "replace", receipt.HeadSHA, forged)
+				case "graft":
+					runGit(t, source, "config", "advice.graftFileDeprecated", "false")
+					grafts := filepath.Join(source, ".git", "info", "grafts")
+					if err := os.WriteFile(grafts, []byte(receipt.HeadSHA+" "+issue.PhaseChangeHeadSHA+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runGit(t, source, "merge-base", "--is-ancestor", issue.PhaseChangeHeadSHA, receipt.HeadSHA)
 			}
 			issue.FreshCheckout, issue.BaseRef = true, base
 			info, err := replacement.Create(t.Context(), issue)
@@ -228,5 +247,47 @@ func TestItemPhasePushReconcilesConcurrentRefUpdate(t *testing.T) {
 				t.Fatalf("remote head = %s, want %s", remote, concurrent)
 			}
 		})
+	}
+}
+
+func TestAbsentItemPhaseBranchDoesNotAuthorizeConcurrentTip(t *testing.T) {
+	f := newLandingFixture(t)
+	base := f.remoteMain(t)
+	runGit(t, f.info.Path, "push", "origin", "HEAD:refs/heads/seed")
+	source := initSourceRepo(t)
+	runGit(t, source, "remote", "add", "origin", f.remote)
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ref-created")
+	ref := "refs/heads/" + f.info.PublishBranch()
+	git := shellQuote(realGit)
+	script := "#!/bin/sh\ncase \"$*\" in *ls-remote*" + shellQuote(ref) + ")\n" +
+		"if [ ! -f " + shellQuote(marker) + " ]; then\n" +
+		git + " \"$@\" || exit $?\n" +
+		git + " -C " + shellQuote(f.remote) + " update-ref " + shellQuote(ref) + " " + shellQuote(f.head) + " || exit $?\n" +
+		"touch " + shellQuote(marker) + " && exit 0\nfi;;\nesac\nexec " + git + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	issue := f.issue
+	issue.PublicationRepository, issue.VerifyPhaseBranch, issue.FreshCheckout = f.remote, true, true
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("did not create the concurrent ref: %v", err)
+	}
+	if head, err := backend.Head(t.Context(), info, issue); err != nil || head != base {
+		t.Fatalf("checkout head = %s, error = %v, want independently selected base %s", head, err, base)
 	}
 }
