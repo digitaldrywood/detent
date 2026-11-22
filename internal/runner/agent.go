@@ -3217,7 +3217,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					}
 				case change != nil:
 					verdictAttempted = true
-					assessment, err := r.decideRound(afterRunCtx, req, runWorkspace, info, workspaceIssue, "implement", feedback, result, nil, true, nil)
+					assessment, err := r.decideRound(ctx, req, runWorkspace, info, workspaceIssue, "implement", feedback, result, nil, true, nil)
 					turnErr = err
 					if err == nil {
 						applyRoundHumanAction(&result, assessment)
@@ -3252,7 +3252,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				applyRoundHumanAction(&result, assessment)
 			}
 		}
-		turnErr = errors.Join(turnErr, r.finishExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, cleanupWorkspace))
+		turnErr = errors.Join(turnErr, r.finishExecution(ctx, req, runWorkspace, info, workspaceIssue, cleanupWorkspace))
 		r.logWorkerEvent(req.Issue, "worker_after_run_finished",
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID,
 			telemetry.DetentSessionIDKey, sessionID,

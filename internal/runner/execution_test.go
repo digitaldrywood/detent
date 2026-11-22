@@ -245,6 +245,71 @@ func TestNativeSourceGateStopsWhenSSHOwnerDisconnects(t *testing.T) {
 	}
 }
 
+type cancelObservingReviewExecution struct {
+	testExecution
+}
+
+func (e *cancelObservingReviewExecution) ReviewVersion(ctx context.Context) (NativeValidation, error) {
+	<-ctx.Done()
+	return NativeValidation{}, ctx.Err()
+}
+
+func (e *cancelObservingReviewExecution) RecordReview(context.Context, gate.ValidatorResult) error {
+	return nil
+}
+
+func (e *cancelObservingReviewExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	<-ctx.Done()
+	return NativeValidation{}, ctx.Err()
+}
+
+func (e *cancelObservingReviewExecution) RecordValidator(context.Context, gate.ValidatorResult) error {
+	return nil
+}
+
+func TestNativeReviewAndValidatorCancelOnLeaseLoss(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		review bool
+	}{
+		{name: "implementation review", review: true},
+		{name: "acceptance validator", review: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Config{}
+			if tc.review {
+				cfg.Gate.AutomatedReview = gate.AutomatedReviewRequired
+			} else {
+				cfg.Gate.Validator.Enabled = true
+			}
+			r, err := NewRunner(Dependencies{
+				ProcessSource: emptyProcessSource,
+				Workflow:      config.Workflow{Config: cfg},
+				Workspace:     &fakeWorkspaceBackend{},
+				AgentBackend:  &fakeCodexClient{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(ErrExecutionAuthorityUnavailable)
+			exec := &cancelObservingReviewExecution{}
+			req := RunRequest{Execution: exec, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+			if tc.review {
+				if _, err := r.reviewNativeChange(ctx, req); !errors.Is(err, context.Canceled) {
+					t.Fatalf("reviewNativeChange did not cancel on lease loss: %v", err)
+				}
+			} else {
+				if err := r.validateNativeChange(ctx, req); !errors.Is(err, context.Canceled) {
+					t.Fatalf("validateNativeChange did not cancel on lease loss: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
