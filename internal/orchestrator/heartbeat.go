@@ -50,6 +50,7 @@ type heartbeatTarget struct {
 	progress             *workerProgress
 	issueID              string
 	claimOwner           string
+	leaseExpiresAt       time.Time
 	workAttemptHeartbeat store.WorkAttemptHeartbeat
 	workerProcess        procgroup.Identity
 	workspacePath        string
@@ -178,7 +179,17 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 	} else {
 		m.nextSequence++
 		target.sequence = m.nextSequence
-		target.nextDue = m.now().Add(m.settings.interval)
+		now := m.now()
+		delay := m.settings.interval
+		if !target.leaseExpiresAt.IsZero() {
+			remaining := target.leaseExpiresAt.Sub(now)
+			if remaining <= 0 {
+				delay = 0
+			} else if third := remaining / 3; third < delay {
+				delay = max(time.Millisecond, third)
+			}
+		}
+		target.nextDue = now.Add(delay)
 	}
 	m.targets[target.issueID] = target
 	m.mu.Unlock()
@@ -589,6 +600,7 @@ func (o *Orchestrator) trackRunningHeartbeat(state *State, running Running, clai
 		progress:             running.progress,
 		issueID:              running.Issue.ID,
 		claimOwner:           owner,
+		leaseExpiresAt:       claimed.LeaseExpiresAt,
 		workAttemptHeartbeat: o.runningWorkAttemptHeartbeat(state, running, now),
 		workerProcess:        running.WorkerProcess,
 		workspacePath:        running.WorkspacePath,

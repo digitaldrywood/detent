@@ -3,12 +3,10 @@ package nativechange
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/big"
 	"net/http"
 	"slices"
 	"strconv"
@@ -212,8 +210,17 @@ func (e *nativeExecution) Recovery() tracker.NativeRecovery {
 	return recovery
 }
 
-func (e *nativeExecution) remaining() time.Duration {
-	return e.scheduler.host.RemainingExecution(e.claim.lease)
+func (e *nativeExecution) claimSnapshot() (time.Time, <-chan struct{}, bool) {
+	claim, ok := e.scheduler.host.ExecutionClaim(string(e.claim.lease.WorkItemID))
+	if !ok || claim.Lost || claim.Lease.ID != e.claim.lease.ID || claim.Lease.FencingToken != e.claim.lease.FencingToken {
+		return time.Time{}, nil, false
+	}
+	return claim.Deadline, claim.LeaseChanged, true
+}
+
+func (e *nativeExecution) claimActive() bool {
+	deadline, _, ok := e.claimSnapshot()
+	return ok && e.scheduler.now().Before(deadline)
 }
 
 func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), error) {
@@ -240,7 +247,6 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	go func() {
 		defer close(done)
 		var routingChanged <-chan struct{}
-		backoff := time.Second
 		for {
 			if e.scheduler.client.Enrolled() {
 				availability, changed, err := e.scheduler.client.AvailabilityState()
@@ -258,39 +264,35 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 					routingChanged = changed
 				}
 			}
-			remaining := e.remaining()
-			if remaining <= 0 {
-				if err := e.renew(guarded, 0); err != nil {
-					if !nativeTransportUnavailable(err) {
-						cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, err))
-						return
-					}
-					remaining = backoff
-					if jitter, err := rand.Int(rand.Reader, big.NewInt(int64(backoff/2)+1)); err == nil {
-						remaining = backoff/2 + time.Duration(jitter.Int64())
-					}
-					backoff = min(30*time.Second, backoff*2)
-				} else {
-					remaining = e.remaining()
-					backoff = time.Second
-				}
+			leaseDeadline, leaseChanged, ok := e.claimSnapshot()
+			if !ok {
+				cancel(runner.ErrExecutionAuthorityUnavailable)
+				return
+			}
+			now := e.scheduler.now()
+			wait := leaseDeadline.Sub(now)
+			if wait <= 0 {
+				cancel(runner.ErrExecutionAuthorityUnavailable)
+				return
 			}
 			if deadline := e.AvailabilityDeadline(); !deadline.IsZero() {
-				untilDeadline := deadline.Sub(e.scheduler.now())
+				untilDeadline := deadline.Sub(now)
 				if untilDeadline <= 0 {
 					cancel(runner.NewCancellationCause(context.Canceled, "runner.availability"))
 					return
 				}
-				remaining = min(remaining, untilDeadline)
+				wait = min(wait, untilDeadline)
 			}
-			timer := time.NewTimer(remaining)
+			timer := time.NewTimer(wait)
 			select {
 			case <-guarded.Done():
 				timer.Stop()
 				return
-			case <-timer.C:
+			case <-leaseChanged:
+				timer.Stop()
 			case <-routingChanged:
 				timer.Stop()
+			case <-timer.C:
 			}
 		}
 	}()
@@ -342,10 +344,8 @@ func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return e.validationError(ctx, errors.Join(err, context.Cause(ctx)))
 	}
-	if e.remaining() <= 0 {
-		if err := e.renew(ctx, 0); err != nil {
-			return e.validationError(ctx, err)
-		}
+	if !e.claimActive() {
+		return e.validationError(ctx, runner.ErrExecutionAuthorityUnavailable)
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
 		return e.validationError(ctx, err)
@@ -863,9 +863,6 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 				outcome = "cancelled"
 			}
 		}
-		if finishErr == nil && e.remaining() <= 0 {
-			finishErr = e.renew(ctx, 0)
-		}
 		if finishErr == nil {
 			finishErr = e.Finish(ctx, outcome)
 		}
@@ -1112,11 +1109,6 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
-	if e.remaining() <= 0 {
-		if err := e.renew(ctx, 0); err != nil {
-			return e.executionError(ctx, err)
-		}
-	}
 	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
 		path, err := nativeItemPath(e.claim.lease.WorkItemID)
 		if err != nil {

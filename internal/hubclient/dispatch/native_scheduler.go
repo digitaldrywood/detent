@@ -827,26 +827,46 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	if err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
-	s.mu.Lock()
-	current, ok := s.nativeClaims[issueID]
-	if !ok || current.lost || current.lease.ID != lease.ID || current.lease.FencingToken != lease.FencingToken {
-		s.mu.Unlock()
+	renewed, ok := s.applyNativeLeaseRenewal(issueID, renewStarted, claim.lease, lease)
+	if !ok {
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+	}
+	if err := s.checkClaimRunner(ctx, issueID, claim.lease.PolicyID); err != nil {
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
+	}
+	return renewed, nil
+}
+
+func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, expected, lease tracker.NativeLease) (orchestrator.Claimed, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, found := s.nativeClaims[issueID]
+	if !found || current.lost {
+		return orchestrator.Claimed{}, false
+	}
+	if current.lease.FencingToken != expected.FencingToken {
+		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), true
+	}
+	if current.lease.ID != lease.ID || current.lease.FencingToken != lease.FencingToken {
+		return orchestrator.Claimed{}, false
 	}
 	if current.lease.RenewedAt.After(lease.RenewedAt) {
 		lease = current.lease
 	} else {
 		current.signalLeaseChange()
 		current.lease = lease
-		current.deadline = nativeLeaseDeadline(renewStarted, lease)
+		current.deadline = nativeLeaseDeadline(started, lease)
 		s.nativeClaims[issueID] = current
 	}
 	s.claims[issueID] = nativeTrackerLease(lease)
-	s.mu.Unlock()
-	if err := s.checkClaimRunner(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
-	}
-	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
+	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), true
+}
+
+func isDefinitiveAuthorityLoss(err error) bool {
+	var apiErr *APIError
+	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
+		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match")
+	return nativeAuthorityLost(err) || lostAuthority
 }
 
 func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
@@ -885,10 +905,7 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 }
 
 func (s *Scheduler) nativeClaimError(ctx context.Context, issueID string, token tracker.FencingToken, err error) error {
-	var apiErr *APIError
-	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
-		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match")
-	if nativeAuthorityLost(err) || lostAuthority {
+	if isDefinitiveAuthorityLoss(err) {
 		if s.invalidateNativeClaim(ctx, issueID, token, err) {
 			return errors.Join(orchestrator.ErrSchedulingClaimLost, runner.ErrExecutionAuthorityUnavailable, err)
 		}

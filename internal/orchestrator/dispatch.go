@@ -1074,10 +1074,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
 	}
+	o.trackRunningHeartbeat(state, running, claim, now)
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
 	durationLimitTransferred = true
-	o.trackRunningHeartbeat(state, running, claim, now)
 	return dispatchIssueOutcome{dispatched: true}
 }
 
