@@ -239,6 +239,14 @@ type requiredOnlyConnector struct {
 	connector.Connector
 }
 
+type requiredOnlyNativeConnector struct {
+	connector.Connector
+}
+
+func (requiredOnlyNativeConnector) WorkflowStates(context.Context) ([]connector.WorkflowState, error) {
+	return nil, nil
+}
+
 func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
@@ -504,6 +512,73 @@ func TestTickReconcilesReviewLaneOperationalCompletionAndAuditedBlocker(t *testi
 		}
 		if got, wantComments := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, wantComments) {
 			t.Fatalf("FetchIssueComments = %#v, want %#v", got, wantComments)
+		}
+	})
+
+	t.Run("cleared human request in human review stays in review", func(t *testing.T) {
+		t.Parallel()
+		orch, tracker, issue := mergingSecurityAuditFixture()
+		issue.State = "Human Review"
+		orch.cfg.ObservedStates = []string{"Human Review", "Blocked"}
+		orch.cfg.AutoPromote.SourceState = "Human Review"
+		orch.now = func() time.Time { return now }
+		t1 := now.Add(-3 * time.Minute)
+		t2 := now.Add(-2 * time.Minute)
+		t3 := now.Add(-time.Minute)
+		tracker.stateIssues = []connector.Issue{issue}
+		tracker.issueComments = map[string][]connector.IssueComment{
+			issue.ID: {
+				{
+					CreatedAt:        &t1,
+					UpdatedAt:        &t1,
+					AuthorAuthorized: true,
+					Body:             "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve production cutover\n```",
+				},
+				{
+					CreatedAt:        &t2,
+					UpdatedAt:        &t2,
+					AuthorAuthorized: true,
+					Body:             "## Codex Workpad\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: \"\"\n```",
+				},
+				{
+					CreatedAt:        &t3,
+					UpdatedAt:        &t3,
+					AuthorAuthorized: true,
+					Body:             "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: \"\"\n```",
+				},
+			},
+		}
+		state := newState(orch.cfg)
+		orch.tick(t.Context(), &state, now)
+		if len(tracker.updates) != 0 {
+			t.Fatalf("cleared human request moved issue: updates = %#v", tracker.updates)
+		}
+	})
+
+	t.Run("required-only native connector preserves pending native landing", func(t *testing.T) {
+		t.Parallel()
+		nativeLanding := autoPromoteTickIssue("native-landing-1", nil, nil)
+		nativeLanding.State = "Merging"
+		nativeLanding.NativeLandingHeadSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{nativeLanding}}
+		cfg := normalizeConfig(Config{
+			MaxConcurrentAgents: 1,
+			ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+			TerminalStates:      []string{"Done"},
+			TrackerKind:         "detent",
+		})
+		orch := &Orchestrator{
+			cfg:       cfg,
+			connector: requiredOnlyNativeConnector{Connector: tracker},
+			now:       func() time.Time { return now },
+		}
+		state := newState(cfg)
+		candidates, err := orch.fetchCandidateIssuesForTick(t.Context(), &state, now)
+		if err != nil {
+			t.Fatalf("fetchCandidateIssuesForTick error = %v", err)
+		}
+		if len(candidates) != 1 || candidates[0].ID != nativeLanding.ID {
+			t.Fatalf("candidates = %#v, want [%s]", candidates, nativeLanding.ID)
 		}
 	})
 }

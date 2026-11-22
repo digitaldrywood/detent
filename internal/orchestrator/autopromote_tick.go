@@ -99,7 +99,7 @@ func (o *Orchestrator) reconcileReviewLaneIssues(
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) || issue.PullRequest != nil {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 		}
-		if decision.Reason != AutoPromoteReasonWorkpadBlocker && explicitHumanAction(issue) != "" {
+		if decision.Reason != AutoPromoteReasonWorkpadBlocker && currentWorkpadHumanAction(issue) != "" {
 			decision = autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonWorkpadBlocker)
 		}
 		var targetState string
@@ -123,6 +123,17 @@ func (o *Orchestrator) reconcileReviewLaneIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func currentWorkpadHumanAction(issue connector.Issue) string {
+	if issue.IssueContract != nil && strings.TrimSpace(issue.IssueContract.HumanAction) != "" {
+		return strings.TrimSpace(issue.IssueContract.HumanAction)
+	}
+	signal, ok := autoPromoteIssueWorkpadSignal(issue)
+	if !ok || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusBlocked {
+		return ""
+	}
+	return strings.TrimSpace(signal.HumanAction)
 }
 
 func autoPromoteCompletedFinalState(state *State, issueID string) string {

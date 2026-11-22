@@ -931,7 +931,8 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	}
 	filtered := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) {
+		if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) &&
+			!(o.nativeWorkflow() && strings.TrimSpace(issue.NativeLandingHeadSHA) != "") {
 			continue
 		}
 		filtered = append(filtered, issue)
