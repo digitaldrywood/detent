@@ -120,6 +120,40 @@ func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
 	}
 }
 
+func TestPostgresRunnerUpdateRefusalPreservesPendingTarget(t *testing.T) {
+	f := newReceiptFixture(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for index, name := range []string{"installed", "detached"} {
+		t.Run(name, func(t *testing.T) {
+			newer := runnerauth.UpdateRequest{ID: fmt.Sprintf("newer_%d", index), RequestedAt: now, Service: "detent", Version: "1.2.4", Release: true, FollowHub: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
+			seedMonotonicRequest(t, f, index, newer)
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
+			target := running
+			target.Version, target.SHA256 = newer.Version, strings.Repeat("d", 64)
+			applied := runnerauth.UpdateReceipt{Request: newer, Status: "applied", Applied: &target, ObservedAt: now}
+			if name == "detached" {
+				applied.Status, applied.Applied, applied.VerifiedTarget = "uncertain", nil, &target
+			}
+			writeMonotonicReceipt(t, f, index, "install", applied, running)
+			older := newer
+			older.ID, older.Version, older.RequestedAt = fmt.Sprintf("older_%d", index), running.Version, now.Add(time.Second)
+			seedMonotonicRequest(t, f, index, older)
+			refusal := runnerauth.UpdateReceipt{Request: older, Status: "refused", FailureReason: "A newer release is awaiting restart", ObservedAt: older.RequestedAt}
+			writeMonotonicReceipt(t, f, index, "refuse", refusal, running)
+			want := applied
+			want.PreviousFailure = &runnerauth.UpdateFailure{Request: older, FailureReason: refusal.FailureReason, ObservedAt: refusal.ObservedAt}
+			assertMonotonicReceipt(t, f, index, want)
+			writeMonotonicReceipt(t, f, index, "repeat install", applied, running)
+			assertMonotonicReceipt(t, f, index, want)
+			runner := runnerauth.Runner{Binding: f.bindings[index], Health: "online", ConnectionHealth: "online", LastHeartbeatAt: now,
+				Routing: runnerauth.Routing{UpdateRequest: &older}, Update: &runnerauth.UpdateObservation{Supported: true, Running: running, Receipt: &want, ReceivedAt: now}}
+			if view := runner.UpdateView(now); view.Status != "refused" {
+				t.Fatalf("desired request status = %q, want refused", view.Status)
+			}
+		})
+	}
+}
+
 func seedMonotonicRequest(t *testing.T, f receiptFixture, index int, request runnerauth.UpdateRequest) {
 	t.Helper()
 	err := f.service.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {

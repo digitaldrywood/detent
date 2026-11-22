@@ -190,6 +190,44 @@ func TestSchedulerEnrolledAlreadyRunningRelease(t *testing.T) {
 	}
 }
 
+func TestSchedulerEnrolledCurrentReleasePreservesNewerTarget(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		name := "installed"
+		if pending {
+			name = "detached"
+		}
+		t.Run(name, func(t *testing.T) {
+			now := time.Now().UTC()
+			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
+			updater := &schedulerUpdaterStub{applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true, ReplacementPending: pending}}
+			path := filepath.Join(t.TempDir(), "scheduler.json")
+			scheduler, err := NewScheduler(SchedulerConfig{Updater: updater, RunningBuild: running, CheckInterval: time.Hour, StatePath: path,
+				ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
+				ReserveDrain:   func(context.Context) (func(), error) { return nil, ErrRefused },
+				RequestRestart: func(string) bool { return false },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			newer := runnerauth.UpdateRequest{ID: "newer", Service: "detent", Version: "1.2.4", Release: true, FollowHub: true, ExpectedBuildRevision: scheduler.EnrolledObservation(running).Revision, RequestedAt: now}
+			applied := scheduler.EnrolledUpdate(t.Context(), running, &newer)
+			if applied == nil || applied.Receipt == nil || (applied.Receipt.Applied != nil) == pending || (applied.Receipt.VerifiedTarget != nil) != pending || scheduler.Status().State != "applied_restart_deferred" {
+				t.Fatalf("missing deferred installation evidence: %+v", applied)
+			}
+			current := newer
+			current.ID, current.Version, current.ExpectedBuildRevision = "current", running.Version, applied.Revision
+			refused := scheduler.EnrolledUpdate(t.Context(), running, &current)
+			if refused == nil || refused.Receipt == nil || refused.Receipt.Status != "refused" || !refused.Receipt.Request.Matches(current) {
+				t.Fatalf("current request outcome = %+v", refused)
+			}
+			state, found, err := loadSchedulerState(path)
+			if err != nil || !found || !reflect.DeepEqual(state.EnrolledReceipt, applied.Receipt) || !reflect.DeepEqual(scheduler.EnrolledObservation(running).Receipt, applied.Receipt) || updater.applyCalls != 1 {
+				t.Fatalf("newer target was lost: persisted=%+v, apply calls=%d, error=%v", state.EnrolledReceipt, updater.applyCalls, err)
+			}
+		})
+	}
+}
+
 func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 	t.Parallel()
 	for _, owner := range []string{"enrolled", "automatic", "worker scheduler"} {
@@ -370,6 +408,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		logged         bool
 		release        bool
 		prior          bool
+		missingDigest  bool
 	}{
 		{name: "restart declined", want: "applied", calls: 1},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
@@ -386,6 +425,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		{name: "Hub equal patched version does not drain", follow: true, version: "1.2.3", want: "refused"},
 		{name: "operator repairs equal unverified release", release: true, version: "1.2.3", restart: true, want: "restart_requested", calls: 1},
 		{name: "Hub repairs equal unverified release", follow: true, release: true, prior: true, version: "1.2.3", restart: true, want: "restart_requested", calls: 1},
+		{name: "Hub cannot repair without process identity", follow: true, release: true, version: "1.2.3", missingDigest: true, want: "refused"},
 		{name: "operator repairs prefixed unverified release", release: true, version: "1.2.3", runningVersion: "v1.2.3", restart: true, want: "restart_requested", calls: 1},
 		{name: "Hub repairs prefixed unverified release", follow: true, release: true, prior: true, version: "1.2.3", runningVersion: "v1.2.3", restart: true, want: "restart_requested", calls: 1},
 		{name: "prefixed repair refuses stale revision", follow: true, release: true, version: "1.2.3", runningVersion: "v1.2.3", stale: true, want: "refused"},
@@ -402,6 +442,9 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 			running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "private_patched_source", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
 			if test.runningVersion != "" {
 				running.Version = test.runningVersion
+			}
+			if test.missingDigest {
+				running.SHA256 = ""
 			}
 			updater := &schedulerUpdaterStub{checkStatus: Status{UpdateAvailable: true, LatestVersion: "1.2.4"}, applyStatus: Status{Action: ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, applyErr: test.applyError}
 			if test.release {

@@ -136,6 +136,16 @@ func (r UpdateReceipt) ExecutionReady() bool {
 	return r.ExecutionArtifact && r.Applied != nil && r.Applied.VerifiedRelease && r.FailureReason == "" && (r.Status == "applied" || r.Status == "running")
 }
 
+func (r *UpdateReceipt) Refused(request UpdateRequest) bool {
+	if r == nil {
+		return false
+	}
+	if r.Request.Matches(request) {
+		return r.Status == "refused"
+	}
+	return r.PreviousFailure != nil && r.PreviousFailure.Request.Matches(request)
+}
+
 type UpdateObservation struct {
 	Discovery           string         `json:"discovery"`
 	Protocol            int            `json:"protocol"`
@@ -215,6 +225,8 @@ func (r Runner) UpdateView(now time.Time) UpdateView {
 			if r.Update.Receipt.Running != nil && !r.Update.Running.Matches(*r.Update.Receipt.Running) {
 				view.Status = "drifted"
 			}
+		} else if r.Update.Receipt.Refused(*r.UpdateRequest) {
+			view.Status = "refused"
 		}
 	}
 	return view

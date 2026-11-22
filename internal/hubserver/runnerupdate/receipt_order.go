@@ -47,6 +47,18 @@ func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdat
 		if runner.UpdateRequest == nil || !runner.UpdateRequest.Matches(next.Request) {
 			return true, false
 		}
+		pendingTarget := previous.VerifiedTarget != nil || previous.Applied != nil && (previous.Running == nil || !running.Matches(*previous.Applied))
+		if pendingTarget && next.Status == "refused" && next.FailureReason != "" && next.Applied == nil && next.VerifiedTarget == nil {
+			failure := &runnerauth.UpdateFailure{Request: next.Request, FailureReason: next.FailureReason, ObservedAt: next.ObservedAt}
+			*next = *previous
+			if next.Status == "running" {
+				next.Status = "applied"
+			}
+			if previous.PreviousFailure == nil || !previous.PreviousFailure.Request.Matches(failure.Request) || previous.PreviousFailure.FailureReason != failure.FailureReason {
+				next.PreviousFailure = failure
+			}
+			return true, true
+		}
 		next.RetainPreviousFailure(previous)
 		return true, true
 	}

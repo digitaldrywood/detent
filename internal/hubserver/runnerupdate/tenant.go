@@ -73,13 +73,13 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 func (s *Service) followHub(ctx context.Context, writer tenantstore.Writer, identity runnerstore.Identity, state runnerstore.UpdateState, report runnerauth.UpdateObservation, now time.Time) error {
 	version := Target(s.deps.Version)
 	comparison, err := update.CompareVersions(version, report.Running.Version)
-	repair := comparison == 0 && report.Running.Source == "release" && !report.Running.VerifiedRelease
+	repair := comparison == 0 && report.Running.SHA256 != "" && report.Running.Source == "release" && !report.Running.VerifiedRelease
 	if version == "" || err != nil || comparison < 0 || comparison == 0 && !repair {
 		return nil
 	}
 	current := state.Desired
 	if current != nil {
-		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request.Matches(*current) && report.Receipt.Status == "refused"
+		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt.Refused(*current)
 		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
 			return nil
 		}

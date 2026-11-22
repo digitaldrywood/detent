@@ -238,6 +238,7 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 			if test.repair {
 				running.Version = "1.2.4"
 				running.Source = "release"
+				running.SHA256 = strings.Repeat("a", 64)
 			}
 			scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
 				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
@@ -304,6 +305,50 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnrolledUpdateOwnerReportsRefusalForMatchingRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan struct{})
+		t.Cleanup(cancel)
+		now := time.Now().UTC()
+		running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", VerifiedRelease: true, ObservedAt: now}
+		scheduler, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{RunningBuild: running, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"),
+			Updater: urgentRuntimeUpdater{apply: func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error) {
+				return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
+			}},
+			ReserveIdle:    func(context.Context) (func(), bool) { return func() {}, true },
+			ReserveDrain:   func(context.Context) (func(), error) { return nil, detentupdate.ErrRefused },
+			RequestRestart: func(string) bool { return false },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		install := runnerauth.UpdateRequest{ID: "install", Service: "detent", Version: "1.2.4", Release: true, Urgent: true, RequestedAt: now}
+		applied := scheduler.EnrolledUpdate(ctx, running, &install)
+		if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil {
+			t.Fatalf("missing installed evidence: %+v", applied)
+		}
+		owner, run := enrolledUpdateOwner(scheduler)
+		go func() { defer close(done); run(ctx) }()
+		defer func() { cancel(); <-done }()
+		rejected := runnerauth.UpdateRequest{ID: "reject", Service: "detent", Version: "1.2.1", Release: true, Urgent: true, RequestedAt: now}
+		owner(ctx, &rejected)
+		synctest.Wait()
+		report := owner(ctx, &rejected)
+		if report.Receipt == nil || report.Receipt.Status != "refused" || report.Receipt.FailureReason == "" || !report.Receipt.Request.Matches(rejected) {
+			t.Fatalf("heartbeat did not report request refusal: %+v", report.Receipt)
+		}
+		if canonical := owner(ctx, nil).Receipt; canonical == nil || canonical.Applied == nil || !canonical.Request.Matches(install) {
+			t.Fatalf("installed evidence was lost: %+v", canonical)
+		}
+		other := rejected
+		other.RequestedAt = other.RequestedAt.Add(time.Second)
+		if report := owner(ctx, &other); report.Receipt != nil && report.Receipt.Request.Matches(rejected) {
+			t.Fatalf("heartbeat replayed a refusal for a different request: %+v", report.Receipt)
+		}
+	})
 }
 
 func TestHubRuntimeUpdateSchedule(t *testing.T) {

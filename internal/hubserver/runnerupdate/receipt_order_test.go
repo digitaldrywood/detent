@@ -1,6 +1,7 @@
 package runnerupdate
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -33,5 +34,22 @@ func TestRunnerUpdateExecutionArtifactReceiptOrdering(t *testing.T) {
 				t.Fatalf("known=%v accepted=%v want=%v", known, accepted, test.want)
 			}
 		})
+	}
+}
+
+func TestRefusalPreservesPreviouslyWitnessedTarget(t *testing.T) {
+	now := time.Now().UTC()
+	running := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "darwin", Architecture: "arm64", ObservedAt: now}
+	target := running
+	target.Version, target.SHA256 = "1.2.4", strings.Repeat("d", 64)
+	newer := runnerauth.UpdateRequest{ID: "newer", RequestedAt: now.Add(-time.Second), Service: "detent", Version: target.Version, Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
+	previous := runnerauth.UpdateReceipt{Request: newer, Status: "running", Applied: &target, Running: &target, ObservedAt: newer.RequestedAt}
+	older := newer
+	older.ID, older.Version, older.RequestedAt = "older", running.Version, now
+	next := runnerauth.UpdateReceipt{Request: older, Status: "refused", FailureReason: "A newer release is awaiting restart", ObservedAt: now}
+	state := runnerstore.UpdateState{Desired: &older, Observation: &runnerauth.UpdateObservation{Receipt: &previous}}
+	known, accepted := acceptReceipt(state, runnerstore.UrgentUpdate{}, &next, running)
+	if !known || !accepted || next.Status != "applied" || !next.Request.Matches(newer) || next.Applied == nil || !next.Applied.Matches(target) || next.Running == nil || !next.Running.Matches(target) || !next.Refused(older) {
+		t.Fatalf("refusal replaced installation evidence: %+v", next)
 	}
 }

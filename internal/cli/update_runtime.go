@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -375,15 +374,10 @@ func runnerRunningBuild(ctx context.Context, info buildinfo.Info, version string
 	path, err := os.Executable()
 	if err == nil {
 		build.Source = string(detentupdate.DetectInstallSource(detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS}).Source)
-		file, err := os.Open(path)
-		if err == nil {
-			hash := sha256.New()
-			_, readErr := io.Copy(hash, file)
-			closeErr := file.Close()
-			if readErr == nil && closeErr == nil {
-				build.SHA256 = hex.EncodeToString(hash.Sum(nil))
-			}
-		}
+	}
+	hash := sha256.New()
+	if copyRunningExecutable(hash, path) == nil {
+		build.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	}
 	patched := info.Dirty
 	if metadata, ok := debug.ReadBuildInfo(); ok {
@@ -413,10 +407,12 @@ func enrolledUpdateOwner(scheduler *detentupdate.Scheduler) (func(context.Contex
 	running := scheduler.RunningBuild()
 	var mu sync.Mutex
 	var pending *runnerauth.UpdateRequest
+	var refusal *runnerauth.UpdateObservation
 	wake := make(chan struct{}, 1)
 	observe := func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
+		mu.Lock()
+		refused := refusal
 		if ctx.Err() == nil {
-			mu.Lock()
 			if request != nil {
 				pending = new(*request)
 			}
@@ -424,9 +420,14 @@ func enrolledUpdateOwner(scheduler *detentupdate.Scheduler) (func(context.Contex
 			case wake <- struct{}{}:
 			default:
 			}
-			mu.Unlock()
 		}
-		return scheduler.EnrolledObservation(running)
+		mu.Unlock()
+		observed := scheduler.EnrolledObservation(running)
+		if request != nil && refused != nil && refused.Revision == observed.Revision && refused.Receipt.Request.Matches(*request) &&
+			(observed.Receipt == nil || !observed.Receipt.Request.Matches(*request)) {
+			observed.Receipt = refused.Receipt
+		}
+		return observed
 	}
 	run := func(ctx context.Context) {
 		for ctx.Err() == nil {
@@ -438,7 +439,15 @@ func enrolledUpdateOwner(scheduler *detentupdate.Scheduler) (func(context.Contex
 				request := pending
 				pending = nil
 				mu.Unlock()
-				scheduler.EnrolledUpdate(ctx, running, request)
+				result := scheduler.EnrolledUpdate(ctx, running, request)
+				if request != nil {
+					mu.Lock()
+					refusal = nil
+					if result != nil && result.Receipt != nil && result.Receipt.Status == "refused" && result.Receipt.Request.Matches(*request) {
+						refusal = result
+					}
+					mu.Unlock()
+				}
 			}
 		}
 	}

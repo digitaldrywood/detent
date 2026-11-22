@@ -98,7 +98,7 @@ func superseded(current runnerauth.UpdateRequest, receipt *runnerauth.UpdateRece
 		return false
 	}
 	comparison, err := update.CompareVersions(current.Version, target)
-	return err != nil || comparison < 0 || reported && comparison == 0
+	return err != nil || comparison < 0 || comparison == 0 && (reported || receipt.Refused(current))
 }
 
 func (s *Service) contentContext(ctx context.Context) context.Context {

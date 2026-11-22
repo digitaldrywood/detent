@@ -87,8 +87,8 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	if !stateValid || ctx.Err() != nil || request.Validate() != nil {
 		return observed
 	}
-	if observed.Supported && request.Release && observed.Running.VerifiedRelease &&
-		displayVersion(request.Version) == displayVersion(observed.Running.Version) {
+	sameRelease := request.Release && displayVersion(request.Version) == displayVersion(running.Version)
+	if observed.Supported && sameRelease && observed.Running.VerifiedRelease {
 		if receipt, ok := s.runningEnrolledReceipt(*request, observed.Running); ok {
 			if receipt != nil {
 				previous, _ := s.enrolledState()
@@ -106,7 +106,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	}
 	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
-		if observed.Supported && observed.Receipt.Request == *request && observed.Receipt.ExecutionReady() && !running.VerifiedRelease && running.Source == "release" && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(running.Version, "v") && s.cfg.ReserveIdle != nil {
+		if observed.Supported && observed.Receipt.Request == *request && observed.Receipt.ExecutionReady() && sameRelease && running.SHA256 != "" && !observed.Running.VerifiedRelease && running.Source == "release" && s.cfg.ReserveIdle != nil {
 			releaseIdle, idle := s.cfg.ReserveIdle(ctx)
 			if idle {
 				return s.applyEnrolledRequestLocked(ctx, running, observed.Receipt, releaseIdle)
@@ -133,7 +133,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		return observed
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "refused", FailureReason: enrolledTargetRefusal, ObservedAt: s.cfg.Now().UTC()}
-	repair := request.Release && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(running.Version, "v") && running.Source == "release" && !observed.Running.VerifiedRelease
+	repair := sameRelease && running.SHA256 != "" && running.Source == "release" && !observed.Running.VerifiedRelease
 	targetMatches := retry || request.ExpectedBuildRevision == observed.Revision && (request.Version == observed.AvailableVersion || repair)
 	if request.FollowHub {
 		comparison, err := CompareVersions(request.Version, running.Version)
@@ -153,7 +153,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			targetMatches = targetMatches && err == nil && comparison >= 0
 		}
 	}
-	if !observed.Supported || request.Service != observed.Service || !targetMatches || !request.Release && !observed.Pending {
+	if !observed.Supported || request.Service != observed.Service || !targetMatches || sameRelease && running.SHA256 == "" || !request.Release && !observed.Pending {
 		if installed != nil {
 			observed.Receipt = receipt
 			return observed
@@ -169,14 +169,16 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 
 func (s *Scheduler) runningEnrolledReceipt(request runnerauth.UpdateRequest, running runnerauth.BuildEvidence) (*runnerauth.UpdateReceipt, bool) {
 	receipt, _ := s.enrolledState()
-	if receipt != nil && receipt.Request.ID == request.ID {
-		if !receipt.Request.Matches(request) {
-			return nil, false
-		}
+	if receipt != nil {
 		for _, target := range []*runnerauth.BuildEvidence{receipt.Applied, receipt.VerifiedTarget} {
 			if target != nil && target.VerifiedRelease && !running.Matches(*target) {
 				return nil, false
 			}
+		}
+	}
+	if receipt != nil && receipt.Request.ID == request.ID {
+		if !receipt.Request.Matches(request) {
+			return nil, false
 		}
 		if receipt.Status == "running" && receipt.Running != nil {
 			return nil, true
