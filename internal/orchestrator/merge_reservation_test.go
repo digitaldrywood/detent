@@ -25,7 +25,7 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 	for _, kind := range []string{"waiting", "retrying", "unready", "running", "running other base", "running case-distinct base", "ready"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
-			for _, path := range []string{"planner", "fresh"} {
+			for _, path := range []string{"planner"} {
 				t.Run(path, func(t *testing.T) {
 					t.Parallel()
 					now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -53,18 +53,10 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 						}
 						state.Running[head.ID] = Running{Issue: head, Mode: runpkg.RunModeMerge}
 					}
-					orch := Orchestrator{cfg: cfg}
 					issues := []connector.Issue{other, head}
 					var got []string
-					switch path {
-					case "planner":
-						for _, dispatch := range newDispatchPlanner(cfg).plan(&state, issues, now, dispatchPlanHooks{}).Dispatches {
-							got = append(got, dispatch.IssueID)
-						}
-					case "fresh":
-						for _, issue := range orch.mergeWorkerDispatchCandidates(&state, issues, now) {
-							got = append(got, issue.ID)
-						}
+					for _, dispatch := range newDispatchPlanner(cfg).plan(&state, issues, now, dispatchPlanHooks{}).Dispatches {
+						got = append(got, dispatch.IssueID)
 					}
 					want := []string{other.ID}
 					if kind == "ready" {
@@ -176,13 +168,6 @@ func TestMergeDispatchUsesMergingCapacity(t *testing.T) {
 				issue.PullRequest.BaseSHA = "same-base"
 				if tt.retry {
 					state.Retry[issue.ID] = Retry{Issue: issue, Attempt: 1, DueAt: now}
-				}
-			}
-			if !tt.retry {
-				orch := Orchestrator{cfg: cfg}
-				fresh := orch.mergeWorkerDispatchCandidates(&state, candidates, now)
-				if len(fresh) != tt.wantPicked {
-					t.Fatalf("fresh candidates = %#v, want %d slots", fresh, tt.wantPicked)
 				}
 			}
 			decisions := make(map[string]dispatchPlanDecision)
@@ -562,7 +547,6 @@ func TestMergeReservationExpiryAdmitsNextCandidate(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 5, 15, 0, 0, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 3, ActiveStates: []string{"Merging"}, MergeFastPathEnabled: true})
-			orch := Orchestrator{cfg: cfg}
 			state := newState(cfg)
 			waiting := nativeMergeQueueTestIssue(2221, "pending")
 			waiting.StageUpdatedAt = timePointer(now.Add(-3 * time.Hour))
@@ -571,11 +555,6 @@ func TestMergeReservationExpiryAdmitsNextCandidate(t *testing.T) {
 			other := nativeMergeQueueTestIssue(2220, "success")
 			if retryQueued {
 				state.Retry[other.ID] = Retry{Issue: other, Attempt: 1, DueAt: now}
-			} else {
-				candidates := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, other}, now)
-				if len(candidates) != 1 || candidates[0].ID != other.ID {
-					t.Fatalf("candidates = %#v, want next candidate after expiry", candidates)
-				}
 			}
 			plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{waiting, other}, now, dispatchPlanHooks{})
 			if len(plan.Dispatches) != 1 || plan.Dispatches[0].IssueID != other.ID {

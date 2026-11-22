@@ -2,10 +2,8 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -61,45 +59,6 @@ func (c *reviewHeadConnector) CreatePullRequestComment(ctx context.Context, repo
 		return c.writeErr
 	}
 	return c.autoPromoteTickConnector.CreatePullRequestComment(ctx, repository, number, body)
-}
-
-func TestReviewHeadRequestAndWait(t *testing.T) {
-	for _, tt := range []struct {
-		name              string
-		readErr, writeErr error
-		wantRequests      int
-	}{
-		{name: "one request across repeated ticks", wantRequests: 1},
-		{name: "read failure keeps waiting", readErr: errors.New("read unavailable")},
-		{name: "write failure keeps waiting", writeErr: errors.New("write unavailable")},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := normalizeConfig(Config{PollInterval: time.Minute, MaxConcurrentAgents: 1, AutoPromote: AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(true)}}, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done", "Cancelled"}})
-			issue := autoPromoteTickIssue("review-head", nil, &connector.PullRequest{Number: 42, URL: "https://github.test/digitaldrywood/detent/pull/42", State: "OPEN", HeadSHA: "ced1be0", CIStatus: "success", LatestCodexReviewState: "COMMENTED", LatestCodexReviewCommitSHA: "156b300"})
-			tracker := &reviewHeadConnector{autoPromoteTickConnector: autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, readErr: tt.readErr, writeErr: tt.writeErr}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			state := newState(cfg)
-			now := time.Now()
-			for i := range 2 {
-				orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Duration(i)*time.Minute))
-			}
-			if len(tracker.updates) != 0 {
-				t.Fatalf("stale head changed lane: %+v", tracker.updates)
-			}
-			if len(tracker.prComments) != tt.wantRequests {
-				t.Fatalf("requests = %d, want %d", len(tracker.prComments), tt.wantRequests)
-			}
-			if tt.wantRequests > 0 && !strings.Contains(tracker.prComments[0].body, "@codex review") {
-				t.Fatal("missing review trigger")
-			}
-			tracker.readErr, tracker.writeErr = nil, nil
-			issue.PullRequest.HeadSHA = "next-head"
-			orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(2*time.Minute))
-			if len(tracker.prComments) != tt.wantRequests+1 {
-				t.Fatal("new head did not request review")
-			}
-		})
-	}
 }
 
 func TestReviewHeadMergeAdmission(t *testing.T) {

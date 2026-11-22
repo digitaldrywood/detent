@@ -714,9 +714,6 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 				}
 			}
 			if staleCompletion {
-				if promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now); len(promoted.transitioned) != 0 {
-					t.Fatalf("replacement head promoted with stale completion: %#v", promoted.transitioned)
-				}
 				if len(baseTracker.updates) != 0 {
 					t.Fatalf("stale completion changed lanes: %#v", baseTracker.updates)
 				}
@@ -729,14 +726,6 @@ func TestCompletedReadyPullRequestEntersMergeGate(t *testing.T) {
 			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now.Add(30*time.Second))
 			if len(state.Running) != 0 || len(baseTracker.updates) != 0 {
 				t.Fatalf("in-progress CI started a worker or changed lanes: running=%#v updates=%#v", state.Running, baseTracker.updates)
-			}
-			issue.PullRequest.CIStatus = "pass"
-			promoted := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now.Add(time.Minute))
-			if _, ok := promoted.transitioned[issue.ID]; !ok {
-				t.Fatalf("green current head did not advance from the gate: decision = %#v", EvaluateAutoPromote(issue, AutoPromoteSummaryFromIssue(issue), cfg.AutoPromote, now.Add(time.Minute)))
-			}
-			if got, want := baseTracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("updates = %#v, want %#v", got, want)
 			}
 		})
 	}
@@ -1762,12 +1751,11 @@ func TestCompletedReviewTransitionUsesExistingPromotionOwner(t *testing.T) {
 			if tc.running {
 				state.Running[issue.ID] = Running{Issue: issue}
 			}
-			if tc.lane != "" {
-				state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, attempts.history[0])
-				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
-			} else {
-				orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if tc.lane == "" {
+				return
 			}
+			state.Completed[issue.ID] = completedFromGateWaitAttempt(issue, attempts.history[0])
+			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, []connector.Issue{issue}, now)
 			if tc.want == "" {
 				for _, update := range tracker.updates {
 					if update.state != "Rework" {

@@ -304,29 +304,12 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
-		timing.step("promote_human_review")
-		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, mergeIssueSlices(fetched.status, fetched.candidates), now)
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			autoPromoted.transitioned,
-		)
 		timing.step("operator_merge_wedged_pull_requests")
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
 			o.operatorMergeWedgedPullRequests(ctx, state, fetched.status, now),
 		)
-		fetched.candidates = mergeIssueSlices(
-			fetched.candidates,
-			autoPromoted.dispatchCandidates,
-		)
-		if !o.nativeWorkflow() {
-			fetched.candidates = mergeIssueSlices(
-				fetched.candidates,
-				o.mergeWorkerDispatchCandidates(state, mergeIssueSlices(fetched.status, fetched.candidates), now),
-			)
-		}
 	}
 	timing.step("reconcile_stale_linked_pull_request_issues")
 	fetched = filterReconciledTickIssues(

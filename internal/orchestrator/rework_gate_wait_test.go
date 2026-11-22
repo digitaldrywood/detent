@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -615,44 +614,6 @@ func TestReworkGateWaitRestoreSkipsHydrationWithoutDurableWait(t *testing.T) {
 				t.Fatal("superseded or absent durable Rework wait was restored")
 			}
 		})
-	}
-}
-
-func TestAutoPromoteValidatorEnabledAllowsOperationalCompletion(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 9, 13, 16, 0, 0, 0, time.UTC)
-	issue := autoPromoteTickIssue("issue-operational-validator", nil, nil)
-	issue.Description = operationalCompletionAuthorizationBody()
-	issue.Comments = []connector.IssueComment{{
-		Body: operationalCompletionWorkpadBody("The authorized maintenance completed successfully."),
-	}}
-	cfg := normalizeConfig(Config{
-		TerminalStates: []string{"Done"},
-		AutoPromote: AutoPromoteConfig{
-			Enabled:     true,
-			SourceState: issue.State,
-			Gate: gate.Config{Kind: gate.KindCommand, Validator: gate.ValidatorConfig{
-				Enabled: true,
-			}},
-		},
-	})
-	tracker := &autoPromoteTickConnector{}
-	orch := &Orchestrator{
-		cfg:       cfg,
-		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	state := newState(cfg)
-	state.Completed[issue.ID] = Completed{Issue: issue, CompletionKind: workpad.CompletionOperational}
-
-	result := orch.autoPromoteHumanReviewIssues(t.Context(), &state, []connector.Issue{issue}, now)
-
-	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("updates = %#v, want %#v", got, want)
-	}
-	if _, ok := result.transitioned[issue.ID]; !ok {
-		t.Fatalf("transitioned = %#v, want %q", result.transitioned, issue.ID)
 	}
 }
 

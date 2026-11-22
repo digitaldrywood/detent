@@ -21,7 +21,6 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 	}{
 		{"stale todo PR", "Todo", "Human Review", false},
 		{"blocked recovery", "Blocked", "Rework", false},
-		{"auto promote", "Human Review", "Merging", false},
 		{"dependency late", "Blocked", "Todo", false},
 		{"dependency early", "Blocked", "Todo", true},
 	} {
@@ -31,9 +30,6 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 				BlockedRecovery:       BlockedRecoveryConfig{Enabled: true, SourceStates: []string{"Blocked"}, TargetState: "Rework", ReasonCodes: []string{blockedRecoveryReasonMergeConflict}},
 				DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: strings.HasPrefix(tc.name, "dependency")},
 			})
-			if tc.name == "auto promote" {
-				cfg.AutoPromote.Enabled = true
-			}
 			metrics := &autoPromoteWorkflowMetricsRecorder{}
 			issues := []connector.Issue{}
 			for i, label := range []string{"detent:a", "detent:b"} {
@@ -41,9 +37,6 @@ func TestTickAuthorizationBeforeRecovery(t *testing.T) {
 				issue := dependencyAutoUnblockIssue(id, tc.lane)
 				issue.Labels = []string{label}
 				issue.StageUpdatedAt = &entered
-				if tc.name == "auto promote" {
-					issue.PullRequest = &connector.PullRequest{Number: i + 1, State: "OPEN", MergeableState: "clean", CIStatus: "success", CodexReviewState: "COMMENTED", CodexReviewSubmittedAt: &entered}
-				}
 				if tc.name == "stale todo PR" {
 					issue.PullRequest = &connector.PullRequest{Number: i + 1, State: "OPEN", URL: "https://github.test/digitaldrywood/detent/pull/1"}
 				}
