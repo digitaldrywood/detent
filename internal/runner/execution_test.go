@@ -247,9 +247,11 @@ func TestNativeSourceGateStopsWhenSSHOwnerDisconnects(t *testing.T) {
 
 type cancelObservingReviewExecution struct {
 	testExecution
+	entered chan struct{}
 }
 
 func (e *cancelObservingReviewExecution) ReviewVersion(ctx context.Context) (NativeValidation, error) {
+	close(e.entered)
 	<-ctx.Done()
 	return NativeValidation{}, ctx.Err()
 }
@@ -259,6 +261,7 @@ func (e *cancelObservingReviewExecution) RecordReview(context.Context, gate.Vali
 }
 
 func (e *cancelObservingReviewExecution) ValidatorVersion(ctx context.Context) (NativeValidation, error) {
+	close(e.entered)
 	<-ctx.Done()
 	return NativeValidation{}, ctx.Err()
 }
@@ -278,34 +281,41 @@ func TestNativeReviewAndValidatorCancelOnLeaseLoss(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cfg := config.Config{}
-			if tc.review {
-				cfg.Gate.AutomatedReview = gate.AutomatedReviewRequired
-			} else {
-				cfg.Gate.Validator.Enabled = true
-			}
-			r, err := NewRunner(Dependencies{
-				ProcessSource: emptyProcessSource,
-				Workflow:      config.Workflow{Config: cfg},
-				Workspace:     &fakeWorkspaceBackend{},
-				AgentBackend:  &fakeCodexClient{},
+			synctest.Test(t, func(t *testing.T) {
+				cfg := config.Config{}
+				if tc.review {
+					cfg.Gate.AutomatedReview = gate.AutomatedReviewRequired
+				} else {
+					cfg.Gate.Validator.Enabled = true
+				}
+				r, err := NewRunner(Dependencies{
+					ProcessSource: emptyProcessSource,
+					Workflow:      config.Workflow{Config: cfg},
+					Workspace:     &fakeWorkspaceBackend{},
+					AgentBackend:  &fakeCodexClient{},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, cancel := context.WithCancelCause(t.Context())
+				defer cancel(context.Canceled)
+				exec := &cancelObservingReviewExecution{entered: make(chan struct{})}
+				req := RunRequest{Execution: exec, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+				done := make(chan error, 1)
+				go func() {
+					if tc.review {
+						_, err := r.reviewNativeChange(ctx, req)
+						done <- err
+					} else {
+						done <- r.validateNativeChange(ctx, req)
+					}
+				}()
+				<-exec.entered
+				cancel(ErrExecutionAuthorityUnavailable)
+				if err := <-done; !errors.Is(err, context.Canceled) {
+					t.Fatalf("%s did not cancel in flight on lease loss: %v", tc.name, err)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			ctx, cancel := context.WithCancelCause(t.Context())
-			cancel(ErrExecutionAuthorityUnavailable)
-			exec := &cancelObservingReviewExecution{}
-			req := RunRequest{Execution: exec, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
-			if tc.review {
-				if _, err := r.reviewNativeChange(ctx, req); !errors.Is(err, context.Canceled) {
-					t.Fatalf("reviewNativeChange did not cancel on lease loss: %v", err)
-				}
-			} else {
-				if err := r.validateNativeChange(ctx, req); !errors.Is(err, context.Canceled) {
-					t.Fatalf("validateNativeChange did not cancel on lease loss: %v", err)
-				}
-			}
 		})
 	}
 }
