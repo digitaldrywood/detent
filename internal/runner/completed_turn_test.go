@@ -1033,8 +1033,8 @@ func (w *deadlineRoundWorkspace) PushItemPhase(ctx context.Context, info workspa
 	return "example-phase", head, tree, validate(ctx)
 }
 
-func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error {
-	return nil
+func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) (string, error) {
+	return "", nil
 }
 
 type deadlineRoundBackend struct {

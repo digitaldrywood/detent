@@ -17,7 +17,7 @@ type PhaseReceiptExecution interface {
 type PhasePublisher interface {
 	PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
 	ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
-	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error
+	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) (string, error)
 }
 
 func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, carry *tracker.NativePhaseContinuation, phase, input string) error {
@@ -25,7 +25,7 @@ func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend 
 	if !ok {
 		return errors.New("workspace cannot publish an item phase")
 	}
-	if carry != nil {
+	if carry != nil && issue.ExpectedPhaseRemoteHead == "" {
 		for _, receipt := range carry.Receipts {
 			if receipt.Phase != phase {
 				continue

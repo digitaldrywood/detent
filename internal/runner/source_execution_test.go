@@ -183,6 +183,20 @@ type phaseCompletionExecution struct {
 	publication tracker.NativePhaseReceipt
 }
 
+type phaseCompletionWorkspace struct {
+	*workspace.LocalGit
+	afterPreservation func()
+}
+
+func (w *phaseCompletionWorkspace) PreserveItemPhaseHistory(ctx context.Context, info workspace.Info, issue workspace.Issue, receipt tracker.NativePhaseReceipt, authorize func(context.Context) error) (string, error) {
+	expected, err := w.LocalGit.PreserveItemPhaseHistory(ctx, info, issue, receipt, authorize)
+	if err != nil {
+		return "", err
+	}
+	w.afterPreservation()
+	return expected, nil
+}
+
 func (e *phaseCompletionExecution) VerifyPhaseAuthority(ctx context.Context) error {
 	return e.Validate(ctx)
 }
@@ -328,13 +342,16 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 
 func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		advanceBase bool
-		moveItem    bool
+		name              string
+		advanceBase       bool
+		moveItem          bool
+		afterPreservation string
 	}{
 		{name: "already published"},
 		{name: "base advances", advanceBase: true},
 		{name: "item ref moves", advanceBase: true, moveItem: true},
+		{name: "item ref rewinds after preservation", advanceBase: true, afterPreservation: "rewind"},
+		{name: "intended head arrives after preservation", advanceBase: true, afterPreservation: "publish"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -370,7 +387,8 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			published := commitFile(prior.Path, "item.txt")
+			firstCommit := commitFile(prior.Path, "item.txt")
+			published := commitFile(prior.Path, "item-extra.txt")
 			branch := prior.PublishBranch()
 			ref := "refs/heads/" + branch
 			git(prior.Path, "push", "origin", "HEAD:"+ref)
@@ -394,24 +412,34 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 				remoteHead = commitFile(prior.Path, "other.txt")
 				git(prior.Path, "push", "origin", "HEAD:"+ref)
 			}
+			publication := &phaseCompletionWorkspace{LocalGit: backend, afterPreservation: func() {
+				switch tc.afterPreservation {
+				case "rewind":
+					git(info.Path, "merge-base", "--is-ancestor", firstCommit, "HEAD")
+					git(remote, "update-ref", ref, firstCommit, published)
+					remoteHead = firstCommit
+				case "publish":
+					git(info.Path, "push", "origin", "HEAD:"+ref)
+				}
+			}}
 			execution := &phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
 				testExecution: &testExecution{}, continuation: tracker.NativePhaseContinuation{LastPushed: &receipt},
 			}}
-			r, err := NewRunner(Dependencies{Workspace: backend, AgentBackend: &fakeCodexClient{}, ProcessSource: emptyProcessSource})
+			r, err := NewRunner(Dependencies{Workspace: publication, AgentBackend: &fakeCodexClient{}, ProcessSource: emptyProcessSource})
 			if err != nil {
 				t.Fatal(err)
 			}
 			message := fmt.Sprintf("```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: %s\n  completion_evidence: Verified the published source\n```", published)
 			_, err = r.prepareExecutionCompletion(ctx, RunRequest{
 				Issue: item, Execution: execution, finalizeNativeWork: true, phaseReceipts: true, phaseContinuation: &execution.continuation,
-				retainedReview: &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: message},
-			}, backend, info, issue, AgentResume{}, true)
+				retainedReview: &retainedReviewWorkspace{backend: publication, info: info, issue: issue, message: message},
+			}, publication, info, issue, AgentResume{}, true)
 			actualRemote := git(remote, "rev-parse", ref)
 			head := git(info.Path, "rev-parse", "HEAD")
 			if execution.checkpoint == nil || execution.checkpoint.HeadSHA != head {
 				t.Fatalf("checkpoint = %+v, want finalized checkout %s", execution.checkpoint, head)
 			}
-			if tc.moveItem {
+			if tc.moveItem || tc.afterPreservation == "rewind" {
 				var refusal *workspace.LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved || actualRemote != remoteHead || execution.publication.HeadSHA != "" {
 					t.Fatalf("moved item ref = %s, receipt = %+v, error = %v", actualRemote, execution.publication, err)
@@ -430,8 +458,8 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			}
 			git(info.Path, "merge-base", "--is-ancestor", published, head)
 			git(info.Path, "merge-base", "--is-ancestor", base, head)
-			if changed := git(info.Path, "diff", "--name-only", base, head); changed != "item.txt" {
-				t.Fatalf("finalized source changes %q, want item.txt", changed)
+			if changed := git(info.Path, "diff", "--name-only", base, head); changed != "item-extra.txt\nitem.txt" {
+				t.Fatalf("finalized source changes %q, want both item files", changed)
 			}
 		})
 	}

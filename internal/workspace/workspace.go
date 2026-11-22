@@ -274,6 +274,7 @@ type Issue struct {
 	ProgressBaseRef         string
 	PullRequestHeadSHA      string
 	PublicationRepository   string
+	ExpectedPhaseRemoteHead string
 	PullRequestRepository   string
 	PullRequestNumber       int
 	PullRequestBranch       string
