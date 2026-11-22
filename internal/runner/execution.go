@@ -361,6 +361,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, failedStep("publication", err)
 		}
 		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
+		if req.phaseReceipts {
+			req.publishedPhaseSource = &workspace.PhaseSource{}
+		}
 	}
 	if expected := req.NativeLandingRework; expected != nil {
 		source, ok := req.Execution.(NativeSourceIterationExecution)
@@ -899,9 +902,16 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	if phaseCompleted && req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		publicationIssue := issue
-		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
+		var previous workspace.PhaseSource
+		if latest := req.publishedPhaseSource; latest != nil && latest.HeadSHA != "" {
+			previous = *latest
+		} else if carry := req.phaseContinuation; carry != nil && carry.LastPushed != nil {
+			receipt := carry.LastPushed
+			previous = workspace.PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}
+		}
+		if previous.HeadSHA != "" && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
-				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
+				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
 				publicationIssue.ExpectedPhaseRemoteHead = expected
 				finalizationErr = failedStep("publication", err)
 			}
@@ -1281,7 +1291,7 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 	}
 	recovery := req.Execution.Recovery()
 	action, reason := "fresh_checkout", "verified_pushed_phase"
-	if !issue.VerifyPhaseBranch || !itemPhaseFromPriorLease(issue.PhaseSource, recovery.Lease.ID) {
+	if info.RecoveredPhase.HeadSHA == "" && (!issue.VerifyPhaseBranch || !itemPhaseFromPriorLease(issue.PhaseSource, recovery.Lease.ID)) {
 		action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 	}
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {

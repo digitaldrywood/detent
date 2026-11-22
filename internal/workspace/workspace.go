@@ -685,8 +685,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return info, nil
 	}
 	if issue.VerifyPhaseBranch {
-		if err := l.verifyItemPhaseBranch(ctx, info, issue); err != nil {
+		info.RecoveredPhase, err = l.recoverItemPhaseBranch(ctx, info, issue)
+		if err != nil {
 			return Info{}, err
+		}
+		if info.RecoveredPhase.HeadSHA != "" {
+			issue.FreshCheckout = true
 		}
 	}
 	localHead, err := l.verifiedLocalCheckpointHead(ctx, info, issue)
@@ -801,11 +805,11 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		}
 		if receipt := issue.PhaseSource; receipt != nil {
 			if !issue.VerifyPhaseBranch {
-				if err := l.fetchItemPhase(ctx, info, issue, *receipt); err != nil {
+				if err := l.fetchItemPhase(ctx, info, issue, PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}); err != nil {
 					return Info{}, err
 				}
 			}
-			head = receipt.HeadSHA
+			head = cmp.Or(info.RecoveredPhase.HeadSHA, receipt.HeadSHA)
 		}
 		created, err = l.createWorktree(ctx, &info, issue, head)
 	}
@@ -827,7 +831,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 	info.Created = created
 	if receipt := issue.PhaseSource; receipt != nil {
-		if err := phasegit.VerifyCheckout(ctx, info.Path, *receipt); err != nil {
+		head, tree := itemPhaseCheckoutSource(info, *receipt)
+		if err := phasegit.VerifyCheckout(ctx, info.Path, head, tree); err != nil {
 			return Info{}, err
 		}
 	}
@@ -2852,3 +2857,4 @@ func validateWorkspacePath(root string, path string) (string, error) {
 }
 
 type Info = model.Info
+type PhaseSource = model.PhaseSource

@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -33,26 +33,26 @@ func readHead(read func(...string) (string, error)) (string, string, error) {
 	return head, strings.TrimSpace(tree), nil
 }
 
-func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhaseReceipt) error {
-	return verifyCheckout(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) }, receipt)
+func VerifyCheckout(ctx context.Context, path, head, tree string) error {
+	return verifyCheckout(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) }, head, tree)
 }
 
-func VerifyCleanCheckout(ctx context.Context, path, owner string, receipt tracker.NativePhaseReceipt) error {
+func VerifyCleanCheckout(ctx context.Context, path, owner, head, tree string) error {
 	return gitexec.WithPublicationCheckoutFromHead(ctx, path, owner, func(read func(...string) (string, error)) error {
-		if err := verifyCheckout(read, receipt); err != nil {
+		if err := verifyCheckout(read, head, tree); err != nil {
 			return err
 		}
 		return validationcmd.VerifyPublicationTreeFromHead(ctx, path, read)
 	})
 }
 
-func verifyCheckout(read func(...string) (string, error), receipt tracker.NativePhaseReceipt) error {
+func verifyCheckout(read func(...string) (string, error), expectedHead, expectedTree string) error {
 	head, tree, err := readHead(read)
 	if err != nil {
 		return err
 	}
-	if head != receipt.HeadSHA || tree != receipt.TreeSHA {
-		return errors.New("replacement worktree differs from the recorded phase source")
+	if head != expectedHead || tree != expectedTree {
+		return errors.New("replacement worktree differs from the verified phase source")
 	}
 	return nil
 }
@@ -129,7 +129,7 @@ func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHe
 	return branch, head, tree, nil
 }
 
-func PreserveHistory(ctx context.Context, path, identifier string, previous tracker.NativePhaseReceipt, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
+func PreserveHistory(ctx context.Context, path, identifier string, previous model.PhaseSource, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
 	head, tree, err := Head(ctx, path)
 	if err != nil || head == previous.HeadSHA {
 		return "", err
@@ -168,8 +168,8 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous trac
 	return remote, nil
 }
 
-func Fetch(ctx context.Context, branch string, receipt tracker.NativePhaseReceipt, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
-	if !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA) || receipt.Branch == "" || receipt.Branch != branch {
+func Fetch(ctx context.Context, branch string, source model.PhaseSource, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
+	if !gitexec.ValidHead(source.HeadSHA) || !gitexec.ValidHead(source.TreeSHA) || source.Branch == "" || source.Branch != branch {
 		return errors.New("recorded phase does not name the item branch and immutable source")
 	}
 	repo := repository(ctx)
@@ -182,15 +182,15 @@ func Fetch(ctx context.Context, branch string, receipt tracker.NativePhaseReceip
 		return err
 	}
 	defer release()
-	if _, err := git(ctx, "fetch", "--no-tags", gitexec.DefaultRemote, receipt.HeadSHA); err != nil {
+	if _, err := git(ctx, "fetch", "--no-tags", gitexec.DefaultRemote, source.HeadSHA); err != nil {
 		return fmt.Errorf("fetch recorded phase commit: %w", err)
 	}
 	head, err := git(ctx, "rev-parse", "FETCH_HEAD^{commit}")
-	if err != nil || strings.TrimSpace(head) != receipt.HeadSHA {
+	if err != nil || strings.TrimSpace(head) != source.HeadSHA {
 		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
 	}
-	tree, err := git(ctx, "rev-parse", receipt.HeadSHA+"^{tree}")
-	if err != nil || strings.TrimSpace(tree) != receipt.TreeSHA {
+	tree, err := git(ctx, "rev-parse", source.HeadSHA+"^{tree}")
+	if err != nil || strings.TrimSpace(tree) != source.TreeSHA {
 		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
 	}
 	return nil
