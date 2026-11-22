@@ -549,9 +549,9 @@ describe("the conversation shell", () => {
       { id: "org_mock", name: "Mock organization", url: "/organizations/org_mock", current: true },
       { id: "org_second", name: "Second mock organization", url: "/organizations/org_second", current: false },
     ] : null, error: null, loading: false, refresh: async () => {}, set: () => {} });
-    const switches: unknown[] = [];
+    const switchRequests = vi.fn();
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith("/switch")) switches.push(JSON.parse(String(init?.body)));
+      if (String(input).endsWith("/switch")) switchRequests(input, init);
       return sameRealmFetch(input, init);
     });
     await mountApp({ path: "/work" });
@@ -563,13 +563,12 @@ describe("the conversation shell", () => {
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Mock organization" }));
     expect(assign).not.toHaveBeenCalled();
-    expect(switches).toEqual([]);
+    expect(switchRequests).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Second mock organization" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith(shared ? "/organizations/org_second" : "https://second.mock.test/auth/oidc/start"));
-    if (shared) expect(switches).toEqual([]);
-    else expect(switches).toEqual([{ organization: "org_second", idempotency_key: expect.any(String) }]);
+    await waitFor(() => expect(assign).toHaveBeenCalledExactlyOnceWith(shared ? "/organizations/org_second" : "/auth/oidc/start?organization=org_second"));
+    expect(switchRequests).not.toHaveBeenCalled();
   });
 
   it("keeps an open chat visible and reconnects after a server_error close", async () => {
