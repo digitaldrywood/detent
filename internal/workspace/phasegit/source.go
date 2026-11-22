@@ -85,20 +85,20 @@ func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHe
 		if err != nil {
 			return err
 		}
-		if previous == head {
-			return authorize(ctx)
-		}
 		expected := cmp.Or(expectedRemoteHead, previous)
-		if previous != expected {
+		if previous != expected && previous != head {
 			return moved()
 		}
-		if expected != "" {
+		if expected != "" && expected != head {
 			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}
 				return errors.Join(moved(), err)
 			}
+		}
+		if previous == head {
+			return authorize(ctx)
 		}
 		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
 		var pushErr error
@@ -137,7 +137,7 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous trac
 	if err := fetch(ctx); err != nil {
 		return "", err
 	}
-	if _, err := gitexec.Run(ctx, path, "merge-base", "--is-ancestor", previous.HeadSHA, head); err == nil {
+	if err := gitexec.VerifyPublicationAncestry(ctx, path, previous.HeadSHA, head); err == nil {
 		return "", nil
 	} else {
 		var commandErr *gitexec.CommandError
@@ -148,9 +148,6 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous trac
 	remote, exists, err := remoteHead(ctx, path, gitexec.DefaultRemote, previous.Branch)
 	if err != nil {
 		return "", err
-	}
-	if exists && remote == head {
-		return remote, nil
 	}
 	if !exists || remote != previous.HeadSHA {
 		return "", moved
