@@ -117,9 +117,6 @@ func TestOperatorMergeWedgedCandidate(t *testing.T) {
 		{"dirty", func(i *connector.Issue, _ *State) { i.PullRequest.MergeableState = "dirty" }, false},
 		{"too young", func(i *connector.Issue, _ *State) { stage := now.Add(-time.Hour); i.StageUpdatedAt = &stage }, false},
 		{"unknown age", func(i *connector.Issue, _ *State) { i.StageUpdatedAt = nil }, false},
-		{"queue entry present", func(i *connector.Issue, s *State) {
-			s.nativeMergeQueueEntries[i.ID] = nativeMergeQueueEntry{Entry: connector.PullRequestMergeQueueEntry{ID: "MQE"}, HeadSHA: i.PullRequest.HeadSHA, CheckedAt: now}
-		}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
