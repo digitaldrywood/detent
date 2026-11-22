@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
@@ -120,17 +119,13 @@ func (u *Registry) Start(ctx context.Context, path string) (*Owner, error) {
 		return nil, nil
 	}
 	lifetime := hookLifetimeFromContext(ctx)
-	setup, hasSetup := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
-	parent := ""
-	if hasSetup {
-		parent = filepath.Join(setup.root, pendingWorkspaceSetupPath(path))
-	}
-	descriptor, err := newLifetime(parent)
+	descriptor, err := NewLifetime()
 	if err != nil {
 		return nil, fmt.Errorf("open hook lifetime: %w", err)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	setup, _ := ctx.Value(workspaceSetupKey{}).(*workspaceSetup)
 	owner := &Owner{lock: make(chan struct{}, 1), uses: u, path: path, token: rand.Text(), lifetime: lifetime, descriptor: descriptor, running: true, setup: setup}
 	if u.hooks == nil {
 		u.hooks = make(map[string]map[*Owner]struct{})
@@ -219,7 +214,7 @@ func (o *Owner) CommandFinished(ctx context.Context, commandErr error) error {
 	}
 	if active {
 		if o.setup != nil {
-			if err := recordWorkspaceSetupReady(o.setup.root, o.path, o.token, o.descriptor); err != nil {
+			if err := recordWorkspaceSetupStatus(o.setup.root, o.path, "ready"); err != nil {
 				return err
 			}
 			o.setup.retained.Store(true)
@@ -249,11 +244,6 @@ func (o *Owner) stopLocked(ctx context.Context) (int, error) {
 	if o.running {
 		return 0, &HookExitUnverifiedError{Err: ErrWorkspacePreserved}
 	}
-	if o.setup != nil && o.setup.retained.Load() {
-		if err := revokeWorkspaceSetupReady(o.setup.root, o.path); err != nil {
-			return 0, &HookExitUnverifiedError{Err: err}
-		}
-	}
 	count, err := o.descriptor.Reap(ctx, o.path, o.token)
 	if err != nil {
 		return count, &HookExitUnverifiedError{Err: err}
@@ -265,12 +255,6 @@ func (o *Owner) stopLocked(ctx context.Context) (int, error) {
 }
 
 func (o *Owner) release(ctx context.Context) error {
-	if o.setup != nil && o.setup.retained.Load() {
-		if err := ClearWorkspaceSetupPending(o.setup.root, o.path); err != nil {
-			return err
-		}
-		o.setup.retained.Store(false)
-	}
 	if o.finish != nil {
 		cleanup, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -278,6 +262,11 @@ func (o *Owner) release(ctx context.Context) error {
 			return err
 		}
 		o.finish = nil
+	}
+	if o.setup != nil && o.setup.retained.Load() {
+		if err := ClearWorkspaceSetupPending(o.setup.root, o.path); err != nil {
+			return err
+		}
 	}
 	if err := o.descriptor.Close(); err != nil {
 		return err

@@ -19,11 +19,7 @@ import (
 )
 
 func NewLifetime() (*Lifetime, error) {
-	return newLifetime("")
-}
-
-func newLifetime(parent string) (*Lifetime, error) {
-	dir, err := os.MkdirTemp(parent, "detent-hook-")
+	dir, err := os.MkdirTemp("", "detent-hook-")
 	if err != nil {
 		return nil, err
 	}
@@ -35,47 +31,6 @@ func newLifetime(parent string) (*Lifetime, error) {
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
 	return l, nil
-}
-
-func (l *Lifetime) fileIdentity() (string, error) {
-	var stat unix.Stat_t
-	if err := unix.Fstat(int(l.reader.Fd()), &stat); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%d:%d", stat.Dev, stat.Ino), nil
-}
-
-func openRetainedLifetime(root *os.Root, path string) (*Lifetime, error) {
-	info, err := root.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeNamedPipe == 0 {
-		return nil, errors.New("retained hook lifetime is not a FIFO")
-	}
-	reader, err := openRetainedFile(root, path, info)
-	if err != nil {
-		return nil, err
-	}
-	return &Lifetime{reader: reader}, nil
-}
-
-func openRetainedFile(root *os.Root, path string, expected os.FileInfo) (*os.File, error) {
-	parent, err := root.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		return nil, err
-	}
-	fd, openErr := unix.Openat(int(parent.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	closeErr := parent.Close()
-	if openErr != nil {
-		return nil, errors.Join(&os.PathError{Op: "openat", Path: path, Err: openErr}, closeErr)
-	}
-	file := os.NewFile(uintptr(fd), path)
-	opened, err := file.Stat()
-	if closeErr != nil || err != nil || opened.Mode().Type() != expected.Mode().Type() || !os.SameFile(expected, opened) {
-		return nil, errors.Join(errors.New("verify opened hook evidence"), closeErr, err, file.Close())
-	}
-	return file, nil
 }
 
 func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {

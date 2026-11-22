@@ -603,7 +603,7 @@ func incorporatedSourceDelta(ctx context.Context, path, sourceBase, base, head s
 }
 
 func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) error {
-	if err := l.uses.CheckWorkspaceSetupRemoval(ctx, l.root, staging); err != nil {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, staging); err != nil {
 		return err
 	}
 	if err := l.uses.Stop(ctx, staging); err != nil {
