@@ -575,6 +575,7 @@ func TestRunnerClientEnrollmentSchedulingAndRotationRecovery(t *testing.T) {
 		id := string(issue.WorkItemID)
 		claim := scheduler.nativeClaims[id]
 		claim.lease.FencingToken++
+		claim.leaseChanged = nil
 		stale.nativeClaims[id] = claim
 		stale.claims[id] = nativeTrackerLease(claim.lease)
 		stale.claimPolicies[id] = scheduler.claimPolicies[id]

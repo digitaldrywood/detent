@@ -930,7 +930,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					wantReleases = 1
 				}
 				wantRenewals := 0
-				if test.exhausted || !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
+				if !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
 					wantRenewals = 1
 				}
 				if renewals != wantRenewals || releases != wantReleases {

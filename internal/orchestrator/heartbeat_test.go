@@ -107,6 +107,27 @@ func TestClaimLostHeartbeatPreservesCompletionOwner(t *testing.T) {
 	}
 }
 
+func TestHeartbeatManagerSchedulesFromRemainingLeaseLifetime(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Claiming: ClaimingConfig{HeartbeatInterval: 30 * time.Second, LeaseTTL: 90 * time.Second}})
+	manager := newHeartbeatManager(cfg, nil, nil, func() time.Time { return now }, nil)
+
+	manager.upsert(heartbeatTarget{issueID: "fresh", leaseExpiresAt: now.Add(90 * time.Second)})
+	if got := manager.targets["fresh"].nextDue.Sub(now); got != 30*time.Second {
+		t.Fatalf("fresh lease first due = %v, want 30s", got)
+	}
+
+	manager.upsert(heartbeatTarget{issueID: "consumed", leaseExpiresAt: now.Add(15 * time.Second)})
+	if got := manager.targets["consumed"].nextDue.Sub(now); got != 5*time.Second {
+		t.Fatalf("partially consumed lease first due = %v, want 5s", got)
+	}
+
+	manager.upsert(heartbeatTarget{issueID: "expired", leaseExpiresAt: now.Add(-time.Second)})
+	if got := manager.targets["expired"].nextDue.Sub(now); got != 0 {
+		t.Fatalf("expired lease first due = %v, want 0", got)
+	}
+}
+
 func TestHeartbeatManagerRenewsWithoutSchedulerLoop(t *testing.T) {
 	initial := time.Now().UTC().Add(-time.Minute)
 	issue := claimTestIssue("issue-dedicated-heartbeat")
