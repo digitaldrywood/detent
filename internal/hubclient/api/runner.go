@@ -589,6 +589,9 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 	}
 	c.ApplyHeartbeatChanges(snapshot.Changes)
 	c.client.runner.ApplyRouting(snapshot)
+	if err := c.client.observeRunnerRouting(ctx, snapshot.Routing.State); err != nil {
+		return err
+	}
 	if err := runnerauth.SaveRoutingCache(c.client.runner.path, snapshot); err != nil {
 		c.client.runner.RejectSettings(true)
 		slog.Default().Warn("runner routing cache not updated", "error", err)

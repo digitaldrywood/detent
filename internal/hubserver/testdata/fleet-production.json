@@ -2,6 +2,9 @@
   "runners": [
     {
       "update": {
+        "health": "online",
+        "target_version": "",
+        "target_held": false,
         "runner_id": "runner_0",
         "revision": 0,
         "status": "unavailable",
@@ -138,6 +141,9 @@
     },
     {
       "update": {
+        "health": "online",
+        "target_version": "",
+        "target_held": false,
         "runner_id": "runner_1",
         "revision": 0,
         "status": "unavailable",
@@ -274,6 +280,9 @@
     },
     {
       "update": {
+        "health": "online",
+        "target_version": "",
+        "target_held": false,
         "runner_id": "runner_2",
         "revision": 0,
         "status": "unavailable",
