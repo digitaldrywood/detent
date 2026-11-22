@@ -621,9 +621,6 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		}
 		turnID := turn.ID
 		lifetime.Activity()
-		if tools != nil {
-			tools.observeTurn(threadID, turnID, lifetime)
-		}
 
 		result = RunTurnResult{
 			ThreadID:           threadID,

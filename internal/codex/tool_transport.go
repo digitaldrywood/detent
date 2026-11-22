@@ -2,9 +2,9 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -13,7 +13,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const toolRetirementTimeout = 5 * time.Second
+const (
+	dynamicToolTimeout    = 30 * time.Minute
+	toolRetirementTimeout = 5 * time.Second
+)
 
 type ToolError struct{ Err error }
 
@@ -36,9 +39,6 @@ type toolTransport struct {
 	pending    []Message
 	unresolved bool
 	drain      bool
-	threadID   string
-	turnID     string
-	lifetime   *sessiontimeout.Session
 }
 
 func newToolTransport(ctx context.Context, transport Transport, handler DynamicToolHandler, logger *slog.Logger) *toolTransport {
@@ -83,32 +83,9 @@ func (t *toolTransport) receiveMessage(toolCtx, ctx context.Context) (Message, e
 	}
 }
 
-func (t *toolTransport) observeTurn(threadID, turnID string, lifetime *sessiontimeout.Session) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.threadID, t.turnID, t.lifetime = threadID, turnID, lifetime
-}
-
-func (t *toolTransport) observeCall(msg Message) (*sessiontimeout.Session, string) {
-	if t.lifetime == nil {
-		return nil, ""
-	}
-	var scope struct {
-		ThreadID string `json:"threadId"`
-		TurnID   string `json:"turnId"`
-	}
-	if json.Unmarshal(msg.Params, &scope) != nil || scope.ThreadID != t.threadID || scope.TurnID != t.turnID {
-		return nil, ""
-	}
-	id := scope.ThreadID + "/" + scope.TurnID + "/" + string(msg.ID)
-	if !t.lifetime.Event("tool/call/" + id) {
-		return nil, ""
-	}
-	return t.lifetime, id
-}
-
 func (t *toolTransport) run(ctx context.Context) {
 	defer close(t.done)
+	var callSequence uint64
 	for {
 		t.mu.Lock()
 		if ctx.Err() != nil && (!t.drain || len(t.pending) == 0) {
@@ -127,21 +104,27 @@ func (t *toolTransport) run(ctx context.Context) {
 		t.pending[0] = Message{}
 		t.pending = t.pending[1:]
 		t.unresolved = true
-		lifetime, callID := t.observeCall(msg)
 		t.mu.Unlock()
-		_, err := handleServerRequest(ctx, t, msg, t.handler, nil, t.logger)
+		callSequence++
+		err := t.handleCall(ctx, msg, callSequence)
 		t.mu.Lock()
 		if err == nil && ctx.Err() == nil {
 			t.unresolved = false
-			if lifetime != nil {
-				lifetime.Event("tool/result/" + callID)
-			}
 		}
 		t.mu.Unlock()
 		if err != nil && ctx.Err() == nil {
 			t.cancel(err)
 		}
 	}
+}
+
+func (t *toolTransport) handleCall(ctx context.Context, msg Message, sequence uint64) error {
+	ctx, cancel := context.WithTimeout(ctx, dynamicToolTimeout)
+	defer cancel()
+	complete := sessiontimeout.ObserveOwnedCommand(ctx, "dynamic/"+strconv.FormatUint(sequence, 10))
+	defer complete()
+	_, err := handleServerRequest(ctx, t, msg, t.handler, nil, t.logger)
+	return err
 }
 
 func (t *toolTransport) finish(err error) error {
