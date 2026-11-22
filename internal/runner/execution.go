@@ -419,9 +419,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				sourceReviewed = true
 				reviewRequest := req
 				reviewRequest.retainedReview = retained
-				reviewErr := r.validateNativeChange(ctx, reviewRequest)
+				reviewErr := r.validateNativeChange(guarded, reviewRequest)
 				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
-					change, err := source.SourceReview(ctx)
+					change, err := source.SourceReview(guarded)
 					if err != nil {
 						return "", errors.Join(reviewErr, err)
 					}
