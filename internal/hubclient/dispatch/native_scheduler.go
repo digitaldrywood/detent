@@ -854,6 +854,11 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	localWorker := false
 	if execution := claim.execution; execution != nil {
 		state, err := execution.ClaimState(ctx)
+		if errors.Is(err, runner.ErrProviderSessionUnretired) && !s.now().Before(claim.deadline) {
+			if _, validateErr := claim.source.NativeClient().ValidateLease(ctx, claim.lease); validateErr != nil {
+				return false, validateErr
+			}
+		}
 		if err != nil || state.Override != 0 {
 			return state.Override > 0, err
 		}

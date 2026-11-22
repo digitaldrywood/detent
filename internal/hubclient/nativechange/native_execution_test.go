@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,22 +125,32 @@ func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		providerFailure bool
+		expireLease     bool
 	}{
 		{name: "worker close deadline"},
 		{name: "unretired tool after protocol failure", providerFailure: true},
+		{name: "Hub lease expires during provider retirement", providerFailure: true, expireLease: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure)
+			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure, tc.expireLease)
 		})
 	}
 }
 
-func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure bool) {
+func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure, expireLease bool) {
 	t.Helper()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Retire the old worker")
 	h.claim(t, issue.ID)
 	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if providerFailure {
+		if err := e.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "validation", HeartbeatAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	guarded, stop, err := e.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -157,9 +168,12 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure 
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- e.CloseWorkers(cleanup) }()
-	defer func() {
+	retireWorker := sync.OnceValue(func() error {
 		close(retired)
-		if err := <-done; err != nil {
+		return <-done
+	})
+	defer func() {
+		if err := retireWorker(); err != nil {
 			t.Error(err)
 		}
 	}()
@@ -169,8 +183,12 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure 
 		if !runner.StopProviderSupervision(e, cause) {
 			t.Fatal("unretired tool did not stop supervision")
 		}
-		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrProviderSessionUnretired) {
 			t.Fatalf("unretired tool allowed claim completion: %v", err)
+		}
+		if _, stopNext, err := e.Guard(t.Context()); !errors.Is(err, runner.ErrProviderSessionUnretired) {
+			stopNext()
+			t.Fatalf("unretired tool allowed another worker: %v", err)
 		}
 	} else {
 		cancel()
@@ -182,16 +200,55 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure 
 	case <-watch.Done():
 		t.Fatal("expired cleanup left the supervisor active")
 	}
-	if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-		t.Fatalf("unretired worker retained renewal: %v", err)
+	_, err = h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
+	if providerFailure {
+		if !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("heartbeat reported provider retirement as lease loss: %v", err)
+		}
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("renewal reported provider retirement as lease loss: %v", err)
+		}
+	} else if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Errorf("unretired worker retained renewal: %v", err)
 	}
 	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
 		lease, err := w.Lease(t.Context(), string(e.claim.lease.ID))
-		if err == nil && lease.ReleasedAt != nil {
-			t.Fatal("the lease was released before its worker was retired")
+		if err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.Equal(e.claim.lease.ExpiresAt)) {
+			t.Fatal("pending worker retirement changed the Hub lease")
 		}
 		return err
 	})
+	if expireLease {
+		stop()
+		testsupport.NativeChangeExpireLease(t, h.config, e.claim.lease.ID)
+		fixtureSetNow(h.scheduler, e.claim.lease.ExpiresAt.Add(time.Second))
+		if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Fatalf("Hub expiry did not end the claim: %v", err)
+		}
+		return
+	}
+	if providerFailure {
+		stop()
+		if err := retireWorker(); err != nil {
+			t.Fatal(err)
+		}
+		renewed, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
+		if err != nil || !renewed.LeaseRenewedAt.After(e.claim.lease.RenewedAt) {
+			t.Fatalf("renew after retirement: %+v, %v", renewed, err)
+		}
+		_, stopNext, err := e.Guard(t.Context())
+		if err != nil {
+			t.Fatalf("next worker could not start under the current lease: %v", err)
+		}
+		defer stopNext()
+		testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+			lease, err := w.Lease(t.Context(), string(e.claim.lease.ID))
+			if err == nil && (lease.ReleasedAt != nil || lease.FencingToken != int64(e.claim.lease.FencingToken)) {
+				t.Fatal("resumed worker changed the Hub lease fence")
+			}
+			return err
+		})
+	}
 }
 
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {

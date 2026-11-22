@@ -224,6 +224,11 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	live, cancel := context.WithCancelCause(ctx)
 	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
 	e.cancelMu.Lock()
+	if e.unretiredProvider {
+		e.cancelMu.Unlock()
+		cancel(runner.ErrProviderSessionUnretired)
+		return guarded, func() {}, runner.ErrProviderSessionUnretired
+	}
 	if e.supervisionLost {
 		e.cancelMu.Unlock()
 		cancel(runner.ErrExecutionAuthorityUnavailable)
@@ -306,7 +311,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 
 func supervisorLost(ctx context.Context) bool {
 	cause := context.Cause(ctx)
-	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause)
+	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause) && !runner.UnretiredProviderSession(cause)
 }
 
 func (e *nativeExecution) unavailable(err error) error {
@@ -362,7 +367,7 @@ func (e *nativeExecution) validationError(ctx context.Context, err error) error 
 	if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return e.unavailable(err)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, runner.ErrProviderSessionUnretired) {
 		return err
 	}
 	if !nativeTransportUnavailable(err) {
