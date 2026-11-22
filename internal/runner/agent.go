@@ -1862,7 +1862,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			replacementPhase := itemPhaseFromPriorLease(pushed, recovery.Lease.ID)
 			changeDiffers := recovery.Change != nil && recovery.Change.HeadSHA != pushed.HeadSHA
 			previous := recovery.SourceAttempt()
-			explicitRework := runworkspace.RunRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
+			explicitRework := req.executionRole() == RoleRework && previous != nil && previous.Status == "succeeded"
 			switch {
 			case replacementPhase && (reviewRecovery == nil || changeDiffers):
 				phaseSource = pushed
@@ -1939,7 +1939,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && (req.NativeLandingRework != nil || phaserecovery.LandingNeedsRework(req.Execution.Recovery()))
-	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runworkspace.RunRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (req.executionRole() == RoleRework || landingRework || repairResume)
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding
 	var sourceErr error
@@ -2269,7 +2269,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement && req.Execution != nil {
 		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
 	}
-	role := runworkspace.RunRole(req.Mode, req.Issue)
+	role := req.executionRole()
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {

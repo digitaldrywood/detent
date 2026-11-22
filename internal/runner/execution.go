@@ -514,7 +514,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		prepareCtx, prepareCancel := finishCtx, func() {}
 		if outcome == "succeeded" {
 			workflow, runtime, _, _ := r.runtimeSnapshot()
-			role := runtime.effectiveRunRole(runworkspace.RunRole(req.Mode, req.Issue))
+			role := runtime.effectiveRunRole(req.executionRole())
 			_, _, backend, routeErr := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 			if routeErr != nil {
 				runErr = errors.Join(runErr, routeErr)
@@ -690,7 +690,7 @@ func executionCheckpointPreservingPublication(execution Execution, state *worksp
 }
 
 func (req RunRequest) publicationRecovery(mode string) bool {
-	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runworkspace.RunRole(mode, req.Issue)) {
+	if req.Execution != nil && mode == RunModeImplement && isImplementationRole(req.executionRole()) {
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
 			return previous.Checkpoint.UncertainForgeEffect()
 		}
@@ -698,13 +698,9 @@ func (req RunRequest) publicationRecovery(mode string) bool {
 	return false
 }
 
-func publicationRecoveryRole(role string) bool {
-	return role == RoleCode || role == RoleRework
-}
-
 func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace.RecoveryState, identity tracker.NativeExecutionIdentity, current *workspace.ChangeSource) bool {
 	previous := recovery.SourceAttempt()
-	if !publicationRecoveryRole(identity.Role) || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
+	if !isImplementationRole(identity.Role) || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
 		return false
 	}
 	checkpoint, version := previous.Checkpoint, current.Version

@@ -3,21 +3,38 @@ package runner
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"slices"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 )
 
 type ProviderCapacityResolver interface {
 	DispatchCapacity(context.Context, RunRequest) (providercapacity.Requirement, error)
 }
 
+func (req RunRequest) executionRole() string {
+	role := runworkspace.RunRole(req.Mode, req.Issue)
+	if runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !isImplementationRole(role) {
+		return role
+	}
+	if execution, ok := req.Execution.(ProviderCapacityExecution); ok {
+		if reservation := execution.ProviderCapacity(); reservation != nil && isImplementationRole(reservation.Role) {
+			return reservation.Role
+		}
+	}
+	return role
+}
+
+func isImplementationRole(role string) bool {
+	return role == RoleCode || role == RoleRework
+}
+
 func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providercapacity.Requirement, error) {
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runworkspace.RunRole(req.Mode, req.Issue)
+	role := req.executionRole()
 	selection, backend, backendConfig, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return providercapacity.Requirement{}, err
@@ -107,13 +124,13 @@ func (r agentRuntime) selectReservedLandingBackend(reservation *providercapacity
 	return r.backendForSelection(RouteSelection{BackendID: reservation.Backend, Model: model})
 }
 
-func capacitySelectionBackend(req RunRequest, backend AgentBackend) AgentBackend {
+func capacitySelectionBackend(req RunRequest, role string, backend AgentBackend) AgentBackend {
 	execution, ok := req.Execution.(ProviderCapacityExecution)
 	if !ok {
 		return backend
 	}
 	reservation := execution.ProviderCapacity()
-	if reservation == nil || reservation.Role != runworkspace.RunRole(req.Mode, req.Issue) {
+	if reservation == nil || reservation.Role != role {
 		return backend
 	}
 	provider, ok := backend.(AgentModelCatalogProvider)

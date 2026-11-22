@@ -494,7 +494,7 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
 	landing, ok := req.Execution.(LandingExecution)
 	workflow, _, _, _ := r.runtimeSnapshot()
-	if workflow.Config.Tracker.Kind != config.TrackerHubNative || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runworkspace.RunRole(req.Mode, req.Issue) != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || req.executionRole() != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
 		return nil, nil
 	}
 	tools := []AgentTool{
