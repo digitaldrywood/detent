@@ -37,12 +37,12 @@ func newLifetime(parent string) (*Lifetime, error) {
 	return l, nil
 }
 
-func (l *Lifetime) fileIdentity() (lifetimeFileIdentity, error) {
+func (l *Lifetime) fileIdentity() (string, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(l.reader.Fd()), &stat); err != nil {
-		return lifetimeFileIdentity{}, err
+		return "", err
 	}
-	return lifetimeFileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino)}, nil
+	return fmt.Sprintf("%d:%d", stat.Dev, stat.Ino), nil
 }
 
 func openRetainedLifetime(root *os.Root, path string) (*Lifetime, error) {

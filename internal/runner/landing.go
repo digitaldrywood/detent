@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"

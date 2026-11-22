@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
