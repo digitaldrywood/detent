@@ -472,7 +472,7 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 		{name: "pending native status read", native: true, blockStates: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Merging")
+			issue := testIssue("issue-pending-shutdown", "owner/repository#1546", "Todo")
 			issue.PullRequest = &connector.PullRequest{
 				Number:         1546,
 				URL:            "https://github.test/owner/repository/pull/1546",
@@ -505,10 +505,10 @@ func TestBeginDrainStopsPendingDispatchTick(t *testing.T) {
 				MergeFastPathEnabled: true,
 				MaxConcurrentAgents:  1,
 				MaxConcurrentAgentsByState: map[string]int{
-					"Merging": 1,
+					"Todo": 1,
 				},
-				ActiveStates:           []string{"Merging"},
-				ObservedStates:         []string{"Merging"},
+				ActiveStates:           []string{"Todo"},
+				ObservedStates:         []string{"Todo"},
 				TerminalStates:         []string{"Done", "Cancelled"},
 				ContinuationRetryDelay: time.Second,
 			}, orchestrator.Dependencies{

@@ -71,6 +71,56 @@ type autoPromoteReworkSignature struct {
 	FailedChecks []string
 }
 
+func (o *Orchestrator) reconcileReviewLaneIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	if !cfg.Enabled {
+		return nil
+	}
+	transitioned := map[string]struct{}{}
+	for _, issue := range o.localIntakeIssues(state, issues) {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" || normalizeState(issue.State) != normalizeState(cfg.SourceState) {
+			continue
+		}
+		if rejected, err := o.operatorRejectedHead(ctx, issue); err != nil || rejected {
+			continue
+		}
+		summary := AutoPromoteSummaryFromIssue(issue)
+		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
+		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
+		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
+		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
+			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		}
+		var targetState string
+		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
+			targetState = o.nonReviewDecisionTargetState(issue, autoPromoteTargetState(decision.Action, cfg))
+		} else if !gateRequiresPullRequest(cfg.Gate) && issue.PullRequest == nil {
+			targetState = autoPromoteTargetState(decision.Action, cfg)
+		}
+		if targetState == "" || normalizeState(targetState) == normalizeState(issue.State) {
+			recordAutoPromoteSnapshotDecision(state, issueID, decision)
+			o.logAutoPromoteDecision(issue, decision, "")
+			continue
+		}
+		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
+			continue
+		}
+		transitioned[issueID] = struct{}{}
+		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	}
+	if len(transitioned) == 0 {
+		return nil
+	}
+	return transitioned
+}
+
 func autoPromoteCompletedFinalState(state *State, issueID string) string {
 	if state == nil {
 		return ""

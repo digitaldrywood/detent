@@ -28,14 +28,12 @@ func (h intakeBarrierHandler) Handle(ctx context.Context, record slog.Record) er
 
 func TestLocalIntakeStopsRacingDispatchAndResumes(t *testing.T) {
 	t.Parallel()
-	issue := testIssue("pending-local", "local#1", "Merging")
-	issue.PullRequest = &connector.PullRequest{Number: 1, State: "OPEN", MergeableState: "clean", CIStatus: "success"}
-	issue.PRRepository = "example/local"
+	issue := testIssue("pending-local", "local#1", "Todo")
 	tracker := &pendingDispatchConnector{fakeConnector: newFakeConnector(issue), started: make(chan struct{}), release: make(chan struct{})}
 	tracker.stateIssues = []connector.Issue{issue}
 	runner := newBlockingRunner()
 	gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}))
-	cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Merging"}, ObservedStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true}
+	cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}, ObservedStates: []string{"Todo"}, TerminalStates: []string{"Done"}}
 	applied := make(chan struct{})
 	orch, err := orchestrator.New(cfg, orchestrator.Dependencies{Connector: tracker, Runner: runner, GlobalDispatchGate: gate, Logger: slog.New(intakeBarrierHandler{Handler: slog.NewTextHandler(io.Discard, nil), applied: applied, once: &sync.Once{}})})
 	if err != nil {

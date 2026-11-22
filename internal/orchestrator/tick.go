@@ -304,6 +304,12 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
 		)
+		timing.step("reconcile_review_lane_issues")
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.reconcileReviewLaneIssues(ctx, state, fetched.status, now),
+		)
 		timing.step("operator_merge_wedged_pull_requests")
 		fetched = filterReconciledTickIssues(
 			state,
@@ -1080,12 +1086,8 @@ func (o *Orchestrator) reconcileOpenTerminalIssueDrift(
 	return remaining
 }
 
-func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
-	states := append([]string(nil), o.cfg.ActiveStates...)
-	if o.nativeWorkflow() || !o.mergeWorkerLocalSlotsAvailable(state) {
-		states = statesWithoutState(states, autoPromoteMergingState)
-	}
-	return states
+func (o *Orchestrator) candidateFetchStatesForTick(_ *State) []string {
+	return statesWithoutState(append([]string(nil), o.cfg.ActiveStates...), autoPromoteMergingState)
 }
 
 func markRefreshError(state *State, message string, at time.Time) {

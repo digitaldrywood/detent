@@ -263,10 +263,17 @@ func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 				State: "OPEN", HeadSHA: "head-103", MergeableState: "clean", CIStatus: "success",
 			})
 			timedOutActive.State = "In Progress"
-			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive, timedOutActive}}
+			mergingPR := autoPromoteTickIssue("merging-pr", nil, &connector.PullRequest{
+				Number: 104, URL: "https://github.test/example-org/example-project/pull/104",
+				State: "OPEN", HeadSHA: "head-104", MergeableState: "clean", CIStatus: "success",
+			})
+			mergingPR.State = "Merging"
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive, timedOutActive, mergingPR}}
 			cfg := normalizeConfig(Config{
-				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-				TerminalStates: []string{"Done"},
+				MaxConcurrentAgents:  2,
+				MergeFastPathEnabled: true,
+				ActiveStates:         []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates:       []string{"Done"},
 				AutoPromote: AutoPromoteConfig{
 					Enabled:               true,
 					SourceState:           "Human Review",
@@ -276,7 +283,13 @@ func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 					Gate:                  gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
 				},
 			})
-			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+			runner := newWorkerHostRunner()
+			orch := &Orchestrator{
+				cfg:        cfg,
+				connector:  tracker,
+				supervisor: newTestSupervisor(t, runner, cfg),
+				now:        func() time.Time { return now },
+			}
 			state := newState(cfg)
 			state.Completed[completedActive.ID] = Completed{Issue: cloneIssue(completedActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
 			state.Completed[timedOutActive.ID] = Completed{Issue: cloneIssue(timedOutActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-30 * time.Minute)}
@@ -290,6 +303,43 @@ func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 				t.Fatalf("tick dispatched merge worker for PR: %+v", state.Running)
 			}
 		})
+	}
+}
+
+func TestTickReconcilesReviewLaneArtifactGate(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 7, 0, 0, 0, time.UTC)
+	approved := autoPromoteTickIssue("artifact-approved", nil, nil)
+	approved.State = "Review"
+	approved.Fields = map[string]string{"render_status": "approved"}
+	pending := autoPromoteTickIssue("artifact-pending", nil, nil)
+	pending.State = "Review"
+	pending.Fields = map[string]string{"render_status": "pending"}
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{approved, pending}}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+		ObservedStates: []string{"Review"},
+		TerminalStates: []string{"Done"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Done",
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+				Artifact: gate.ArtifactConfig{
+					StatusField:  "render_status",
+					PassStatuses: []string{"approved"},
+					WaitStatuses: []string{"pending"},
+				},
+			},
+		},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+	state := newState(cfg)
+	orch.tick(t.Context(), &state, now)
+	want := []autoPromoteTickUpdate{{issueID: approved.ID, state: "Done"}}
+	if !reflect.DeepEqual(tracker.updates, want) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
 	}
 }
 
@@ -307,9 +357,10 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
 		},
 		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review", "Blocked"},
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
-	blocked := autoPromoteTickIssue("issue-stale-todo-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+	blockedTodo := autoPromoteTickIssue("issue-stale-todo-workpad-blocker", []string{"bug"}, &connector.PullRequest{
 		Number:                 180,
 		URL:                    "https://github.test/example-org/example-project/pull/180",
 		State:                  "OPEN",
@@ -317,9 +368,9 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 		CIStatus:               "pass",
 		CodexReviewSubmittedAt: &oldReview,
 	})
-	blocked.State = "Todo"
-	blocked.Identifier = "example-org/example-project#175"
-	clean := autoPromoteTickIssue("issue-stale-todo-clean", []string{"bug"}, &connector.PullRequest{
+	blockedTodo.State = "Todo"
+	blockedTodo.Identifier = "example-org/example-project#175"
+	cleanTodo := autoPromoteTickIssue("issue-stale-todo-clean", []string{"bug"}, &connector.PullRequest{
 		Number:                 181,
 		URL:                    "https://github.test/example-org/example-project/pull/181",
 		State:                  "OPEN",
@@ -327,14 +378,34 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 		CIStatus:               "pass",
 		CodexReviewSubmittedAt: &oldReview,
 	})
-	clean.State = "Todo"
-	clean.Identifier = "example-org/example-project#176"
+	cleanTodo.State = "Todo"
+	cleanTodo.Identifier = "example-org/example-project#176"
+	blockedReview := autoPromoteTickIssue("issue-review-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 182,
+		URL:                    "https://github.test/example-org/example-project/pull/182",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	blockedReview.State = "Human Review"
+	blockedReview.Identifier = "example-org/example-project#177"
+	cleanReview := autoPromoteTickIssue("issue-review-clean", []string{"bug"}, &connector.PullRequest{
+		Number:                 183,
+		URL:                    "https://github.test/example-org/example-project/pull/183",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cleanReview.State = "Human Review"
+	cleanReview.Identifier = "example-org/example-project#178"
+	workpadBlocker := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```"
 	tracker := &autoPromoteTickConnector{
-		stateIssues: []connector.Issue{blocked, clean},
+		stateIssues: []connector.Issue{blockedTodo, cleanTodo, blockedReview, cleanReview},
 		issueComments: map[string][]connector.IssueComment{
-			blocked.ID: {{
-				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
-			}},
+			blockedTodo.ID:   {{Body: workpadBlocker}},
+			blockedReview.ID: {{Body: workpadBlocker}},
 		},
 	}
 	orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
@@ -342,13 +413,14 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 	orch.tick(t.Context(), &state, now)
 
 	wantUpdates := []autoPromoteTickUpdate{
-		{issueID: blocked.ID, state: "Blocked"},
-		{issueID: clean.ID, state: "Human Review"},
+		{issueID: blockedReview.ID, state: "Blocked"},
+		{issueID: blockedTodo.ID, state: "Blocked"},
+		{issueID: cleanTodo.ID, state: "Human Review"},
 	}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
 	}
-	if got, want := tracker.fetchComments, []string{blocked.ID, clean.ID}; !reflect.DeepEqual(got, want) {
+	if got, want := tracker.fetchComments, []string{blockedReview.ID, cleanReview.ID, blockedTodo.ID, cleanTodo.ID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
 	}
 }
