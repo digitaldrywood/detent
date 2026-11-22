@@ -642,8 +642,8 @@ func TestSchedulerHubOwnedTarget(t *testing.T) {
 				if state == runnerauth.LifecycleUpdating && target != "1.2.2" {
 					t.Errorf("authorized target=%s", target)
 				}
-				if state == runnerauth.LifecycleShuttingDown && reason != "update" {
-					t.Errorf("shutdown reason=%s", reason)
+				if state == runnerauth.LifecycleShuttingDown && (reason != "update" || target != "1.2.2") {
+					t.Errorf("shutdown reason=%s target=%s", reason, target)
 				}
 				return nil
 			})
