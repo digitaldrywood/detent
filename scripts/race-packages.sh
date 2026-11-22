@@ -28,7 +28,6 @@ BEGIN {
     weight[module "/internal/workspacesession"] = 1.058
     weight[module "/internal/procstart"] = 1.056
     weight[module "/internal/skills"] = 1.054
-    weight[module "/internal/aidebug"] = 1.050
     weight[module "/internal/activehours"] = 1.047
     weight[module "/internal/coordination"] = 1.045
     weight[module "/internal/backendcapacity"] = 1.043
