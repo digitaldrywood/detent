@@ -35,7 +35,7 @@ type SSHPeer struct {
 	cancel   context.CancelFunc
 	decoder  *json.Decoder
 	encoder  *json.Encoder
-	writeMu  sync.Mutex
+	writer   chan struct{}
 	mu       sync.Mutex
 	pending  map[uint64]chan sshMessage
 	sequence atomic.Uint64
@@ -48,12 +48,16 @@ type sshMessage struct {
 	Arguments []json.RawMessage `json:",omitempty"`
 	Result    json.RawMessage   `json:",omitempty"`
 	Error     *sshError         `json:",omitempty"`
-	Timeout   time.Duration     `json:",omitempty"`
+	Deadline  time.Time         `json:",omitzero"`
 }
 
 func NewSSHPeer(ctx context.Context, input io.Reader, output io.Writer, handle func(context.Context, string, []json.RawMessage) (any, error)) *SSHPeer {
 	ctx, cancel := context.WithCancel(ctx)
-	p := &SSHPeer{ctx: ctx, cancel: cancel, decoder: json.NewDecoder(input), encoder: json.NewEncoder(output), pending: make(map[uint64]chan sshMessage), handle: handle}
+	p := &SSHPeer{
+		ctx: ctx, cancel: cancel,
+		decoder: json.NewDecoder(input), encoder: json.NewEncoder(output),
+		writer: make(chan struct{}, 1), pending: make(map[uint64]chan sshMessage), handle: handle,
+	}
 	go p.read()
 	return p
 }
@@ -61,11 +65,23 @@ func NewSSHPeer(ctx context.Context, input io.Reader, output io.Writer, handle f
 func (p *SSHPeer) Context() context.Context { return p.ctx }
 func (p *SSHPeer) Close()                   { p.cancel() }
 
-func (p *SSHPeer) send(message sshMessage) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+func (p *SSHPeer) send(ctx context.Context, message sshMessage) error {
+	select {
+	case <-p.ctx.Done():
+		return io.ErrUnexpectedEOF
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case p.writer <- struct{}{}:
+	}
+	defer func() { <-p.writer }()
 	if p.ctx.Err() != nil {
 		return io.ErrUnexpectedEOF
+	}
+	if err := context.Cause(ctx); err != nil {
+		return err
+	}
+	if !message.Deadline.IsZero() && !time.Now().Before(message.Deadline) {
+		return context.DeadlineExceeded
 	}
 	return p.encoder.Encode(message)
 }
@@ -85,15 +101,10 @@ func (p *SSHPeer) Call(ctx context.Context, method string, result any, args ...a
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, message.ID); p.mu.Unlock() }()
 	switch method {
-	case "execution.Checkpoint", "source.diff", "source.change":
-		if deadline, ok := ctx.Deadline(); ok {
-			message.Timeout = time.Until(deadline)
-			if message.Timeout <= 0 {
-				return context.DeadlineExceeded
-			}
-		}
+	case "execution.Validate", "execution.Checkpoint", "source.diff", "source.change":
+		message.Deadline, _ = ctx.Deadline()
 	}
-	if err := p.send(message); err != nil {
+	if err := p.send(ctx, message); err != nil {
 		return err
 	}
 	select {
@@ -132,24 +143,26 @@ func (p *SSHPeer) read() {
 		// handler keeps the read loop available for that nested response.
 		go func() {
 			ctx := p.ctx
-			if message.Timeout > 0 {
+			if !message.Deadline.IsZero() {
 				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, message.Timeout)
+				ctx, cancel = context.WithDeadline(ctx, message.Deadline)
 				defer cancel()
 			}
 			var result any
-			var err error
-			if p.handle == nil {
-				err = fmt.Errorf("unsupported SSH method %q", message.Method)
-			} else {
-				result, err = p.handle(ctx, message.Method, message.Arguments)
+			err := context.Cause(ctx)
+			if err == nil {
+				if p.handle == nil {
+					err = fmt.Errorf("unsupported SSH method %q", message.Method)
+				} else {
+					result, err = p.handle(ctx, message.Method, message.Arguments)
+				}
 			}
 			response := sshMessage{ID: message.ID, Error: encodeSSHError(err)}
 			if err == nil {
 				response.Result, err = json.Marshal(result)
 				response.Error = encodeSSHError(err)
 			}
-			if p.send(response) != nil {
+			if p.send(p.ctx, response) != nil {
 				p.cancel()
 			}
 		}()
