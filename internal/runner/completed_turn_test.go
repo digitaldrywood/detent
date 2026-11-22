@@ -704,11 +704,14 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
 		{name: "validation exceeds session budget without a turn limit", validationDelay: 6 * time.Minute, validationTimeout: true, sessionBudget: true},
 		{name: "legacy rolling mode validates finalization", validationDelay: 2 * time.Minute, rollingBarrier: true},
-		{name: "operator stop during successful long validation", operatorStop: true, validationDelay: 2 * time.Minute, legacyReceiptJSON: true},
+		{name: "operator stop cancels long validation", operatorStop: true, validationDelay: 2 * time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithCancel(t.Context())
+				if test.expired {
+					ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+				}
 				defer cancel()
 				ctx, stopOperator := context.WithCancelCause(ctx)
 				defer stopOperator(context.Canceled)
@@ -791,7 +794,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal("host finalization preceded provider completion observation")
 				}
 				publicationFailed := test.publicationTimeout || test.publicationRevoked
-				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
+				failed := test.expired || test.cancelled || test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != (failed || publicationFailed) || execution.published != (!failed && !publicationFailed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
@@ -859,8 +862,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)
 				}
-				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation == nil || execution.validation.ExitCode != 0 || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
-					t.Fatalf("operator stop lost successful validation or checkpoint: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
+				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation != nil || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
+					t.Fatalf("operator stop did not cancel long validation cleanly: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
 				}
 				if test.validationDelay > 0 && !failed && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
 					t.Fatalf("successful finalized-head validation was not published: %+v", execution.validation)

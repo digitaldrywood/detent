@@ -13,7 +13,7 @@ import (
 )
 
 func (r *Runner) sourceFinalizationContext(ctx context.Context, req RunRequest, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if req.Execution == nil || req.observationPeer == nil {
+	if req.Execution == nil {
 		ctx = context.WithoutCancel(ctx)
 	}
 	return r.finalizationContext(ctx, timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
