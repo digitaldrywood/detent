@@ -260,8 +260,10 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	lease, ok := s.claims[strings.TrimSpace(issue.ID)]
+	var localDeadline time.Time
 	if native, exists := s.nativeClaims[strings.TrimSpace(issue.ID)]; exists {
 		issue.IsolationPolicy = native.lease.IsolationPolicy
+		localDeadline = native.deadline
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -270,7 +272,9 @@ func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ tim
 	if err := s.checkClaimPolicy(ctx, issue.ID, lease.PolicyID); err != nil {
 		return orchestrator.Claimed{}, err
 	}
-	return claimedIssue(issue, lease), nil
+	claimed := claimedIssue(issue, lease)
+	claimed.LocalLeaseDeadline = localDeadline
+	return claimed, nil
 }
 
 func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time) (orchestrator.Claimed, error) {
@@ -314,7 +318,7 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	started := s.now()
 	lease, err := claim.source.NativeClient().RenewHeartbeat(ctx, claim.lease, int64(s.leaseTTL/time.Second))
 	if err == nil {
-		if renewed, ok := s.applyNativeLeaseRenewal(issueID, started, claim.lease, lease); ok {
+		if renewed, ok := s.applyNativeLeaseRenewal(issueID, started, claim.lease, lease, true); ok {
 			return renewed, nil
 		}
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
@@ -330,7 +334,9 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	current, found := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if found && !current.lost && current.lease.FencingToken != claim.lease.FencingToken {
-		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
+		claimed := claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease))
+		claimed.LocalLeaseDeadline = current.deadline
+		return claimed, nil
 	}
 	return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 }
