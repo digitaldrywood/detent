@@ -1,7 +1,6 @@
 package workspace
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,19 +19,11 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", err
 	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	expected := cmp.Or(issue.ExpectedPhaseRemoteHead, info.PhaseRemoteHead)
-	var remoteHead, replayFrom *string
-	if issue.VerifyPhaseBranch || expected != "" {
-		remoteHead = &expected
+	expected := info.PhaseRemoteHead
+	if issue.ExpectedPhaseRemoteHead != "" {
+		expected = &issue.ExpectedPhaseRemoteHead
 	}
-	if info.ReplayPhase && expected == info.PhaseRemoteHead {
-		base := info.StartHeadSHA
-		if issue.PhaseSource != nil {
-			base = issue.PhaseSource.HeadSHA
-		}
-		replayFrom = &base
-	}
-	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, remoteHead, replayFrom, authorize, func(ctx context.Context) error {
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
@@ -47,11 +38,7 @@ func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issu
 	if err != nil {
 		return "", err
 	}
-	expected := previous.HeadSHA
-	if info.ReplayPhase && issue.PhaseSource != nil && previous.HeadSHA == issue.PhaseSource.HeadSHA {
-		expected = info.PhaseRemoteHead
-	}
-	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, expected, func(ctx context.Context) error {
+	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
 		return l.fetchItemPhase(ctx, info, issue, previous)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
 		return l.runCommit(ctx, info.Path, nil, args...)
@@ -71,7 +58,8 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 	if err != nil {
 		return err
 	}
-	if issue.PhaseSource == nil {
+	source := itemPhaseCheckoutSource(info, issue.PhaseSource)
+	if source.HeadSHA == "" {
 		return ErrItemPhaseSource
 	}
 	if l.autoBranch {
@@ -80,15 +68,17 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 			return errors.Join(errors.New("checkout is no longer on the assigned item branch"), err)
 		}
 	}
-	head, tree := itemPhaseCheckoutSource(info, *issue.PhaseSource)
-	return phasegit.VerifyCleanCheckout(ctx, info.Path, l.sourceRoot, head, tree)
+	return phasegit.VerifyCleanCheckout(ctx, info.Path, l.sourceRoot, source.HeadSHA, source.TreeSHA)
 }
 
-func itemPhaseCheckoutSource(info Info, receipt tracker.NativePhaseReceipt) (string, string) {
+func itemPhaseCheckoutSource(info Info, receipt *tracker.NativePhaseReceipt) PhaseSource {
 	if info.RecoveredPhase.HeadSHA != "" {
-		return info.RecoveredPhase.HeadSHA, info.RecoveredPhase.TreeSHA
+		return info.RecoveredPhase
 	}
-	return receipt.HeadSHA, receipt.TreeSHA
+	if receipt == nil {
+		return PhaseSource{}
+	}
+	return PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}
 }
 
 func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
@@ -102,11 +92,11 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 		return fmt.Errorf("read published item branch: %w", err)
 	}
 	receipt := issue.PhaseSource
-	if receipt == nil {
-		info.PhaseRemoteHead, info.ReplayPhase = head, exists
+	if !exists && receipt == nil {
+		info.PhaseRemoteHead = &head
 		return nil
 	}
-	if !exists || receipt.Branch != branch || !gitexec.ValidHead(head) || !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA) {
+	if !exists || !gitexec.ValidHead(head) || receipt != nil && (receipt.Branch != branch || !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA)) {
 		return fmt.Errorf("%w: published item branch differs from its latest phase receipt", ErrItemPhaseSource)
 	}
 	release, err := l.acquireSourceOperation(ctx)
@@ -125,26 +115,44 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 	if strings.TrimSpace(fetched) != head {
 		return fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
 	}
-	if head != receipt.HeadSHA {
-		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, receipt.HeadSHA, head); err != nil {
-			return fmt.Errorf("%w: published item branch does not descend from its latest phase receipt: %w", ErrItemPhaseSource, err)
+	var ancestor string
+	if receipt != nil {
+		ancestor = receipt.HeadSHA
+	} else {
+		base := issue.BaseRef
+		if base == "" {
+			base, err = l.newBranchBaseRef(ctx)
+			if err != nil {
+				return err
+			}
 		}
-	}
-	tree, err := l.itemPhaseTree(ctx, receipt.HeadSHA)
-	if err != nil || tree != receipt.TreeSHA {
-		return errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
-	}
-	info.PhaseRemoteHead = head
-	if head != receipt.HeadSHA {
-		tree, err = l.itemPhaseTree(ctx, head)
+		ancestor, err = l.resolveWorktreeStartHead(ctx, base)
 		if err != nil {
 			return err
 		}
-		if tree == receipt.TreeSHA {
-			info.RecoveredPhase = PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
-		} else {
-			info.ReplayPhase = true
+	}
+	if head != ancestor {
+		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, ancestor, head); err != nil {
+			reason := "published item branch does not descend from its latest phase receipt"
+			if receipt == nil {
+				reason = "published item branch does not descend from the item base"
+			}
+			return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, reason), err)
 		}
+	}
+	if receipt != nil {
+		tree, err := l.itemPhaseTree(ctx, ancestor)
+		if err != nil || tree != receipt.TreeSHA {
+			return errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
+		}
+	}
+	info.PhaseRemoteHead = &head
+	if receipt == nil || head != receipt.HeadSHA {
+		tree, err := l.itemPhaseTree(ctx, head)
+		if err != nil {
+			return err
+		}
+		info.RecoveredPhase = PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
 	}
 	return nil
 }

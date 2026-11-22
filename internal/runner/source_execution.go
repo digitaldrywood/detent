@@ -74,8 +74,36 @@ func (e *sourceRepair) Unwrap() error { return e.err }
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
-func itemPhaseFromPriorLease(phase *tracker.NativePhaseReceipt, leaseID tracker.LeaseID) bool {
-	return phase != nil && phase.LeaseID != "" && leaseID != "" && phase.LeaseID != leaseID
+func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuation *tracker.NativePhaseContinuation) bool {
+	if continuation == nil {
+		return false
+	}
+	if recovery.SourceVersionID != "" && (recovery.Change == nil || recovery.Change.VersionID != recovery.SourceVersionID) {
+		return true
+	}
+	change := recovery.Change
+	if change == nil {
+		return false
+	}
+	for _, receipt := range []*tracker.NativePhaseReceipt{continuation.LastPushed, continuation.PublishedChangeReceipt} {
+		if receipt != nil && receipt.HeadSHA == change.HeadSHA && !tracker.IsPlanPhase(receipt.Phase) {
+			return false
+		}
+	}
+	return true
+}
+
+func retainsPhaseCheckout(recovery tracker.NativeRecovery, scope workspace.AttemptWorkspace, activeAttemptID string) bool {
+	lease := recovery.Lease
+	if scope.Key() == "" || lease.ID == "" || lease.FencingToken == 0 {
+		return false
+	}
+	for _, attempt := range recovery.Attempts {
+		if attempt.AttemptID == scope.Attempt {
+			return attempt.LeaseID == lease.ID && attempt.FencingToken == lease.FencingToken && attempt.ClaimReleasedAt == nil
+		}
+	}
+	return scope.Attempt == activeAttemptID
 }
 
 func verifyReplacementItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {

@@ -128,6 +128,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	needsResolution := target.MergeResolution && !target.GitHubPullRequest
 	resolutionOptions := options
+	resolutionOptions.PreserveSourceHistory = req.phaseContinuation != nil && info.PublicationBranch != ""
 	attemptedLanding := !target.GitHubPullRequest && !needsResolution
 	if attemptedLanding {
 		land()

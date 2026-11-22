@@ -366,6 +366,9 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	}{
 		{name: "release delivery repository setup failure retains Rework", sourceState: "Rework", preProvider: true, states: reworkRetry, humanReview: &no, runErr: fmt.Errorf("%w: create workspace: invalid pull request repository", runpkg.ErrWorkspacePreparation), preInstance: true, releaseDelivery: true, roundTrip: true},
 		{name: "release delivery unavailable base retains Rework", sourceState: "Rework", preProvider: true, states: reworkRetry, humanReview: &no, runErr: fmt.Errorf("%w: create workspace: resolve recovery base: local progress base branch is unavailable", runpkg.ErrWorkspacePreparation), preInstance: true, releaseDelivery: true},
+		{name: "phase history refusal returns to Rework", preProvider: true, states: unfinishedWorkflow, humanReview: &no,
+			runErr: fmt.Errorf("%w: published item history diverged", runpkg.ErrNativeRecoveryRequired),
+			change: &runpkg.NativeChange{VersionCode: workspace.LandRefusalHeadMoved, VersionError: "published item history diverged"}},
 		{name: "CODE pre-provider checkpoint recovery retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: checkpoint_requires_recovery", runpkg.ErrNativeRecoveryRequired), preInstance: true},
 		{name: "CODE pre_provider external effect uncertainty retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: external_effect_uncertain", runpkg.ErrNativeRecoveryRequired), preInstance: true},
 		{name: "CODE unavailable retained checkpoint retries the instance", preProvider: true, states: planRecovery, humanReview: &no, runErr: fmt.Errorf("%w: checkpoint_unavailable", runpkg.ErrNativeRecoveryRequired), preInstance: true},
@@ -994,6 +997,13 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 			if test.preProvider {
 				if len(state.Completed) != 0 {
 					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v", state.Retry, state.Blocked)
+				}
+				if test.change != nil && test.change.VersionCode == workspace.LandRefusalHeadMoved {
+					retry := state.Retry[issue.ID]
+					if tick.stateIssues[0].State != "Rework" || retry.Issue.State != "Rework" || len(state.Blocked) != 0 {
+						t.Fatalf("published history refusal did not retry in Rework: updates=%v, retry lane=%q", tick.updates, retry.Issue.State)
+					}
+					return
 				}
 				if test.preInstance {
 					retry, retried := state.Retry[issue.ID]

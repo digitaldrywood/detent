@@ -262,7 +262,19 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 			return result, fmt.Errorf("%w: resolution changed nonconflicting hunks", ErrMergeResolutionInvalid)
 		}
 	}
-	if _, err := l.runCommit(ctx, path, nil, "commit", "-m", opts.Message); err != nil {
+	if opts.PreserveSourceHistory {
+		tree, err := runGitAt(ctx, path, "write-tree")
+		if err != nil {
+			return result, err
+		}
+		resolved, err := l.runCommit(ctx, path, nil, "commit-tree", strings.TrimSpace(tree), "-p", result.BaseSHA, "-p", opts.HeadSHA, "-m", opts.Message)
+		if err != nil {
+			return result, err
+		}
+		if _, err := runGitAt(ctx, path, "update-ref", "HEAD", strings.TrimSpace(resolved), result.BaseSHA); err != nil {
+			return result, err
+		}
+	} else if _, err := l.runCommit(ctx, path, nil, "commit", "-m", opts.Message); err != nil {
 		return result, err
 	}
 	resolved, err := runGitAt(ctx, path, "rev-parse", "HEAD")

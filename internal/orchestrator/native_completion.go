@@ -149,8 +149,9 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 
 	if event.Err != nil || terminalStateForRun(nil, finalState) != store.WorkAttemptTerminalSuccess {
+		headMoved := change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
 		decision, attributed := runpkg.FailureDecision(event.Err)
-		if (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable) || attributed && decision.Outcome == "instance") && o.handlePreTurnFailure(ctx, state, event, running) {
+		if !headMoved && (preProvider || errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable) || attributed && decision.Outcome == "instance") && o.handlePreTurnFailure(ctx, state, event, running) {
 			return true
 		}
 		states, err := reader.WorkflowStates(ctx)
@@ -159,7 +160,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		}
 		target := terminalAttemptTodoState(o.cfg.ActiveStates)
 		var allowed bool
-		if humanReview && !recoveryRequired && preTurnFailureClass(event, running) == "" {
+		if !headMoved && humanReview && !recoveryRequired && preTurnFailureClass(event, running) == "" {
 			review := cfg.reviewTargetState()
 			if autoPromoteOptoutLabel(issue, cfg) {
 				review = cfg.SourceState
@@ -169,7 +170,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 				return handoff(fmt.Errorf("native workflow allows no move from %s to the review lane %s", issue.State, review))
 			}
 		} else {
-			if running.DiffStats.RecoveryStateAvailable || recordedWorkProduct && dispatchableState(states, cfg.ReworkState) {
+			if running.DiffStats.RecoveryStateAvailable || (recordedWorkProduct || headMoved) && dispatchableState(states, cfg.ReworkState) {
 				target = cfg.ReworkState
 			}
 			target, allowed = nativeRetryLane(states, issue.State, target)
@@ -186,7 +187,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		failed := running
 		failed.Issue.State = target
 		failed.CompletionLane = target
-		if o.handlePreTurnFailure(ctx, state, event, failed) {
+		if !headMoved && o.handlePreTurnFailure(ctx, state, event, failed) {
 			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}

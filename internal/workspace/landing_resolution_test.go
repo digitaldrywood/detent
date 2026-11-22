@@ -20,8 +20,10 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 		validationCommand   string
 		wantAttribution     string
 		baseMoved           bool
+		phaseHistory        bool
 	}{
 		{name: "symlink conflict uses Git entries", before: "symlink", after: "symlink", wantCalls: 1},
+		{name: "phase resolution keeps published ancestry and validates the final commit", before: "symlink", after: "symlink", wantCalls: 1, phaseHistory: true},
 		{name: "inspected base advancement stops before provider", baseMoved: true},
 		{name: "gate failure reproduces on integration base", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "printf 'landing validation failed\\n'; exit 1", wantAttribution: failureattribution.Independent},
 		{name: "gate failure introduced by resolution", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "if [ \"$(readlink feature.txt)\" = missing-resolved-target ]; then printf 'landing validation failed\\n'; exit 1; fi", wantAttribution: failureattribution.Change},
@@ -91,8 +93,11 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 			if command == "" {
 				command = "git diff --check HEAD^ HEAD"
 			}
+			if test.phaseHistory {
+				runGit(t, fixture.info.Path, "push", "origin", fixture.head+":refs/heads/"+fixture.info.PublishBranch())
+			}
 			result, err := fixture.backend.ResolveLandingConflict(t.Context(), fixture.info, fixture.issue, LandOptions{
-				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: command, ExpectedBaseSHA: expectedBase,
+				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: command, ExpectedBaseSHA: expectedBase, PreserveSourceHistory: test.phaseHistory,
 			}, func(ctx context.Context, path string, files []string) error {
 				calls++
 				if len(files) != 1 || files[0] != "feature.txt" {
@@ -148,6 +153,18 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 				}
 			} else if test.wantAttribution == "" && (result.Unchanged || result.HeadSHA == "" || result.Gate.ExitCode != 0 || result.Gate.StartedAt.IsZero()) {
 				t.Fatalf("symlink resolution did not require new review: %#v", result)
+			}
+			if test.phaseHistory {
+				parents := strings.Fields(runGit(t, fixture.info.Path, "show", "-s", "--format=%P", result.HeadSHA))
+				if len(parents) != 2 || parents[0] != base || parents[1] != fixture.head || result.Gate.HeadSHA != result.HeadSHA {
+					t.Fatalf("resolution parents=%v, gate head=%s, resolution head=%s", parents, result.Gate.HeadSHA, result.HeadSHA)
+				}
+				fixture.issue.PublicationRepository = fixture.remote
+				_, published, _, err := fixture.backend.PushItemPhase(t.Context(), fixture.info, fixture.issue, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || published != result.HeadSHA {
+					t.Fatalf("publish resolved item phase: head=%s error=%v", published, err)
+				}
+				runGit(t, fixture.remote, "merge-base", "--is-ancestor", fixture.head, published)
 			}
 		})
 	}

@@ -93,7 +93,6 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			info := workspace.Info{Path: checkout, Key: "item", Branch: branch, PublicationBranch: branch}
 			execution := &phaseExecution{}
 			issue := workspace.Issue{Identifier: "ITEM", PublicationRepository: origin}
-			base := git("-C", source, "rev-parse", "HEAD")
 			if name == "lease lost after push" {
 				git("-C", source, "push", "origin", "HEAD:refs/heads/main")
 				if err := os.WriteFile(filepath.Join(checkout, "orphaned.txt"), []byte("unfinished phase\n"), 0o600); err != nil {
@@ -122,13 +121,13 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				issue.BaseRef, issue.BranchName, issue.VerifyPhaseBranch = base, branch, true
+				issue.BaseRef, issue.BranchName, issue.VerifyPhaseBranch = git("-C", source, "rev-parse", "HEAD"), branch, true
 				restarted, err := replacement.Create(t.Context(), issue)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if head := git("-C", restarted.Path, "rev-parse", "HEAD"); head != base {
-					t.Fatalf("replacement starts at %s, want %s", head, base)
+				if head := git("-C", restarted.Path, "rev-parse", "HEAD"); head != orphan {
+					t.Fatalf("replacement starts at %s, want %s", head, orphan)
 				}
 				git("-C", restarted.Path, "commit", "--allow-empty", "-m", "Complete the restarted phase")
 				replacementExecution := &phaseExecution{}
@@ -137,6 +136,7 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 				if err != nil || replacementExecution.receipts != 1 || receipt.HeadSHA != got || got == orphan {
 					t.Fatalf("restarted publication: receipt=%+v remote=%s error=%v", receipt, got, err)
 				}
+				git("-C", origin, "merge-base", "--is-ancestor", orphan, got)
 				return
 			}
 			if name != "normal" && name != "isolated configuration" {
