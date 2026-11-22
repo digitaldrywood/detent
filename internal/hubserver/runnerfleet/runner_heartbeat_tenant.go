@@ -556,6 +556,13 @@ func ReadRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identi
 		return err
 	}
 	runnerupdate.ApplyUrgentRouting(&updateRunner, runnerupdate.UrgentUpdate{Revision: urgentUpdate.Revision, Request: urgentUpdate.Request}, record.Version)
+	allowed, err := runnerupdate.OfferAllowed(ctx, r, identity.RunnerID, updateRunner.UpdateRequest)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		updateRunner.UpdateRequest = nil
+	}
 	routing.UpdateRequest = updateRunner.UpdateRequest
 	routing = routing.Normalized()
 	if err := routing.Validate(); err != nil {

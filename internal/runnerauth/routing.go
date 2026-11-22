@@ -148,12 +148,15 @@ type HostChange struct {
 }
 
 type Runner struct {
-	BackendIsolation map[string][]string       `json:"backend_isolation,omitempty"`
-	Update           *UpdateObservation        `json:"update,omitempty"`
-	CapacityConfig   *CapacityConfig           `json:"capacity_configuration,omitempty"`
-	ProjectUsed      map[tracker.ProjectID]int `json:"project_used,omitempty"`
-	Problems         []Problem                 `json:"problems"`
-	ProviderCapacity []providercapacity.View   `json:"provider_capacity,omitempty"`
+	UpdateTargetVersion string                    `json:"-"`
+	UpdateTargetHeld    bool                      `json:"-"`
+	Lifecycle           *Lifecycle                `json:"lifecycle,omitempty"`
+	BackendIsolation    map[string][]string       `json:"backend_isolation,omitempty"`
+	Update              *UpdateObservation        `json:"update,omitempty"`
+	CapacityConfig      *CapacityConfig           `json:"capacity_configuration,omitempty"`
+	ProjectUsed         map[tracker.ProjectID]int `json:"project_used,omitempty"`
+	Problems            []Problem                 `json:"problems"`
+	ProviderCapacity    []providercapacity.View   `json:"provider_capacity,omitempty"`
 	Binding
 	Routing
 	OrganizationID   tracker.OrganizationID `json:"organization_id"`

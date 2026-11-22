@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -37,4 +38,28 @@ func (c *Client) StoreRunnerUpdateReceipt(ctx context.Context, receipt *runnerau
 		Receipt *runnerauth.UpdateReceipt `json:"receipt"`
 		Running runnerauth.BuildEvidence  `json:"running"`
 	}{receipt, running}, nil)
+}
+
+func (c *Client) ReportRunnerLifecycle(ctx context.Context, report runnerauth.LifecycleReport) error {
+	path, err := c.runnerReceiptPath()
+	if err != nil {
+		return err
+	}
+	return c.Request(ctx, http.MethodPost, strings.TrimSuffix(path, "/update/receipt")+"/lifecycle", report, nil)
+}
+
+func (c *Client) SetRunnerRoutingObserver(observe func(context.Context, string) error) {
+	c.runnerRoutingMu.Lock()
+	defer c.runnerRoutingMu.Unlock()
+	c.runnerRoutingObserver = observe
+}
+
+func (c *Client) observeRunnerRouting(ctx context.Context, state string) error {
+	c.runnerRoutingMu.RLock()
+	observe := c.runnerRoutingObserver
+	c.runnerRoutingMu.RUnlock()
+	if observe == nil {
+		return nil
+	}
+	return observe(ctx, state)
 }
