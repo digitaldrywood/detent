@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -24,6 +25,7 @@ type sshNativeProbe struct {
 	capture                func(context.Context, string, string) (artifact.GitCapture, error)
 	diff                   runner.AttemptDiffSource
 	lastDiff               tracker.AttemptDiffRequest
+	sourceValidation       gate.CommandResult
 	bundle                 artifact.GitCapture
 	producerFailure        bool
 	outcome, finalMessage  string
@@ -106,6 +108,20 @@ func (e *sshNativeProbe) PrepareFinish(_ context.Context, _, finalMessage string
 	defer e.mu.Unlock()
 	e.finalMessage = finalMessage
 	return nil
+}
+
+func (e *sshNativeProbe) RecordSourceValidation(_ context.Context, result gate.CommandResult) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sourceValidation = result
+	return nil
+}
+
+func (*sshNativeProbe) PublishValidationEvidence(ctx context.Context, files []runner.ValidationEvidence) error {
+	if len(files) != 0 {
+		return errors.New("unexpected validation attachments in SSH fixture")
+	}
+	return ctx.Err()
 }
 
 func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation, error) {

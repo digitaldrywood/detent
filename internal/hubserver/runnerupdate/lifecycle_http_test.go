@@ -185,6 +185,8 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], report), http.StatusNoContent)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, targetPath, admin.Token, runnerstore.UpdateTarget{Version: "1.2.5", Revision: 1}), http.StatusOK)
 			report.Sequence++
+			report.State = runnerauth.LifecycleShuttingDown
+			report.Reason = "update"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], report), http.StatusConflict)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], report), http.StatusConflict)
 			if err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
@@ -216,6 +218,8 @@ func TestPostgresRunnerStartDeadline(t *testing.T) {
 		report := runnerauth.LifecycleReport{ProcessID: fmt.Sprintf("deadline-%d", index), Sequence: 1, State: runnerauth.LifecycleStarting, Version: "1.2.3", BuildRevision: "revision"}
 		path := "/api/v2/organizations/org_startup/runners/" + binding.RunnerID + "/lifecycle"
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], report), http.StatusNoContent)
+		report.Sequence++
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], report), http.StatusConflict)
 		if err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
 			current, err := r.(runnerstore.LifecycleReader).RunnerLifecycle(t.Context(), binding.RunnerID)
 			if err != nil {
@@ -255,13 +259,13 @@ func TestPostgresRunnerStartDeadline(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(history) != 2 || history[0].State != runnerauth.LifecycleStartFailed {
+		if len(history) != 3 || history[0].State != runnerauth.LifecycleStartFailed || history[1].Refusal != runnerstore.LifecycleInvalidTransition {
 			t.Fatalf("deadline history=%+v", history)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	report := runnerauth.LifecycleReport{ProcessID: "deadline-0", Sequence: 2, State: runnerauth.LifecycleReady, Version: "1.2.3", BuildRevision: "revision"}
+	report := runnerauth.LifecycleReport{ProcessID: "deadline-0", Sequence: 3, State: runnerauth.LifecycleReady, Version: "1.2.3", BuildRevision: "revision"}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations/org_startup/runners/"+f.bindings[0].RunnerID+"/lifecycle", f.tokens[0], report), http.StatusNoContent)
 }
