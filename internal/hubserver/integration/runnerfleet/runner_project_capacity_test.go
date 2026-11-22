@@ -64,9 +64,10 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			change(r, 8, map[tracker.ProjectID]int{first.Project.ID: 4})
 			change(second, 8, map[tracker.ProjectID]int{first.Project.ID: 1, other.Project.ID: 2})
 			type claimed struct {
-				claim tracker.NativeClaim
-				lease tracker.NativeLease
-				base  string
+				claim   tracker.NativeClaim
+				lease   tracker.NativeLease
+				base    string
+				refusal string
 			}
 			claim := func(runner hubfixture.Runner, f hubfixture.Native, name string, want int) claimed {
 				t.Helper()
@@ -77,6 +78,10 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 				result := claimed{claim: request, base: f.Base}
 				if want == http.StatusOK {
 					hubfixture.Decode(t, response, &result.lease)
+				} else {
+					var failure struct{ Code string }
+					hubfixture.Decode(t, response, &failure)
+					result.refusal = failure.Code
 				}
 				return result
 			}
@@ -140,6 +145,24 @@ func TestRunnerProjectCapacityClaims(t *testing.T) {
 			if available != 0 {
 				t.Fatalf("runtime ignored remaining project headroom: available=%d", available)
 			}
+			change(r, 5, map[tracker.ProjectID]int{first.Project.ID: 4, other.Project.ID: 2})
+			otherWork := claim(r, other, "other-project-with-runner-headroom", http.StatusOK)
+			stored = read(r)
+			if stored.Used != 5 || stored.HostUsed >= stored.HostCapacity || stored.ProjectUsed[other.Project.ID] != 1 {
+				t.Fatalf("expected full runner with host and project headroom: %+v", stored)
+			}
+			refused := claim(r, other, "other-project-runner-full", http.StatusConflict)
+			if refused.refusal != "runner_capacity" {
+				t.Fatalf("full runner refusal=%q, want runner_capacity", refused.refusal)
+			}
+			runtime = first.Hub.Request(t, http.MethodGet, other.Base+"/work-items/"+string(refused.claim.WorkItemID)+"/runtime", other.Token, nil)
+			hubfixture.RequireStatus(t, runtime, http.StatusOK)
+			var refusalEvidence tracker.NativeRuntimeEvidence
+			hubfixture.Decode(t, runtime, &refusalEvidence)
+			if latest := refusalEvidence.LatestDecision; latest == nil || latest.Data.Decision == nil || latest.Data.Decision.Reason != "runner_capacity" || latest.Data.Decision.RunnerID != r.Binding.RunnerID {
+				t.Fatalf("expected a recorded capacity refusal for this runner: %+v", latest)
+			}
+			release(r, otherWork)
 			change(r, 3, map[tracker.ProjectID]int{first.Project.ID: 3})
 			claim(r, first, "lowered-project", http.StatusConflict)
 			claim(r, other, "lowered-total", http.StatusConflict)

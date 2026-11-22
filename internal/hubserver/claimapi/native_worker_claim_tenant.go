@@ -431,12 +431,12 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 		if identityRefusal != nil {
 			return false, nil
 		}
-		available, projectCapacity, projectConfigured, err := runnerClaimCapacity(identity, scope.Project, now)
-		if err != nil || available <= 0 {
+		runnerCapacity, projectCapacity, projectConfigured, err := runnerClaimCapacity(identity, scope.Project, now)
+		if err != nil || runnerCapacity <= 0 || projectConfigured && projectCapacity <= 0 {
 			return err == nil, err
 		}
 		usage, err := reader.ClaimCapacityUsage(ctx, string(identity.MachineID), identity.RunnerID, scope.Project, now)
-		return err == nil && (usage.Runner >= int64(available) || projectConfigured && usage.Project >= int64(projectCapacity)), err
+		return err == nil && (usage.Runner >= int64(runnerCapacity) || projectConfigured && usage.Project >= int64(projectCapacity)), err
 	case "source_unavailable":
 		item, err := reader.WorkItem(ctx, scope.Project, request.WorkItemID)
 		if err != nil || identityRefusal != nil {
@@ -453,12 +453,9 @@ func runnerClaimCapacity(identity runnerstore.Identity, project tracker.ProjectI
 	if identity.CapacityLimit <= 0 || identity.CapacityConfig == nil {
 		return 0, projectCapacity, projectConfigured, nil
 	}
-	capacity := min(identity.CapacityLimit, identity.ReportedCapacity, int64(identity.CapacityConfig.LocalLimit), int64(identity.CapacityConfig.ClientLimit), int64(identity.CapacityConfig.RuntimeLimit))
-	if projectConfigured {
-		capacity = min(capacity, int64(projectCapacity))
-	}
+	runnerCapacity := min(identity.CapacityLimit, identity.ReportedCapacity, int64(identity.CapacityConfig.LocalLimit), int64(identity.CapacityConfig.ClientLimit), int64(identity.CapacityConfig.RuntimeLimit))
 	availability := runnerauth.Availability{Timezone: identity.Availability.Timezone, Windows: identity.Availability.Windows, WindowSlots: identity.Availability.WindowSlots, HardDeadline: identity.Availability.HardDeadline}
-	available, err := availability.Capacity(now, int(capacity))
+	available, err := availability.Capacity(now, int(runnerCapacity))
 	return available, projectCapacity, projectConfigured, err
 }
 
@@ -1132,7 +1129,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		}
 		var exposure budget.CostExposure
 		if replay == nil {
-			availableCapacity, projectCapacity, projectCapacityConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
+			runnerCapacity, projectCapacity, projectConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
 			if err != nil {
 				return err
 			}
@@ -1146,7 +1143,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			if machine.Capacity <= 0 {
 				return ProviderWait("host_capacity", "Runner host has no available execution slots")
 			}
-			if availableCapacity <= 0 {
+			if runnerCapacity <= 0 || projectConfigured && projectCapacity <= 0 {
 				return ProviderWait("runner_capacity", "Runner has no available execution slots")
 			}
 			exposure = d.MonthlyCostExposure(machine, workspaceItem, runnerAPI)
@@ -1157,7 +1154,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 			if usage.Host >= machine.Capacity {
 				return errClaimHostSlotTaken
 			}
-			if usage.Runner >= int64(availableCapacity) || projectCapacityConfigured && usage.Project >= int64(projectCapacity) {
+			if usage.Runner >= int64(runnerCapacity) || projectConfigured && usage.Project >= int64(projectCapacity) {
 				return ProviderWait("runner_capacity", "Runner has no available execution slots")
 			}
 			if sourceRefusal, err = claimsource.Refusal(ctx, w, scope.Project, item, plan.Source, string(identity.MachineID), identity.RunnerID); !workspaceItem && (err != nil || sourceRefusal != "") {
