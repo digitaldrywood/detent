@@ -17,13 +17,13 @@ type PhaseReceiptExecution interface {
 type PhasePublisher interface {
 	PushItemPhase(context.Context, workspace.Info, workspace.Issue, func(context.Context) error) (string, string, string, error)
 	ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error)
-	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) (string, error)
+	PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, workspace.PhaseSource, func(context.Context) error) (string, error)
 }
 
-func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, carry *tracker.NativePhaseContinuation, phase, input string) error {
+func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend workspace.Backend, info workspace.Info, issue workspace.Issue, carry *tracker.NativePhaseContinuation, phase, input string) (workspace.PhaseSource, error) {
 	publisher, ok := backend.(PhasePublisher)
 	if !ok {
-		return errors.New("workspace cannot publish an item phase")
+		return workspace.PhaseSource{}, errors.New("workspace cannot publish an item phase")
 	}
 	if carry != nil && issue.ExpectedPhaseRemoteHead == "" {
 		for _, receipt := range carry.Receipts {
@@ -32,16 +32,19 @@ func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend 
 			}
 			head, tree, err := publisher.ItemPhaseHead(ctx, info, issue)
 			if err != nil {
-				return err
+				return workspace.PhaseSource{}, err
 			}
 			if receipt.HeadSHA == head && receipt.TreeSHA == tree {
-				return nil
+				return workspace.PhaseSource{}, nil
 			}
 		}
 	}
 	branch, head, tree, err := publisher.PushItemPhase(ctx, info, issue, execution.VerifyPhaseAuthority)
 	if err != nil {
-		return err
+		return workspace.PhaseSource{}, err
 	}
-	return execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input)
+	if err := execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input); err != nil {
+		return workspace.PhaseSource{}, err
+	}
+	return workspace.PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}, nil
 }

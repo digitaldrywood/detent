@@ -79,8 +79,12 @@ func itemPhaseFromPriorLease(phase *tracker.NativePhaseReceipt, leaseID tracker.
 }
 
 func verifyReplacementItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
-	if state == nil || state.HeadSHA != issue.PhaseSource.HeadSHA {
-		return fmt.Errorf("%w: checkout after setup differs from the recorded phase head or is unavailable", ErrNativeRecoveryRequired)
+	head := info.RecoveredPhase.HeadSHA
+	if head == "" && issue.PhaseSource != nil {
+		head = issue.PhaseSource.HeadSHA
+	}
+	if head == "" || state == nil || state.HeadSHA != head {
+		return fmt.Errorf("%w: checkout after setup differs from the verified phase head or is unavailable", ErrNativeRecoveryRequired)
 	}
 	verifier, ok := backend.(interface {
 		VerifyItemPhaseCheckout(context.Context, workspace.Info, workspace.Issue) error
@@ -98,7 +102,11 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if !req.phaseReceipts {
 		return nil
 	}
-	return failedStep("publication", runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input))
+	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
+		*req.publishedPhaseSource = source
+	}
+	return failedStep("publication", err)
 }
 
 func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {

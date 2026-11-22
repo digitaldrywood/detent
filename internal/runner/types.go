@@ -685,6 +685,7 @@ type RunRequest struct {
 	retainedReview            *retainedReviewWorkspace
 	phaseReceipts             bool
 	phaseContinuation         *tracker.NativePhaseContinuation
+	publishedPhaseSource      *workspace.PhaseSource
 }
 
 type NativeReviewContinuation struct {

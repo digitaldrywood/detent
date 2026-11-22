@@ -92,7 +92,7 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			if name == "missing project" {
 				issue.PublicationRepository = ""
 			}
-			err = PublishPhase(t.Context(), execution, backend, info, issue, nil, "implement", "")
+			_, err = PublishPhase(t.Context(), execution, backend, info, issue, nil, "implement", "")
 			remoteHead := git("-C", origin, "for-each-ref", "--format=%(objectname)", ref)
 			otherHead := git("-C", other, "for-each-ref", "--format=%(objectname)", ref)
 			if name != "normal" && name != "isolated configuration" {
