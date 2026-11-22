@@ -126,7 +126,7 @@ func VerifyPublicationTree(ctx context.Context, path string, read func(...string
 		} else if err != nil {
 			return err
 		}
-		if err := gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string) error) error {
+		if err := gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
 			return VerifyPublicationTree(ctx, submodule, read)
 		}); err != nil {
 			return fmt.Errorf("verify publication submodule: %w", err)

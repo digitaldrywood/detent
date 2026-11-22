@@ -1849,24 +1849,34 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	reviewRecovery, turnRecovery, repairResume := nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	publicationRecovery := req.publicationRecovery(mode)
 	var phaseSource *tracker.NativePhaseReceipt
+	var phaseChangeHead string
 	if req.NativeLandingRework != nil {
 		reviewRecovery, turnRecovery, repairResume = nil, nil, false
 	} else if continuation := req.phaseContinuation; mode == RunModeImplement && continuation != nil && continuation.NextPhase == RunModePlan {
 		reviewRecovery, turnRecovery, repairResume = nil, nil, false
 	}
-	if req.NativeLandingRework == nil && mode == RunModeImplement && req.phaseContinuation != nil && reviewRecovery == nil && !req.operatorFreshRetry() && !publicationRecovery {
-		phaseSource = req.phaseContinuation.LastPushed
-		if phaseSource != nil {
-			recovery := req.Execution.Recovery()
+	if continuation := req.phaseContinuation; mode == RunModeImplement && req.NativeLandingRework == nil && continuation != nil && !publicationRecovery {
+		recovery := req.Execution.Recovery()
+		pushed := continuation.LastPushed
+		if pushed != nil {
+			replacementPhase := pushed.LeaseID != "" && recovery.Lease.ID != "" && pushed.LeaseID != recovery.Lease.ID
+			changeDiffers := recovery.Change != nil && recovery.Change.HeadSHA != pushed.HeadSHA
 			previous := recovery.SourceAttempt()
 			explicitRework := runworkspace.RunRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
-			if explicitRework && !tracker.IsPlanPhase(phaseSource.Phase) || recovery.SourceVersionID != "" || recovery.Change != nil && recovery.Change.HeadSHA != phaseSource.HeadSHA {
-				phaseSource = nil
+			switch {
+			case replacementPhase && (reviewRecovery == nil || changeDiffers):
+				phaseSource = pushed
+				if changeDiffers {
+					phaseChangeHead = recovery.Change.HeadSHA
+				}
+				reviewRecovery = nil
+			case reviewRecovery == nil && !req.operatorFreshRetry() && !changeDiffers && recovery.SourceVersionID == "" && (!explicitRework || tracker.IsPlanPhase(pushed.Phase)):
+				phaseSource = pushed
 			}
 		}
 		if phaseSource != nil {
 			turnRecovery, repairResume = nil, false
-			if !tracker.IsPlanPhase(phaseSource.Phase) && req.phaseContinuation.NextPhase != RunModeImplement && req.phaseContinuation.NextPhase != RunModePlan {
+			if !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan {
 				turnRecovery = nativePhaseTurnResumeAttempt(req.Execution.Recovery(), *phaseSource)
 			}
 			req.ResumeState = store.AgentResumeState{}
@@ -1941,6 +1951,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		workspaceIssue.PullRequestHeadSHA = workspaceIssue.Source.Version.HeadSHA
 	}
 	workspaceIssue.PhaseSource = phaseSource
+	workspaceIssue.PhaseChangeHeadSHA = phaseChangeHead
+	workspaceIssue.VerifyPhaseBranch = req.phaseReceipts && mode == RunModeImplement && req.NativeLandingRework == nil &&
+		!publicationRecovery && reviewRecovery == nil && (phaseSource != nil || req.phaseContinuation.LastPushed == nil)
 	if phaseSource == nil {
 		restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
 	}
@@ -2037,7 +2050,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, errors.Join(sourceErr, err)
 		}
 		sourceRecovery := workspaceIssue.NativeRework || workspaceIssue.Source != nil && workspaceIssue.Source.Transferred
-		if errors.Is(err, workspace.ErrLocalCheckpointChanged) {
+		if errors.Is(err, workspace.ErrLocalCheckpointChanged) || errors.Is(err, workspace.ErrItemPhaseSource) {
 			return RunResult{}, fmt.Errorf("%w: %w", ErrNativeRecoveryRequired, err)
 		}
 		if sourceRecovery && errors.Is(err, workspace.ErrMergeResolutionInvalid) {

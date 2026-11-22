@@ -256,6 +256,8 @@ type Issue struct {
 	RetainedLanding         bool
 	finalizationBranch      string
 	PhaseSource             *tracker.NativePhaseReceipt
+	PhaseChangeHeadSHA      string
+	VerifyPhaseBranch       bool
 	PinStartHead            bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
@@ -681,6 +683,11 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		}
 		return info, nil
 	}
+	if issue.VerifyPhaseBranch {
+		if err := l.verifyItemPhaseBranch(ctx, info, issue); err != nil {
+			return Info{}, err
+		}
+	}
 	localHead, err := l.verifiedLocalCheckpointHead(ctx, info, issue)
 	if err != nil {
 		return Info{}, err
@@ -790,8 +797,10 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			head = localHead
 		}
 		if receipt := issue.PhaseSource; receipt != nil {
-			if err := l.fetchItemPhase(ctx, info, issue, *receipt); err != nil {
-				return Info{}, err
+			if !issue.VerifyPhaseBranch {
+				if err := l.fetchItemPhase(ctx, info, issue, *receipt); err != nil {
+					return Info{}, err
+				}
 			}
 			head = receipt.HeadSHA
 		}

@@ -3,9 +3,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -157,5 +159,57 @@ func TestSourceTurnBudget(t *testing.T) {
 				t.Fatalf("exhausted budget started another provider call: %v calls=%d", err, backend.calls)
 			}
 		})
+	}
+}
+
+type phaseCheckoutExecution struct {
+	*testExecution
+	PhaseReceiptExecution
+	continuation tracker.NativePhaseContinuation
+}
+
+func (e *phaseCheckoutExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
+	return &e.continuation, nil
+}
+
+type phaseCheckoutWorkspace struct {
+	*fakeWorkspaceBackend
+	itemPhaseWorkspace
+	issue workspace.Issue
+	stop  error
+}
+
+func (w *phaseCheckoutWorkspace) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
+	w.issue = issue
+	return workspace.Info{}, w.stop
+}
+
+func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	change := &tracker.NativeChangeReference{VersionID: "older-version", HeadSHA: strings.Repeat("b", 40)}
+	receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
+	execution := &phaseCheckoutExecution{
+		testExecution: &testExecution{recovery: tracker.NativeRecovery{
+			Lease: tracker.NativeLease{ID: "replacement-lease"}, Change: change, SourceVersionID: change.VersionID,
+		}},
+		continuation: tracker.NativePhaseContinuation{LastPushed: &receipt, NextPhase: "project_gate"},
+	}
+	backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
+	r, err := NewRunner(Dependencies{
+		Workflow:  config.Workflow{Config: config.Default(), Prompt: "Complete the issue"},
+		Workspace: backend, AgentBackend: &releaseDeliveryAgent{}, ProcessSource: emptyProcessSource, Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"}})
+	if !errors.Is(err, backend.stop) {
+		t.Fatalf("run did not reach checkout: %v", err)
+	}
+	if backend.issue.PhaseSource == nil || backend.issue.PhaseSource.HeadSHA != head {
+		t.Fatalf("checkout phase = %+v, want %s", backend.issue.PhaseSource, head)
+	}
+	if !backend.issue.VerifyPhaseBranch || backend.issue.PhaseChangeHeadSHA != change.HeadSHA {
+		t.Fatalf("checkout must verify the branch and the current Change ancestry: %+v", backend.issue)
 	}
 }
