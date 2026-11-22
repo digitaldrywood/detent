@@ -976,30 +976,23 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 }
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
-	if e.diffSource == nil && e.lastDiff == nil {
+	if e.diffSource == nil {
+		if e.lastDiff != nil && (e.worktreeHead == "" || e.worktreeHead == e.lastDiff.HeadSHA) {
+			return nil
+		}
 		return errors.New("the run's final attempt diff source is unavailable")
 	}
-	finalized := e.worktreeState == "clean" || e.worktreeState == "unpushed"
-	diff := e.lastDiff
-	available := false
-	if e.diffSource != nil {
-		if request, ok := e.diffSource(ctx); ok {
-			diff = &request
-			available = true
-		} else if request.HeadSHA != "" {
+	request, ok := e.diffSource(ctx)
+	if !ok {
+		if request.HeadSHA != "" {
 			e.lastDiff = nil
 			return errors.New("worktree HEAD moved after the attempt diff was captured")
 		}
-	}
-	if diff == nil {
 		return errors.New("the run's final attempt diff is unavailable")
 	}
-	if !available && finalized && e.worktreeHead != "" && diff.HeadSHA != e.worktreeHead {
-		return errors.New("the attempt diff does not match the final checkpoint head")
-	}
-	e.lastDiff = diff
-	if finalized && e.diffSource != nil {
-		return e.retainChangeSource(ctx, *diff)
+	e.lastDiff = &request
+	if e.worktreeState == "clean" || e.worktreeState == "unpushed" {
+		return e.retainChangeSource(ctx, *e.lastDiff)
 	}
 	return nil
 }

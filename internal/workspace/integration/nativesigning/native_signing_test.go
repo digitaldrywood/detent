@@ -247,15 +247,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				if err != nil || prepared.Status != workspace.MergePrepareStatusConflict {
 					t.Fatalf("prepare paused rework: %+v, %v", prepared, err)
 				}
-				checkpoint, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
-				if err != nil || !changed {
-					t.Fatalf("paused rework checkpoint: changed=%v error=%v", changed, err)
-				}
-				identity := "Native Author <native@example.com>"
-				if test.noIdentity {
-					identity = "Enrolled runner <machine_fixture@runners.detent.invalid>"
-				}
-				assertRunnerCommitPolicy(t, info.Path, checkpoint.CommitSHA, identity, test.signed)
+
 				gitfixture.WriteFile(t, info.Path, "README.md", "resolved conflict\n")
 				gitfixture.Git(t, info.Path, "add", "README.md")
 			}
@@ -331,14 +323,7 @@ func TestLocalGitNativeWorkDisablesTrackedHooks(t *testing.T) {
 				gitfixture.Git(t, info.Path, "add", "checkpoint.md")
 				intendedTree = strings.TrimSpace(gitfixture.Git(t, info.Path, "write-tree"))
 			}
-			ref, changed, err := owner.PushCheckpointRef(t.Context(), info, issue, workspace.CheckpointRef{}, owned)
-			if err != nil || !changed {
-				t.Fatalf("checkpoint ref: changed=%v error=%v", changed, err)
-			}
-			assertRunnerCommitPolicy(t, info.Path, ref.CommitSHA, expected, test.signed)
-			if test.signerLost && (ref.TreeSHA != intendedTree || ref.HeadSHA != head || strings.TrimSpace(gitfixture.Git(t, info.Path, "show", "-s", "--format=%P", ref.CommitSHA)) != head || owner.CommitReport().Signing != "unsigned" || len(owner.Problems()) == 0) {
-				t.Fatal("signer loss changed checkpoint identity or omitted signing problem")
-			}
+
 			plan, err := owner.PrepareCheckpoint(t.Context(), info, issue)
 			if err != nil {
 				t.Fatal(err)

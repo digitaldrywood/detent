@@ -24,6 +24,7 @@ func TestMain(m *testing.M) {
 type phaseExecution struct {
 	branch, head, tree string
 	receipts           int
+	receiptErr         error
 }
 
 func (*phaseExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
@@ -33,13 +34,16 @@ func (*phaseExecution) PhaseReceipts(context.Context, string) (*tracker.NativePh
 func (*phaseExecution) VerifyPhaseAuthority(context.Context) error { return nil }
 
 func (e *phaseExecution) RecordPhaseReceipt(_ context.Context, _, branch, head, tree, _ string) error {
+	if e.receiptErr != nil {
+		return e.receiptErr
+	}
 	e.branch, e.head, e.tree = branch, head, tree
 	e.receipts++
 	return nil
 }
 
 func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
-	for _, name := range []string{"normal", "isolated configuration", "missing project", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
+	for _, name := range []string{"normal", "isolated configuration", "lease lost after push", "missing project", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "source")
@@ -89,12 +93,52 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			info := workspace.Info{Path: checkout, Key: "item", Branch: branch, PublicationBranch: branch}
 			execution := &phaseExecution{}
 			issue := workspace.Issue{Identifier: "ITEM", PublicationRepository: origin}
+			base := git("-C", source, "rev-parse", "HEAD")
+			if name == "lease lost after push" {
+				git("-C", source, "push", "origin", "HEAD:refs/heads/main")
+				if err := os.WriteFile(filepath.Join(checkout, "orphaned.txt"), []byte("unfinished phase\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git("-C", checkout, "add", "orphaned.txt")
+				git("-C", checkout, "commit", "-m", "Publish before recording receipt")
+				execution.receiptErr = errors.New("lease lost recording receipt")
+			}
 			if name == "missing project" {
 				issue.PublicationRepository = ""
 			}
 			_, err = PublishPhase(t.Context(), execution, backend, info, issue, nil, "implement", "")
 			remoteHead := git("-C", origin, "for-each-ref", "--format=%(objectname)", ref)
 			otherHead := git("-C", other, "for-each-ref", "--format=%(objectname)", ref)
+			if name == "lease lost after push" {
+				orphan := git("-C", checkout, "rev-parse", "HEAD")
+				if !errors.Is(err, execution.receiptErr) || execution.receipts != 0 || remoteHead != orphan {
+					t.Fatalf("interrupted publication: head=%s receipts=%d error=%v", remoteHead, execution.receipts, err)
+				}
+				replacementSource := filepath.Join(dir, "replacement")
+				git("clone", "--branch", "main", origin, replacementSource)
+				replacement, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+					Root: filepath.Join(dir, "replacement-workspaces"), SourceRoot: replacementSource, AutoBranch: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue.BaseRef, issue.BranchName, issue.VerifyPhaseBranch = base, branch, true
+				restarted, err := replacement.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if head := git("-C", restarted.Path, "rev-parse", "HEAD"); head != base {
+					t.Fatalf("replacement starts at %s, want %s", head, base)
+				}
+				git("-C", restarted.Path, "commit", "--allow-empty", "-m", "Complete the restarted phase")
+				replacementExecution := &phaseExecution{}
+				receipt, err := PublishPhase(t.Context(), replacementExecution, replacement, restarted, issue, nil, "implement", "")
+				got := git("-C", origin, "rev-parse", ref)
+				if err != nil || replacementExecution.receipts != 1 || receipt.HeadSHA != got || got == orphan {
+					t.Fatalf("restarted publication: receipt=%+v remote=%s error=%v", receipt, got, err)
+				}
+				return
+			}
 			if name != "normal" && name != "isolated configuration" {
 				var attributed interface {
 					FailureAttribution() tracker.FailureAttribution

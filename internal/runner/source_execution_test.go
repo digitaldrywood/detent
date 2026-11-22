@@ -221,32 +221,46 @@ func (w *phaseCheckoutWorkspace) Create(_ context.Context, issue workspace.Issue
 }
 
 func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T) {
-	head := strings.Repeat("a", 40)
-	change := &tracker.NativeChangeReference{VersionID: "older-version", HeadSHA: strings.Repeat("b", 40)}
-	receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
-	execution := &phaseCheckoutExecution{
-		testExecution: &testExecution{recovery: tracker.NativeRecovery{
-			Lease: tracker.NativeLease{ID: "replacement-lease"}, Change: change, SourceVersionID: change.VersionID,
-		}},
-		continuation: tracker.NativePhaseContinuation{LastPushed: &receipt, NextPhase: "project_gate"},
-	}
-	backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
-	r, err := NewRunner(Dependencies{
-		Workflow:  config.Workflow{Config: config.Default(), Prompt: "Complete the issue"},
-		Workspace: backend, AgentBackend: &releaseDeliveryAgent{}, ProcessSource: emptyProcessSource, Logger: slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"}})
-	if !errors.Is(err, backend.stop) {
-		t.Fatalf("run did not reach checkout: %v", err)
-	}
-	if backend.issue.PhaseSource == nil || backend.issue.PhaseSource.HeadSHA != head {
-		t.Fatalf("checkout phase = %+v, want %s", backend.issue.PhaseSource, head)
-	}
-	if !backend.issue.VerifyPhaseBranch || backend.issue.PhaseChangeHeadSHA != change.HeadSHA {
-		t.Fatalf("checkout must verify the branch and the current Change ancestry: %+v", backend.issue)
+	for _, priorPhase := range []bool{false, true} {
+		t.Run(map[bool]string{false: "ignore uncommitted progress", true: "resume pushed phase"}[priorPhase], func(t *testing.T) {
+			head := strings.Repeat("a", 40)
+			change := &tracker.NativeChangeReference{VersionID: "older-version", HeadSHA: strings.Repeat("b", 40)}
+			execution := &phaseCheckoutExecution{
+				testExecution: &testExecution{recovery: tracker.NativeRecovery{
+					Lease:  tracker.NativeLease{ID: "replacement-lease", MachineID: "same-runner"},
+					Change: change, SourceVersionID: change.VersionID,
+					Attempts: []tracker.NativeAttempt{{
+						NativeRunData: tracker.NativeRunData{AttemptID: "attempt_11111111111111111111111111111111", LeaseID: "old-lease", MachineID: "same-runner"},
+						Checkpoint:    &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: change.HeadSHA},
+					}},
+				}},
+			}
+			if priorPhase {
+				execution.continuation.LastPushed = &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
+				execution.continuation.NextPhase = "project_gate"
+			}
+			backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
+			r, err := NewRunner(Dependencies{
+				Workflow:  config.Workflow{Config: config.Default(), Prompt: "Complete the issue"},
+				Workspace: backend, AgentBackend: &releaseDeliveryAgent{}, ProcessSource: emptyProcessSource, Logger: slog.New(slog.DiscardHandler),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"},
+				AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_22222222222222222222222222222222"},
+			})
+			if !errors.Is(err, backend.stop) {
+				t.Fatalf("run did not reach checkout: %v", err)
+			}
+			issue := backend.issue
+			if issue.PhaseSource != execution.continuation.LastPushed || !issue.VerifyPhaseBranch || !issue.FreshCheckout {
+				t.Fatalf("replacement checkout did not select its phase or base: %+v", issue)
+			}
+			if issue.Checkpoint != nil || issue.RetainedCheckpoint != nil || issue.LocalCheckpoint != nil || issue.Source != nil || issue.RecoveryAttemptWorkspace.Key() != "" {
+				t.Fatalf("replacement checkout selected an older recovery source: %+v", issue)
+			}
+		})
 	}
 }
 

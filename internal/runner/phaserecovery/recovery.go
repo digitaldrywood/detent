@@ -96,7 +96,7 @@ func ReviewMatches(recovery tracker.NativeRecovery, local *workspace.RecoverySta
 		return false
 	}
 	version := current.Version
-	if *recovery.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) || version.Source == nil || version.Policy.ID != version.PolicyID {
+	if *recovery.Change != (tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) || version.Policy.ID != version.PolicyID {
 		return false
 	}
 	for _, published := range recovery.ChangeDetail.Versions {
@@ -107,7 +107,7 @@ func ReviewMatches(recovery tracker.NativeRecovery, local *workspace.RecoverySta
 			if phase := current.PushedPhase; phase != nil {
 				return phase.HeadSHA == version.HeadSHA && phase.TreeSHA == local.DiffStat.TreeSHA && phase.PolicyID == version.PolicyID && local.DiffStat.IsEmpty()
 			}
-			return version.Source.Validate(version.BaseSHA, version.HeadSHA, current.Bundle) == nil
+			return version.Source != nil && version.Source.Validate(version.BaseSHA, version.HeadSHA, current.Bundle) == nil
 		}
 	}
 	return false

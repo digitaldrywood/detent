@@ -100,22 +100,7 @@ func (l *LocalGit) VerifyReworkRecovery(ctx context.Context, info Info, issue Is
 	if err != nil || !paused {
 		return false, err
 	}
-	if issue.Checkpoint != nil {
-		checkpoint := *issue.Checkpoint
-		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
-			return false, err
-		}
-		if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
-			return false, err
-		}
-		if checkpoint.Transaction != nil {
-			current, err := l.RecoveryState(ctx, info, issue)
-			if err != nil {
-				return false, err
-			}
-			return current.HeadSHA == observed.HeadSHA && current.WorkspaceFingerprint == observed.WorkspaceFingerprint && checkpointMatches(ctx, info.Path, &checkpoint), nil
-		}
-	}
+
 	if sourceHead == "" || sourceDigest != workspaceRecoveryFingerprint(sourceHead, "") {
 		return false, nil
 	}
@@ -334,7 +319,7 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
 			return MergePrepareResult{}, err
 		}
-		if checkpoint.Transaction != nil || !checkpointMatches(ctx, info.Path, &checkpoint) {
+		if !checkpointMatches(ctx, info.Path, &checkpoint) {
 			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
 		}
 		staged, err := runGitAt(ctx, info.Path, "diff", "--cached", "--raw", "HEAD")

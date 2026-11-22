@@ -372,11 +372,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				execution.recovery.Attempts[0].Identity.Model = "previous-model"
 			}
 			if test.gitRef {
-				ref, _, err := gitWorkspace.PushCheckpointRef(ctx, info, workspaceIssue, workspace.CheckpointRef{}, execution.Validate)
-				if err != nil {
-					t.Fatal(err)
-				}
-				checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+				resume := checkpoint.Resume
+				checkpoint = publishReworkCheckpoint(t, gitWorkspace, info, workspaceIssue)
+				checkpoint.Resume = resume
 			}
 			if test.changedHead {
 				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "divergent head")
@@ -2292,69 +2290,6 @@ func TestArtifactsFinalizeBeforeWorkspaceCleanup(t *testing.T) {
 	}
 }
 
-type wipExecutionWorkspace struct {
-	retainedExecutionWorkspace
-	published  bool
-	pushes     int
-	publishErr error
-}
-
-func (w *wipExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
-	if err := validate(ctx); err != nil {
-		return previous, false, err
-	}
-	w.pushes++
-	w.published = true
-	if w.publishErr != nil {
-		return previous, false, w.publishErr
-	}
-	return workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
-}
-
-func TestStageEndPushesCheckpointRef(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name       string
-		failed     bool
-		restored   *workspace.CheckpointRef
-		wantCommit string
-	}{
-		{name: "pushed", wantCommit: strings.Repeat("c", 40)},
-		{name: "push failure keeps the job and records local state", failed: true},
-		{name: "push failure keeps the newest recorded checkpoint", failed: true, restored: &workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("d", 40)}, wantCommit: strings.Repeat("b", 40)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
-			if test.failed {
-				backend.publishErr = errors.New("push unavailable")
-			}
-			execution := &availabilityTestExecution{deadline: time.Now().Add(-time.Second)}
-			ctx, cancel := context.WithCancelCause(t.Context())
-			cancel(context.Canceled)
-			defer cancel(context.Canceled)
-			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second, finalizationContext: context.WithTimeoutCause}
-			req := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}
-			req.checkpointRefs = newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{Checkpoint: test.restored}, nil)
-			err := r.afterExecution(ctx, req, backend, workspace.Info{}, workspace.Issue{}, AgentResume{}, true)
-			wantPushes := 1
-			if test.failed {
-				wantPushes = checkpointRefFinalAttempts
-			}
-			if backend.pushes != wantPushes || backend.afterRun || errors.Is(err, backend.publishErr) && backend.publishErr != nil {
-				t.Fatalf("pushes=%d cleaned=%t err=%v", backend.pushes, backend.afterRun, err)
-			}
-			checkpoint := execution.checkpoint
-			if checkpoint == nil || checkpoint.CommitSHA != test.wantCommit || checkpoint.GitRef() != (test.wantCommit != "") {
-				t.Fatalf("final checkpoint = %#v", checkpoint)
-			}
-			if checkpoint.GitRef() && checkpoint.Resume == "manual_recovery" {
-				t.Fatal("a pushed checkpoint still demands manual recovery")
-			}
-		})
-	}
-}
-
 type availabilityTestExecution struct {
 	testExecution
 	deadline time.Time
@@ -2373,8 +2308,8 @@ func (e *availabilityTestExecution) Checkpoint(ctx context.Context, checkpoint t
 
 type deadlineRunExecution struct {
 	availabilityTestExecution
-	cancel    context.CancelCauseFunc
-	published *bool
+	cancel   context.CancelCauseFunc
+	retained *bool
 }
 
 func (e *deadlineRunExecution) Guard(ctx context.Context) (context.Context, func(), error) {
@@ -2389,8 +2324,8 @@ func (e *deadlineRunExecution) Finish(ctx context.Context, outcome string) error
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if !*e.published {
-		return errors.New("finish preceded checkpoint ref push")
+	if !*e.retained {
+		return errors.New("finish preceded workspace preservation")
 	}
 	e.finish = outcome
 	return nil
@@ -2408,10 +2343,10 @@ func (b *availabilityStoppingBackend) RunTurn(ctx context.Context, _ AgentTurnRe
 	return AgentTurnResult{}, errors.Join(ctx.Err(), b.err)
 }
 
-func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) {
+func TestRunnerAvailabilityInterruptionFinishesAfterWorkspacePreservation(t *testing.T) {
 	t.Parallel()
-	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
-	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, retained: &backend.retained}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
 	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
@@ -2423,8 +2358,8 @@ func TestRunnerAvailabilityInterruptionFinishesAfterCheckpointRef(t *testing.T) 
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("run error = %v", err)
 	}
-	if execution.finish != "interrupted" || !backend.published || !backend.retained || backend.afterRun {
-		t.Fatalf("finish=%s published=%t retained=%t cleaned=%t", execution.finish, backend.published, backend.retained, backend.afterRun)
+	if execution.finish != "interrupted" || !backend.retained || backend.afterRun {
+		t.Fatalf("finish=%s retained=%t cleaned=%t", execution.finish, backend.retained, backend.afterRun)
 	}
 	if !held || !released {
 		t.Fatalf("sleep held=%t released=%t", held, released)
@@ -2463,25 +2398,25 @@ func TestAvailabilityStopPreservesRetryBudget(t *testing.T) {
 }
 
 func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
-	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}}
-	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.retained}
+	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, retained: &backend.retained}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }, err: ErrWorkerProcessReap}
 	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-	if !errors.Is(err, ErrWorkerProcessReap) || !backend.published || !backend.retained || backend.afterRun {
-		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	if !errors.Is(err, ErrWorkerProcessReap) || !backend.retained || backend.afterRun {
+		t.Fatalf("error=%v retained=%t cleaned=%t", err, backend.retained, backend.afterRun)
 	}
-	if checkpoint := execution.checkpoint; checkpoint == nil || !checkpoint.GitRef() || execution.finish != "interrupted" {
+	if checkpoint := execution.checkpoint; checkpoint == nil || checkpoint.Storage != "local_only" || execution.finish != "interrupted" {
 		t.Fatalf("checkpoint=%+v finish=%q", checkpoint, execution.finish)
 	}
 }
 
-func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
-	backend := &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}, publishErr: errors.New("push unavailable")}
-	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, published: &backend.published}
+func TestAvailabilityStopFinalizesLocalSession(t *testing.T) {
+	backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Key: "native", Branch: "native"}, recoveryStates: []workspace.RecoveryState{{TrackedPaths: []string{"work.go"}}}}}
+	execution := &deadlineRunExecution{availabilityTestExecution: availabilityTestExecution{deadline: time.Now().Add(-time.Second)}, retained: &backend.retained}
 	agent := &availabilityStoppingBackend{stop: func() { execution.cancel(context.Canceled) }}
 	sessionStore := &fakeSessionStore{sessionID: 3169}
 	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: config.Config{}, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent, Store: sessionStore})
@@ -2489,7 +2424,7 @@ func TestAvailabilityStopFinalizesLocalSessionAfterPushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-	if errors.Is(err, backend.publishErr) || backend.pushes == 0 || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
+	if !errors.Is(err, context.Canceled) || sessionStore.finishCalls != 1 || sessionStore.usageCalls != 1 || execution.finish != "interrupted" {
 		t.Fatalf("error=%v session finishes=%d usage=%d outcome=%s", err, sessionStore.finishCalls, sessionStore.usageCalls, execution.finish)
 	}
 }

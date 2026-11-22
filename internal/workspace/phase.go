@@ -20,8 +20,19 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", err
 	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	expected := cmp.Or(issue.ExpectedPhaseRemoteHead, info.RecoveredPhase.HeadSHA)
-	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
+	expected := cmp.Or(issue.ExpectedPhaseRemoteHead, info.PhaseRemoteHead)
+	var remoteHead, replayFrom *string
+	if issue.VerifyPhaseBranch || expected != "" {
+		remoteHead = &expected
+	}
+	if info.ReplayPhase && expected == info.PhaseRemoteHead {
+		base := info.StartHeadSHA
+		if issue.PhaseSource != nil {
+			base = issue.PhaseSource.HeadSHA
+		}
+		replayFrom = &base
+	}
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, remoteHead, replayFrom, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
@@ -36,7 +47,11 @@ func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issu
 	if err != nil {
 		return "", err
 	}
-	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
+	expected := previous.HeadSHA
+	if info.ReplayPhase && issue.PhaseSource != nil && previous.HeadSHA == issue.PhaseSource.HeadSHA {
+		expected = info.PhaseRemoteHead
+	}
+	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, expected, func(ctx context.Context) error {
 		return l.fetchItemPhase(ctx, info, issue, previous)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
 		return l.runCommit(ctx, info.Path, nil, args...)
@@ -76,64 +91,62 @@ func itemPhaseCheckoutSource(info Info, receipt tracker.NativePhaseReceipt) (str
 	return receipt.HeadSHA, receipt.TreeSHA
 }
 
-func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info Info, issue Issue) (PhaseSource, error) {
+func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
 	branch := info.PublishBranch()
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
 	if err := verifyPublicationRemote(ctx, l.sourceRoot, defaultGitRemote, repository); err != nil {
-		return PhaseSource{}, phasePublicationDestinationError{err}
+		return phasePublicationDestinationError{err}
 	}
 	head, exists, err := gitexec.PublicationBranchHead(ctx, repository, branch)
 	if err != nil {
-		return PhaseSource{}, fmt.Errorf("read published item branch: %w", err)
+		return fmt.Errorf("read published item branch: %w", err)
 	}
 	receipt := issue.PhaseSource
 	if receipt == nil {
-		if !exists || issue.Source != nil && issue.Source.Version.HeadSHA == head {
-			return PhaseSource{}, nil
-		}
-		return PhaseSource{}, fmt.Errorf("%w: published item head has no matching phase receipt or Change source", ErrItemPhaseSource)
+		info.PhaseRemoteHead, info.ReplayPhase = head, exists
+		return nil
 	}
 	if !exists || receipt.Branch != branch || !gitexec.ValidHead(head) || !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA) {
-		return PhaseSource{}, fmt.Errorf("%w: published item branch differs from its latest phase receipt", ErrItemPhaseSource)
+		return fmt.Errorf("%w: published item branch differs from its latest phase receipt", ErrItemPhaseSource)
 	}
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
-		return PhaseSource{}, err
+		return err
 	}
 	defer release()
 	ref := "refs/heads/" + branch
 	if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-recurse-submodules", defaultGitRemote, ref)...); err != nil {
-		return PhaseSource{}, fmt.Errorf("fetch published item branch: %w", withCommandOutput(err))
+		return fmt.Errorf("fetch published item branch: %w", withCommandOutput(err))
 	}
 	fetched, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	if err != nil {
-		return PhaseSource{}, err
+		return err
 	}
 	if strings.TrimSpace(fetched) != head {
-		return PhaseSource{}, fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
+		return fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
 	}
 	if head != receipt.HeadSHA {
 		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, receipt.HeadSHA, head); err != nil {
-			return PhaseSource{}, fmt.Errorf("%w: published item branch does not descend from its latest phase receipt: %w", ErrItemPhaseSource, err)
-		}
-	}
-	if changeHead := issue.PhaseChangeHeadSHA; changeHead != "" {
-		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, changeHead, head); err != nil {
-			return PhaseSource{}, fmt.Errorf("%w: published item phase does not descend from the current Change head: %w", ErrItemPhaseSource, err)
+			return fmt.Errorf("%w: published item branch does not descend from its latest phase receipt: %w", ErrItemPhaseSource, err)
 		}
 	}
 	tree, err := l.itemPhaseTree(ctx, receipt.HeadSHA)
 	if err != nil || tree != receipt.TreeSHA {
-		return PhaseSource{}, errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
+		return errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
 	}
-	if head == receipt.HeadSHA {
-		return PhaseSource{}, nil
+	info.PhaseRemoteHead = head
+	if head != receipt.HeadSHA {
+		tree, err = l.itemPhaseTree(ctx, head)
+		if err != nil {
+			return err
+		}
+		if tree == receipt.TreeSHA {
+			info.RecoveredPhase = PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
+		} else {
+			info.ReplayPhase = true
+		}
 	}
-	tree, err = l.itemPhaseTree(ctx, head)
-	if err != nil {
-		return PhaseSource{}, err
-	}
-	return PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}, nil
+	return nil
 }
 
 func (l *LocalGit) itemPhaseTree(ctx context.Context, head string) (string, error) {

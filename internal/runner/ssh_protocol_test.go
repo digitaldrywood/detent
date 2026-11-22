@@ -280,12 +280,12 @@ func TestSSHCheckpointDeadlineReachesSource(t *testing.T) {
 				if err := execution.Validate(ctx); err != nil {
 					t.Errorf("checkpoint validation: %v", err)
 				}
-				if err := recordCheckpointRef(ctx, nil, execution, tracker.NativeCheckpoint{}); !errors.Is(err, context.DeadlineExceeded) {
+				if err := recordExecutionCheckpoint(ctx, execution, tracker.NativeCheckpoint{}); !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("checkpoint error = %v, want deadline exceeded", err)
 				} else {
 					wireErr := NewSSHRunResponse(RunResult{}, err).Err()
 					var cause *CancellationCause
-					if !errors.Is(wireErr, context.DeadlineExceeded) || !errors.As(wireErr, &cause) || cause.Source != "runner.checkpoint_recovery" {
+					if !errors.Is(wireErr, context.DeadlineExceeded) || !errors.As(wireErr, &cause) || cause.Source != "runner.checkpoint" {
 						t.Fatalf("worker response lost checkpoint cancellation: %v", wireErr)
 					}
 				}
