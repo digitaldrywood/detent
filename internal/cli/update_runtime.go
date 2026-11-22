@@ -2,24 +2,20 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/project"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -261,7 +257,7 @@ func runtimeUpdateDrainReservation(ctx context.Context, registry *project.Regist
 		func(waitCtx context.Context) bool { return runtimeUpdateIdle(waitCtx, registry) },
 		runtimeUpdateDrainTimeout(registry),
 		time.Now,
-		waitForRuntimeUpdateDrain,
+		remoterunner.WaitForUpdateDrain,
 	)
 	if err != nil {
 		release()
@@ -290,7 +286,7 @@ func waitForRuntimeUpdateIdle(
 		now = time.Now
 	}
 	if wait == nil {
-		wait = waitForRuntimeUpdateDrain
+		wait = remoterunner.WaitForUpdateDrain
 	}
 	deadline := now().Add(timeout)
 	for !idle(ctx) {
@@ -308,52 +304,8 @@ func waitForRuntimeUpdateIdle(
 	return nil
 }
 
-func waitForRuntimeUpdateDrain(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 func runtimeUpdateDrainTimeout(registry *project.Registry) time.Duration {
-	defaultTimeout := max(
-		time.Duration(workflowconfig.DefaultMaxSessionDurationMS)*time.Millisecond,
-		time.Duration(workflowconfig.DefaultMergeWorkerMaxDurationMS)*time.Millisecond,
-	)
-	if registry == nil {
-		return defaultTimeout
-	}
-	timeout := time.Duration(0)
-	for _, trackedProject := range registry.List() {
-		agent := trackedProject.Workflow().Config.Agent
-		for _, level := range trackedProject.Workflow().Config.Agents.ModelSelection.Levels {
-			if level.MaxSessionDurationMS != nil {
-				timeout = max(timeout, time.Duration(*level.MaxSessionDurationMS)*time.Millisecond)
-			}
-		}
-		ceilings := []struct {
-			configured int
-			fallback   int
-		}{
-			{configured: agent.MaxSessionDurationMS, fallback: workflowconfig.DefaultMaxSessionDurationMS},
-			{configured: agent.MergeWorkerMaxDurationMS, fallback: workflowconfig.DefaultMergeWorkerMaxDurationMS},
-		}
-		for _, ceiling := range ceilings {
-			configured := ceiling.configured
-			if configured <= 0 {
-				configured = ceiling.fallback
-			}
-			timeout = max(timeout, time.Duration(configured)*time.Millisecond)
-		}
-	}
-	if timeout == 0 {
-		return defaultTimeout
-	}
-	return timeout
+	return remoterunner.UpdateDrainTimeout(registry)
 }
 
 func requestUpdateRestart(controller *ShutdownController, restart *RestartRequest, binary string) bool {
@@ -367,46 +319,7 @@ func requestUpdateRestart(controller *ShutdownController, restart *RestartReques
 }
 
 func runnerRunningBuild(ctx context.Context, info buildinfo.Info, version string) runnerauth.BuildEvidence {
-	if info.Version == "" {
-		info.Version = version
-	}
-	info = buildinfo.Normalize(info)
-	build := runnerauth.BuildEvidence{Version: info.Version, Commit: info.Commit, Source: "unknown", OS: runtime.GOOS, Architecture: runtime.GOARCH, ObservedAt: time.Now().UTC()}
-	path, err := os.Executable()
-	if err == nil {
-		build.Source = string(detentupdate.DetectInstallSource(detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS}).Source)
-		file, err := os.Open(path)
-		if err == nil {
-			hash := sha256.New()
-			_, readErr := io.Copy(hash, file)
-			closeErr := file.Close()
-			if readErr == nil && closeErr == nil {
-				build.SHA256 = hex.EncodeToString(hash.Sum(nil))
-			}
-		}
-	}
-	patched := info.Dirty
-	if metadata, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range metadata.Settings {
-			if setting.Key == "vcs.modified" && setting.Value == "true" {
-				patched = true
-			}
-		}
-		for _, dependency := range metadata.Deps {
-			if dependency.Replace != nil {
-				patched = true
-			}
-		}
-	}
-	if patched {
-		build.Source = "private_patched_source"
-	} else if err == nil {
-		build.VerifiedRelease = detentupdate.InstalledReleaseVerified(ctx, detentupdate.DetectionOptions{ExecutablePath: path, CurrentVersion: info.Version, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}, info.Commit, build.SHA256)
-		if build.VerifiedRelease {
-			build.Source = "release"
-		}
-	}
-	return build
+	return remoterunner.RunningBuild(ctx, info, version)
 }
 
 func enrolledUpdateOwner(runtimeCtx context.Context, scheduler *detentupdate.Scheduler, running runnerauth.BuildEvidence) func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {

@@ -44,6 +44,7 @@ type AutoStatus struct {
 }
 
 type SchedulerConfig struct {
+	ReportLifecycle    func(context.Context, runnerauth.LifecycleState, string, string) error
 	ReceiptStore       ReceiptStore
 	WorkerArtifacts    *WorkerArtifacts
 	WorkerPreflight    BinaryPreflight
@@ -205,7 +206,7 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
+	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; s.cfg.ReportLifecycle == nil && receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
 		opts := s.cfg.ApplyOptions
 		opts.ExpectedVersion = receipt.Applied.Version
 		opts.FromRelease = receipt.Request.FromRelease
@@ -215,6 +216,13 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 }
 
 func (s *Scheduler) prepareWorkersLocked(ctx context.Context) (Status, error) {
+	if s.cfg.ReportLifecycle != nil {
+		artifact, err := s.cfg.WorkerArtifacts.PrepareVersion(ctx, s.cfg.RunningBuild.Version, s.cfg.WorkerPreflight, nil)
+		if err != nil {
+			return Status{}, err
+		}
+		return artifact.Status, artifact.Release()
+	}
 	artifact, err := s.cfg.WorkerArtifacts.PrepareLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
 		if status.Critical {
 			comparison, err := CompareVersions(status.LatestVersion, status.CurrentVersion)
@@ -240,7 +248,7 @@ func (s *Scheduler) prepareWorkersLocked(ctx context.Context) (Status, error) {
 }
 
 func (s *Scheduler) Run(ctx context.Context) {
-	if s == nil || !s.cfg.Enabled && s.cfg.WorkerArtifacts == nil {
+	if s == nil || s.cfg.ReportLifecycle != nil || !s.cfg.Enabled && s.cfg.WorkerArtifacts == nil {
 		return
 	}
 	if ctx == nil {
@@ -489,7 +497,13 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 		status.State = "applying"
 		status.LastError = ""
 	})
-	artifact, err := s.cfg.WorkerArtifacts.PrepareLaunch(ctx, s.cfg.WorkerPreflight, func(status Status) error {
+	prepare := s.cfg.WorkerArtifacts.PrepareLaunch
+	if s.cfg.ReportLifecycle != nil {
+		prepare = func(ctx context.Context, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
+			return s.cfg.WorkerArtifacts.PrepareVersion(ctx, opts.ExpectedVersion, preflight, capture)
+		}
+	}
+	artifact, err := prepare(ctx, s.cfg.WorkerPreflight, func(status Status) error {
 		if opts.ExpectedVersion != "" && opts.ExpectedVersion != status.LatestVersion {
 			return errors.New("requested release is no longer the latest execution release")
 		}
@@ -902,5 +916,29 @@ func waitForUpdateCheck(ctx context.Context, delay time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+func (s *Scheduler) SetLifecycleReporter(report func(context.Context, runnerauth.LifecycleState, string, string) error) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	s.cfg.ReportLifecycle = report
+	restart := s.cfg.RequestRestart
+	if restart != nil && report != nil {
+		s.cfg.RequestRestart = func(binary string) bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", ""); err != nil {
+				s.cfg.Logger.Warn("report update shutdown", "error", err)
+				return false
+			}
+			accepted := restart(binary)
+			if !accepted {
+				if err := report(ctx, runnerauth.LifecycleReady, "", ""); err != nil {
+					s.cfg.Logger.Warn("report deferred update restart", "error", err)
+				}
+			}
+			return accepted
+		}
 	}
 }

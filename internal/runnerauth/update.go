@@ -189,15 +189,19 @@ func (b BuildEvidence) Matches(other BuildEvidence) bool {
 }
 
 type UpdateView struct {
-	RunnerID    string             `json:"runner_id"`
-	Revision    int64              `json:"revision"`
-	Status      string             `json:"status"`
-	Desired     *UpdateRequest     `json:"desired"`
-	Observation *UpdateObservation `json:"observation"`
+	Lifecycle     *Lifecycle         `json:"lifecycle,omitempty"`
+	Health        string             `json:"health"`
+	TargetVersion string             `json:"target_version"`
+	TargetHeld    bool               `json:"target_held"`
+	RunnerID      string             `json:"runner_id"`
+	Revision      int64              `json:"revision"`
+	Status        string             `json:"status"`
+	Desired       *UpdateRequest     `json:"desired"`
+	Observation   *UpdateObservation `json:"observation"`
 }
 
 func (r Runner) UpdateView(now time.Time) UpdateView {
-	view := UpdateView{RunnerID: r.RunnerID, Revision: r.Revision, Status: "unavailable", Desired: r.UpdateRequest, Observation: r.Update}
+	view := UpdateView{Lifecycle: r.Lifecycle, Health: r.Health, TargetVersion: r.UpdateTargetVersion, TargetHeld: r.UpdateTargetHeld, RunnerID: r.RunnerID, Revision: r.Revision, Status: "unavailable", Desired: r.UpdateRequest, Observation: r.Update}
 	if r.Update == nil || r.Health == "revoked" || r.Health == "expired" || r.ConnectionHealth != "online" || now.Before(r.LastHeartbeatAt) || !now.Before(r.LastHeartbeatAt.Add(HeartbeatTimeout)) || now.Before(r.Update.ReceivedAt) || !now.Before(r.Update.ReceivedAt.Add(HeartbeatTimeout)) {
 		return view
 	}

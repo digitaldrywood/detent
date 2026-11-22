@@ -131,6 +131,7 @@ const (
 )
 
 type BootConfig struct {
+	lifecycle        *remoterunner.Lifecycle
 	serviceStdout    *os.File
 	serviceStderr    *os.File
 	Mode             BootMode
@@ -376,7 +377,20 @@ detent --format json config path`),
 				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
 				Port:     runtimeIntFlag{Value: port, Set: flagChanged(cmd, "port")},
 			}
-			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, opts, bootRuntimeDeps(opts), true)
+			var lifecycle *remoterunner.Lifecycle
+			defer func() { lifecycle.ReportStartupFailure(cmd.Context()) }()
+			startup := opts
+			startup.resolveProjects = func(ctx context.Context, cfg globalconfig.Config) (globalconfig.Config, error) {
+				if cfg.Client.IdentityFile != "" {
+					var err error
+					lifecycle, err = remoterunner.StartLifecycle(ctx, cfg.Client, opts.build, opts.version)
+					if err != nil {
+						return cfg, err
+					}
+				}
+				return resolveRunnerProjects(ctx, cfg)
+			}
+			boot, err := resolveBootConfigWithRuntimeDeps(cmd.Context(), configPath, host, flags, startup, bootRuntimeDeps(opts), true)
 			if err != nil {
 				return err
 			}
@@ -420,6 +434,7 @@ detent --format json config path`),
 				}
 				boot.StartupRecovery = recovery
 			}
+			boot.lifecycle, lifecycle = lifecycle, nil
 			bootErr := opts.boot(cmd.Context(), boot)
 			if bootErr != nil && recovery != nil && (boot.Restart == nil || boot.Restart.control == nil || !boot.Restart.control.retired.Load()) {
 				recovery.HandleFailure(cmd.Context(), bootErr)
