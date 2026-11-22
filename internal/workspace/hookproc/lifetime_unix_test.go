@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
 )
@@ -227,5 +229,170 @@ IFS= read -r release || :
 	}
 	if err := lifetime.verifyWriterExits(); err == nil {
 		t.Fatal("accepted the original writer's exit after only the replacement retired")
+	}
+}
+
+func TestReplacementPreservesWorkspaceAfterUnverifiedWriterHandoff(t *testing.T) {
+	root, path := t.TempDir(), t.TempDir()
+	if err := MarkWorkspaceSetupPending(root, path, ":"); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := &Registry{}
+	ctx := context.WithValue(t.Context(), workspaceSetupKey{}, &workspaceSetup{root: root})
+	owner, err := registry.Start(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := owner.descriptor.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", "exec 4>\"$1\"; printf 'ready\\n'; IFS= read -r release || :", "hook", owner.descriptor.path())
+	cmd.Dir = path
+	cmd.Env = append(os.Environ(), HookOwnerKey+"="+owner.Token(), "DETENT_WORKSPACE="+path)
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		input.Close()
+		if cmd.ProcessState == nil {
+			cmd.Wait()
+		}
+	})
+	ready := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(output).ReadString('\n')
+		ready <- line
+	}()
+	select {
+	case line := <-ready:
+		if line != "ready\n" {
+			t.Fatalf("original hook readiness: %q", line)
+		}
+	case <-time.After(hookCleanupTimeout):
+		t.Fatal("original hook did not open the FIFO")
+	}
+	if err := owner.CommandFinished(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !owner.setup.retained.Load() {
+		t.Fatal("original hook did not record retained setup")
+	}
+
+	writer, err := os.OpenFile(owner.descriptor.path(), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx = context.WithValue(t.Context(), writerSnapshotKey{}, []int{})
+	var unverified *HookExitUnverifiedError
+	if err := registry.Stop(ctx, path); !errors.As(err, &unverified) || !owner.descriptor.unidentifiedWriter {
+		t.Fatalf("teardown did not record an unidentified writer: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := owner.descriptor.Active(); err != nil || active {
+		t.Fatalf("FIFO still active: %t, %v", active, err)
+	}
+
+	replacement := &Registry{}
+	if retry, err := replacement.CheckWorkspaceSetup(root, path); retry || !errors.Is(err, ErrWorkspacePreserved) {
+		t.Errorf("replacement could reuse the workspace: retry cleanup=%t, error=%v", retry, err)
+	}
+	if err := replacement.CheckWorkspaceSetupRemoval(root, path); !errors.Is(err, ErrWorkspacePreserved) {
+		t.Errorf("replacement could remove the workspace: %v", err)
+	}
+}
+
+func TestReplacementRejectsNonRegularReadyMarker(t *testing.T) {
+	for _, markerType := range []string{"fifo", "symlink"} {
+		t.Run(markerType, func(t *testing.T) {
+			root, path := t.TempDir(), t.TempDir()
+			if err := MarkWorkspaceSetupPending(root, path, ":"); err != nil {
+				t.Fatal(err)
+			}
+			ready := filepath.Join(root, pendingWorkspaceSetupPath(path), "ready")
+			fifo := ready
+			if markerType == "symlink" {
+				fifo = filepath.Join(filepath.Dir(ready), "fifo")
+			}
+			if err := unix.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if markerType == "symlink" {
+				if err := os.Symlink(filepath.Base(fifo), ready); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result := make(chan error, 1)
+			go func() {
+				_, err := (&Registry{}).CheckWorkspaceSetup(root, path)
+				result <- err
+			}()
+			select {
+			case err := <-result:
+				var unverified *HookExitUnverifiedError
+				if !errors.As(err, &unverified) || !errors.Is(err, ErrWorkspacePreserved) {
+					t.Fatalf("invalid marker did not preserve the workspace: %v", err)
+				}
+			case <-time.After(hookCleanupTimeout):
+				writer, err := os.OpenFile(fifo, os.O_RDWR|unix.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer writer.Close()
+				if _, err := io.WriteString(writer, "{}\n"); err != nil {
+					t.Fatal(err)
+				}
+				<-result
+				t.Fatal("reading an invalid ready marker blocked workspace setup")
+			}
+		})
+	}
+}
+
+func TestOpenRetainedFileRefusesSymlinkSwappedAfterInspection(t *testing.T) {
+	root := t.TempDir()
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := os.WriteFile(filepath.Join(root, "ready"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := dir.Lstat("ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dir.Rename("ready", "original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("original", filepath.Join(root, "ready")); err != nil {
+		t.Fatal(err)
+	}
+	file, err := openRetainedFile(dir, "ready", expected)
+	if err == nil {
+		file.Close()
+		t.Fatal("opened the inspected inode through a substituted symlink")
 	}
 }
