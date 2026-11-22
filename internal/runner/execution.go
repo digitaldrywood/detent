@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
@@ -193,7 +194,8 @@ type ArtifactSourceExecution interface {
 // It fills the base, the head and the files; the
 // execution owns the producer tuple and the generation, because only the
 // execution knows the lease it is fenced by and the event sequence the diff
-// belongs to. It reports false when there is nothing to post.
+// belongs to. A false result with a head reports that a captured diff was
+// superseded by the observed head. A false result without a head is unavailable.
 type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
 
 // DiffExecution is an Execution that also stores the attempt's diff before
@@ -1053,13 +1055,25 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			diffErr = failedStep("checkpoint_recovery", errors.Join(ErrNativeRecoveryRequired, err))
 		} else {
 			request := attemptDiffRequest(finalDiff)
+			var superseded atomic.Pointer[string]
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				head, err := gitexec.Run(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+				if head := superseded.Load(); head != nil {
+					return tracker.AttemptDiffRequest{HeadSHA: *head}, false
+				}
+				output, err := gitexec.Run(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
 				if err == nil {
-					return request, strings.TrimSpace(head) == request.HeadSHA
+					head := strings.TrimSpace(output)
+					if head != request.HeadSHA {
+						superseded.Store(&head)
+						return tracker.AttemptDiffRequest{HeadSHA: head}, false
+					}
+					return request, true
 				}
 				_, statErr := os.Stat(info.Path)
-				return request, errors.Is(statErr, os.ErrNotExist)
+				if errors.Is(statErr, os.ErrNotExist) {
+					return request, true
+				}
+				return tracker.AttemptDiffRequest{}, false
 			})
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,75 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSSHCheckpointRefusesCachedDiffAfterHeadMoves(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "checkpoint diff", true: "already stored finish diff"}[staged], func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Use the live source head")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			ctx := t.Context()
+			base, final, moved := nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b"), nativeChangeFixtureHead("c")
+			source := nativeChangeSourceFixture(ctx, t, base, final)
+			worker, closePeers := nativeSSHExecution(t, ctx, e, t.TempDir())
+			worker.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
+			worker.(runner.ChangeSourceExecution).SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
+				return source, nil
+			})
+			var headMoved atomic.Bool
+			finalDiff := nativeChangeDiff(final, "README.md")
+			worker.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				if headMoved.Load() {
+					return tracker.AttemptDiffRequest{HeadSHA: moved}, false
+				}
+				return finalDiff(ctx)
+			})
+			if err := worker.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: final, ExternalEffect: "none", EffectState: "none"}
+			if err := worker.Checkpoint(ctx, checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.RecordSourceValidation(ctx, gate.CommandResult{Command: "go test ./internal/example", HeadSHA: final, TreeSHA: strings.Repeat("b", 40), DurationNS: 1, StartedAt: time.Now().UTC().Add(-time.Second), FinishedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			if staged {
+				if err := e.postDiff(ctx, e.data.Sequence+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if e.lastDiff == nil || e.lastDiff.HeadSHA != final || e.retainedSource == nil || e.retainedSource.Source.HeadSHA != final {
+				t.Fatal("checkpoint did not retain the finalized diff and bundle")
+			}
+			stored := e.storedSeq
+			assertUnpublished := func() {
+				t.Helper()
+				detail, err := h.admin.CurrentChange(ctx, tracker.NativeWorkItemID(issue.ID))
+				if err != nil || detail.Change.CurrentVersion != "" || e.storedSeq != stored {
+					t.Fatalf("moved head reused cached source: sequence=%d (was %d), version=%s, error=%v", e.storedSeq, stored, detail.Change.CurrentVersion, err)
+				}
+			}
+			headMoved.Store(true)
+			if err := e.PrepareFinish(ctx, "succeeded", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			assertUnpublished()
+			if change := e.NativeChange(); change == nil || change.VersionError == "" || e.lastDiff != nil {
+				t.Fatalf("the moved checkout did not invalidate the cached diff: change=%+v diff=%+v", change, e.lastDiff)
+			}
+			if err := worker.Checkpoint(ctx, checkpoint); err != nil {
+				t.Fatalf("a moved diff head blocked checkpoint publication: %v", err)
+			}
+			closePeers()
+			if err := e.postDiff(ctx, stored+1); err == nil {
+				t.Fatal("disconnect allowed the superseded diff to be uploaded")
+			}
+			assertUnpublished()
+		})
+	}
+}
 
 func TestCheckpointDoesNotCaptureAnOlderDiffHead(t *testing.T) {
 	h := newNativeChangeHub(t, true)

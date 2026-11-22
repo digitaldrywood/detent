@@ -171,14 +171,21 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			}
 			if test.priorSnapshot {
 				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "move after finalization")
-				if _, available := execution.diffSource(ctx); available {
-					t.Fatal("a moved checkout was reported as the finalized source")
+				moved := strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				if diff, available := execution.diffSource(ctx); available || diff.HeadSHA != moved {
+					t.Fatalf("a moved checkout must report the observed head without a diff: head=%s available=%t", diff.HeadSHA, available)
 				}
 			}
 			if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
 				t.Fatal(err)
 			}
 			diff, ok := execution.diffSource(ctx)
+			if test.priorSnapshot {
+				if ok {
+					t.Fatal("cleanup restored the superseded diff")
+				}
+				return
+			}
 			if !ok || diff.HeadSHA != execution.checkpoint.HeadSHA || diff.HeadSHA == base || diff.BaseSHA != base || len(diff.Files) != 1 || diff.Files[0].Path != "implementation.go" {
 				t.Fatalf("final diff did not survive cleanup at the verified checkpoint: diff=%+v available=%t checkpoint=%+v", diff, ok, execution.checkpoint)
 			}
