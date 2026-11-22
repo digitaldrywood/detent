@@ -1247,7 +1247,11 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 	if issue.PhaseSource != nil {
 		startHead = issue.PhaseSource.HeadSHA
 	}
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
+	recovery := req.Execution.Recovery()
+	action, reason := "fresh_checkout", "verified_pushed_phase"
+	if issue.PhaseSource == nil || issue.PhaseSource.LeaseID == "" || issue.PhaseSource.LeaseID == recovery.Lease.ID || !issue.VerifyPhaseBranch {
+		action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
+	}
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
