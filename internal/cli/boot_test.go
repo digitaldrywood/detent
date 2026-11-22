@@ -44,11 +44,7 @@ import (
 
 func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 	for _, missingCheckout := range []bool{false, true} {
-		name := "enrolled runner"
-		if missingCheckout {
-			name = "enrolled runner with absent checkout"
-		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(fmt.Sprintf("missingCheckout=%t", missingCheckout), func(t *testing.T) {
 			func(t *testing.T) {
 				observations := make(chan *runnerauth.UpdateObservation, 1)
 				var identity runnerauth.File
@@ -56,6 +52,9 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 					w.Header().Set("Content-Type", "application/json")
 					var response any
 					switch {
+					case strings.HasSuffix(r.URL.Path, "/lifecycle"):
+						w.WriteHeader(http.StatusNoContent)
+						return
 					case r.URL.Path == "/api/v2/capabilities":
 						response = map[string]any{"version": "dev", "protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeRunnerUpdateCapability, tracker.NativeProviderCapacityCapability}}
 					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.Identity.RunnerID):

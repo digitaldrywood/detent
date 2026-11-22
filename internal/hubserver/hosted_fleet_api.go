@@ -33,6 +33,7 @@ type hostedRunnerCheckout struct {
 }
 
 type hostedFleetRunner struct {
+	Lifecycle          *runnerauth.Lifecycle                      `json:"lifecycle,omitempty"`
 	ProjectCheckouts   map[tracker.ProjectID]hostedRunnerCheckout `json:"project_checkouts,omitempty"`
 	Sprite             *hostedFleetSprite                         `json:"sprite,omitempty"`
 	Update             runnerauth.UpdateView                      `json:"update"`
@@ -196,8 +197,9 @@ func scopeHostUsage(runners []hostedFleetRunner) {
 
 func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map[tracker.ProjectID]bool, now time.Time) hostedFleetRunner {
 	view := hostedFleetRunner{
-		Update: runner.UpdateView(now),
-		ID:     runner.RunnerID, MachineID: string(runner.MachineID), DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
+		Update:    runner.UpdateView(now),
+		Lifecycle: runner.Lifecycle,
+		ID:        runner.RunnerID, MachineID: string(runner.MachineID), DisplayName: runner.DisplayName, Hostname: runner.Hostname, Health: runner.Status(now),
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},

@@ -522,6 +522,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		current         string
 		version         string
 		follow          bool
+		exact           bool
 		brew            bool
 		explicit        bool
 		fromRelease     bool
@@ -533,6 +534,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		busyRepair      bool
 	}{
 		{name: "selected release", current: "1.2.3"},
+		{name: "Hub-selected exact release below latest", current: "1.2.3", exact: true},
+		{name: "Hub holds an older signed release", current: "1.2.5", exact: true},
 		{name: "same version CLI repair", current: "1.2.4"},
 		{name: "same version Hub repair", current: "1.2.4", follow: true},
 		{name: "same version busy Hub repair resumes when idle", current: "1.2.4", follow: true, busyRepair: true},
@@ -646,7 +649,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				switch r.URL.Path {
 				case "/releases":
 					releases := []Release{release}
-					if test.follow && !test.busyRepair {
+					if (test.follow || test.exact) && !test.busyRepair {
 						releases = append(releases, Release{TagName: "v9.0.0"})
 					}
 					if err := json.NewEncoder(w).Encode(releases); err != nil {
@@ -691,7 +694,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				},
 			})
 
-			if !test.follow {
+			if !test.follow && !test.exact {
 				if checked, err := service.Check(t.Context()); err != nil {
 					t.Fatal(err)
 				} else if test.current == version && (!checked.RepairAvailable || checked.UpdateAvailable || checked.VerifiedRelease) {
@@ -701,7 +704,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			if test.brew {
 				service.cfg.EvalSymlinks = func(string) (string, error) { return "/opt/homebrew/Cellar/detent/1.2.3/bin/detent", nil }
 			}
-			if !test.follow && !test.explicit {
+			if !test.follow && !test.exact && !test.explicit {
 				stale, staleErr := service.Apply(t.Context(), ApplyOptions{AssumeYes: true, ExpectedVersion: "1.2.5"})
 				if !errors.Is(staleErr, ErrRefused) || stale.Action != ActionRefused {
 					t.Fatalf("changed selected release = %+v, %v", stale, staleErr)
@@ -711,7 +714,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 			applyOptions := ApplyOptions{
 				AssumeYes:         true,
 				FollowHub:         test.follow,
-				FromRelease:       test.follow,
+				ExactRelease:      test.exact,
+				FromRelease:       test.follow || test.exact,
 				ExpectedVersion:   version,
 				RecoveryStatePath: recoveryStatePath,
 				Preflight: func(_ context.Context, path string) error {

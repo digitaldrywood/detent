@@ -71,7 +71,7 @@ func RunnerOperationAllowed(c echo.Context, operations []string) bool {
 	}
 	operation := ""
 	switch {
-	case path == runnerBase+"/:runner/update/receipt":
+	case path == runnerBase+"/:runner/update/receipt", path == runnerBase+"/:runner/lifecycle":
 		operation = runnerauth.Heartbeat
 	case path == "/api/v2/capabilities":
 		operation = runnerauth.Read

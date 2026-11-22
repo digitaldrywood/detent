@@ -479,7 +479,7 @@ func TestWorkerArtifactsSelectionAndRetention(t *testing.T) {
 
 func TestWorkerArtifactsRejectInvalidLaunch(t *testing.T) {
 	t.Parallel()
-	for _, failure := range []string{"download", "signature", "provenance", "checksum", "identity", "protocol", "cached executable", "cached archive", "platform"} {
+	for _, failure := range []string{"download", "signature", "pinned signature", "provenance", "checksum", "identity", "protocol", "cached executable", "cached archive", "platform"} {
 		t.Run(failure, func(t *testing.T) {
 			t.Parallel()
 			a, f, publish := workerArtifactFixture(t)
@@ -503,7 +503,7 @@ func TestWorkerArtifactsRejectInvalidLaunch(t *testing.T) {
 			switch failure {
 			case "download":
 				delete(f.downloads, release.Assets[0].BrowserDownloadURL)
-			case "signature":
+			case "signature", "pinned signature":
 				f.downloads[release.Assets[2].BrowserDownloadURL] = []byte("invalid signature")
 			case "provenance":
 				f.downloads[release.Assets[3].BrowserDownloadURL] = testReleaseProvenance(t, "v2.0.0", testUpdatedCommit)
@@ -539,7 +539,14 @@ func TestWorkerArtifactsRejectInvalidLaunch(t *testing.T) {
 			case "platform":
 				a.service.cfg.GOARCH = "unsupported"
 			}
-			if _, err := a.Acquire(t.Context(), preflight); err == nil {
+			acquire := a.Acquire
+			if failure == "pinned signature" {
+				publish("1.0.2")
+				acquire = func(ctx context.Context, p BinaryPreflight) (*WorkerArtifact, error) {
+					return a.PrepareVersion(ctx, "1.0.1", p, nil)
+				}
+			}
+			if _, err := acquire(t.Context(), preflight); err == nil {
 				t.Fatal("invalid selected launch accepted")
 			}
 			if _, err := os.Stat(active.Status.Binary); err != nil {
@@ -787,6 +794,38 @@ func TestWorkerDiscoveryRunsOutsideHeartbeat(t *testing.T) {
 			scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), nil)
 			if checks != before {
 				t.Fatal("heartbeat retried failed discovery")
+			}
+		})
+	}
+}
+
+func TestWorkerArtifactsPinnedRelease(t *testing.T) {
+	for _, target := range []string{"1.0.0", "1.0.1", "1.0.9"} {
+		t.Run(target, func(t *testing.T) {
+			artifacts, _, publish := workerArtifactFixture(t)
+			publish("1.0.0")
+			publish("1.0.1")
+			publish("1.0.2")
+			selected, err := artifacts.PrepareVersion(t.Context(), target, nil, nil)
+			if target == "1.0.9" {
+				if err == nil {
+					if err := selected.Release(); err != nil {
+						t.Error(err)
+					}
+					t.Fatal("missing pinned release fell back to latest")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := selected.Release(); err != nil {
+					t.Error(err)
+				}
+			}()
+			if selected.Status.LatestVersion != target || !selected.Status.VerifiedRelease {
+				t.Fatalf("pinned release=%+v", selected.Status)
 			}
 		})
 	}

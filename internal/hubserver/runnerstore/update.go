@@ -8,10 +8,14 @@ import (
 )
 
 type UpdateState struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	Desired        *runnerauth.UpdateRequest
-	Observation    *runnerauth.UpdateObservation
+	UrgentPolicyChecked bool
+	UrgentAllowed       bool
+	TargetVersion       string
+	TargetHeld          bool
+	OrganizationID      tracker.OrganizationID
+	RunnerID            string
+	Desired             *runnerauth.UpdateRequest
+	Observation         *runnerauth.UpdateObservation
 }
 
 type UpdateRequestRecord struct {

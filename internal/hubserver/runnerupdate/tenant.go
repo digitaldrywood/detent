@@ -64,26 +64,48 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 	if err := writer.ReplaceRunnerUpdateObservation(ctx, identity.RunnerID, report); err != nil {
 		return err
 	}
-	if !report.Supported || !releasePublished {
+	lifecycleOwner, ok := writer.(runnerstore.LifecycleReader)
+	var lifecycle *runnerauth.Lifecycle
+	if ok {
+		lifecycle, err = lifecycleOwner.RunnerLifecycle(ctx, identity.RunnerID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return err
+		}
+	}
+	if lifecycle == nil && !report.Supported {
 		return nil
 	}
-	return s.followHub(ctx, writer, identity, state, *report, now)
+	return s.reconcileTarget(ctx, writer, identity, state, *report, now, lifecycle != nil, releasePublished)
 }
 
-func (s *Service) followHub(ctx context.Context, writer tenantstore.Writer, identity runnerstore.Identity, state runnerstore.UpdateState, report runnerauth.UpdateObservation, now time.Time) error {
-	version := Target(s.deps.Version)
+func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer, identity runnerstore.Identity, state runnerstore.UpdateState, report runnerauth.UpdateObservation, now time.Time, lifecycle bool, published bool) error {
+	version, held, err := EffectiveTarget(ctx, writer, identity.RunnerID, Target(s.deps.Version))
+	if err != nil {
+		return err
+	}
+	if !published && !held {
+		return nil
+	}
+	probe := &runnerauth.UpdateRequest{Version: version}
+	allowed, err := OfferAllowed(ctx, writer, identity.RunnerID, probe)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
 	comparison, err := update.CompareVersions(version, report.Running.Version)
 	repair := comparison == 0 && report.Running.Source == "release" && !report.Running.VerifiedRelease
-	if version == "" || err != nil || comparison < 0 || comparison == 0 && !repair {
+	if version == "" || err != nil || comparison < 0 && !held || comparison == 0 && !repair {
 		return nil
 	}
 	current := state.Desired
 	if current != nil {
 		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request.Matches(*current) && report.Receipt.Status == "refused"
-		if current.FollowHub && current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
+		if current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
 			return nil
 		}
-		if !superseded(*current, report.Receipt, version) {
+		if !held && !superseded(*current, report.Receipt, version) {
 			return nil
 		}
 	}
@@ -91,13 +113,13 @@ func (s *Service) followHub(ctx context.Context, writer tenantstore.Writer, iden
 	if err != nil {
 		return err
 	}
-	if urgent.Request != nil {
+	if urgent.Request != nil && !held {
 		comparison, err := update.CompareVersions(urgent.Request.Version, report.Running.Version)
 		if err == nil && comparison > 0 {
 			return nil
 		}
 	}
-	request := runnerauth.UpdateRequest{ID: hubapi.NewID("update"), RequestedAt: canonicalTime(now), Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: report.Revision}
+	request := runnerauth.UpdateRequest{ID: hubapi.NewID("update"), RequestedAt: canonicalTime(now), Service: "detent", Version: strings.TrimPrefix(version, "v"), Release: true, FromRelease: true, FollowHub: !lifecycle && !held, ExpectedBuildRevision: report.Revision}
 	if err := request.Validate(); err != nil {
 		return hubapi.PublicInvalid("The current runner update request is invalid")
 	}
@@ -119,7 +141,8 @@ func (s *Service) View(ctx context.Context, scope hubapi.Scope, runnerID string)
 			return err
 		}
 		view = runner.UpdateView(now)
-		return nil
+		view.TargetVersion, view.TargetHeld, err = EffectiveTarget(ctx, reader, runnerID, Target(s.deps.Version))
+		return err
 	})
 	return view, err
 }
@@ -158,7 +181,22 @@ func (s *Service) runner(ctx context.Context, reader tenantstore.Reader, runnerI
 	} else {
 		runner.ConnectionHealth = "offline"
 	}
+	if owner, ok := reader.(runnerstore.LifecycleReader); ok {
+		lifecycle, err := owner.RunnerLifecycle(ctx, runnerID)
+		if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+			return runnerauth.Runner{}, err
+		}
+		runner.Lifecycle = lifecycle
+		runner.ApplyLifecycle(now)
+	}
 	ApplyUrgentRouting(&runner, UrgentUpdate{Revision: urgent.Revision, Request: urgent.Request}, machine.Version)
+	allowed, err := OfferAllowed(ctx, reader, runnerID, runner.UpdateRequest)
+	if !allowed {
+		runner.UpdateRequest = nil
+	}
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
 	return runner, nil
 }
 
@@ -275,6 +313,13 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		}
 		if !reflect.DeepEqual(runner.Update, preparedView.Observation) {
 			return Conflict(runner.Revision, "The runner update observation changed; read get_runner_update and retry with its current revision")
+		}
+		allowed, err := OfferAllowed(ctx, writer, runnerID, &delivery)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return hubapi.Conflict(0)
 		}
 		if err := writer.CreateRunnerUpdateRequest(ctx, runnerstore.UpdateRequestRecord{OrganizationID: scope.Organization, RunnerID: runnerID, Request: delivery}); err != nil {
 			return err
@@ -411,6 +456,13 @@ func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request Ur
 			if err != nil || comparison < 0 {
 				return hubapi.PublicInvalid("An urgent release cannot lower the existing update target")
 			}
+		}
+		allowed, err := OfferAllowed(ctx, writer, "", value.Request)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return hubapi.Conflict(0)
 		}
 		if latest.Request == nil || latest.Request.Version != request.Version {
 			if err := writer.CreateRunnerUpdateRequest(ctx, runnerstore.UpdateRequestRecord{OrganizationID: scope.Organization, Request: *value.Request}); err != nil {
