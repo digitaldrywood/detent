@@ -32,15 +32,13 @@ Copies of SQLite stores are coherent only when taken from a stopped owner, with 
 
 ## 2. Start a Hub and connect MCP
 
-The Hub uses its own private durable paths; it never opens the old `detent.db` or a tracker database. A single-machine loopback example:
+The Hub stores its state in PostgreSQL. Keep the old `detent.db` and tracker databases as migration sources. For a single-machine setup, prepare a private `hub.yaml` with the Hub's `postgres` configuration and start the Hub on loopback.
 
 ```sh
 umask 077
 export HUB_URL=http://127.0.0.1:7777
-export HUB_DIR="$HOME/.local/share/detent-hub"
-mkdir -p "$HUB_DIR/backups"
 export DETENT_HUB_ADMIN_TOKEN="$(openssl rand -hex 32)"
-detent hub serve --database "$HUB_DIR/hub.db" --listen 127.0.0.1:7777
+detent hub serve --hosted-config ./hub.yaml --listen 127.0.0.1:7777
 ```
 
 This unhosted command requires the Hub process's existing `gh` login or GitHub App credentials; see [GitHub modes](hub-self-hosting.md#github-modes). A hosted Hub can run without GitHub transport when App credentials are absent.
@@ -49,16 +47,7 @@ This unhosted command requires the Hub process's existing `gh` login or GitHub A
 
 An authenticated `GET $HUB_URL/health` confirms the Hub is up, and `GET $HUB_URL/api/v2/organizations` returns the local organization ID. A Streamable HTTP MCP client connects to `$HUB_URL/api/v2/organizations/ORG_ID/mcp` with an `Authorization: Bearer` header; see [API & MCP setup](api-mcp-setup.md) and [capability availability](mcp-capabilities.md), since tools backed only by hosted services are unavailable on an unhosted Hub.
 
-A running self-hosted Hub writes online snapshots through `POST /api/v2/admin/backup`; the offline `detent hub backup` and `detent hub verify` commands require a stopped Hub. See [backup and export](hub-self-hosting.md#backup-and-export).
-
-Take the first backup before creating projects or enrolling runners. Stop this Hub and wait for exit, then run:
-
-```sh
-detent hub backup --database "$HUB_DIR/hub.db" --output "$HUB_DIR/backups/initial.db"
-detent hub verify --database "$HUB_DIR/backups/initial.db"
-```
-
-The destination must not exist. Restart with the same serve command and token. Keep completed snapshots in encrypted backup storage with the binary version and separate secret backups. Subsequent backups can use the online snapshot API while the Hub runs.
+Before creating projects or enrolling runners, back up the Hub's PostgreSQL database and verify the backup by restoring it into an isolated database. Follow [backup and export](hub-self-hosting.md#backup-and-export) for backup custody and retention.
 
 ## 3. Create the native project
 
