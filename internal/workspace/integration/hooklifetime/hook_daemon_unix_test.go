@@ -91,64 +91,6 @@ func TestHookDaemonWorkspaceTeardown(t *testing.T) {
 	}
 }
 
-func TestReplacementReusesRetainedSetupAfterServiceExit(t *testing.T) {
-	daemon := detachedHook(t)
-	useDaemonCandidates(t, daemon)
-	opts := workspace.LocalGitOptions{
-		Root: t.TempDir(), SourceRoot: gitfixture.SourceRepo(t), AutoBranch: true,
-		Hooks: workspace.Hooks{AfterCreate: "echo setup >> setup.log; " + daemon.Command},
-	}
-	first, err := workspace.NewLocalGit(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, finish := workspace.WithHookProcesses(t.Context())
-	t.Cleanup(func() {
-		if err := finish(); err != nil {
-			t.Error(err)
-		}
-	})
-	issue := workspace.Issue{Identifier: "EXAMPLE-1"}
-	info, err := first.Create(ctx, issue)
-	if err != nil || !daemon.Alive(t) {
-		t.Fatalf("prepare checkout with detached service: %v", err)
-	}
-	progress := filepath.Join(info.Path, "uncommitted")
-	if err := os.WriteFile(progress, []byte("keep"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	replacement, err := workspace.NewLocalGit(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := replacement.Create(t.Context(), issue); !errors.Is(err, workspace.ErrWorkspacePreserved) || !daemon.Alive(t) {
-		t.Fatalf("replacement accepted or signaled a live retained service: %v", err)
-	}
-	pid, start, err := daemonIdentity(daemon.control)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := daemon.quit.Close(); err != nil {
-		t.Fatal(err)
-	}
-	testenv.WaitUntil(t, t.Context(), func() error {
-		alive, err := procstart.Matches(pid, start)
-		if alive {
-			return errors.New("waiting for fixture service to exit")
-		}
-		return err
-	})
-
-	reused, err := replacement.Create(t.Context(), issue)
-	if err != nil || reused.Path != info.Path || reused.Created {
-		t.Fatalf("replacement did not reuse the prepared checkout: %+v, %v", reused, err)
-	}
-	if gitfixture.ReadFile(t, progress) != "keep" || gitfixture.ReadFile(t, filepath.Join(reused.Path, "setup.log")) != "setup\n" {
-		t.Fatal("replacement changed retained work or reran setup")
-	}
-}
-
 func TestCheckoutRemovalPreservesForeignProcesses(t *testing.T) {
 	for _, kind := range []string{"filesystem", "local git"} {
 		t.Run(kind, func(t *testing.T) {

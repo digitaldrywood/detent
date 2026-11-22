@@ -416,8 +416,7 @@ func ProcessIDs(ctx context.Context, path string) ([]int, error) {
 		holders, fdErr := lifetime.candidates(ctx)
 		return append(marked, holders...), errors.Join(envErr, fdErr)
 	}
-	owner := ctx.Value(hookOwnerKey{})
-	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil && owner == nil {
+	if source, ok := ctx.Value(processSourceKey{}).(ProcessSource); ok && source != nil {
 		return source(ctx, path)
 	}
 
@@ -431,14 +430,12 @@ func ProcessIDs(ctx context.Context, path string) ([]int, error) {
 	if filepath.Dir(canonical) == canonical {
 		return nil, errors.New("workspace path must not resolve to a filesystem root")
 	}
-	if owner == nil {
-		path = canonical
-	}
-	cwdScan := func(ctx context.Context, _ string) ([]int, error) {
+	path = canonical
+	cwdScan := func(ctx context.Context, path string) ([]int, error) {
 		if runtime.GOOS == "linux" {
-			return linuxWorkspaceProcessIDs(canonical)
+			return linuxWorkspaceProcessIDs(path)
 		}
-		return lsofWorkspaceProcessIDs(ctx, canonical)
+		return lsofWorkspaceProcessIDs(ctx, path)
 	}
 	return workspaceProcessIDsWithScanners(ctx, path, scratchEnvironmentProcessIDs, cwdScan)
 }
