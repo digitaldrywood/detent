@@ -736,6 +736,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest.HeadCommittedAt = cloneTimePointer(issue.PullRequest.HeadCommittedAt)
 		if issue.PullRequest.MergeQueueEntry != nil {
 			entry := *issue.PullRequest.MergeQueueEntry
+			entry.EnqueuedAt = cloneTimePointer(entry.EnqueuedAt)
 			pullRequest.MergeQueueEntry = &entry
 		}
 		if issue.PullRequest.MergedAt != nil {
