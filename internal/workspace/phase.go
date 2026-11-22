@@ -58,6 +58,9 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 	if err != nil {
 		return err
 	}
+	if issue.RetainPhaseCheckout && !info.Created {
+		return l.verifyRetainedItemPhaseCheckout(ctx, info, issue)
+	}
 	source := itemPhaseCheckoutSource(info, issue.PhaseSource)
 	if source.HeadSHA == "" {
 		return ErrItemPhaseSource
@@ -81,6 +84,38 @@ func itemPhaseCheckoutSource(info Info, receipt *tracker.NativePhaseReceipt) Pha
 	return PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}
 }
 
+func (l *LocalGit) verifyRetainedItemPhaseCheckout(ctx context.Context, info Info, issue Issue) error {
+	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err != nil {
+		return err
+	}
+	if paused && !issue.NativeRework {
+		return ErrMergeResolutionInvalid
+	}
+	if issue.PublishedChangeHeadSHA == "" {
+		return nil
+	}
+	head, err := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "refs/heads/"+info.Branch+"^{commit}")
+	if err != nil {
+		return err
+	}
+	return verifyPublishedChangeAncestry(ctx, info.Path, issue.PublishedChangeHeadSHA, strings.TrimSpace(head))
+}
+
+func validItemPhaseReceipt(info Info, receipt *tracker.NativePhaseReceipt) bool {
+	return receipt.Branch == info.PublishBranch() && gitexec.ValidHead(receipt.HeadSHA) && gitexec.ValidHead(receipt.TreeSHA)
+}
+
+func verifyPublishedChangeAncestry(ctx context.Context, path, published, head string) error {
+	if published == "" || published == head {
+		return nil
+	}
+	if err := gitexec.VerifyPublicationAncestry(ctx, path, published, head); err != nil {
+		return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, "selected item history does not contain the published Change"), err)
+	}
+	return nil
+}
+
 func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
 	branch := info.PublishBranch()
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
@@ -93,10 +128,13 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 	}
 	receipt := issue.PhaseSource
 	if !exists && receipt == nil {
+		if issue.PublishedChangeHeadSHA != "" {
+			return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, "published Change has no item branch"))
+		}
 		info.PhaseRemoteHead = &head
 		return nil
 	}
-	if !exists || !gitexec.ValidHead(head) || receipt != nil && (receipt.Branch != branch || !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA)) {
+	if !exists || !gitexec.ValidHead(head) || receipt != nil && !validItemPhaseReceipt(*info, receipt) {
 		return fmt.Errorf("%w: published item branch differs from its latest phase receipt", ErrItemPhaseSource)
 	}
 	release, err := l.acquireSourceOperation(ctx)
@@ -145,6 +183,9 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 		if err != nil || tree != receipt.TreeSHA {
 			return errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
 		}
+	}
+	if err := verifyPublishedChangeAncestry(ctx, l.sourceRoot, issue.PublishedChangeHeadSHA, head); err != nil {
+		return err
 	}
 	info.PhaseRemoteHead = &head
 	if receipt == nil || head != receipt.HeadSHA {

@@ -1843,6 +1843,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.RetryMode = RetryModeFresh
 	}
 	legacyPublishedSource := mode == RunModeImplement && !req.phaseReceipts && req.phaseContinuation != nil
+	planPending := mode == RunModeImplement && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil && !req.phaseContinuation.Plan.Accepted
 	var reviewRecovery, turnRecovery *tracker.NativeAttempt
 	var repairResume bool
 	publicationRecovery := req.publicationRecovery(mode)
@@ -1862,7 +1863,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	} else {
 		reviewRecovery, turnRecovery, repairResume = nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	}
-	if req.Execution != nil && !req.phaseReceipts && !legacyPublishedSource && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
+	if planPending {
+		reviewRecovery, turnRecovery, repairResume, publicationRecovery = nil, nil, false, false
+		req.ResumeState = store.AgentResumeState{}
+	}
+	if req.Execution != nil && !req.phaseReceipts && !legacyPublishedSource && !planPending && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
 		if err := r.resumeRunCheckpoint(ctx, &req, agentRuntime); err != nil {
 			return RunResult{}, err
 		}
@@ -1947,7 +1952,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.PhaseSource = phaseSource
 	workspaceIssue.VerifyPhaseBranch = req.phaseReceipts && mode == RunModeImplement && req.NativeLandingRework == nil
 	if workspaceIssue.VerifyPhaseBranch {
-		workspaceIssue.RetainPhaseCheckout = retainsPhaseCheckout(req.Execution.Recovery(), req.AttemptWorkspace, req.phaseContinuation.ActiveAttemptID)
+		recovery := req.Execution.Recovery()
+		if recovery.Change != nil {
+			workspaceIssue.PublishedChangeHeadSHA = recovery.Change.HeadSHA
+		}
+		workspaceIssue.RetainPhaseCheckout = retainsPhaseCheckout(recovery, req.AttemptWorkspace, req.phaseContinuation.ActiveAttemptID)
 		workspaceIssue.FreshCheckout = !workspaceIssue.RetainPhaseCheckout
 	}
 	var landingTarget NativeLandingTarget
@@ -2205,8 +2214,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	attempt := req.Attempt
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
-	if workspaceIssue.VerifyPhaseBranch && info.PhaseRemoteHead != nil && (info.RecoveredPhase.HeadSHA != "" || phaseSource != nil) {
-		if err := verifyReplacementItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
+	if workspaceIssue.VerifyPhaseBranch && (info.RecoveredPhase.HeadSHA != "" || phaseSource != nil || workspaceIssue.PublishedChangeHeadSHA != "") {
+		if err := verifyItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -2216,7 +2225,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnRecovery, publicationRecovery = nil, false
 		}
 	}
-	if workspaceIssue.RetainPhaseCheckout && info.PhaseRemoteHead == nil && turnRecovery != nil && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
+	if workspaceIssue.RetainPhaseCheckout && !info.Created && turnRecovery != nil && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
 		turnRecovery, publicationRecovery = nil, false
 	}
 	var promptRecoveryState *workspace.RecoveryState
@@ -2353,7 +2362,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if turnRecovery != nil && !req.phaseReceipts && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
 		turnRecovery = nil
 	}
-	if !req.phaseReceipts && mode != RunModeRoutine && reviewRecovery == nil && turnRecovery == nil {
+	if !req.phaseReceipts && !planPending && mode != RunModeRoutine && reviewRecovery == nil && turnRecovery == nil {
 		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 		if err != nil {
 			return RunResult{}, err
@@ -2367,7 +2376,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
 		}
 	}
-	planPhase := req.phaseReceipts && mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil
+	planPhase := mode == RunModeImplement && req.Admission == nil && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil
 	if !planPhase {
 		if admission, refused, err := admitImplementation(startedAt); refused || err != nil {
 			return admission, err
@@ -2429,7 +2438,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if preStartBinding {
 			executionIdentity = nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnRequest)
 		}
-		if reviewRecovery == nil && turnRecovery == nil {
+		if !planPending && reviewRecovery == nil && turnRecovery == nil {
 			resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, preStartBinding, runWorkspace, info, workspaceIssue)
 			if err != nil {
 				return RunResult{}, err
@@ -2494,6 +2503,13 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if wait != "" {
 			afterRunPending = false
 			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait}, nil
+		}
+		if planPending && legacyPublishedSource && req.publicationRecovery(mode) {
+			if !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
+				afterRunPending = false
+				return RunResult{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
+			}
+			publicationRecovery = true
 		}
 		if admission, refused, err := admitImplementation(r.now()); refused || err != nil {
 			afterRunPending = false

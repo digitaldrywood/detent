@@ -319,6 +319,9 @@ func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
 					t.Fatalf("checkout did not select the live lease or receipt: issue=%+v calls=%d", issue, execution.recoveryCalls)
 				}
 			}
+			if tc.matching && issue.PublishedChangeHeadSHA != change.HeadSHA {
+				t.Fatalf("phase checkout omitted published Change head: %+v", issue)
+			}
 			if issue.Checkpoint != nil || issue.RetainedCheckpoint != nil || issue.LocalCheckpoint != nil {
 				t.Fatalf("checkout selected a local recovery source: %+v", issue)
 			}
@@ -333,10 +336,13 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 		movesHead bool
 		advanced  bool
 		wantStart bool
+		live      bool
 	}{
 		{name: "unchanged", wantStart: true},
 		{name: "advance without a receipt", advanced: true, wantStart: true},
 		{name: "hook edited the recovered source", advanced: true, hook: "printf 'changed\\n' >> README.md"},
+		{name: "live lease retains staged and unstaged work", live: true, wantStart: true},
+		{name: "live lease hook removed the published Change from ancestry", live: true, hook: "git update-ref HEAD ", movesHead: true},
 		{name: "unchanged with index flags", hook: "git update-index --assume-unchanged README.md && git update-index --skip-worktree README.md", wantStart: true},
 		{name: "hook changed HEAD", hook: "git switch --detach ", movesHead: true},
 		{name: "hook detached the same HEAD", hook: "git switch --detach HEAD"},
@@ -389,6 +395,20 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
 				},
 			}
+			if tc.live {
+				replacement = prior
+				execution.recovery.Lease = tracker.NativeLease{ID: "old-lease", FencingToken: 1}
+				execution.recovery.Change = &tracker.NativeChangeReference{VersionID: "version_published", HeadSHA: head}
+				execution.continuation.ActiveAttemptID = prior.Attempt
+				path := filepath.Join(seed.Path, "retry.txt")
+				if err := os.WriteFile(path, []byte("staged work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, seed.Path, "add", "retry.txt")
+				if err := os.WriteFile(path, []byte("unstaged work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			agent := &fakeCodexClient{
 				updates: []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "implementation-turn"}},
 				err:     errors.New("stop after starting the verified turn"),
@@ -421,6 +441,15 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			}
 			if observed, err := backend.Head(t.Context(), info, target); err != nil || observed != wantHead {
 				t.Fatalf("hook checkout = %s, error = %v, want %s", observed, err, wantHead)
+			}
+			if tc.live && tc.wantStart {
+				if staged := strings.TrimSpace(runRunnerGit(t, info.Path, "show", ":retry.txt")); staged != "staged work" {
+					t.Fatalf("retained index = %q", staged)
+				}
+				got, err := os.ReadFile(filepath.Join(info.Path, "retry.txt"))
+				if err != nil || string(got) != "unstaged work\n" {
+					t.Fatalf("retained worktree = %q, error=%v", got, err)
+				}
 			}
 		})
 	}
