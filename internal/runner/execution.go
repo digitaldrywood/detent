@@ -902,7 +902,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
 	}
 	if phaseCompleted && req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
-		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || req.Execution.Recovery().SourceVersionID != "") {
+		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
 				finalizationErr = failedStep("publication", publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority))
 			}

@@ -3,7 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,6 +178,20 @@ func (e *phaseCheckoutExecution) PhaseReceipts(context.Context, string) (*tracke
 	return &e.continuation, nil
 }
 
+type phaseCompletionExecution struct {
+	phaseCheckoutExecution
+	publication tracker.NativePhaseReceipt
+}
+
+func (e *phaseCompletionExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	return e.Validate(ctx)
+}
+
+func (e *phaseCompletionExecution) RecordPhaseReceipt(_ context.Context, phase, branch, head, tree, _ string) error {
+	e.publication = tracker.NativePhaseReceipt{Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree}
+	return nil
+}
+
 type phaseCheckoutWorkspace struct {
 	*fakeWorkspaceBackend
 	itemPhaseWorkspace
@@ -305,6 +321,117 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			}
 			if observed, err := backend.Head(t.Context(), info, target); err != nil || observed != wantHead {
 				t.Fatalf("hook checkout = %s, error = %v, want %s", observed, err, wantHead)
+			}
+		})
+	}
+}
+
+func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		advanceBase bool
+		moveItem    bool
+	}{
+		{name: "already published"},
+		{name: "base advances", advanceBase: true},
+		{name: "item ref moves", advanceBase: true, moveItem: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			source := initRunnerSourceRepo(t)
+			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
+			git := func(path string, args ...string) string {
+				t.Helper()
+				return strings.TrimSpace(runRunnerGit(t, path, args...))
+			}
+			const repository = "https://github.com/example-org/example-project"
+			git(source, "config", "url."+remote+".insteadOf", repository)
+			git(source, "remote", "set-url", "origin", repository)
+			commitFile := func(path, name string) string {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(path, name), []byte(name+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git(path, "add", name)
+				git(path, "commit", "-m", "add "+name)
+				return git(path, "rev-parse", "HEAD")
+			}
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dispatch := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			item := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress"}
+			issue := runworkspace.Issue(dispatch.Project, item)
+			issue.AttemptWorkspace, issue.ProgressBaseRef, issue.PublicationRepository = dispatch, "main", remote
+			prior, err := backend.Create(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			published := commitFile(prior.Path, "item.txt")
+			branch := prior.PublishBranch()
+			ref := "refs/heads/" + branch
+			git(prior.Path, "push", "origin", "HEAD:"+ref)
+			receipt := tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: published, TreeSHA: git(prior.Path, "rev-parse", "HEAD^{tree}")}
+			if tc.advanceBase {
+				commitFile(source, "base.txt")
+				git(source, "push", "origin", "main")
+			}
+			base := git(source, "rev-parse", "HEAD")
+			issue.AttemptWorkspace.Attempt = "attempt_22222222222222222222222222222222"
+			issue.PhaseSource, issue.VerifyPhaseBranch, issue.NoChangeNeeded = &receipt, true, true
+			info, err := backend.Create(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if head := git(info.Path, "rev-parse", "HEAD"); head != published {
+				t.Fatalf("replacement checkout starts at %s, want published %s", head, published)
+			}
+			remoteHead := published
+			if tc.moveItem {
+				remoteHead = commitFile(prior.Path, "other.txt")
+				git(prior.Path, "push", "origin", "HEAD:"+ref)
+			}
+			execution := &phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
+				testExecution: &testExecution{}, continuation: tracker.NativePhaseContinuation{LastPushed: &receipt},
+			}}
+			r, err := NewRunner(Dependencies{Workspace: backend, AgentBackend: &fakeCodexClient{}, ProcessSource: emptyProcessSource})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := fmt.Sprintf("```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: %s\n  completion_evidence: Verified the published source\n```", published)
+			_, err = r.prepareExecutionCompletion(ctx, RunRequest{
+				Issue: item, Execution: execution, finalizeNativeWork: true, phaseReceipts: true, phaseContinuation: &execution.continuation,
+				retainedReview: &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: message},
+			}, backend, info, issue, AgentResume{}, true)
+			actualRemote := git(remote, "rev-parse", ref)
+			head := git(info.Path, "rev-parse", "HEAD")
+			if execution.checkpoint == nil || execution.checkpoint.HeadSHA != head {
+				t.Fatalf("checkpoint = %+v, want finalized checkout %s", execution.checkpoint, head)
+			}
+			if tc.moveItem {
+				var refusal *workspace.LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved || actualRemote != remoteHead || execution.publication.HeadSHA != "" {
+					t.Fatalf("moved item ref = %s, receipt = %+v, error = %v", actualRemote, execution.publication, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := git(info.Path, "rev-parse", "HEAD^{tree}")
+			if actualRemote != head || execution.publication != (tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: head, TreeSHA: tree}) {
+				t.Fatalf("remote = %s, checkout = %s, receipt = %+v", actualRemote, head, execution.publication)
+			}
+			if !tc.advanceBase && head != published {
+				t.Fatalf("already published source was rewritten: %s, want %s", head, published)
+			}
+			git(info.Path, "merge-base", "--is-ancestor", published, head)
+			git(info.Path, "merge-base", "--is-ancestor", base, head)
+			if changed := git(info.Path, "diff", "--name-only", base, head); changed != "item.txt" {
+				t.Fatalf("finalized source changes %q, want item.txt", changed)
 			}
 		})
 	}
