@@ -970,7 +970,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 }
 
 func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
-	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "revoked", "expired runtime"} {
+	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "capacity renewal after replacement", "revoked", "expired runtime"} {
 		t.Run(outcome, func(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
 			issue := h.createInProgress(t, "Fenced renewal")
@@ -992,22 +992,61 @@ func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
 				defer claim.lifecycle.Unlock()
 			}
 			var successor tracker.NativeLease
+			replaceWithSuccessor := func() {
+				successor = claim.lease
+				if outcome != "acknowledged after newer renewal" {
+					successor.ID = "lease_successor"
+					successor.FencingToken++
+				}
+				successor.RenewedAt = time.Now().Add(time.Second)
+				successor.ExpiresAt = time.Now().Add(2 * time.Minute)
+				h.scheduler.mu.Lock()
+				current := h.scheduler.nativeClaims[issue.ID]
+				current.lease = successor
+				if outcome == "capacity renewal after replacement" {
+					current.execution = nil
+				}
+				h.scheduler.nativeClaims[issue.ID] = current
+				h.scheduler.claims[issue.ID] = nativeTrackerLease(successor)
+				h.scheduler.mu.Unlock()
+			}
+			if outcome == "capacity renewal after replacement" {
+				requests := fixtureClient(h.native.Transport()).requests.Load()
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(r.URL.Path, "/leases/"+string(claim.lease.ID)+"/renew") {
+						if err := h.native.Release(t.Context(), claim.lease, "released"); err != nil {
+							return nil, err
+						}
+						h.claim(t, issue.ID)
+						successor = h.scheduler.nativeClaims[issue.ID].lease
+						body, err := json.Marshal(claim.lease)
+						if err != nil {
+							return nil, err
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+					}
+					return requests.RoundTrip(r)
+				}))
+				err := h.scheduler.RenewExecution(t.Context(), claim.lease, 1)
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("stale capacity renewal succeeded after replacement: %v", err)
+				}
+				current := h.scheduler.nativeClaims[issue.ID]
+				if current.lost || current.lease.ID != successor.ID || current.lease.FencingToken != successor.FencingToken {
+					t.Fatalf("stale capacity renewal damaged replacement claim: %+v", current.lease)
+				}
+				if err := h.scheduler.RunExecution(issue.ID).Validate(t.Context()); err != nil {
+					t.Fatalf("replacement claim is not usable after stale capacity renewal: %v", err)
+				}
+				if err := h.scheduler.RenewExecution(t.Context(), successor, 0); err != nil {
+					t.Fatalf("replacement claim renewal failed: %v", err)
+				}
+				return
+			}
 			transport := fixtureClient(h.native.Transport()).renewals.Load()
 			fixtureClient(h.native.Transport()).renewals.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				if strings.Contains(outcome, "after replacement") || outcome == "acknowledged after newer renewal" {
-					successor = claim.lease
-					if outcome != "acknowledged after newer renewal" {
-						successor.ID = "lease_successor"
-						successor.FencingToken++
-					}
-					successor.RenewedAt = time.Now().Add(time.Second)
-					successor.ExpiresAt = time.Now().Add(2 * time.Minute)
-					h.scheduler.mu.Lock()
-					current := h.scheduler.nativeClaims[issue.ID]
-					current.lease = successor
-					h.scheduler.nativeClaims[issue.ID] = current
-					h.scheduler.claims[issue.ID] = nativeTrackerLease(successor)
-					h.scheduler.mu.Unlock()
+					replaceWithSuccessor()
 				}
 				if strings.HasPrefix(outcome, "rejected") {
 					return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: r}, nil

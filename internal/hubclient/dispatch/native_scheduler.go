@@ -827,7 +827,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	if err != nil {
 		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
-	renewed, ok := s.applyNativeLeaseRenewal(issueID, renewStarted, claim.lease, lease)
+	renewed, ok := s.applyNativeLeaseRenewal(issueID, renewStarted, claim.lease, lease, false)
 	if !ok {
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
@@ -837,7 +837,7 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	return renewed, nil
 }
 
-func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, expected, lease tracker.NativeLease) (orchestrator.Claimed, bool) {
+func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, expected, lease tracker.NativeLease, allowReplacement bool) (orchestrator.Claimed, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, found := s.nativeClaims[issueID]
@@ -845,7 +845,12 @@ func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, e
 		return orchestrator.Claimed{}, false
 	}
 	if current.lease.FencingToken != expected.FencingToken {
-		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), true
+		if !allowReplacement {
+			return orchestrator.Claimed{}, false
+		}
+		claimed := claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease))
+		claimed.LocalLeaseDeadline = current.deadline
+		return claimed, true
 	}
 	if current.lease.ID != lease.ID || current.lease.FencingToken != lease.FencingToken {
 		return orchestrator.Claimed{}, false
@@ -859,7 +864,9 @@ func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, e
 		s.nativeClaims[issueID] = current
 	}
 	s.claims[issueID] = nativeTrackerLease(lease)
-	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), true
+	claimed := claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease))
+	claimed.LocalLeaseDeadline = current.deadline
+	return claimed, true
 }
 
 func isDefinitiveAuthorityLoss(err error) bool {
