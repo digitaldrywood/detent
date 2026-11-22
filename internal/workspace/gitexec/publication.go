@@ -167,7 +167,7 @@ func withPublicationGit(ctx context.Context, path, owner string, use func(string
 	return use(scratch, source)
 }
 
-func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), push func(repository, refspec string) error) error) error {
+func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationGit(ctx, path, owner, func(scratch string, source publicationSource) error {
 		head, err := ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")
 		if err != nil {
@@ -188,8 +188,8 @@ func WithPublicationCheckout(ctx context.Context, path, owner string, use func(r
 			options := []string{"--git-dir=" + scratch, "--work-tree=" + path, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.excludesFile=" + filepath.Join(source.common, "info", "exclude")}
 			return withCommandEnvironment(ctx, path, env, true, "", RunCommand, append(options, args...)...)
 		}
-		return use(read, func(repository, refspec string) error {
-			return pushPublication(ctx, scratch, repository, refspec)
+		return use(read, func(repository, refspec string, options ...string) error {
+			return pushPublication(ctx, scratch, repository, refspec, options...)
 		})
 	})
 }

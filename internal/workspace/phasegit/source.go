@@ -43,7 +43,7 @@ func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhas
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, authorize, verifyDestination func(context.Context) error, pushError func(error, string) error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -55,7 +55,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 	}
 	ref := "refs/heads/" + branch
 	var head, tree string
-	err := gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), push func(string, string) error) error {
+	err := gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), push func(string, string, ...string) error) error {
 		if _, err := read("check-ref-format", ref); err != nil {
 			return fmt.Errorf("validate phase publication branch: %w", err)
 		}
@@ -67,16 +67,43 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 		if err != nil {
 			return err
 		}
-		if err := authorize(ctx); err != nil {
+		previous, _, err := gitexec.PublicationBranchHead(ctx, repository, branch)
+		if err != nil {
 			return err
 		}
-		if pushErr := push(repository, head+":"+ref); pushErr != nil {
-			current, exists, readErr := gitexec.PublicationBranchHead(ctx, repository, branch)
-			if readErr != nil || !exists || current != head {
-				return errors.Join(pushError(pushErr, branch), readErr)
+		if previous == head {
+			return authorize(ctx)
+		}
+		if previous != "" {
+			if _, err := read("merge-base", "--is-ancestor", previous, head); err != nil {
+				if ctx.Err() != nil {
+					return context.Cause(ctx)
+				}
+				return errors.Join(moved(), err)
 			}
 		}
-		return nil
+		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+previous
+		var pushErr error
+		for range 2 {
+			if err := authorize(ctx); err != nil {
+				return err
+			}
+			pushErr = push(repository, refspec, lease)
+			if pushErr == nil {
+				return nil
+			}
+			current, _, readErr := gitexec.PublicationBranchHead(ctx, repository, branch)
+			if readErr != nil {
+				return errors.Join(pushErr, readErr)
+			}
+			if current == head {
+				return nil
+			}
+			if current != previous {
+				return errors.Join(moved(), pushErr)
+			}
+		}
+		return fmt.Errorf("push item phase to %s: %w", branch, pushErr)
 	})
 	if err != nil {
 		return "", "", "", err
