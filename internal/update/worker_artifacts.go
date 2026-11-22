@@ -101,18 +101,37 @@ func (a *WorkerArtifacts) AcquireLaunch(ctx context.Context, preflight BinaryPre
 }
 
 func (a *WorkerArtifacts) PrepareLaunch(ctx context.Context, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
+	return a.prepareVersion(ctx, "", preflight, capture)
+}
+
+func (a *WorkerArtifacts) PrepareVersion(ctx context.Context, version string, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
+	return a.prepareVersion(ctx, version, preflight, capture)
+}
+
+func (a *WorkerArtifacts) prepareVersion(ctx context.Context, version string, preflight BinaryPreflight, capture func(Status) error) (*WorkerArtifact, error) {
 	a.prepareMu.Lock()
 	defer a.prepareMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	releases, err := a.service.cfg.Client.ListReleases(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("resolve worker release: %w", err)
-	}
-	release, found := selectLatestRelease(releases, false)
-	if !found {
-		return nil, errors.New("resolve worker release: no eligible worker release")
+
+	var release Release
+	if version != "" {
+		selected, _, err := a.service.publishedRelease(ctx, "v"+strings.TrimPrefix(version, "v"))
+		if err != nil {
+			return nil, fmt.Errorf("resolve worker release: %w", err)
+		}
+		release = selected
+	} else {
+		releases, err := a.service.cfg.Client.ListReleases(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve worker release: %w", err)
+		}
+		selected, found := selectLatestRelease(releases, false)
+		if !found {
+			return nil, errors.New("resolve worker release: no eligible worker release")
+		}
+		release = selected
 	}
 	status := Status{CurrentVersion: a.service.cfg.CurrentVersion, LatestVersion: displayVersion(release.TagName), LatestTag: release.TagName, Critical: releaseCritical(release)}
 	if capture != nil {

@@ -67,6 +67,9 @@
       ],
       "claim_refusal_reason": "Too old to take work, needs v0.9.1",
       "update": {
+        "health": "healthy",
+        "target_version": "",
+        "target_held": false,
         "runner_id": "rnr_macbook",
         "revision": 1,
         "status": "unavailable",
@@ -101,6 +104,9 @@
       "leases": [],
       "claim_refusal_reason": "Too old to take work, needs v0.9.1",
       "update": {
+        "health": "stale",
+        "target_version": "",
+        "target_held": false,
         "runner_id": "rnr_macmini",
         "revision": 1,
         "status": "unavailable",
