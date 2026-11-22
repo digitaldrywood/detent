@@ -133,14 +133,25 @@ func (s *Session) Event(identity string) bool {
 	return true
 }
 
+func WithoutCommandObservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sessionKey{}, (*Session)(nil))
+}
+
 func ObserveOwnedCommand(ctx context.Context, id string) func() {
 	s, _ := ctx.Value(sessionKey{}).(*Session)
-	deadline, bounded := ctx.Deadline()
-	if s == nil || !bounded || ctx.Err() != nil {
+	if s == nil {
 		return func() {}
 	}
+	finish, _ := s.BeginOwnedCommand(ctx, id)
+	return finish
+}
+
+func (s *Session) BeginOwnedCommand(ctx context.Context, id string) (func(), bool) {
+	deadline, bounded := ctx.Deadline()
 	id = "host/" + id
-	s.StartCommand(id)
+	if !bounded || ctx.Err() != nil || !s.StartCommand(id) {
+		return func() {}, false
+	}
 	limit := max(time.Nanosecond, time.Until(deadline))
 	onDeadline := func() {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -152,7 +163,7 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 		stop()
 		onDeadline()
 		s.EndCommand(id)
-	}
+	}, true
 }
 
 func (s *Session) StartCommand(id string) bool {
