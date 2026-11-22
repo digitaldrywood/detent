@@ -219,7 +219,7 @@ func (o *Owner) CommandFinished(ctx context.Context, commandErr error) error {
 	}
 	if active {
 		if o.setup != nil {
-			if err := recordWorkspaceSetupReady(o.setup.root, o.path, o.descriptor); err != nil {
+			if err := recordWorkspaceSetupReady(o.setup.root, o.path, o.token, o.descriptor); err != nil {
 				return err
 			}
 			o.setup.retained.Store(true)

@@ -46,7 +46,7 @@ func ClearWorkspaceSetupPending(root, path string) error {
 	return dir.RemoveAll(pendingWorkspaceSetupPath(path))
 }
 
-func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, err error) {
+func (u *Registry) CheckWorkspaceSetup(ctx context.Context, root, path string) (retryCleanup bool, err error) {
 	incomplete := &HookExitUnverifiedError{Err: fmt.Errorf("%w: workspace setup incomplete for %s", ErrWorkspacePreserved, path)}
 	if u.setupFailed(path) {
 		return true, incomplete
@@ -77,7 +77,7 @@ func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, er
 		if u.ownsRetainedSetup(path) {
 			return false, nil
 		}
-		if err := verifyWorkspaceSetupExited(dir, marker, ready); err != nil {
+		if err := verifyWorkspaceSetupExited(ctx, dir, path, marker, ready); err != nil {
 			return false, errors.Join(incomplete, err)
 		}
 		return false, nil
@@ -87,8 +87,8 @@ func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, er
 	return false, incomplete
 }
 
-func (u *Registry) CheckWorkspaceSetupRemoval(root, path string) error {
-	retry, err := u.CheckWorkspaceSetup(root, path)
+func (u *Registry) CheckWorkspaceSetupRemoval(ctx context.Context, root, path string) error {
+	retry, err := u.CheckWorkspaceSetup(ctx, root, path)
 	var unverified *HookExitUnverifiedError
 	if retry || errors.As(err, &unverified) && u.ownsRetainedSetup(path) {
 		return nil
@@ -119,10 +119,11 @@ func recordWorkspaceSetupStatus(root, path, status string) error {
 type retainedSetup struct {
 	DescriptorDir string         `json:"descriptor_dir"`
 	Descriptor    string         `json:"descriptor"`
+	Owner         string         `json:"owner"`
 	Processes     map[int]string `json:"processes"`
 }
 
-func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) (returnErr error) {
+func recordWorkspaceSetupReady(root, path, owner string, lifetime *Lifetime) (returnErr error) {
 	processes := make(map[int]string, len(lifetime.witnesses)+len(lifetime.starts))
 	maps.Copy(processes, lifetime.witnesses)
 	maps.Copy(processes, lifetime.starts)
@@ -130,7 +131,7 @@ func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) (returnErr
 	if err != nil {
 		return err
 	}
-	record := retainedSetup{DescriptorDir: filepath.Base(lifetime.dir), Descriptor: identity, Processes: processes}
+	record := retainedSetup{DescriptorDir: filepath.Base(lifetime.dir), Descriptor: identity, Owner: owner, Processes: processes}
 	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return err
@@ -166,7 +167,7 @@ func revokeWorkspaceSetupReady(root, path string) error {
 	return errors.Join(removeErr, dir.Close())
 }
 
-func verifyWorkspaceSetupExited(dir *os.Root, marker string, ready fs.FileInfo) (returnErr error) {
+func verifyWorkspaceSetupExited(ctx context.Context, dir *os.Root, path, marker string, ready fs.FileInfo) (returnErr error) {
 	readyPath := filepath.Join(marker, "ready")
 	file, err := openRetainedFile(dir, readyPath, ready)
 	if err != nil {
@@ -178,7 +179,7 @@ func verifyWorkspaceSetupExited(dir *os.Root, marker string, ready fs.FileInfo) 
 		return fmt.Errorf("read retained hook lifetime: %w", err)
 	}
 	if !filepath.IsLocal(record.DescriptorDir) || filepath.Base(record.DescriptorDir) != record.DescriptorDir ||
-		!strings.HasPrefix(record.DescriptorDir, "detent-hook-") || record.Descriptor == "" || len(record.Processes) == 0 {
+		!strings.HasPrefix(record.DescriptorDir, "detent-hook-") || record.Descriptor == "" || strings.TrimSpace(record.Owner) == "" || len(record.Processes) == 0 {
 		return errors.New("invalid retained hook lifetime")
 	}
 	for pid, start := range record.Processes {
@@ -211,6 +212,15 @@ func verifyWorkspaceSetupExited(dir *os.Root, marker string, ready fs.FileInfo) 
 	}
 	if active {
 		return errors.New("retained workspace hook descriptor still has a writer")
+	}
+	discovery, cancel := context.WithTimeout(ctx, hookCleanupTimeout)
+	defer cancel()
+	pids, err := ScanOwned(context.WithValue(discovery, hookOwnerKey{}, record.Owner), path, ProcessIDs)
+	if err := errors.Join(err, discovery.Err()); err != nil {
+		return fmt.Errorf("inspect retained workspace hook processes: %w", err)
+	}
+	if len(pids) != 0 {
+		return errors.New("a process is still associated with the retained workspace")
 	}
 	current, err := dir.Lstat(readyPath)
 	if err != nil {

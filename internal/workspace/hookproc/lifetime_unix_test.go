@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/procstart"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
@@ -314,10 +315,10 @@ func TestReplacementPreservesWorkspaceAfterUnverifiedWriterHandoff(t *testing.T)
 	}
 
 	replacement := &Registry{}
-	if retry, err := replacement.CheckWorkspaceSetup(root, path); retry || !errors.Is(err, ErrWorkspacePreserved) {
+	if retry, err := replacement.CheckWorkspaceSetup(t.Context(), root, path); retry || !errors.Is(err, ErrWorkspacePreserved) {
 		t.Errorf("replacement could reuse the workspace: retry cleanup=%t, error=%v", retry, err)
 	}
-	if err := replacement.CheckWorkspaceSetupRemoval(root, path); !errors.Is(err, ErrWorkspacePreserved) {
+	if err := replacement.CheckWorkspaceSetupRemoval(t.Context(), root, path); !errors.Is(err, ErrWorkspacePreserved) {
 		t.Errorf("replacement could remove the workspace: %v", err)
 	}
 }
@@ -345,7 +346,7 @@ func TestReplacementRejectsNonRegularReadyMarker(t *testing.T) {
 
 			result := make(chan error, 1)
 			go func() {
-				_, err := (&Registry{}).CheckWorkspaceSetup(root, path)
+				_, err := (&Registry{}).CheckWorkspaceSetup(t.Context(), root, path)
 				result <- err
 			}()
 			select {
@@ -367,6 +368,132 @@ func TestReplacementRejectsNonRegularReadyMarker(t *testing.T) {
 				t.Fatal("reading an invalid ready marker blocked workspace setup")
 			}
 		})
+	}
+}
+
+func TestReplacementPreservesWorkspaceWithLaterHookHelper(t *testing.T) {
+	root, path := t.TempDir(), t.TempDir()
+	if err := MarkWorkspaceSetupPending(root, path, ":"); err != nil {
+		t.Fatal(err)
+	}
+	first := &Registry{}
+	ctx := context.WithValue(t.Context(), workspaceSetupKey{}, &workspaceSetup{root: root})
+	owner, err := first.Start(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := owner.descriptor.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	helperInput, retireHelper, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer helperInput.Close()
+	defer retireHelper.Close()
+
+	const script = "exec 4>\"$1\"; printf 'ready\\n'; IFS= read -r handoff; " +
+		"/bin/sh -c 'exec 4>&-; printf \"%s\\n\" \"$$\"; IFS= read -r release || :' <&3 &"
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", script, "hook", owner.descriptor.path())
+	cmd.Dir = path
+	cmd.Env = append(os.Environ(), HookOwnerKey+"="+owner.Token(), "DETENT_WORKSPACE="+path)
+	cmd.ExtraFiles = []*os.File{helperInput}
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		input.Close()
+		if cmd.ProcessState == nil {
+			cmd.Wait()
+		}
+	})
+	lines := make(chan string, 2)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(output)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+	readLine := func() string {
+		select {
+		case line := <-lines:
+			return line
+		case <-time.After(hookCleanupTimeout):
+			t.Fatal("timed out waiting for hook fixture")
+			return ""
+		}
+	}
+	if line := readLine(); line != "ready" {
+		t.Fatalf("original hook readiness: %q", line)
+	}
+	if err := owner.CommandFinished(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !owner.setup.retained.Load() {
+		t.Fatal("original hook did not record retained setup")
+	}
+	if _, err := io.WriteString(input, "handoff\n"); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(readLine())
+	if err != nil || pid <= 0 || pid == cmd.Process.Pid {
+		t.Fatalf("invalid later hook helper PID %d: %v", pid, err)
+	}
+	start, err := procstart.Identity(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := owner.descriptor.Active(); err != nil || active {
+		t.Fatalf("expected FIFO closure while helper lives: %t, %v", active, err)
+	}
+
+	replacement := &Registry{}
+	var unverified *HookExitUnverifiedError
+	if retry, err := replacement.CheckWorkspaceSetup(t.Context(), root, path); retry || !errors.As(err, &unverified) || !errors.Is(err, ErrWorkspacePreserved) {
+		t.Errorf("replacement could reuse the workspace: retry cleanup=%t, error=%v", retry, err)
+	}
+	if err := replacement.CheckWorkspaceSetupRemoval(t.Context(), root, path); !errors.As(err, &unverified) || !errors.Is(err, ErrWorkspacePreserved) {
+		t.Errorf("replacement could remove the workspace: %v", err)
+	}
+	if alive, err := procstart.Matches(pid, start); err != nil || !alive {
+		t.Fatalf("replacement disturbed the later hook helper: alive=%t, error=%v", alive, err)
+	}
+
+	if err := retireHelper.Close(); err != nil {
+		t.Fatal(err)
+	}
+	testenv.WaitUntil(t, t.Context(), func() error {
+		alive, err := procstart.Matches(pid, start)
+		if alive {
+			return errors.New("waiting for later hook helper to exit")
+		}
+		return err
+	})
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := replacement.CheckWorkspaceSetup(canceled, root, path); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrWorkspacePreserved) {
+		t.Errorf("replacement did not preserve the workspace after canceled inspection: %v", err)
+	}
+	if retry, err := replacement.CheckWorkspaceSetup(t.Context(), root, path); retry || err != nil {
+		t.Errorf("replacement refused verified reuse: retry cleanup=%t, error=%v", retry, err)
+	}
+	if err := replacement.CheckWorkspaceSetupRemoval(t.Context(), root, path); err != nil {
+		t.Errorf("replacement refused verified removal: %v", err)
 	}
 }
 
