@@ -203,6 +203,64 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 	}
 }
 
+func TestCheckpointPublishesWhenAttemptDiffStalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		descriptor := clientTestPolicy()
+		lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
+		checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
+		var diffTimedOut bool
+		var published tracker.NativeRunEvent
+		client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			response := httptest.NewRecorder()
+			switch {
+			case strings.HasSuffix(request.URL.Path, "/validate"):
+				io.WriteString(response, "{}")
+			case strings.HasSuffix(request.URL.Path, "/diff"):
+				<-request.Context().Done()
+				diffTimedOut = errors.Is(request.Context().Err(), context.DeadlineExceeded)
+				return nil, request.Context().Err()
+			case strings.HasSuffix(request.URL.Path, "/events"):
+				if err := request.Context().Err(); err != nil {
+					return nil, err
+				}
+				if err := json.NewDecoder(request.Body).Decode(&published); err != nil {
+					t.Fatal(err)
+				}
+				response.WriteHeader(http.StatusNoContent)
+			default:
+				t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+			}
+			return response.Result(), nil
+		})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		native, err := client.Native("org_example", "prj_example")
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: 5 * time.Second, LeaseTTL: 5 * time.Minute, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := fixtureConnector(native)
+		fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(5 * time.Minute)}, descriptor, "project")
+		execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+		execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
+		execution.data.Sequence = 1
+		execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		if err := execution.Checkpoint(ctx, checkpoint); err != nil {
+			t.Fatal(err)
+		}
+		if !diffTimedOut || ctx.Err() != nil || published.Type != "run.checkpointed" || published.Data.Handoff == nil || *published.Data.Handoff != checkpoint {
+			t.Fatalf("checkpoint after stalled diff = %s %+v, diff timed out = %t, checkpoint context = %v", published.Type, published.Data.Handoff, diffTimedOut, ctx.Err())
+		}
+	})
+}
+
 func TestRunnerSessionStartSurvivesHubOutageWithSameFence(t *testing.T) {
 	for _, test := range []struct {
 		name    string

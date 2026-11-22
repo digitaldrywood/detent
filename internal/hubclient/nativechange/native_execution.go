@@ -1014,6 +1014,8 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	return e.appendEvent(ctx, kind, outcome, checkpoint, nil, len(immediate) != 0)
 }
 
+const checkpointDiffTimeout = 10 * time.Second
+
 func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, worker *tracker.NativeAttemptWorker, immediate bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
@@ -1044,8 +1046,18 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 		data.CompletionBody = e.preparedMessage
 	}
 	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
-		if err := e.postDiff(ctx, data.Sequence); err != nil {
-			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)
+		diffCtx, cancelDiff := ctx, func() {}
+		if kind == "run.checkpointed" {
+			diffBudget := checkpointDiffTimeout
+			if deadline, ok := ctx.Deadline(); ok {
+				diffBudget = min(diffBudget, time.Until(deadline)/2)
+			}
+			diffCtx, cancelDiff = context.WithTimeout(ctx, diffBudget)
+		}
+		diffErr := e.postDiff(diffCtx, data.Sequence)
+		cancelDiff()
+		if diffErr != nil {
+			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", diffErr)
 		}
 	}
 	data.Handoff = checkpoint
