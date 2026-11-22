@@ -37,11 +37,11 @@ func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhas
 }
 
 func VerifyCleanCheckout(ctx context.Context, path, owner string, receipt tracker.NativePhaseReceipt) error {
-	return gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+	return gitexec.WithPublicationCheckoutFromHead(ctx, path, owner, func(read func(...string) (string, error)) error {
 		if err := verifyCheckout(read, receipt); err != nil {
 			return err
 		}
-		return validationcmd.VerifyPublicationTree(ctx, path, read)
+		return validationcmd.VerifyPublicationTreeFromHead(ctx, path, read)
 	})
 }
 

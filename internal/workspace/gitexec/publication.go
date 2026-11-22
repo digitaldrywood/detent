@@ -178,6 +178,16 @@ func VerifyPublicationAncestry(ctx context.Context, path, ancestor, head string)
 }
 
 func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
+	return withPublicationCheckout(ctx, path, owner, false, use)
+}
+
+func WithPublicationCheckoutFromHead(ctx context.Context, path, owner string, use func(read func(...string) (string, error)) error) error {
+	return withPublicationCheckout(ctx, path, owner, true, func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+		return use(read)
+	})
+}
+
+func withPublicationCheckout(ctx context.Context, path, owner string, fromHead bool, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationGit(ctx, path, owner, func(scratch string, source publicationSource) error {
 		head, err := ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")
 		if err != nil {
@@ -193,10 +203,22 @@ func WithPublicationCheckout(ctx context.Context, path, owner string, use func(r
 		if entry, err := os.Lstat(index); err != nil || !entry.Mode().IsRegular() {
 			return errors.Join(errors.New("publication checkout requires a local Git index"), err)
 		}
-		env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+index)
-		read := func(args ...string) (string, error) {
-			options := []string{"--git-dir=" + scratch, "--work-tree=" + path, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.excludesFile=" + filepath.Join(source.common, "info", "exclude")}
-			return withCommandEnvironment(ctx, path, env, true, "", RunCommand, append(options, args...)...)
+		checkoutReader := func(indexPath string) func(...string) (string, error) {
+			env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+indexPath)
+			return func(args ...string) (string, error) {
+				options := []string{"--git-dir=" + scratch, "--work-tree=" + path, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.excludesFile=" + filepath.Join(source.common, "info", "exclude")}
+				return withCommandEnvironment(ctx, path, env, true, "", RunCommand, append(options, args...)...)
+			}
+		}
+		read := checkoutReader(index)
+		if fromHead {
+			if _, err := read("diff-index", "--cached", "--quiet", "--ignore-submodules=none", "HEAD", "--"); err != nil {
+				return fmt.Errorf("verify staged files against the published tree: %w", err)
+			}
+			read = checkoutReader(filepath.Join(scratch, "index"))
+			if _, err := read("read-tree", "HEAD"); err != nil {
+				return fmt.Errorf("prepare index from the published tree: %w", err)
+			}
 		}
 		return use(read, func(repository, refspec string, options ...string) error {
 			return pushPublication(ctx, scratch, repository, refspec, options...)

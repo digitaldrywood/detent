@@ -94,6 +94,14 @@ func VerifyCleanReview(ctx context.Context, path string) error {
 }
 
 func VerifyPublicationTree(ctx context.Context, path string, read func(...string) (string, error)) error {
+	return verifyPublicationTree(ctx, path, read, false)
+}
+
+func VerifyPublicationTreeFromHead(ctx context.Context, path string, read func(...string) (string, error)) error {
+	return verifyPublicationTree(ctx, path, read, true)
+}
+
+func verifyPublicationTree(ctx context.Context, path string, read func(...string) (string, error), fromHead bool) error {
 	if err := verifyCleanReview(read, "--ignore-submodules=dirty"); err != nil {
 		return err
 	}
@@ -126,9 +134,17 @@ func VerifyPublicationTree(ctx context.Context, path string, read func(...string
 		} else if err != nil {
 			return err
 		}
-		if err := gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
-			return VerifyPublicationTree(ctx, submodule, read)
-		}); err != nil {
+		verifySubmodule := func(read func(...string) (string, error)) error {
+			return verifyPublicationTree(ctx, submodule, read, fromHead)
+		}
+		if fromHead {
+			err = gitexec.WithPublicationCheckoutFromHead(ctx, submodule, "", verifySubmodule)
+		} else {
+			err = gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+				return verifySubmodule(read)
+			})
+		}
+		if err != nil {
 			return fmt.Errorf("verify publication submodule: %w", err)
 		}
 	}

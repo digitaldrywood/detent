@@ -223,11 +223,16 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 		name      string
 		hook      string
 		movesHead bool
+		wantStart bool
 	}{
-		{name: "unchanged"},
+		{name: "unchanged", wantStart: true},
+		{name: "unchanged with index flags", hook: "git update-index --assume-unchanged README.md && git update-index --skip-worktree README.md", wantStart: true},
 		{name: "hook changed HEAD", hook: "git switch --detach ", movesHead: true},
 		{name: "hook detached the same HEAD", hook: "git switch --detach HEAD"},
 		{name: "hook changed tracked contents", hook: "printf 'changed\\n' >> README.md"},
+		{name: "hook changed only the staged contents", hook: "printf 'staged\\n' >> README.md && git add README.md && git show HEAD:README.md > README.md"},
+		{name: "hook hid an assume-unchanged edit", hook: "git update-index --assume-unchanged README.md && printf 'hidden\\n' >> README.md"},
+		{name: "hook hid a skip-worktree edit", hook: "git update-index --skip-worktree README.md && printf 'hidden\\n' >> README.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := initRunnerSourceRepo(t)
@@ -282,7 +287,7 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := r.Run(t.Context(), RunRequest{ProjectID: prior.Project, Mode: RunModeImplement, Execution: execution, Issue: issue, AttemptWorkspace: replacement})
-			if tc.hook == "" {
+			if tc.wantStart {
 				if agent.calls != 1 || !result.TurnStarted {
 					t.Fatalf("verified phase checkout did not reach execution: calls=%d error=%v", agent.calls, err)
 				}
