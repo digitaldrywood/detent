@@ -19,7 +19,7 @@ import (
 
 func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow config.Workflow, runtime agentRuntime, backend workspace.Backend, info workspace.Info, issue workspace.Issue, checker BudgetChecker, estimator DispatchEstimator) (string, string, RunResult, error) {
 	if !workflow.Config.Plan.Enabled {
-		return "", "", RunResult{}, nil
+		return "", "", RunResult{}, errors.New("native plan state requires planning to be enabled")
 	}
 	execution, ok := req.Execution.(planphase.Execution)
 	if !ok {
