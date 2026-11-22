@@ -446,6 +446,62 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 	}
 }
 
+func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
+	info := workspace.Info{Path: t.TempDir(), Branch: "native"}
+	dirty := workspace.RecoveryState{HeadSHA: "completed-head", WorkspaceFingerprint: "dirty-digest", TrackedPaths: []string{"example.go"}}
+	backend := &completedExecutionWorkspace{
+		retainedExecutionWorkspace: retainedExecutionWorkspace{
+			fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{dirty}},
+		},
+		finalizationErr: &workspace.SourceFinalizationIncomplete{Status: workspace.MergePrepareStatusDirty},
+	}
+	message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	first := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	second := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{
+		updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}},
+		result:  AgentTurnResult{ThreadID: "implementation-thread", TurnID: "completed-turn"},
+	}}
+	agent.afterTurn = func() {
+		if agent.calls == 1 {
+			return
+		}
+		if agent.request.Workspace != info.Path || agent.request.ReadOnly || second.published ||
+			!strings.Contains(agent.request.Prompt, "stage any remaining issue changes") {
+			t.Fatalf("correction did not reach the writable implementation workspace before publication: workspace=%q read-only=%t published=%t prompt=%q", agent.request.Workspace, agent.request.ReadOnly, second.published, agent.request.Prompt)
+		}
+		backend.finalizationErr = nil
+		backend.onFinalize = func() {
+			backend.recoveryStates[0] = workspace.RecoveryState{HeadSHA: "finalized-head", WorkspaceFingerprint: "clean-digest"}
+		}
+	}
+	cfg := config.Config{}
+	cfg.Agent.MaxTurns = 1
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RunRequest{Execution: first, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+	if _, err := r.Run(t.Context(), request); !errors.Is(err, ErrNativeRecoveryRequired) || first.finish != "interrupted" || first.published || agent.calls != 1 {
+		t.Fatalf("first run lost unfinished source: error=%v outcome=%q published=%t turns=%d", err, first.finish, first.published, agent.calls)
+	}
+	second.recovery.Attempts = []tracker.NativeAttempt{{
+		NativeRunData: tracker.NativeRunData{AttemptID: "first", CompletionBody: message, Steps: first.steps},
+		Status:        first.finish, Checkpoint: first.checkpoint,
+	}}
+	recovered := nativeTurnResumeAttempt(second.recovery)
+	if !phaserecovery.TurnMatches(recovered, &dirty) || recovered.Checkpoint.WorktreeState != "dirty" {
+		t.Fatalf("first run did not produce a reusable dirty turn receipt: %+v", recovered)
+	}
+	request.Execution = second
+	result, err := r.Run(t.Context(), request)
+	if err != nil || result.FinalState != FinalStateCompleted || !second.published || agent.calls != 2 || backend.finalizationCalls != 3 ||
+		second.checkpoint == nil || second.checkpoint.HeadSHA != "finalized-head" || second.checkpoint.WorktreeState != "clean" {
+		t.Fatalf("retry did not correct the restored source: error=%v state=%s published=%t turns=%d finalizations=%d checkpoint=%+v",
+			err, result.FinalState, second.published, agent.calls, backend.finalizationCalls, second.checkpoint)
+	}
+}
+
 func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	result, err := b.fakeCodexClient.RunTurn(ctx, request, update)
 	if !strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
