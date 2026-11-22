@@ -100,7 +100,7 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	if exists && !isDir {
 		return Info{}, fmt.Errorf("workspace path exists and is not a directory: %s", info.Path)
 	}
-	if retry, err := f.uses.CheckWorkspaceSetup(f.root, info.Path); err != nil {
+	if retry, err := f.uses.CheckWorkspaceSetup(ctx, f.root, info.Path); err != nil {
 		if retry {
 			err = f.discardFailedSetup(ctx, info.Path, err)
 		}
@@ -194,7 +194,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
 	}
-	if err := errors.Join(f.uses.CheckRemoval(ctx, info.Path), f.uses.CheckWorkspaceSetupRemoval(f.root, info.Path)); err != nil {
+	if err := errors.Join(f.uses.CheckRemoval(ctx, info.Path), f.uses.CheckWorkspaceSetupRemoval(ctx, f.root, info.Path)); err != nil {
 		return result, err
 	}
 	hookErr := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue)
