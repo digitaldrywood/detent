@@ -53,15 +53,29 @@ func openRetainedLifetime(root *os.Root, path string) (*Lifetime, error) {
 	if info.Mode()&os.ModeNamedPipe == 0 {
 		return nil, errors.New("retained hook lifetime is not a FIFO")
 	}
-	reader, err := root.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	reader, err := openRetainedFile(root, path, info)
 	if err != nil {
 		return nil, err
 	}
-	opened, err := reader.Stat()
-	if err != nil || !os.SameFile(info, opened) {
-		return nil, errors.Join(errors.New("retained hook lifetime changed"), err, reader.Close())
-	}
 	return &Lifetime{reader: reader}, nil
+}
+
+func openRetainedFile(root *os.Root, path string, expected os.FileInfo) (*os.File, error) {
+	parent, err := root.OpenFile(filepath.Dir(path), os.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, err
+	}
+	fd, openErr := unix.Openat(int(parent.Fd()), filepath.Base(path), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	closeErr := parent.Close()
+	if openErr != nil {
+		return nil, errors.Join(&os.PathError{Op: "openat", Path: path, Err: openErr}, closeErr)
+	}
+	file := os.NewFile(uintptr(fd), path)
+	opened, err := file.Stat()
+	if closeErr != nil || err != nil || opened.Mode().Type() != expected.Mode().Type() || !os.SameFile(expected, opened) {
+		return nil, errors.Join(errors.New("verify opened hook evidence"), closeErr, err, file.Close())
+	}
+	return file, nil
 }
 
 func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {

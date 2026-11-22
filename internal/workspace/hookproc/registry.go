@@ -249,6 +249,11 @@ func (o *Owner) stopLocked(ctx context.Context) (int, error) {
 	if o.running {
 		return 0, &HookExitUnverifiedError{Err: ErrWorkspacePreserved}
 	}
+	if o.setup != nil && o.setup.retained.Load() {
+		if err := revokeWorkspaceSetupReady(o.setup.root, o.path); err != nil {
+			return 0, &HookExitUnverifiedError{Err: err}
+		}
+	}
 	count, err := o.descriptor.Reap(ctx, o.path, o.token)
 	if err != nil {
 		return count, &HookExitUnverifiedError{Err: err}
@@ -260,6 +265,12 @@ func (o *Owner) stopLocked(ctx context.Context) (int, error) {
 }
 
 func (o *Owner) release(ctx context.Context) error {
+	if o.setup != nil && o.setup.retained.Load() {
+		if err := ClearWorkspaceSetupPending(o.setup.root, o.path); err != nil {
+			return err
+		}
+		o.setup.retained.Store(false)
+	}
 	if o.finish != nil {
 		cleanup, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -267,11 +278,6 @@ func (o *Owner) release(ctx context.Context) error {
 			return err
 		}
 		o.finish = nil
-	}
-	if o.setup != nil && o.setup.retained.Load() {
-		if err := ClearWorkspaceSetupPending(o.setup.root, o.path); err != nil {
-			return err
-		}
 	}
 	if err := o.descriptor.Close(); err != nil {
 		return err
