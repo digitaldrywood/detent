@@ -145,6 +145,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.Running[event.IssueID] = running
 	}
 	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
+	_, operatorStopping := o.pendingStops[event.IssueID]
+	if nativeCompletion && !operatorStopping && runpkg.UnretiredProviderSession(event.Err) {
+		o.rejectUnavailableCompletion(ctx, state, event, running, event.Err, false)
+		return
+	}
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {

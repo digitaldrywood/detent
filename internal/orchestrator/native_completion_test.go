@@ -457,6 +457,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "published passing version waits for review without implementation redispatch", lifecycle: "review_wait", change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published version retains audit infrastructure failure", lifecycle: "review_audit", runErr: fmt.Errorf("%w: landing security audit: unavailable", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published version retains unparseable validator output", lifecycle: "review_validator", runErr: fmt.Errorf("%w: parse validator result: invalid character", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
+		{name: "unretired validator cannot resume review under the same lease", runErr: errors.Join(runpkg.ErrValidatorInfrastructure, runpkg.ErrProviderSessionUnretired), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1), wantAbandoned: true},
 		{name: "published version retries unparseable validator without completion report", runErr: fmt.Errorf("%w: parse validator result: invalid character", runpkg.ErrValidatorInfrastructure), finalState: runpkg.FinalStateFailed, change: waiting, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, wantState: "Rework", wantSameState: true, wantContinue: true},
 		{name: "verified empty Rework retains published review ownership without implementation redispatch", lifecycle: "review_wait", change: &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", BaseSHA: strings.Repeat("b", 40), HeadSHA: head, Files: 0}, states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
 		{name: "published review wait resumes after Hub timeout", lifecycle: "review_timeout", change: waiting, states: unfinishedWorkflow, sourceState: "In Progress", humanReview: &no, reviewed: &no, finalMessage: strings.Replace(unfinishedReport, "in_progress", "complete", 1)},
@@ -1263,7 +1264,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				return
 			}
 			if test.wantAbandoned {
-				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || !strings.Contains(attempts.completions[0].ErrorMessage, "final diff unavailable") {
+				wantError := "final diff unavailable"
+				if runpkg.UnretiredProviderSession(test.runErr) {
+					wantError = runpkg.ErrProviderSessionUnretired.Error()
+					if scheduling.releases != 0 {
+						t.Fatal("released claim while validator retirement is unverified")
+					}
+				}
+				if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalAbandoned || !strings.Contains(attempts.completions[0].ErrorMessage, wantError) {
 					t.Fatalf("native authority failure = %#v", attempts.completions)
 				}
 				if test.updateErr == nil && len(tick.updates) != 0 || tick.stateIssues[0].State != issue.State || len(state.Blocked) != 0 || len(state.Completed) != 0 || len(state.deferredCompletions) != 0 {
