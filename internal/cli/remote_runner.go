@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -16,12 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
-func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
+func startRemoteRunner(ctx context.Context, cfg BootConfig) (result error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -29,16 +31,49 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	defer cancel()
 	logger := slog.Default()
 	usage := &runner.ProviderUsage{}
-	gate, err := buildGlobalDispatchPools(cfg.Global)
-	if err != nil {
-		return err
-	}
+	var gate *scheduler.PoolRegistry
+	var err error
 	logLevel := runtimeLogLevelForReload(cfg)
 	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
+	lifecycle := cfg.lifecycle
+	if lifecycle == nil && cfg.Global.Client.IdentityFile != "" {
+		lifecycle, err = remoterunner.StartLifecycle(ctx, cfg.Global.Client, cfg.Build, cfg.Version)
+		if err != nil {
+			return err
+		}
+	}
+	ready := false
+	defer func() {
+		if lifecycle == nil {
+			return
+		}
+		if !ready {
+			lifecycle.ReportStartupFailure(ctx)
+			return
+		}
+		reportCtx, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer done()
+		reason := "signal"
+		if cfg.Shutdown != nil && cfg.Shutdown.updateRestart.Load() {
+			reason = "update"
+		} else if cfg.Shutdown != nil && cfg.Shutdown.forceRequested.Load() {
+			reason = "operator_stop"
+		} else if cfg.Shutdown != nil && cfg.Shutdown.shutdownRequested.Load() {
+			reason = "drain_complete"
+		}
+		if err := lifecycle.Report(reportCtx, runnerauth.LifecycleShuttingDown, reason, ""); err != nil {
+			logger.Warn("report runner shutdown", "error", err)
+		}
+	}()
+	gate, err = buildGlobalDispatchPools(cfg.Global)
+	if err != nil {
+		return err
+	}
 	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
+		lifecycle:          lifecycle,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 			if manager == nil {
 				view := project.MissingConfigurationOwner(desired.ProjectID)
@@ -83,6 +118,9 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 		}, receipts)
 	if err != nil {
 		return fmt.Errorf("configure runner worker artifacts: %w", err)
+	}
+	if lifecycle != nil {
+		update.SetLifecycleReporter(lifecycle.Report)
 	}
 	if err := update.PrepareWorkers(ctx); err != nil {
 		return fmt.Errorf("prepare runner worker artifacts: %w", err)
@@ -132,6 +170,12 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	if err := startRunnerProjects(ctx, manager, scheduling); err != nil {
 		return err
 	}
+	if lifecycle != nil {
+		if err := lifecycle.Report(ctx, runnerauth.LifecycleReady, "", ""); err != nil {
+			return err
+		}
+	}
+	ready = true
 	return runWithShutdown(ctx, runningShutdownConfig{
 		Controller: cfg.Shutdown, Registry: manager.Registry(), Logger: logger,
 	}, func(parent context.Context) error {

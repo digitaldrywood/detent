@@ -87,6 +87,9 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	if !stateValid {
 		return observed
 	}
+	if s.cfg.ReportLifecycle != nil {
+		return s.applyHubRequestLocked(ctx, running, request, observed)
+	}
 	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
 		if observed.Supported && observed.Receipt.Request == *request && observed.Receipt.ExecutionReady() && !running.VerifiedRelease && running.Source == "release" && strings.TrimPrefix(request.Version, "v") == strings.TrimPrefix(running.Version, "v") && s.cfg.ReserveIdle != nil {
@@ -311,6 +314,9 @@ func (s *Scheduler) recordEnrolledApplied(applied Status, executionArtifact bool
 }
 
 func (s *Scheduler) enrolledApplyOptions(opts ApplyOptions) ApplyOptions {
+	if s.cfg.ReportLifecycle != nil {
+		opts.ExactRelease = true
+	}
 	receipt, _ := s.enrolledState()
 	if receipt != nil && (receipt.Status == "applying" || receipt.Status == "draining") {
 		opts.ExpectedVersion = receipt.Request.Version
@@ -381,3 +387,35 @@ func enrolledCommit(commit string) string {
 }
 
 func (s *Scheduler) RunningBuild() runnerauth.BuildEvidence { return s.cfg.RunningBuild }
+
+func (s *Scheduler) applyHubRequestLocked(ctx context.Context, running runnerauth.BuildEvidence, request *runnerauth.UpdateRequest, observed *runnerauth.UpdateObservation) *runnerauth.UpdateObservation {
+	if request.Validate() != nil {
+		return observed
+	}
+	if receipt := observed.Receipt; receipt != nil && receipt.Request.Matches(*request) && (receipt.ExecutionReady() || receipt.Status == "restart_requested" || receipt.Status == "running") {
+		return observed
+	}
+	if err := s.cfg.ReportLifecycle(ctx, runnerauth.LifecycleDraining, "", request.Version); err != nil {
+		s.cfg.Logger.Warn("report update drain", "error", err)
+		return observed
+	}
+	if err := s.cfg.ReportLifecycle(ctx, runnerauth.LifecycleUpdating, "", request.Version); err != nil {
+		s.cfg.Logger.Warn("authorize runner update", "error", err)
+		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := s.cfg.ReportLifecycle(reportCtx, runnerauth.LifecycleReady, "", ""); err != nil {
+			s.cfg.Logger.Warn("report rejected update", "error", err)
+		}
+		return observed
+	}
+	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "applying", ObservedAt: s.cfg.Now().UTC()}
+	result := s.applyEnrolledRequestLocked(ctx, running, receipt, nil)
+	if s.Status().State != "restart_requested" {
+		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := s.cfg.ReportLifecycle(reportCtx, runnerauth.LifecycleReady, "", ""); err != nil {
+			s.cfg.Logger.Warn("report update result", "error", err)
+		}
+	}
+	return result
+}
