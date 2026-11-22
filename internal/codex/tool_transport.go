@@ -2,9 +2,12 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,11 +42,27 @@ type toolTransport struct {
 	pending    []Message
 	unresolved bool
 	drain      bool
+	lifetime   *sessiontimeout.Session
+	turn       dynamicToolScope
+	call       *runningDynamicTool
 }
 
-func newToolTransport(ctx context.Context, transport Transport, handler DynamicToolHandler, logger *slog.Logger) *toolTransport {
+type dynamicToolScope struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+}
+
+type runningDynamicTool struct {
+	ctx               context.Context
+	scope             dynamicToolScope
+	requestID         string
+	finishObservation func()
+	cancelObservation context.CancelFunc
+}
+
+func newToolTransport(ctx context.Context, transport Transport, handler DynamicToolHandler, logger *slog.Logger, lifetime *sessiontimeout.Session) *toolTransport {
 	ctx, cancel := context.WithCancelCause(ctx)
-	t := &toolTransport{Transport: transport, cancel: cancel, handler: handler, logger: logger, done: make(chan struct{}), wake: make(chan struct{}, 1)}
+	t := &toolTransport{Transport: transport, cancel: cancel, handler: handler, logger: logger, done: make(chan struct{}), wake: make(chan struct{}, 1), lifetime: lifetime}
 	t.receive = func(readCtx context.Context) (Message, error) { return t.receiveMessage(ctx, readCtx) }
 	go t.run(ctx)
 	return t
@@ -83,9 +102,42 @@ func (t *toolTransport) receiveMessage(toolCtx, ctx context.Context) (Message, e
 	}
 }
 
+func (t *toolTransport) observeTurn(threadID, turnID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	scope := dynamicToolScope{ThreadID: threadID, TurnID: turnID}
+	if t.turn == scope {
+		return
+	}
+	if t.call != nil && t.call.cancelObservation != nil {
+		t.call.cancelObservation()
+		t.call.finishObservation()
+		t.call.cancelObservation, t.call.finishObservation = nil, nil
+		t.unresolved = false
+	}
+	t.turn = scope
+	t.observeCall()
+}
+
+func (t *toolTransport) observeCall() {
+	call := t.call
+	if call == nil || t.turn.ThreadID == "" || t.turn.TurnID == "" || call.scope != t.turn || call.requestID == "" {
+		return
+	}
+	id := fmt.Sprintf("dynamic/%q/%q/%s", call.scope.ThreadID, call.scope.TurnID, call.requestID)
+	ctx, cancel := context.WithCancel(call.ctx)
+	finish, owned := t.lifetime.BeginOwnedCommand(ctx, id)
+	if !owned {
+		cancel()
+		return
+	}
+	call.cancelObservation = cancel
+	call.finishObservation = finish
+	t.unresolved = true
+}
+
 func (t *toolTransport) run(ctx context.Context) {
 	defer close(t.done)
-	var callSequence uint64
 	for {
 		t.mu.Lock()
 		if ctx.Err() != nil && (!t.drain || len(t.pending) == 0) {
@@ -103,10 +155,8 @@ func (t *toolTransport) run(ctx context.Context) {
 		msg := t.pending[0]
 		t.pending[0] = Message{}
 		t.pending = t.pending[1:]
-		t.unresolved = true
 		t.mu.Unlock()
-		callSequence++
-		err := t.handleCall(ctx, msg, callSequence)
+		err := t.handleCall(ctx, msg)
 		t.mu.Lock()
 		if err == nil && ctx.Err() == nil {
 			t.unresolved = false
@@ -118,13 +168,44 @@ func (t *toolTransport) run(ctx context.Context) {
 	}
 }
 
-func (t *toolTransport) handleCall(ctx context.Context, msg Message, sequence uint64) error {
-	ctx, cancel := context.WithTimeout(ctx, dynamicToolTimeout)
+func (t *toolTransport) handleCall(ctx context.Context, msg Message) error {
+	callCtx, cancel := context.WithTimeout(ctx, dynamicToolTimeout)
 	defer cancel()
-	complete := sessiontimeout.ObserveOwnedCommand(ctx, "dynamic/"+strconv.FormatUint(sequence, 10))
-	defer complete()
-	_, err := handleServerRequest(ctx, t, msg, t.handler, nil, t.logger)
+	call := &runningDynamicTool{ctx: callCtx}
+	if json.Unmarshal(msg.Params, &call.scope) == nil {
+		call.requestID = dynamicToolRequestID(msg.ID)
+	}
+	t.mu.Lock()
+	t.call = call
+	t.observeCall()
+	t.mu.Unlock()
+	handlerCtx := sessiontimeout.WithoutCommandObservation(callCtx)
+	_, err := handleServerRequest(ctx, t, msg, func(_ context.Context, request DynamicToolCall) (DynamicToolResult, error) {
+		return t.handler(handlerCtx, request)
+	}, nil, t.logger)
+	t.mu.Lock()
+	if call.finishObservation != nil {
+		call.finishObservation()
+		call.cancelObservation()
+	}
+	t.call = nil
+	t.mu.Unlock()
 	return err
+}
+
+func dynamicToolRequestID(raw json.RawMessage) string {
+	if strings.HasPrefix(strings.TrimSpace(string(raw)), `"`) {
+		var id string
+		if json.Unmarshal(raw, &id) == nil {
+			return strconv.Quote(id)
+		}
+		return ""
+	}
+	var id *int64
+	if json.Unmarshal(raw, &id) != nil || id == nil {
+		return ""
+	}
+	return strconv.FormatInt(*id, 10)
 }
 
 func (t *toolTransport) finish(err error) error {
