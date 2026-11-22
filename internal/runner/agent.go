@@ -2383,6 +2383,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return admission, err
 		}
 	}
+	preStartBinding := true
+	var executionIdentity tracker.NativeExecutionIdentity
 	if req.Execution != nil {
 		start := req.Execution.Start
 
@@ -2394,7 +2396,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			start = phased.StartPhased
 		}
 		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
-		preStartBinding := true
 		if _, binds := req.Execution.(ConversationExecution); binds {
 			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
 				preStartBinding = false
@@ -2406,7 +2407,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 			}
 		}
-		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel, ReasoningEffort: turnRequest.ReasoningEffort}
+		executionIdentity = tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel, ReasoningEffort: turnRequest.ReasoningEffort}
 		if !preStartBinding {
 			executionIdentity = nativeAttemptIdentity(ctx, req.Execution, role, selection.BackendID, &turnRequest)
 			if err := start(ctx, executionIdentity); err != nil {
@@ -2582,6 +2583,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if repair.incomplete != nil {
 			if req.phaseReceipts {
 				if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+					return result, errors.Join(repair, err)
+				}
+			}
+			if turnRecovery != nil && preStartBinding {
+				resumeState, err = r.resumeRestoredTurnCorrection(ctx, &req, turnRecovery.AttemptID, agentRuntime, backend, processRequest, executionIdentity, runWorkspace, info, workspaceIssue)
+				if err != nil {
 					return result, errors.Join(repair, err)
 				}
 			}
