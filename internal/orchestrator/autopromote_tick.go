@@ -94,14 +94,18 @@ func (o *Orchestrator) reconcileReviewLaneIssues(
 		summary.CompletedFinalState = autoPromoteCompletedFinalState(state, issueID)
 		summary.OperationalCompletionAccepted = autoPromoteOperationalCompletionAccepted(state, issue)
 		summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, issueID, cfg, now)
+		summary.SecurityAudit = o.securityAuditEvaluation(ctx, issue)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
-		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
+		if autoPromoteDecisionNeedsWorkpadHydration(decision) || issue.PullRequest != nil {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
+		}
+		if decision.Reason != AutoPromoteReasonWorkpadBlocker && explicitHumanAction(issue) != "" {
+			decision = autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonWorkpadBlocker)
 		}
 		var targetState string
 		if decision.Reason == AutoPromoteReasonWorkpadBlocker {
 			targetState = o.nonReviewDecisionTargetState(issue, autoPromoteTargetState(decision.Action, cfg))
-		} else if !gateRequiresPullRequest(cfg.Gate) && issue.PullRequest == nil {
+		} else if decision.Action == AutoPromoteActionComplete || (!gateRequiresPullRequest(cfg.Gate) && issue.PullRequest == nil) {
 			targetState = autoPromoteTargetState(decision.Action, cfg)
 		}
 		if targetState == "" || normalizeState(targetState) == normalizeState(issue.State) {

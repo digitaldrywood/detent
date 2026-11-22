@@ -355,17 +355,13 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 
 func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
 	t.Parallel()
-	for _, activeState := range []string{"In Progress", "Merging"} {
+	for _, activeState := range []string{"In Progress", "Rework"} {
 		t.Run(activeState, func(t *testing.T) { testDrainStopsDispatchAndLetsRunningSessionFinish(t, activeState) })
 	}
 }
 
 func testDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T, activeState string) {
 	runningIssue := testIssue("issue-running", "owner/repository#11", activeState)
-	if activeState == "Merging" {
-		runningIssue.PullRequest = &connector.PullRequest{Number: 11, URL: "https://github.test/owner/repository/pull/11", State: "OPEN", MergeableState: "clean", CIStatus: "success"}
-		runningIssue.PRRepository = "owner/repository"
-	}
 	nextIssue := testIssue("issue-next", "owner/repository#12", "Todo")
 	tracker := &pendingDispatchConnector{
 		fakeConnector: newFakeConnector(runningIssue, nextIssue),

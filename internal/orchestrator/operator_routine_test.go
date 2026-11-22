@@ -235,15 +235,21 @@ func TestOperatorMergeWedgedSkipsFailedSecurityAudit(t *testing.T) {
 	}
 }
 
+type requiredOnlyConnector struct {
+	connector.Connector
+}
+
 func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name      string
-		passState string
+		name         string
+		passState    string
+		requiredOnly bool
 	}{
 		{name: "default_merging_pass_state", passState: "Merging"},
 		{name: "custom_pass_state", passState: "Ready for Pickup"},
+		{name: "required_connector_only", passState: "Merging", requiredOnly: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -269,6 +275,10 @@ func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 			})
 			mergingPR.State = "Merging"
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive, timedOutActive, mergingPR}}
+			var backend connector.Connector = tracker
+			if tc.requiredOnly {
+				backend = requiredOnlyConnector{Connector: tracker}
+			}
 			cfg := normalizeConfig(Config{
 				MaxConcurrentAgents:  2,
 				MergeFastPathEnabled: true,
@@ -286,7 +296,7 @@ func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 			runner := newWorkerHostRunner()
 			orch := &Orchestrator{
 				cfg:        cfg,
-				connector:  tracker,
+				connector:  backend,
 				supervisor: newTestSupervisor(t, runner, cfg),
 				now:        func() time.Time { return now },
 			}
@@ -423,4 +433,77 @@ func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing
 	if got, want := tracker.fetchComments, []string{blockedReview.ID, cleanReview.ID, blockedTodo.ID, cleanTodo.ID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
 	}
+}
+
+func TestTickReconcilesReviewLaneOperationalCompletionAndAuditedBlocker(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+
+	t.Run("operational completion in human review advances to done", func(t *testing.T) {
+		t.Parallel()
+		accepted := autoPromoteTickIssue("op-accepted", []string{"ops"}, nil)
+		accepted.State = "Human Review"
+		accepted.Description = operationalCompletionAuthorizationBody()
+		accepted.Comments = []connector.IssueComment{{
+			Body: operationalCompletionWorkpadBody("Cleanup verified."),
+		}}
+		unaccepted := autoPromoteTickIssue("op-unaccepted", []string{"ops"}, nil)
+		unaccepted.State = "Human Review"
+		unaccepted.Description = operationalCompletionAuthorizationBody()
+		unaccepted.Comments = []connector.IssueComment{{
+			Body: operationalCompletionWorkpadBody("Cleanup verified."),
+		}}
+		tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{accepted, unaccepted}}
+		cfg := normalizeConfig(Config{
+			ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+			ObservedStates: []string{"Human Review"},
+			TerminalStates: []string{"Done"},
+			AutoPromote: AutoPromoteConfig{
+				Enabled:     true,
+				SourceState: "Human Review",
+				PassState:   "Merging",
+				Gate:        gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+		})
+		orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+		state := newState(cfg)
+		state.Completed[accepted.ID] = Completed{
+			Issue:          cloneIssue(accepted),
+			FinalState:     FinalStateCompleted,
+			CompletedAt:    now.Add(-time.Minute),
+			CompletionKind: "operational",
+		}
+		orch.tick(t.Context(), &state, now)
+		want := []autoPromoteTickUpdate{{issueID: accepted.ID, state: "Done"}}
+		if !reflect.DeepEqual(tracker.updates, want) {
+			t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+		}
+	})
+
+	t.Run("audited PR in human review routes explicit human request to blocked", func(t *testing.T) {
+		t.Parallel()
+		orch, tracker, issue := mergingSecurityAuditFixture()
+		issue.State = "Human Review"
+		orch.cfg.ObservedStates = []string{"Human Review", "Blocked"}
+		orch.cfg.AutoPromote.SourceState = "Human Review"
+		orch.now = func() time.Time { return now }
+		tracker.stateIssues = []connector.Issue{issue}
+		tracker.issueComments = map[string][]connector.IssueComment{
+			issue.ID: {{
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve production cutover\n```",
+			}},
+		}
+		if _, err := orch.securityAuditStore.RecordSecurityAuditRun(t.Context(), securityAuditPassingRun(issue)); err != nil {
+			t.Fatal(err)
+		}
+		state := newState(orch.cfg)
+		orch.tick(t.Context(), &state, now)
+		want := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}
+		if !reflect.DeepEqual(tracker.updates, want) {
+			t.Fatalf("updates = %#v, want %#v", tracker.updates, want)
+		}
+		if got, wantComments := tracker.fetchComments, []string{issue.ID}; !reflect.DeepEqual(got, wantComments) {
+			t.Fatalf("FetchIssueComments = %#v, want %#v", got, wantComments)
+		}
+	})
 }

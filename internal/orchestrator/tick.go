@@ -922,7 +922,21 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
-	return o.connector.FetchCandidateIssues(ctx)
+	issues, err := o.connector.FetchCandidateIssues(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if stateIn(autoPromoteMergingState, states) {
+		return issues, nil
+	}
+	filtered := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) {
+			continue
+		}
+		filtered = append(filtered, issue)
+	}
+	return filtered, nil
 }
 
 func (o *Orchestrator) NativeAdmissionContext() (tracker.NativeAdmissionContext, bool) {
