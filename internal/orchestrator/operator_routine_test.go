@@ -133,19 +133,33 @@ func TestOperatorMergeWedgedCandidate(t *testing.T) {
 	}
 }
 
+type operatorQueueInspectingConnector struct {
+	*autoPromoteTickMergeConnector
+	status connector.PullRequestMergeQueueStatus
+	err    error
+}
+
+func (c *operatorQueueInspectingConnector) InspectPullRequestMergeQueue(context.Context, connector.Issue) (connector.PullRequestMergeQueueStatus, error) {
+	return c.status, c.err
+}
+
 func TestOperatorMergeWedgedPullRequestsMergesAndRecords(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 4, 59, 0, 0, time.UTC)
 	deliveredAt := now.Add(5 * time.Minute)
 	for _, tt := range []struct {
-		name       string
-		actions    []string
-		wantMerges int
-		mergeError error
+		name        string
+		actions     []string
+		wantMerges  int
+		mergeError  error
+		queueStatus *connector.PullRequestMergeQueueStatus
+		queueError  error
 	}{
-		{"enabled", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, nil},
-		{"default off", nil, 0, nil},
-		{"failed merge", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, errors.New("merge failed")},
+		{"enabled", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, nil, nil, nil},
+		{"default off", nil, 0, nil, nil, nil},
+		{"failed merge", []string{workflowconfig.OperatorActionMergeWhenWedged}, 1, errors.New("merge failed"), nil, nil},
+		{"provider reports queued", []string{workflowconfig.OperatorActionMergeWhenWedged}, 0, nil, &connector.PullRequestMergeQueueStatus{Available: true, Entry: &connector.PullRequestMergeQueueEntry{ID: "MQE"}}, nil},
+		{"provider queue inspection fails", []string{workflowconfig.OperatorActionMergeWhenWedged}, 0, nil, &connector.PullRequestMergeQueueStatus{}, errors.New("queue read unavailable")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -155,7 +169,15 @@ func TestOperatorMergeWedgedPullRequestsMergesAndRecords(t *testing.T) {
 			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeMethod: "squash", Operator: OperatorConfig{Actions: tt.actions}})
 			tracker.err = tt.mergeError
 			tracker.afterMerge = func() { clock = deliveredAt }
-			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return clock }}
+			var backend connector.Connector = tracker
+			if tt.queueStatus != nil || tt.queueError != nil {
+				status := connector.PullRequestMergeQueueStatus{}
+				if tt.queueStatus != nil {
+					status = *tt.queueStatus
+				}
+				backend = &operatorQueueInspectingConnector{autoPromoteTickMergeConnector: tracker, status: status, err: tt.queueError}
+			}
+			orch := &Orchestrator{cfg: cfg, connector: backend, now: func() time.Time { return clock }}
 			state := newState(cfg)
 			transitioned := orch.operatorMergeWedgedPullRequests(t.Context(), &state, []connector.Issue{issue}, now)
 			wantTransitions := tt.wantMerges
