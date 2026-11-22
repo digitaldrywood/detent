@@ -167,6 +167,16 @@ func withPublicationGit(ctx context.Context, path, owner string, use func(string
 	return use(scratch, source)
 }
 
+func VerifyPublicationAncestry(ctx context.Context, path, ancestor, head string) error {
+	if !ValidHead(ancestor) || !ValidHead(head) {
+		return errors.New("publication ancestry requires exact commit IDs")
+	}
+	return withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
+		_, err := ReadPublicationSource(ctx, scratch, "merge-base", "--is-ancestor", ancestor, head)
+		return err
+	})
+}
+
 func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationGit(ctx, path, owner, func(scratch string, source publicationSource) error {
 		head, err := ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")

@@ -33,7 +33,20 @@ func readHead(read func(...string) (string, error)) (string, string, error) {
 }
 
 func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhaseReceipt) error {
-	head, tree, err := Head(ctx, path)
+	return verifyCheckout(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) }, receipt)
+}
+
+func VerifyCleanCheckout(ctx context.Context, path, owner string, receipt tracker.NativePhaseReceipt) error {
+	return gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+		if err := verifyCheckout(read, receipt); err != nil {
+			return err
+		}
+		return validationcmd.VerifyPublicationTree(ctx, path, read)
+	})
+}
+
+func verifyCheckout(read func(...string) (string, error), receipt tracker.NativePhaseReceipt) error {
+	head, tree, err := readHead(read)
 	if err != nil {
 		return err
 	}

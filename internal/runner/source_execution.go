@@ -66,6 +66,26 @@ func (e *sourceGateRepair) Unwrap() error { return e.err }
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
+func itemPhaseFromPriorLease(phase *tracker.NativePhaseReceipt, leaseID tracker.LeaseID) bool {
+	return phase != nil && phase.LeaseID != "" && leaseID != "" && phase.LeaseID != leaseID
+}
+
+func verifyReplacementItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
+	if state == nil || state.HeadSHA != issue.PhaseSource.HeadSHA {
+		return fmt.Errorf("%w: checkout after setup differs from the recorded phase head or is unavailable", ErrNativeRecoveryRequired)
+	}
+	verifier, ok := backend.(interface {
+		VerifyItemPhaseCheckout(context.Context, workspace.Info, workspace.Issue) error
+	})
+	if !ok {
+		return fmt.Errorf("%w: workspace cannot verify the recorded phase after setup", ErrNativeRecoveryRequired)
+	}
+	if err := verifier.VerifyItemPhaseCheckout(ctx, info, issue); err != nil {
+		return fmt.Errorf("%w: verify the recorded phase after setup: %w", ErrNativeRecoveryRequired, err)
+	}
+	return nil
+}
+
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
 	if !req.phaseReceipts {
 		return nil

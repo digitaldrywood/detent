@@ -1859,7 +1859,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		recovery := req.Execution.Recovery()
 		pushed := continuation.LastPushed
 		if pushed != nil {
-			replacementPhase := pushed.LeaseID != "" && recovery.Lease.ID != "" && pushed.LeaseID != recovery.Lease.ID
+			replacementPhase := itemPhaseFromPriorLease(pushed, recovery.Lease.ID)
 			changeDiffers := recovery.Change != nil && recovery.Change.HeadSHA != pushed.HeadSHA
 			previous := recovery.SourceAttempt()
 			explicitRework := runworkspace.RunRole(mode, req.Issue) == RoleRework && previous != nil && previous.Status == "succeeded"
@@ -2218,6 +2218,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	attempt := req.Attempt
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+	if workspaceIssue.VerifyPhaseBranch && itemPhaseFromPriorLease(workspaceIssue.PhaseSource, req.Execution.Recovery().Lease.ID) {
+		if err := verifyReplacementItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
+			return RunResult{}, err
+		}
+	}
 	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
 		if !req.phaseReceipts {
 			req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
