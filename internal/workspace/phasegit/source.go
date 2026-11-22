@@ -91,8 +91,8 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		if previous != expected && previous != head {
 			return moved()
 		}
-		if previous != "" && previous != head {
-			if _, err := read("merge-base", "--is-ancestor", previous, head); err != nil {
+		if expected != "" && expected != head {
+			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}

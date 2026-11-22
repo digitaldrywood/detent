@@ -25,23 +25,24 @@ func PublishPhase(ctx context.Context, execution PhaseReceiptExecution, backend 
 	if !ok {
 		return workspace.PhaseSource{}, errors.New("workspace cannot publish an item phase")
 	}
-	if carry != nil && issue.ExpectedPhaseRemoteHead == "" {
-		for _, receipt := range carry.Receipts {
-			if receipt.Phase != phase {
-				continue
-			}
-			head, tree, err := publisher.ItemPhaseHead(ctx, info, issue)
-			if err != nil {
-				return workspace.PhaseSource{}, err
-			}
-			if receipt.HeadSHA == head && receipt.TreeSHA == tree {
-				return workspace.PhaseSource{}, nil
-			}
+	if carry != nil {
+		if issue.PublicationRepository == "" {
+			issue.PublicationRepository = carry.RepositoryURL
+		}
+		if issue.ExpectedPhaseRemoteHead == "" && info.PhaseRemoteHead == nil && carry.LastPushed != nil {
+			info.PhaseRemoteHead = &carry.LastPushed.HeadSHA
 		}
 	}
 	branch, head, tree, err := publisher.PushItemPhase(ctx, info, issue, execution.VerifyPhaseAuthority)
 	if err != nil {
 		return workspace.PhaseSource{}, err
+	}
+	if carry != nil && issue.ExpectedPhaseRemoteHead == "" {
+		for _, receipt := range carry.Receipts {
+			if receipt.Phase == phase && receipt.Branch == branch && receipt.HeadSHA == head && receipt.TreeSHA == tree {
+				return workspace.PhaseSource{}, nil
+			}
+		}
 	}
 	if err := execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, input); err != nil {
 		return workspace.PhaseSource{}, err
