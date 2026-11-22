@@ -190,17 +190,16 @@ func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
 	}
 	e.workerMu.Lock()
 	e.workers = append(pending, e.workers[len(workers):]...)
+	e.cancelMu.Lock()
 	if len(e.workers) == 0 {
 		e.workerLauncher = nil
-	}
-	e.workerMu.Unlock()
-	e.cancelMu.Lock()
-	if len(failures) > 0 {
-		e.supervisionLost = true
-	} else if len(workers) > 0 {
 		e.unretiredProvider = false
 	}
+	if len(failures) > 0 {
+		e.supervisionLost = true
+	}
 	e.cancelMu.Unlock()
+	e.workerMu.Unlock()
 	return errors.Join(failures...)
 }
 
