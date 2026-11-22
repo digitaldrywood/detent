@@ -357,11 +357,13 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 		moveItem             bool
 		remoteMatchesRebased bool
 		secondRound          bool
+		recoverAdvanced      bool
 		afterPreservation    string
 	}{
 		{name: "already published"},
 		{name: "base advances", advanceBase: true},
 		{name: "next rework round uses newly receipted head", advanceBase: true, secondRound: true},
+		{name: "recovered checkout advances its publication expectation", advanceBase: true, secondRound: true, recoverAdvanced: true},
 		{name: "item ref moves", advanceBase: true, moveItem: true},
 		{name: "remote matches rebased head without published history", advanceBase: true, remoteMatchesRebased: true},
 		{name: "item ref rewinds after preservation", advanceBase: true, afterPreservation: "rewind"},
@@ -407,6 +409,12 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			ref := "refs/heads/" + branch
 			git(prior.Path, "push", "origin", "HEAD:"+ref)
 			receipt := tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: published, TreeSHA: git(prior.Path, "rev-parse", "HEAD^{tree}")}
+			checkoutHead := published
+			if tc.recoverAdvanced {
+				git(prior.Path, "commit", "--allow-empty", "-m", "push before recording receipt")
+				git(prior.Path, "push", "origin", "HEAD:"+ref)
+				checkoutHead = git(prior.Path, "rev-parse", "HEAD")
+			}
 			if tc.advanceBase {
 				commitFile(source, "base.txt")
 				if tc.remoteMatchesRebased {
@@ -422,10 +430,10 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if head := git(info.Path, "rev-parse", "HEAD"); head != published {
-				t.Fatalf("replacement checkout starts at %s, want published %s", head, published)
+			if head := git(info.Path, "rev-parse", "HEAD"); head != checkoutHead {
+				t.Fatalf("replacement checkout starts at %s, want published %s", head, checkoutHead)
 			}
-			remoteHead := published
+			remoteHead := checkoutHead
 			if tc.moveItem {
 				remoteHead = commitFile(prior.Path, "other.txt")
 				git(prior.Path, "push", "origin", "HEAD:"+ref)
@@ -460,19 +468,20 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			message := fmt.Sprintf("```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: %s\n  completion_evidence: Verified the published source\n```", published)
+			message := fmt.Sprintf("```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: %s\n  completion_evidence: Verified the published source\n```", checkoutHead)
+			phaseSource := info.RecoveredPhase
 			req := RunRequest{
 				Issue: item, Execution: execution, finalizeNativeWork: true, phaseReceipts: true, phaseContinuation: &execution.continuation,
-				publishedPhaseSource: &workspace.PhaseSource{},
+				publishedPhaseSource: &phaseSource,
 				retainedReview:       &retainedReviewWorkspace{backend: publication, info: info, issue: issue, message: message},
 			}
 			_, err = r.prepareExecutionCompletion(ctx, req, publication, info, issue, AgentResume{}, true)
 			if tc.secondRound {
-				if err != nil || execution.publication.HeadSHA == "" || execution.publication.HeadSHA == published {
+				if err != nil || execution.publication.HeadSHA == "" || execution.publication.HeadSHA == checkoutHead {
 					t.Fatalf("first round receipt = %+v, error = %v", execution.publication, err)
 				}
 				firstRound := execution.publication
-				issue.NoChangeNeeded, issue.NativeRework = false, true
+				issue.NoChangeNeeded, issue.NativeRework = false, !tc.recoverAdvanced
 				writePath := filepath.Join(info.Path, "repair.txt")
 				if err := os.WriteFile(writePath, []byte("rework\n"), 0o600); err != nil {
 					t.Fatal(err)
