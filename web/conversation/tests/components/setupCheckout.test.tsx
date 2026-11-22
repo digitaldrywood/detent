@@ -118,6 +118,33 @@ async function mountSetup(onNavigate?: (to: string) => void) {
   );
 }
 
+function controlSetupPoll() {
+  const schedule: typeof import("node:timers").setTimeout = window.setTimeout;
+  const cancel = window.clearTimeout;
+  let pending: { timer: ReturnType<typeof window.setTimeout>; run: () => void } | undefined;
+
+  vi.spyOn(window, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    if (delay !== 5_000 || typeof callback !== "function") return schedule(callback, delay, ...args);
+    const timer = schedule(() => {}, delay);
+    cancel(timer);
+    pending = { timer, run: () => callback(...args) };
+    return timer;
+  });
+  vi.spyOn(window, "clearTimeout").mockImplementation((timer) => {
+    if (pending?.timer === timer) pending = undefined;
+    cancel(timer);
+  });
+
+  return async () => {
+    const poll = await waitFor(() => {
+      expect(pending).toBeDefined();
+      return pending!;
+    });
+    window.clearTimeout(poll.timer);
+    await act(async () => poll.run());
+  };
+}
+
 it("retries a failed repository request while the setup read still reports pending", async () => {
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
@@ -151,7 +178,9 @@ it("retries a failed repository request while the setup read still reports pendi
 it("preserves unsaved setup choices and fields through refresh, then saves and switches projects", async () => {
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
-  let finishRefresh: (() => void) | undefined;
+  let finishRefresh = () => {};
+  const refreshHeld = new Promise<void>((resolve) => { finishRefresh = resolve; });
+  let refreshStarted = false;
   let deferRefresh = false;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
@@ -159,25 +188,17 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
       return Response.json({ ...await response.json(), checkout_repository: String(input).includes("proj_alpha") ? "example-org/another-project" : "example-org/example-project", checkout_verified: true });
     }
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET") && response.ok) {
+      const data = await response.json();
       if (deferRefresh) {
         deferRefresh = false;
-        await new Promise<void>((resolve) => { finishRefresh = resolve; });
+        refreshStarted = true;
+        await refreshHeld;
       }
-      const data = await response.json();
       return Response.json({ ...data, runners: data.runners.map((entry: Record<string, unknown>) => ({ ...entry, local_checks: { checkout: "passed", configuration: "missing", doctor: "pending", provider: "pending", observed_at: new Date().toISOString() } })) });
     }
     return response;
   });
-  let poll: (() => void) | undefined;
-  const setInterval = window.setInterval;
-  vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
-    const timer = setInterval(callback, delay, ...args);
-    if (delay === 5_000 && typeof callback === "function") {
-      poll = callback as () => void;
-      window.clearInterval(timer);
-    }
-    return timer as unknown as ReturnType<typeof window.setInterval>;
-  });
+  const poll = controlSetupPoll();
   const view = mount();
   const context = await screen.findByRole("region", { name: "Project setup context" });
   expect(within(context).getByText("Setting up a project in Mock organization")).toBeTruthy();
@@ -190,20 +211,22 @@ it("preserves unsaved setup choices and fields through refresh, then saves and s
   expect(within(stepper).getByText("Run files", { exact: true })).toBeTruthy();
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Checkout/ }));
-  deferRefresh = true;
-  expect(poll).toBeDefined();
-  act(() => poll!());
-  await waitFor(() => expect(finishRefresh).toBeDefined());
-  await user.click(screen.getByRole("radio", { name: /Create starter files on/ }));
-  await user.click(screen.getByRole("button", { name: /Run files/ }));
-  await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
   const fields = [
     ["Service id", "service_example"],
     ["Gateway origin", "https://artifacts.example.com"],
     ["Publisher token id", "token_example"],
   ] as const;
-  for (const [label, value] of fields) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
-  await act(async () => finishRefresh!());
+  try {
+    deferRefresh = true;
+    await poll();
+    await waitFor(() => expect(refreshStarted).toBe(true));
+    await user.click(screen.getByRole("radio", { name: /Create starter files on/ }));
+    await user.click(screen.getByRole("button", { name: /Run files/ }));
+    await user.click(screen.getByRole("radio", { name: "Your bucket and gateway" }));
+    for (const [label, value] of fields) fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+  } finally {
+    await act(async () => finishRefresh());
+  }
   expect((screen.getByRole("radio", { name: "Your bucket and gateway" }) as HTMLInputElement).checked).toBe(true);
   for (const [label, value] of fields) expect((screen.getByRole("textbox", { name: label }) as HTMLInputElement).value).toBe(value);
   expect(screen.getByRole("button", { name: "Help for Publisher token id" })).toBeTruthy();
@@ -423,13 +446,7 @@ it.each([false, true])("enrolls inline when there are no runners and advances wh
   const mount = await mountSetup();
   const fetch = globalThis.fetch;
   let connected = false;
-  let poll: (() => void) | undefined;
-  const setInterval = window.setInterval;
-  vi.spyOn(window, "setInterval").mockImplementation((callback, delay, ...args) => {
-    const timer = setInterval(callback, delay, ...args);
-    if (delay === 5_000 && typeof callback === "function") { poll = callback as () => void; window.clearInterval(timer); }
-    return timer as unknown as ReturnType<typeof window.setInterval>;
-  });
+  const poll = controlSetupPoll();
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const response = await fetch(input, init);
     if (String(input).endsWith("/onboarding") && (!init?.method || init.method === "GET")) {
@@ -448,7 +465,7 @@ it.each([false, true])("enrolls inline when there are no runners and advances wh
     await userEvent.setup().click(screen.getByRole("button", { name: "Enroll a runner" }));
   }
   connected = true;
-  await act(async () => poll!());
+  await poll();
   expect(await screen.findByRole("heading", { level: 1, name: "Which repository is beta?" })).toBeTruthy();
   await userEvent.setup().click(screen.getByRole("button", { name: /Runner action required/ }));
   expect((screen.getByRole("radio", { name: /New build runner/ }) as HTMLInputElement).checked).toBe(true);

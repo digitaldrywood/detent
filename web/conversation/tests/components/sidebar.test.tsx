@@ -464,6 +464,8 @@ it("shares findings snapshots across rerenders and refreshes only the project na
 });
 
 it("retains successful findings and recovers a failed project on its next named invalidation", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  vi.spyOn(Math, "random").mockReturnValue(0);
   vi.stubGlobal("EventSource", Source);
   const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
   let fail = true;
@@ -476,9 +478,12 @@ it("retains successful findings and recovers a failed project on its next named 
   await act(async () => {});
   expect(hook.result.current.error).toBe(true);
   fail = false;
-  await act(async () => Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
-    data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
-  })));
+  await act(async () => {
+    Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
+      data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
+    }));
+    await vi.advanceTimersByTimeAsync(500);
+  });
   expect(hook.result.current.error).toBe(false);
   expect(hook.result.current.read?.last_tick_at).toBe("2026-10-06T10:00:00Z");
   expect(mocks.listHealthFindings.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p2"]);
