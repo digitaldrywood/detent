@@ -313,6 +313,46 @@ func TestSupervisorPropagatesCancellationCause(t *testing.T) {
 	}
 }
 
+func TestSupervisorDistinguishesValidationAndParentDeadlines(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name          string
+		parentTimeout time.Duration
+		wantSource    string
+	}{
+		{name: "validation scan expires", parentTimeout: time.Hour},
+		{name: "parent expires", wantSource: "orchestrator.parent_context"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(t.Context(), tt.parentTimeout)
+			defer cancel()
+			scanCtx, stopScan := context.WithTimeout(ctx, 0)
+			defer stopScan()
+			scanErr := fmt.Errorf("scan workspace processes: %w", scanCtx.Err())
+			validationErr := failedStep("validation", scanErr)
+			supervisor, err := NewSupervisor(staticBackend{err: validationErr}, SupervisorConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			completion := supervisor.Run(ctx, RunRequest{Issue: connector.Issue{ID: "issue-validation"}})
+			if !errors.Is(completion.Err, validationErr) || !errors.Is(completion.Err, context.DeadlineExceeded) || !completion.Retryable {
+				t.Fatalf("completion lost the retryable validation failure: %+v", completion)
+			}
+			var cause *CancellationCause
+			if tt.wantSource == "" {
+				if errors.As(completion.Err, &cause) {
+					t.Fatalf("validation scan deadline attributed to attempt cancellation: %v", cause)
+				}
+			} else if !errors.As(completion.Err, &cause) || cause.Source != tt.wantSource || cause.Reason != "deadline_exceeded" {
+				t.Fatalf("cancellation = %v, want deadline_exceeded from %s", cause, tt.wantSource)
+			}
+		})
+	}
+}
+
 func TestSupervisorUsesFlatSameAttemptRetryForTransientOverload(t *testing.T) {
 	t.Parallel()
 
@@ -786,13 +826,14 @@ func (e backendError) BackendErrorMessage() string {
 type staticBackend struct {
 	result   RunResult
 	returned chan struct{}
+	err      error
 }
 
 func (b staticBackend) Run(context.Context, RunRequest) (RunResult, error) {
 	if b.returned != nil {
 		close(b.returned)
 	}
-	return b.result, nil
+	return b.result, b.err
 }
 
 type cancelCompletionBackend struct {
