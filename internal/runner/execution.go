@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
@@ -254,31 +256,45 @@ type ChangeSourceExecution interface {
 // A run with no pull request base is diffed against the base resolved when
 // the source is made, so every generation of one run shares a base.
 func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	return r.worktreeDiffSource(info, issue, attemptDiffBase(ctx, info, issue))
+}
+
+func attemptDiffBase(ctx context.Context, info workspace.Info, issue workspace.Issue) string {
 	base := strings.TrimSpace(issue.BaseRef)
 	if base == "" {
 		base = workspace.AttemptBase(ctx, info.Path)
 	}
+	return base
+}
+
+func (r *Runner) setAttemptDiffSource(ctx context.Context, req *RunRequest, execution DiffExecution, info workspace.Info, issue workspace.Issue) {
+	req.attemptDiffBase = attemptDiffBase(ctx, info, issue)
+	execution.SetDiffSource(r.worktreeDiffSource(info, issue, req.attemptDiffBase))
+}
+
+func (r *Runner) worktreeDiffSource(info workspace.Info, issue workspace.Issue, base string) AttemptDiffSource {
 	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
 		if err != nil {
 			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
 			return tracker.AttemptDiffRequest{}, false
 		}
-		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
-		for _, file := range diffs.Files {
-			request.Files = append(request.Files, tracker.AttemptDiffFile{
-				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
-				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
-			})
-		}
-		if diffs.Truncated {
-			// The whole patch output exceeded the bound, so the counts are
-			// posted without patches rather than with a patch set that stops
-			// partway through the change.
-			request.Files = tracker.StripDiffPatches(request.Files)
-		}
-		return request, true
+		return attemptDiffRequest(diffs), true
 	}
+}
+
+func attemptDiffRequest(diffs workspace.FileDiffs) tracker.AttemptDiffRequest {
+	request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
+	for _, file := range diffs.Files {
+		request.Files = append(request.Files, tracker.AttemptDiffFile{
+			Path: file.Path, OldPath: file.OldPath, Status: file.Status,
+			Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
+		})
+	}
+	if diffs.Truncated {
+		request.Files = tracker.StripDiffPatches(request.Files)
+	}
+	return request
 }
 
 func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -888,8 +904,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				} else if base != "" {
 					issue.BaseRef = base
 					if diffs, ok := req.Execution.(DiffExecution); ok {
-						req.attemptDiffSource = r.attemptDiffSource(ctx, info, issue)
-						diffs.SetDiffSource(req.attemptDiffSource)
+						r.setAttemptDiffSource(ctx, &req, diffs, info, issue)
 					}
 				}
 			}
@@ -1002,7 +1017,10 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	} else if turnStarted {
 		checkpoint.Resume = "fresh_checkout"
 	}
-	req.checkpointRefs.apply(&checkpoint)
+	phase := req.publishedPhaseSource
+	if checkpoint.WorktreeState != "unpushed" || phase == nil || phase.HeadSHA == "" || phase.HeadSHA != checkpoint.HeadSHA {
+		req.checkpointRefs.apply(&checkpoint)
+	}
 	artifactCtx, cancelArtifacts := r.artifactCompletionContext(ctx, req.Execution)
 	defer cancelArtifacts()
 	var artifactErr error
@@ -1026,19 +1044,22 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	}
 	var diffErr error
 	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
-		source := req.attemptDiffSource
-		if source == nil {
-			source = r.attemptDiffSource(ctx, info, issue)
+		base := req.attemptDiffBase
+		if base == "" {
+			base = attemptDiffBase(ctx, info, issue)
 		}
-		finalDiff, available := source(ctx)
-		if !available || checkpoint.HeadSHA == "" || finalDiff.HeadSHA != checkpoint.HeadSHA {
-			diffErr = failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+		finalDiff, err := workspace.GitCommitFileDiffs(ctx, info.Path, base, checkpoint.HeadSHA, tracker.MaxDiffBytes)
+		if err != nil {
+			diffErr = failedStep("checkpoint_recovery", errors.Join(ErrNativeRecoveryRequired, err))
 		} else {
+			request := attemptDiffRequest(finalDiff)
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				if current, available := source(ctx); available {
-					return current, true
+				head, err := gitexec.Run(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+				if err == nil {
+					return request, strings.TrimSpace(head) == request.HeadSHA
 				}
-				return finalDiff, true
+				_, statErr := os.Stat(info.Path)
+				return request, errors.Is(statErr, os.ErrNotExist)
 			})
 		}
 	}
