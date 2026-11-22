@@ -615,20 +615,32 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			}
 			finish = e.data.Sequence + 1
 		}
-		if e.storedSeq != finish && e.releaseDelivery == nil {
-			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
-				err = e.executionError(ctx, err)
-				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+		var diffErr error
+		if e.releaseDelivery == nil {
+			switch {
+			case e.storedSeq != finish:
+				diffErr = e.postDiff(ctx, finish)
+			case !e.settled && e.ownsChangeCompletion() && e.diffSource != nil:
+				stored := e.lastDiff
+				diffErr = e.captureDiff(ctx)
+				if diffErr == nil && stored != nil && (stored.HeadSHA != e.lastDiff.HeadSHA || stored.BaseSHA != e.lastDiff.BaseSHA) {
+					e.lastDiff = nil
+					diffErr = errors.New("the stored attempt diff no longer matches the live source")
 				}
-				if nativeTransportUnavailable(err) {
-					e.change = &runner.NativeChange{Error: err.Error()}
-				} else {
-					e.change = &runner.NativeChange{VersionError: err.Error(), VersionCode: hubErrorCode(err)}
-					e.settled = true
-				}
-				return nil
 			}
+		}
+		if diffErr != nil && e.ownsChangeCompletion() {
+			err := e.executionError(ctx, diffErr)
+			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			}
+			if nativeTransportUnavailable(err) {
+				e.change = &runner.NativeChange{Error: err.Error()}
+			} else {
+				e.change = &runner.NativeChange{VersionError: err.Error(), VersionCode: hubErrorCode(err)}
+				e.settled = true
+			}
+			return nil
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
 			err = e.executionError(ctx, err)
@@ -974,6 +986,9 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 		if request, ok := e.diffSource(ctx); ok {
 			diff = &request
 			available = true
+		} else if request.HeadSHA != "" {
+			e.lastDiff = nil
+			return errors.New("worktree HEAD moved after the attempt diff was captured")
 		}
 	}
 	if diff == nil {
