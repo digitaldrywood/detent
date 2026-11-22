@@ -13,6 +13,42 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestCheckpointDoesNotCaptureAnOlderDiffHead(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Resume after publishing the next phase")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	old, current := nativeChangeFixtureHead("c"), nativeChangeFixtureHead("d")
+	e.SetDiffSource(nativeChangeDiff(old, "README.md"))
+	checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: old, WorkspaceDigest: strings.Repeat("a", 64), ExternalEffect: "none", EffectState: "none"}
+	if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if e.lastDiff == nil || e.lastDiff.HeadSHA != old {
+		t.Fatal("the first checkpoint did not cache the earlier diff")
+	}
+	e.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+		return tracker.AttemptDiffRequest{}, false
+	})
+	var captured []string
+	e.SetChangeSource(func(_ context.Context, _, head string) (tracker.ChangeSourceCapture, error) {
+		captured = append(captured, head)
+		return tracker.ChangeSourceCapture{}, io.ErrUnexpectedEOF
+	})
+	checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = current, strings.Repeat("b", 64), "unpushed"
+	for range 2 {
+		if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+			t.Fatalf("checkpoint should survive an unavailable diagnostic diff: %v", err)
+		}
+	}
+	if len(captured) != 0 || e.data.Handoff.HeadSHA != current || e.storedSeq == e.data.Sequence {
+		t.Fatalf("stale diff was used for the new checkpoint: captured=%v checkpoint=%s diff sequence=%d run sequence=%d", captured, e.data.Handoff.HeadSHA, e.storedSeq, e.data.Sequence)
+	}
+}
+
 func TestNativePublicationRetainsSourceAfterRunProgress(t *testing.T) {
 	for _, progress := range []bool{false, true} {
 		t.Run(map[bool]string{false: "gate passed", true: "progress after final diff"}[progress], func(t *testing.T) {

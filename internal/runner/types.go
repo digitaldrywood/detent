@@ -679,7 +679,7 @@ type RunRequest struct {
 	repairResume              bool
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
-	attemptDiffSource         AttemptDiffSource
+	attemptDiffBase           string
 	validationEvidenceSource  AttemptDiffSource
 	reviewSource              func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error)
 	retainedReview            *retainedReviewWorkspace

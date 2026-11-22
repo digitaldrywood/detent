@@ -95,15 +95,19 @@ func (e *finalizingDiffExecution) SetDiffSource(source AttemptDiffSource) {
 
 func TestCompletedNativeFinalizationDiff(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		commit       bool
-		newBase      bool
-		implicitBase bool
+		name          string
+		commit        bool
+		newBase       bool
+		implicitBase  bool
+		missingIndex  bool
+		priorSnapshot bool
 	}{
 		{name: "host commit replaces the precommit diff", commit: true},
 		{name: "implicit base survives the host commit", commit: true, implicitBase: true},
 		{name: "no commit rework replaces an older diff"},
 		{name: "finalized base survives workspace cleanup", commit: true, newBase: true},
+		{name: "finalized diff does not need the worktree index", commit: true, missingIndex: true},
+		{name: "pushed phase takes precedence over an earlier snapshot", priorSnapshot: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := initRunnerSourceRepo(t)
@@ -114,6 +118,15 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			commit := func() {
 				runRunnerGit(t, directory, "commit", "-m", "implement")
 				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				if test.missingIndex {
+					index := filepath.Join(directory, ".git", "index")
+					if err := os.Rename(index, index+".saved"); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(index, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if test.commit {
 				backend.onFinalize = commit
@@ -133,15 +146,34 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			defer cancel()
 			request := RunRequest{Execution: execution, finalizeNativeWork: true}
 			issue := workspace.Issue{BaseRef: base}
+			if test.priorSnapshot {
+				previous := tracker.NativeCheckpoint{HeadSHA: backend.recoveryStates[0].HeadSHA, WorktreeState: "unpushed"}
+				remoteCheckpoint(&previous)
+				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "retain phase history")
+				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				backend.recoveryStates[0].UnpushedCommits = 1
+				request.phaseReceipts = true
+				request.publishedPhaseSource = &workspace.PhaseSource{HeadSHA: backend.recoveryStates[0].HeadSHA}
+				request.checkpointRefs = &checkpointRefs{
+					publisher: &wipExecutionWorkspace{publishErr: errors.New("snapshot unavailable")},
+					execution: execution, saved: &previous, stop: func() {},
+				}
+			}
 			if test.implicitBase {
 				issue.BaseRef = ""
-				request.attemptDiffSource = r.attemptDiffSource(ctx, backend.info, issue)
+				r.setAttemptDiffSource(ctx, &request, execution, backend.info, issue)
 			}
 			if err := r.afterExecution(ctx, request, backend, backend.info, issue, AgentResume{}, true); err != nil {
 				t.Fatal(err)
 			}
-			if !backend.afterRun || execution.checkpoint == nil {
+			if backend.afterRun == test.priorSnapshot || execution.checkpoint == nil {
 				t.Fatal("finalization did not checkpoint and clean up")
+			}
+			if test.priorSnapshot {
+				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "move after finalization")
+				if _, available := execution.diffSource(ctx); available {
+					t.Fatal("a moved checkout was reported as the finalized source")
+				}
 			}
 			if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
 				t.Fatal(err)
