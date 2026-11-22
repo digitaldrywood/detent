@@ -1040,11 +1040,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		_, err := preserveWorkspace(preserveCtx, backend, issue)
+		preservation, err := preserveWorkspace(preserveCtx, backend, issue)
 		cancel()
 		if err != nil && (issue.AttemptWorkspace.Key() != "" || !errors.Is(err, workspace.ErrMissingWorkspace)) {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
-			return false, errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
+			completionErr = errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
+			if incomplete == nil || !preservation.Preserved || !errors.Is(err, context.DeadlineExceeded) {
+				return false, completionErr
+			}
 		}
 	}
 	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
@@ -1092,25 +1095,26 @@ func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, r
 	return state, err
 }
 
-func (r *Runner) resumeRestoredTurnCorrection(ctx context.Context, req *RunRequest, attemptID string, runtime agentRuntime, backend AgentBackend, process AgentProcessRequest, identity tracker.NativeExecutionIdentity, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
+func (r *Runner) resumeRestoredTurnCorrection(ctx context.Context, req *RunRequest, attemptID string, runtime agentRuntime, backend AgentBackend, process AgentProcessRequest, identity tracker.NativeExecutionIdentity, restored *workspace.RecoveryState, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
 	recovery := req.Execution.Recovery()
 	previous := recovery.SourceAttempt()
 	if req.operatorFreshRetry() || previous == nil || previous.AttemptID != attemptID || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" {
 		return store.AgentResumeState{}, nil
 	}
-	local := r.workspaceRecoveryState(source, ctx, info, issue, "restored_source_correction")
-	if !phaserecovery.TurnMatches(previous, local) {
+	if !phaserecovery.TurnMatches(previous, restored) {
 		return store.AgentResumeState{}, nil
 	}
 	state, err := r.nativeSessionResumeState(ctx, *req, runtime)
 	if err != nil || agentResumeStateEmpty(state) {
 		return state, err
 	}
-	action, _ := nativeRecoveryAction(recovery, local, true, state, identity, false, issue.Source, issue.AttemptWorkspace.Attempt, info.StartHeadSHA)
+	action, _ := nativeRecoveryAction(recovery, restored, true, state, identity, false, nil, issue.AttemptWorkspace.Attempt, info.StartHeadSHA)
 	if action != "resume_session" {
 		return store.AgentResumeState{}, nil
 	}
-	return r.nativeResume(ctx, req, backend, process, local, state, identity, true, source, info, issue)
+	verifiedCheckout := issue
+	verifiedCheckout.Source = nil
+	return r.nativeResume(ctx, req, backend, process, restored, state, identity, true, source, info, verifiedCheckout)
 }
 
 func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {

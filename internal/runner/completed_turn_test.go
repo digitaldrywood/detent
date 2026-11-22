@@ -446,7 +446,71 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 	}
 }
 
+type restoredRebaseWorkspace struct {
+	*completedExecutionWorkspace
+	lostInspection       bool
+	retainedAfterTimeout bool
+}
+
+func (w *restoredRebaseWorkspace) FinalizeNativeWork(ctx context.Context, info workspace.Info, issue workspace.Issue, validate func(context.Context) error) (string, error) {
+	if w.finalizationCalls == 1 {
+		w.recoveryStates[0].HeadSHA = "rebase-base"
+		w.recoveryStates[0].WorkspaceFingerprint = "conflict-digest"
+		w.finalizationErr = &workspace.SourceFinalizationIncomplete{Status: workspace.MergePrepareStatusConflict}
+	}
+	return w.completedExecutionWorkspace.FinalizeNativeWork(ctx, info, issue, validate)
+}
+
+func (w *restoredRebaseWorkspace) PrepareRework(context.Context, workspace.Info, workspace.Issue, workspace.MergePrepareOptions, func(context.Context) error) (workspace.MergePrepareResult, error) {
+	if w.finalizationCalls == 2 {
+		return workspace.MergePrepareResult{}, errors.New("rework preparation ran again over the restored conflict")
+	}
+	return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean}, nil
+}
+
+func (*restoredRebaseWorkspace) VerifyReworkRecovery(context.Context, workspace.Info, workspace.Issue, string, string, workspace.RecoveryState) (bool, error) {
+	return false, nil
+}
+
+type restoredRebaseExecution struct {
+	*retryStepExecution
+	source workspace.ChangeSource
+}
+
+func (*restoredRebaseExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *restoredRebaseExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return e.source, nil
+}
+
+func (w *restoredRebaseWorkspace) PreserveIssue(ctx context.Context, issue workspace.Issue) (workspace.Preservation, error) {
+	if w.finalizationCalls == 2 && w.lostInspection {
+		return workspace.Preservation{Preserved: w.retainedAfterTimeout}, context.DeadlineExceeded
+	}
+	return w.completedExecutionWorkspace.PreserveIssue(ctx, issue)
+}
+
 func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		rebase     bool
+		inspection bool
+		retained   bool
+	}{
+		{name: "dirty source"},
+		{name: "paused rebase", rebase: true},
+		{name: "paused rebase with retention inspection timeout", rebase: true, inspection: true, retained: true},
+		{name: "paused rebase without confirmed retention", rebase: true, inspection: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testRecoveredIncompleteSource(t, test.rebase, test.inspection, test.retained)
+		})
+	}
+}
+
+func testRecoveredIncompleteSource(t *testing.T, rebase, lostInspection, retained bool) {
+	t.Helper()
 	info := workspace.Info{Path: t.TempDir(), Branch: "native"}
 	dirty := workspace.RecoveryState{HeadSHA: "completed-head", WorkspaceFingerprint: "dirty-digest", TrackedPaths: []string{"example.go"}}
 	backend := &completedExecutionWorkspace{
@@ -454,6 +518,12 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 			fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{dirty}},
 		},
 		finalizationErr: &workspace.SourceFinalizationIncomplete{Status: workspace.MergePrepareStatusDirty},
+	}
+	var runnerWorkspace workspace.Backend = backend
+	correction := "stage any remaining issue changes"
+	if rebase {
+		runnerWorkspace = &restoredRebaseWorkspace{completedExecutionWorkspace: backend, lostInspection: lostInspection, retainedAfterTimeout: retained}
+		correction = "runner paused the rebase at unresolved conflicts"
 	}
 	message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 	first := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
@@ -471,7 +541,7 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 			t.Fatalf("correction resume = %+v, verified = %+v, want recorded session %+v", agent.request.Resume, agent.verifiedResume, recordedResume)
 		}
 		if agent.request.Workspace != info.Path || agent.request.ReadOnly || second.published ||
-			!strings.Contains(agent.request.Prompt, "stage any remaining issue changes") {
+			!strings.Contains(agent.request.Prompt, correction) {
 			t.Fatalf("correction did not reach the writable implementation workspace before publication: workspace=%q read-only=%t published=%t prompt=%q", agent.request.Workspace, agent.request.ReadOnly, second.published, agent.request.Prompt)
 		}
 		backend.finalizationErr = nil
@@ -481,11 +551,14 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 	}
 	cfg := config.Config{}
 	cfg.Agent.MaxTurns = 1
-	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: runnerWorkspace, AgentBackend: agent})
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := RunRequest{Execution: first, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+	if rebase {
+		request.Issue.State = "Rework"
+	}
 	if _, err := r.Run(t.Context(), request); !errors.Is(err, ErrNativeRecoveryRequired) || first.finish != "interrupted" || first.published || agent.calls != 1 {
 		t.Fatalf("first run lost unfinished source: error=%v outcome=%q published=%t turns=%d", err, first.finish, first.published, agent.calls)
 	}
@@ -507,7 +580,23 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 		t.Fatalf("first run did not produce a reusable dirty turn receipt: %+v", recovered)
 	}
 	request.Execution = second
+	if rebase {
+		base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+		bundle := []byte("# v2 git bundle\n-" + base + " base\n" + head + " HEAD\n\nPACK")
+		source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, Bytes: int64(len(bundle)),
+			BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: tracker.ChangeSourceDigest(nil)}
+		request.Execution = &restoredRebaseExecution{retryStepExecution: second, source: workspace.ChangeSource{
+			Version: tracker.ChangeVersion{ID: "published-change", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Source: source}},
+			Bundle:  bundle,
+		}}
+	}
 	result, err := r.Run(t.Context(), request)
+	if lostInspection && !retained {
+		if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, context.DeadlineExceeded) || second.published || agent.calls != 1 {
+			t.Fatalf("correction started without confirmed retention: error=%v published=%t turns=%d", err, second.published, agent.calls)
+		}
+		return
+	}
 	if err != nil || result.FinalState != FinalStateCompleted || !second.published || agent.calls != 2 || backend.finalizationCalls != 3 ||
 		second.checkpoint == nil || second.checkpoint.HeadSHA != "finalized-head" || second.checkpoint.WorktreeState != "clean" {
 		t.Fatalf("retry did not correct the restored source: error=%v state=%s published=%t turns=%d finalizations=%d checkpoint=%+v",
