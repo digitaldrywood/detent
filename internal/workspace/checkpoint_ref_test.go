@@ -289,8 +289,10 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	}
 	writeCheckpointFile(t, info.Path, "README.md", "first resolution\n")
 	runGit(t, info.Path, "add", "README.md")
-	if _, err := source.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() }); err != nil {
-		t.Fatalf("continue first resolution: %v", err)
+	_, err = source.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() })
+	var incomplete *SourceFinalizationIncomplete
+	if !errors.As(err, &incomplete) || incomplete.Status != MergePrepareStatusConflict {
+		t.Fatalf("first resolution did not leave the next conflict for correction: %v", err)
 	}
 	writeCheckpointFile(t, info.Path, "later.txt", "partial later resolution\n")
 	if test.resolved {

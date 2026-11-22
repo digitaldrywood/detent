@@ -819,8 +819,8 @@ func TestRestoredSourceGateRepairSurvivesCompletion(t *testing.T) {
 		retainedReview: &retainedReviewWorkspace{},
 	}
 	err = r.afterExecution(ctx, request, source, info, workspace.Issue{PhaseSource: &tracker.NativePhaseReceipt{}}, AgentResume{}, false)
-	repair, ok := err.(*sourceGateRepair)
-	if !ok || repair.output != source.validationOutput || execution.finalizations != 0 {
+	repair, ok := err.(*sourceRepair)
+	if !ok || repair.incomplete != nil || repair.output != source.validationOutput || execution.finalizations != 0 {
 		t.Fatalf("restored gate result=%T %v, artifact finalizations=%d", err, err, execution.finalizations)
 	}
 }
