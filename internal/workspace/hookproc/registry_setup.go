@@ -70,11 +70,14 @@ func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, er
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if _, err := dir.Lstat(filepath.Join(marker, "ready")); err == nil {
+	if ready, err := dir.Lstat(filepath.Join(marker, "ready")); err == nil {
+		if !ready.Mode().IsRegular() {
+			return false, errors.Join(incomplete, errors.New("retained hook ready marker is not a regular file"))
+		}
 		if u.ownsRetainedSetup(path) {
 			return false, nil
 		}
-		if err := verifyWorkspaceSetupExited(dir, marker); err != nil {
+		if err := verifyWorkspaceSetupExited(dir, marker, ready); err != nil {
 			return false, errors.Join(incomplete, err)
 		}
 		return false, nil
@@ -85,10 +88,12 @@ func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, er
 }
 
 func (u *Registry) CheckWorkspaceSetupRemoval(root, path string) error {
-	if retry, err := u.CheckWorkspaceSetup(root, path); !retry {
-		return err
+	retry, err := u.CheckWorkspaceSetup(root, path)
+	var unverified *HookExitUnverifiedError
+	if retry || errors.As(err, &unverified) && u.ownsRetainedSetup(path) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 func MarkWorkspaceSetupRetired(root, path string) error {
@@ -146,14 +151,30 @@ func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) (returnErr
 	return nil
 }
 
-func verifyWorkspaceSetupExited(dir *os.Root, marker string) (returnErr error) {
-	file, err := dir.Open(filepath.Join(marker, "ready"))
+func revokeWorkspaceSetupReady(root, path string) error {
+	dir, err := os.OpenRoot(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
+	removeErr := dir.Remove(filepath.Join(pendingWorkspaceSetupPath(path), "ready"))
+	if errors.Is(removeErr, fs.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(removeErr, dir.Close())
+}
+
+func verifyWorkspaceSetupExited(dir *os.Root, marker string, ready fs.FileInfo) (returnErr error) {
+	readyPath := filepath.Join(marker, "ready")
+	file, err := openRetainedFile(dir, readyPath, ready)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, file.Close()) }()
 	var record retainedSetup
-	decodeErr := json.NewDecoder(io.LimitReader(file, 128<<10)).Decode(&record)
-	if err := errors.Join(decodeErr, file.Close()); err != nil {
+	if err := json.NewDecoder(io.LimitReader(file, 128<<10)).Decode(&record); err != nil {
 		return fmt.Errorf("read retained hook lifetime: %w", err)
 	}
 	if !filepath.IsLocal(record.DescriptorDir) || filepath.Base(record.DescriptorDir) != record.DescriptorDir ||
@@ -190,6 +211,13 @@ func verifyWorkspaceSetupExited(dir *os.Root, marker string) (returnErr error) {
 	}
 	if active {
 		return errors.New("retained workspace hook descriptor still has a writer")
+	}
+	current, err := dir.Lstat(readyPath)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(ready, current) {
+		return errors.New("retained hook ready marker changed during verification")
 	}
 	return nil
 }

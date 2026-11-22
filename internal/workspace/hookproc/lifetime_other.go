@@ -13,6 +13,10 @@ func newLifetime(string) (*Lifetime, error) { return nil, errors.ErrUnsupported 
 
 func openRetainedLifetime(*os.Root, string) (*Lifetime, error) { return nil, errors.ErrUnsupported }
 
+func openRetainedFile(*os.Root, string, os.FileInfo) (*os.File, error) {
+	return nil, errors.ErrUnsupported
+}
+
 func (*Lifetime) fileIdentity() (string, error) {
 	return "", errors.ErrUnsupported
 }
