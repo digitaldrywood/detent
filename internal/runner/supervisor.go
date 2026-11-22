@@ -264,8 +264,11 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 	if err == nil {
 		result, err = s.backend.Run(ctx, request)
 	}
-	err = preserveCancellation(ctx, err, "orchestrator.parent_context")
-	if cause := context.Cause(ctx); cooperativeStopError(cause) {
+	cause := context.Cause(ctx)
+	if cause != nil {
+		err = preserveCancellation(ctx, err, "orchestrator.parent_context")
+	}
+	if cooperativeStopError(cause) {
 		err = errors.Join(err, cause)
 		if errors.Is(cause, ErrMergeWorkerDurationExceeded) {
 			result.FinalState = FinalStateMergeDurationExceeded
