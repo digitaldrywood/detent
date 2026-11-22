@@ -118,6 +118,9 @@ func operatorMergeWedgedCandidate(issue connector.Issue, state *State, cfg Confi
 	if issue.StageUpdatedAt == nil || now.Sub(*issue.StageUpdatedAt) < cfg.Operator.mergeWedgeAge() {
 		return false
 	}
+	if issue.PullRequest.MergeQueueEntry != nil && strings.TrimSpace(issue.PullRequest.MergeQueueEntry.ID) != "" {
+		return false
+	}
 	if state != nil {
 		if staleMergingPullRequestDispatchActive(state, strings.TrimSpace(issue.ID)) {
 			return false
