@@ -1,6 +1,7 @@
 package phasegit
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ func verifyCheckout(read func(...string) (string, error), receipt tracker.Native
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository, expectedRemoteHead string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -87,15 +88,19 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 		if previous == head {
 			return authorize(ctx)
 		}
-		if previous != "" {
-			if _, err := read("merge-base", "--is-ancestor", previous, head); err != nil {
+		expected := cmp.Or(expectedRemoteHead, previous)
+		if previous != expected {
+			return moved()
+		}
+		if expected != "" {
+			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}
 				return errors.Join(moved(), err)
 			}
 		}
-		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+previous
+		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
 		var pushErr error
 		for range 2 {
 			if err := authorize(ctx); err != nil {
@@ -112,7 +117,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 			if current == head {
 				return nil
 			}
-			if current != previous {
+			if current != expected {
 				return errors.Join(moved(), pushErr)
 			}
 		}
@@ -124,40 +129,46 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 	return branch, head, tree, nil
 }
 
-func PreserveHistory(ctx context.Context, path, identifier string, previous tracker.NativePhaseReceipt, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) error {
+func PreserveHistory(ctx context.Context, path, identifier string, previous tracker.NativePhaseReceipt, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
 	head, tree, err := Head(ctx, path)
 	if err != nil || head == previous.HeadSHA {
-		return err
+		return "", err
 	}
 	if err := fetch(ctx); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := gitexec.Run(ctx, path, "merge-base", "--is-ancestor", previous.HeadSHA, head); err == nil {
-		return nil
+		return "", nil
 	} else {
 		var commandErr *gitexec.CommandError
 		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
-			return err
+			return "", err
 		}
 	}
 	remote, exists, err := remoteHead(ctx, path, gitexec.DefaultRemote, previous.Branch)
 	if err != nil {
-		return err
+		return "", err
+	}
+	if exists && remote == head {
+		return remote, nil
 	}
 	if !exists || remote != previous.HeadSHA {
-		return moved
+		return "", moved
 	}
 	if err := authorize(ctx); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := commit(ctx, "-c", "core.hooksPath="+os.DevNull, "merge", "--no-ff", "-s", "ours", "-m", "fix: retain phase history for "+identifier, previous.HeadSHA); err != nil {
-		return err
+		return "", err
 	}
 	_, observedTree, err := Head(ctx, path)
-	if err == nil && observedTree != tree {
-		return errors.New("preserving the item branch changed the completed source tree")
+	if err != nil {
+		return "", err
 	}
-	return err
+	if observedTree != tree {
+		return "", errors.New("preserving the item branch changed the completed source tree")
+	}
+	return remote, nil
 }
 
 func Fetch(ctx context.Context, branch string, receipt tracker.NativePhaseReceipt, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {

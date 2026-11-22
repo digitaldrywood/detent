@@ -19,7 +19,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", err
 	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, authorize, func(ctx context.Context) error {
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, issue.ExpectedPhaseRemoteHead, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
@@ -29,10 +29,10 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	})
 }
 
-func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) error {
+func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) (string, error) {
 	info, err := l.normalizeInfo(info, issue)
 	if err != nil {
-		return err
+		return "", err
 	}
 	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
 		return l.fetchItemPhase(ctx, info, issue, previous)

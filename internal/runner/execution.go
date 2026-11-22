@@ -902,16 +902,19 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
 	}
 	if phaseCompleted && req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
+		publicationIssue := issue
 		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
-				finalizationErr = failedStep("publication", publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority))
+				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
+				publicationIssue.ExpectedPhaseRemoteHead = expected
+				finalizationErr = failedStep("publication", err)
 			}
 		}
 		if finalizationErr == nil {
 			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
 		}
 		if finalizationErr == nil {
-			finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
+			finalizationErr = publishItemPhase(ctx, req, backend, info, publicationIssue, "implement", "")
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
