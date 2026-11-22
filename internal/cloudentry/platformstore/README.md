@@ -150,9 +150,8 @@ diagnostics and keyring-compatible restart.
 
 Platform pools reserve one connection for health reads in addition to the serving
 and background budgets. Startup rejects overcommitted budgets. Omitted Cloud
-pool budgets default to 10 total, 8 serving and 1 background. These small
-client pools work with PgBouncer transaction pooling; size the server pool for
-the fleet separately rather than reserving server connections per tenant.
+pool budgets default to 10 total, 8 serving and 1 background. Size the PostgreSQL connection budget across the fleet. Each physical
+connection has its own bounded prepared-statement cache shared by tenants.
 
 Tenant entry-key authority resolution reads the key, current organization binding,
 policy, approval and bounded project grants in one indexed, read-only statement.

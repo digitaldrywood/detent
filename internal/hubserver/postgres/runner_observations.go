@@ -131,7 +131,7 @@ func (s *session) AppendRunnerHostMetricSegments(ctx context.Context, runnerID s
 		counts[key.hour]++
 		rows = append(rows, []any{s.organization, runnerID, segment.Hour, segment.SegmentID, segment.Partial, int64(segment.SampleCount), segment.LogicalCores, int64(segment.MemoryTotalBytes), int64(segment.MemoryAvailableMinBytes), int64(segment.MemoryAvailableSumBytes), int64(segment.MemorySampleCount), int64(segment.SwapUsedMaxBytes), int64(segment.SwapSampleCount), segment.PSISomeAvg10Sum, int64(segment.PSISomeSampleCount), segment.PSIFullAvg10Sum, int64(segment.PSIFullSampleCount), int64(segment.PressureWarnCount), int64(segment.PressureCriticalCount), int64(segment.PressureSampleCount), segment.CPUBusySumPercent, segment.CPUBusyMaxPercent, int64(segment.CPUSampleCount), segment.Load1Max, int64(segment.LoadSampleCount), int64(segment.DiskFreeMinBytes), int64(segment.DiskTotalMinBytes), int64(segment.DiskSampleCount)})
 	}
-	if err := s.insertRunnerCurrentRows(ctx, "runner_host_metric_segments", "organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count", rows); err != nil {
+	if err := s.insertRunnerCurrentRows(ctx, runnerReportRows{"runner_host_metric_segments", "organization_id,runner_id,hour,segment_id,partial,sample_count,logical_cores,memory_total_bytes,memory_available_min_bytes,memory_available_sum_bytes,memory_sample_count,swap_used_max_bytes,swap_sample_count,psi_some_avg10_sum,psi_some_sample_count,psi_full_avg10_sum,psi_full_sample_count,pressure_warn_count,pressure_critical_count,pressure_sample_count,cpu_busy_sum_percent,cpu_busy_max_percent,cpu_sample_count,load1_max,load_sample_count,disk_free_min_bytes,disk_total_min_bytes,disk_sample_count", "text,text,timestamptz,timestamptz,boolean,bigint,integer,bigint,bigint,bigint,bigint,bigint,bigint,double precision,bigint,double precision,bigint,bigint,bigint,bigint,double precision,double precision,bigint,double precision,bigint,bigint,bigint,bigint", rows}); err != nil {
 		return nil, err
 	}
 	return acknowledged, nil
@@ -243,7 +243,7 @@ func (s *session) ReplaceRunnerAdmissionObservation(ctx context.Context, runnerI
 	if _, err := s.db.Exec(ctx, `DELETE FROM runner_native_admission_selectors WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
 		return mapError(ctx, err)
 	}
-	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
+	return s.insertRunnerCurrentRows(ctx, table)
 }
 
 func (s *session) PruneRunnerHostMetrics(ctx context.Context, cutoff time.Time, limit int) error {
