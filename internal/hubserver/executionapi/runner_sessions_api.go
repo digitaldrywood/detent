@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 
 	"github.com/labstack/echo/v4"
@@ -306,7 +307,7 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 		var err error
 		attempt, approved, err = d.RunnerSessionFence(ctx, r, scope, request, record.IssueID, false)
 		if err == nil && request.Start != nil {
-			snapshot.AuditPredecessor, err = landingAuditSessionAdmission(ctx, r, request)
+			snapshot.AuditPredecessor, snapshot.AuditModelAliases, err = landingAuditSessionAdmission(ctx, r, request)
 		}
 		return err
 	})
@@ -471,21 +472,24 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		if request.Start != nil {
-			admission, err := landingAuditSessionAdmission(ctx, w, request)
-			if err != nil {
-				return err
+			predecessor, aliases, admissionErr := landingAuditSessionAdmission(ctx, w, request)
+			if admissionErr != nil {
+				return admissionErr
 			}
-			if !reflect.DeepEqual(admission, snapshot.AuditPredecessor) {
+			if !reflect.DeepEqual(predecessor, snapshot.AuditPredecessor) || !slices.Equal(aliases, snapshot.AuditModelAliases) {
 				return corestore.ErrRevisionConflict
 			}
 			record, err = writer.CreateRunnerSession(ctx, record, runnersession.History{Key: request.Key, Reference: historyRef})
 		} else {
 			record.ReceiptID, err = writer.UpdateRunnerSession(ctx, record, runnersession.History{SessionID: record.ID, Revision: record.Revision, Key: request.Key, Reference: historyRef})
 		}
-		if err == nil && request.Worker != nil {
+		if err != nil {
+			return err
+		}
+		if request.Worker != nil {
 			return d.RegisterWorkerProcess(ctx, w, scope, record, snapshot, historyRef, leasestore.Fence{LeaseID: locked.LeaseID, FencingToken: locked.FencingToken})
 		}
-		return err
+		return nil
 	})
 	if err != nil {
 		return d.HTTPError(c, err)
@@ -495,23 +499,33 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 	return c.JSON(http.StatusOK, snapshot)
 }
 
-func landingAuditSessionAdmission(ctx context.Context, r tenantstore.Reader, request runnersession.Mutation) (*int64, error) {
+func landingAuditSessionAdmission(ctx context.Context, r tenantstore.Reader, request runnersession.Mutation) (*int64, []string, error) {
 	start := request.Start
 	if start.AgentRole != "security_audit" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	reserved, err := r.ProviderReservation(ctx, request.LeaseID)
 	if errors.Is(err, corestore.ErrNotFound) || err == nil && reserved.Reservation.Role != "security_audit" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	want := providercapacity.Requirement{Role: start.AgentRole, Backend: start.AgentBackendID, Model: cmp.Or(start.RequestedModel, start.Model, "provider_default")}
 	if reserved.AuditPredecessor == nil || reserved.Reservation.Requirement != want {
-		return nil, hubapi.PolicyMismatch("Landing audit session differs from its phase admission")
+		return nil, nil, hubapi.PolicyMismatch("Landing audit session differs from its phase admission")
 	}
-	return reserved.AuditPredecessor, nil
+	var aliases []string
+	report := reserved.Reservation.Report
+	if want.Model != "provider_default" {
+		for _, model := range report.Models {
+			if model != want.Model && report.MatchesModel(want.Model, model) {
+				aliases = append(aliases, model)
+			}
+		}
+		slices.Sort(aliases)
+	}
+	return reserved.AuditPredecessor, aliases, nil
 }
 
 func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {

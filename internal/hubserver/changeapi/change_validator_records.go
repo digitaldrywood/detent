@@ -134,7 +134,7 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 		return nil, "", err
 	}
 	p.auditPredecessor = session.AuditPredecessor
-	p.auditObservedModels = auditFinishModels(session)
+	p.auditObservedModels = session.FinalizedModels()
 	p.evidence.Issue, err = s.deps.HydrateWorkItemRecord(ctx, p.issue, itemVersion)
 	if err != nil {
 		return nil, "", err
@@ -232,15 +232,4 @@ func (s *validator) lockValidatorReviewRecord(ctx context.Context, w tenantstore
 		return releaseaudits.LockValidatorAuditDispositions(ctx, w, scope, audit.Run.ID, p.auditDispositionRows)
 	}
 	return nil
-}
-
-func auditFinishModels(session runnersession.Snapshot) [2]string {
-	finish := session.Finish
-	if session.Finalization != nil {
-		finish = &session.Finalization.Input.Finish
-	}
-	if finish == nil {
-		return [2]string{}
-	}
-	return [2]string{finish.Model, finish.RuntimeIdentity.ResolvedModel.Value}
 }

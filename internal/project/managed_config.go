@@ -287,7 +287,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	}
 	workflow := p.Workflow()
 	view.AllowLocalBinding = workflow.Config.Worker.EffectiveAllowLocalBinding()
-	view.LandingAuditRoute = new(workflow.Config.ConfiguredLandingAuditRoute())
+	view.LandingAuditRoute = workflow.Config.ConfiguredLandingAuditRoute()
 	view.EffectivePolicy = &workflow.Config.Policy
 	if workflow.Config.Policy.ID == "" {
 		descriptor, err := ResolvePolicy(current, workflow)
@@ -473,7 +473,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 		if p != nil {
 			cfg := p.Workflow().Config
 			actual := cfg.Policy
-			view.LandingAuditRoute = new(cfg.ConfiguredLandingAuditRoute())
+			view.LandingAuditRoute = cfg.ConfiguredLandingAuditRoute()
 			view.EffectivePolicy = &actual
 			view.SelectedPolicy, view.Source = p.reportedPolicy(actual, view.Source)
 			view.Paused = p.Paused()
@@ -581,7 +581,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 	view.Paused = p.Paused()
 	cfg := p.Workflow().Config
 	view.AllowLocalBinding = cfg.Worker.EffectiveAllowLocalBinding()
-	view.LandingAuditRoute = new(cfg.ConfiguredLandingAuditRoute())
+	view.LandingAuditRoute = cfg.ConfiguredLandingAuditRoute()
 	view.Pending = false
 	view.ObservedAt = time.Now().UTC()
 	if orch := p.Orchestrator(); orch != nil && p.Running() {

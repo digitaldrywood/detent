@@ -276,6 +276,24 @@ func TestRunnerSessionMetadataReplaysSafely(t *testing.T) {
 				t.Fatal(err)
 			}
 			ctx := api.WithMutationAuthority(t.Context(), native.Scope(), fixture.leases[0], nil)
+
+			path := native.Scope() + "/runner-sessions"
+			start := runnersession.Mutation{Key: "session-start-conflict", LeaseID: fixture.leases[0].ID, FencingToken: fixture.leases[0].FencingToken,
+				ProcessKey: strings.Repeat("a", 32), Start: &store.SessionStart{IssueID: string(fixture.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "initial-model"}}
+			var committed, replayed runnersession.Snapshot
+			if err := client.Request(ctx, http.MethodPost, path, start, &committed); err != nil {
+				t.Fatal(err)
+			}
+			changed := start
+			changed.Start = new(*start.Start)
+			changed.Start.Model = "changed-model"
+			var conflict *api.APIError
+			if err := client.Request(ctx, http.MethodPost, path, changed, nil); !errors.As(err, &conflict) || conflict.Status != http.StatusConflict {
+				t.Errorf("changed start with a reused key returned %v, want HTTP 409", err)
+			}
+			if err := client.Request(ctx, http.MethodPost, path, start, &replayed); err != nil || replayed.ID != committed.ID || replayed.Start.Model != start.Start.Model {
+				t.Fatalf("original start did not replay: %+v, %v", replayed, err)
+			}
 			sessions := api.NewRunnerSessions(native)
 			id, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(fixture.leases[0].WorkItemID), StartedAt: time.Now().UTC(), Model: "example-model"})
 			if err != nil {

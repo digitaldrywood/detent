@@ -188,7 +188,7 @@ func TestLandingAuditVerdictRequiresMatchingReservation(t *testing.T) {
 				snapshot.Finish = &store.SessionFinish{Model: model}
 				snapshot.Finalization = &runnersession.Finalization{Input: sessionmodel.Finalization{Finish: finish}}
 			}
-			prepared := &preparedValidatorReview{session: session, auditPredecessor: new(test.sessionPhase), auditObservedModels: auditFinishModels(snapshot)}
+			prepared := &preparedValidatorReview{session: session, auditPredecessor: new(test.sessionPhase), auditObservedModels: snapshot.FinalizedModels()}
 			err := owner.lockValidatorReviewRecord(t.Context(), writer, scope, tracker.ChangeRequest{}, request, prepared, runnerstore.Identity{}, eventstore.Change{})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("landing verdict error = %v, want %v", err, test.want)

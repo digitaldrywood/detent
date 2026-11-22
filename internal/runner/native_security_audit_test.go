@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -325,6 +326,7 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 		models                            []string
 		verify, refuse, providerDefault   bool
 		wrongModel, requireCatalogScratch bool
+		conditional, explicitBackend      bool
 	}{
 		{name: "separate audit backend and configured model"},
 		{name: "provider default ignores the issue model", providerDefault: true, models: []string{"selected-by-provider"}},
@@ -332,6 +334,8 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 		{name: "verification binds the configured complex model", verify: true},
 		{name: "verification using a different model cannot approve", verify: true, models: []string{"audit-model", "different-model"}, wrongModel: true},
 		{name: "full audit account receives no diff", refuse: true},
+		{name: "conditional route cannot send a diff to the fallback", conditional: true},
+		{name: "explicit operator backend resolves a conditional route", conditional: true, explicitBackend: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			lease := tracker.NativeLease{ID: "lease_landing", FencingToken: 7}
@@ -387,6 +391,15 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 				{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"},
 			}
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", ModelField: "audit_model", Default: true}}
+			if test.conditional {
+				cfg.Agents.Routes = []config.AgentRoute{
+					{Name: "dedicated", Role: RoleSecurityAudit, Backend: "audit", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"security"}}}},
+					{Name: "default", Role: RoleCode, Backend: "merge", Default: true},
+				}
+			}
+			if test.explicitBackend {
+				cfg.Agents.ModelSelection.Stages = map[string]config.ModelSelectionStage{RoleSecurityAudit: {Backend: new("audit")}}
+			}
 			merge := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
 			audit := &verificationAuditBackend{t: t, outputs: []string{`{"verdict":"pass","summary":"No findings","findings":[]}`}}
 			audit.observedModels = test.models
@@ -414,9 +427,15 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			}
 			result, err := r.Audit(t.Context(), SecurityAuditRequest{
 				landing: true, usageExecution: execution,
-				Issue:    connector.Issue{ModelOverride: "issue-model", Fields: map[string]string{"audit_model": "issue-model"}, Description: "```detent-agent\nschema: 1\nmodel: issue-model\n```"},
+				Issue:    connector.Issue{Labels: []string{"security"}, ModelOverride: "issue-model", Fields: map[string]string{"audit_model": "issue-model"}, Description: "```detent-agent\nschema: 1\nmodel: issue-model\n```"},
 				Snapshot: securityaudit.Snapshot{ProjectID: "prj_example", IssueID: "wi_example", Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "+change"},
 			})
+			if test.conditional && !test.explicitBackend {
+				if err == nil || len(phaseCalls) != 0 || merge.calls != 0 || len(audit.requests) != 0 {
+					t.Fatalf("conditional audit used an unverified route: phases=%v fallback turns=%d audit turns=%d error=%v", phaseCalls, merge.calls, len(audit.requests), err)
+				}
+				return
+			}
 			want := []providercapacity.Requirement{{Role: RoleSecurityAudit, Backend: "audit", Model: effectiveModel(model, "provider_default")}}
 			if test.verify {
 				want = append(want, providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: "complex-model"})

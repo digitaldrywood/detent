@@ -148,8 +148,9 @@ warning; a later release will reject it.
 
 Native landing security audits use the configured unconditional or default
 `security_audit` route, with the default code route as a fallback. A runner reports
-the route's backend and model through its project configuration. An operator
-can override the backend with `stages.security_audit.backend`. The pinned
+the route's backend and model through its project configuration. When a
+conditional audit route can take precedence, native landing requires an
+explicit operator backend in `stages.security_audit.backend`. The pinned
 `gate.security_audit.model` takes precedence over the audit stage model and the
 route model. Verification uses the configured complex model.
 

@@ -377,30 +377,37 @@ func (a Agents) ModelSelectionWarnings() []string {
 	return []string{"agents.model_selection is ignored; configure model selection in Cloud organization or project settings; remove it before the next release, which will reject it"}
 }
 
-func (c Config) ConfiguredLandingAuditRoute() policy.AuditRoute {
+func (c Config) ConfiguredLandingAuditRoute() *policy.AuditRoute {
 	routes := c.AgentRouteConfigs()
 	for _, route := range routes {
-		if !route.Default && !route.Disabled && normalizeAgentRouteRole(route.Role) == "security_audit" && route.ModelField == "" && route.Selector.IsZero() {
-			return policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
+		if route.Default || route.Disabled || normalizeAgentRouteRole(route.Role) != "security_audit" {
+			continue
 		}
+		if route.ModelField != "" || !route.Selector.IsZero() {
+			return nil
+		}
+		return &policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
 	}
 	for _, role := range []string{"security_audit", "code"} {
 		for _, route := range routes {
 			if route.Default && !route.Disabled && normalizeAgentRouteRole(route.Role) == role {
-				return policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
+				return &policy.AuditRoute{Backend: strings.TrimSpace(route.Backend), Model: strings.TrimSpace(route.Model)}
 			}
 		}
 	}
-	return policy.AuditRoute{Backend: DefaultAgentBackendID}
+	return nil
 }
 
-func (c Config) LandingAuditIdentity(route policy.AuditRoute, verification bool) policy.AuditRoute {
+func (c Config) LandingAuditIdentity(configured *policy.AuditRoute, verification bool) policy.AuditRoute {
+	var route policy.AuditRoute
+	if configured != nil {
+		route = *configured
+	}
 	models := c.EffectiveModelSelection()
 	stage := models.Stages["security_audit"]
 	if backend := selectionString(stage.Backend); backend != "" && backend != route.Backend {
 		route = policy.AuditRoute{Backend: backend}
 	}
-	route.Backend = cmp.Or(route.Backend, DefaultAgentBackendID)
 	if verification {
 		route.Model = models.Model("complex")
 		return route

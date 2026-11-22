@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
+	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
@@ -1259,7 +1261,8 @@ func patchLabels(t *testing.T, f nativeFixture, issue tracker.NativeIssue, key s
 func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now }})
+	var clockOffset atomic.Int64
+	service := newClockedPostgresNativeService(t, Config{Clock: func() time.Time { return now.Add(time.Duration(clockOffset.Load())) }})
 	first := newNativeFixture(t, service, "", "planning")
 	second := newNativeFixture(t, service, first.project.OrganizationID+"_second", "planning")
 	pinned := hubTestPolicy()
@@ -1419,16 +1422,34 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	}
 	ctx := hubclientapi.WithMutationAuthority(t.Context(), native.Scope(), landing.lease, nil)
 	sessions := hubclientapi.NewRunnerSessions(native)
-	primary, err := sessions.StartSession(ctx, store.SessionStart{IssueID: string(landing.lease.WorkItemID), StartedAt: now,
-		AgentRole: audit.Role, AgentBackendID: audit.Backend, RequestedModel: audit.Model})
+	sessionStart := store.SessionStart{ProjectID: string(project.project.ID), IssueID: string(landing.lease.WorkItemID), StartedAt: now,
+		AgentRole: audit.Role, AgentBackendID: audit.Backend, RequestedModel: audit.Model}
+	completePrimary := func(id int64, model string) {
+		t.Helper()
+		completed := now.Add(time.Microsecond)
+		finish := store.SessionFinish{CompletedAt: completed, FinalState: "completed", Model: model}
+		usage := store.UsageEvent{ProjectID: sessionStart.ProjectID, IssueID: sessionStart.IssueID, SessionID: id, StartedAt: now, FinishedAt: completed, Outcome: "completed", Model: model}
+		phase := &store.WorkflowPhaseEvent{ProjectID: sessionStart.ProjectID, IssueID: sessionStart.IssueID, SessionID: id, StartedAt: now, FinishedAt: completed,
+			PhaseType: store.WorkflowPhaseTypeAgentSession, PhaseName: "agent_active", Status: "completed"}
+		value := &sessionmodel.Finalization{SessionID: id, Finish: finish, Usage: usage, Phase: phase}
+		if err := sessions.ReconcileSessionFinalization(ctx, id, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wrongPrimary, err := sessions.StartSession(ctx, sessionStart)
 	if err != nil {
 		t.Fatal(err)
 	}
-	verificationPhase := tracker.NativeProviderPhaseMutation{Expected: audit, Requirement: verification, Sequence: landing.sequence, AuditPredecessor: primary}
+	verificationPhase := tracker.NativeProviderPhaseMutation{Expected: audit, Requirement: verification, Sequence: landing.sequence, AuditPredecessor: wrongPrimary}
 	requireNativeStatus(t, swapPhase(project, landing.lease, landing.runner, verificationPhase), http.StatusConflict)
-	if err := sessions.FinishSession(ctx, primary, store.SessionFinish{CompletedAt: now, FinalState: "completed"}); err != nil {
+	completePrimary(wrongPrimary, "wrong-model")
+	requireNativeStatus(t, swapPhase(project, landing.lease, landing.runner, verificationPhase), http.StatusConflict)
+	primary, err := sessions.StartSession(ctx, sessionStart)
+	if err != nil {
 		t.Fatal(err)
 	}
+	completePrimary(primary, "test-alias")
+	verificationPhase.AuditPredecessor = primary
 	response = swapPhase(project, landing.lease, landing.runner, verificationPhase)
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &renewed)
@@ -1475,9 +1496,24 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		Source: "cloud_workflow", ObservedAt: now, ConfigRevision: strings.Repeat("a", 64),
 		EffectivePolicy: &pinned, SelectedPolicy: &pinned, LandingAuditRoute: &policy.AuditRoute{Backend: audit.Backend, Model: audit.Model},
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost,
-		project.base+"/machines/"+string(landing.runner.binding.MachineID)+"/heartbeat", landing.runner.redemption.Credential,
-		map[string]any{"backend_isolation": landing.runner.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "project_configuration": observed}), http.StatusOK)
+	reportRoute := func(observation runnerauth.ProjectConfiguration) {
+		t.Helper()
+		requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost,
+			project.base+"/machines/"+string(landing.runner.binding.MachineID)+"/heartbeat", landing.runner.redemption.Credential,
+			map[string]any{"backend_isolation": landing.runner.redemption.BackendIsolation, "display_name": "runner", "capacity": 8, "version": "test", "project_configuration": observation}), http.StatusOK)
+	}
+	stale := pinned
+	stale.Gates.Validator = !pinned.Gates.Validator
+	stale = stale.WithID()
+	observed.EffectivePolicy = &stale
+	observed.LocalBindingPolicy = &pinned
+	reportRoute(observed)
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, original, audit, landing.sequence), http.StatusConflict)
+	clockOffset.Add(int64(time.Second))
+	observed.ObservedAt = service.config.Clock()
+	observed.EffectivePolicy = &pinned
+	observed.SelectedPolicy = &stale
+	reportRoute(observed)
 	substituted = original
 	substituted.Role = "security_audit"
 	requireNativeStatus(t, swap(project, landing.lease, landing.runner, original, substituted, landing.sequence), http.StatusConflict)

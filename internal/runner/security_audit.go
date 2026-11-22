@@ -117,6 +117,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	var landingModel string
 	if req.landing {
 		audit := workflow.Config.LandingAuditIdentity(workflow.Config.ConfiguredLandingAuditRoute(), verification)
+		if audit.Backend == "" {
+			return execution, errors.New("landing audit requires an operator backend when the configured route depends on issue selection")
+		}
 		landingModel = audit.Model
 		selection, backend, backendConfig, err = agentRuntime.backendForSelection(RouteSelection{BackendID: audit.Backend, Model: audit.Model})
 	} else {

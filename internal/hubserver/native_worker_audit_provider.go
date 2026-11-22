@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
@@ -138,20 +139,21 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 		return nil, err
 	}
 	workflow.Config.Agents.ModelSelection = models.Effective
-	var route policy.AuditRoute
+	var route *policy.AuditRoute
 	if plan.observation.Key != "" {
 		var observed runnerauth.ProjectConfiguration
 		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.observation, &observed); err != nil {
 			return nil, err
 		}
-		if observed.ProjectID == string(scope.Project) && observed.RuntimeRegistered && observed.LandingAuditRoute != nil {
-			route = *observed.LandingAuditRoute
+		if observed.ProjectID == string(scope.Project) && observed.RuntimeRegistered && observed.LandingAuditRoute != nil &&
+			observed.EffectivePolicy != nil && observed.EffectivePolicy.Match(approval.Policy) == nil {
+			route = observed.LandingAuditRoute
 		}
 	}
-	if route.Backend == "" && models.Effective.Stages[runner.RoleSecurityAudit].Backend == nil {
-		return nil, hubapi.PolicyMismatch("The runner's configured audit route has not been observed")
-	}
 	primary := workflow.Config.LandingAuditIdentity(route, false)
+	if primary.Backend == "" {
+		return nil, hubapi.PolicyMismatch("The runner's configured audit route has not been observed under the pinned policy")
+	}
 	plan.primary = providercapacity.Requirement{Role: runner.RoleSecurityAudit, Backend: primary.Backend, Model: cmp.Or(primary.Model, "provider_default")}
 	plan.requirement = plan.primary
 	if plan.predecessor != nil {
@@ -161,6 +163,19 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 		}
 		if snapshot.AuditPredecessor == nil || *snapshot.AuditPredecessor != 0 {
 			return nil, hubapi.PolicyMismatch("Audit verification requires a primary audit session admitted under this attempt")
+		}
+		if err := s.verifyRunnerSessionFinalization(ctx, scope, *plan.predecessor, snapshot); err != nil {
+			if errors.Is(err, runnersession.ErrFinalizationIncomplete) {
+				return nil, hubapi.PolicyMismatch("Audit verification requires a finalized primary audit")
+			}
+			return nil, err
+		}
+		if plan.primary.Model != "provider_default" {
+			for _, observed := range snapshot.FinalizedModels() {
+				if observed != "" && observed != plan.primary.Model && !slices.Contains(snapshot.AuditModelAliases, observed) {
+					return nil, hubapi.PolicyMismatch("The primary audit used a different model than reserved")
+				}
+			}
 		}
 		plan.requirement.Model = workflow.Config.LandingAuditIdentity(route, true).Model
 	}

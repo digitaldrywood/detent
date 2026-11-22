@@ -16,21 +16,33 @@ import (
 const HistoryLimit = 200
 
 type Snapshot struct {
-	AuditPredecessor *int64        `json:",omitempty"`
-	Finalization     *Finalization `json:",omitempty"`
-	ReceiptID        int64
-	ID               int64
-	Revision         int64
-	Start            store.SessionStart
-	Finish           *store.SessionFinish
-	Identity         agentidentity.Identity
-	Provider         store.SessionProviderIdentity
-	Resume           store.SessionResumeState
-	Progress         *store.SessionProgress
-	Policy           policy.Descriptor
-	Worker           *store.WorkerProcessRegistration
-	Reaped           *store.WorkerProcessReap
-	Authority        string
+	AuditModelAliases []string      `json:",omitempty"`
+	AuditPredecessor  *int64        `json:",omitempty"`
+	Finalization      *Finalization `json:",omitempty"`
+	ReceiptID         int64
+	ID                int64
+	Revision          int64
+	Start             store.SessionStart
+	Finish            *store.SessionFinish
+	Identity          agentidentity.Identity
+	Provider          store.SessionProviderIdentity
+	Resume            store.SessionResumeState
+	Progress          *store.SessionProgress
+	Policy            policy.Descriptor
+	Worker            *store.WorkerProcessRegistration
+	Reaped            *store.WorkerProcessReap
+	Authority         string
+}
+
+func (s Snapshot) FinalizedModels() [2]string {
+	finish := s.Finish
+	if s.Finalization != nil {
+		finish = &s.Finalization.Input.Finish
+	}
+	if finish == nil {
+		return [2]string{}
+	}
+	return [2]string{finish.Model, finish.RuntimeIdentity.ResolvedModel.Value}
 }
 
 type Finalization struct {
