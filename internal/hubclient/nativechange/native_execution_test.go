@@ -126,18 +126,20 @@ func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 		name            string
 		providerFailure bool
 		expireLease     bool
+		overlap         bool
 	}{
 		{name: "worker close deadline"},
 		{name: "unretired tool after protocol failure", providerFailure: true},
+		{name: "overlapping worker retires during earlier close", providerFailure: true, overlap: true},
 		{name: "Hub lease expires during provider retirement", providerFailure: true, expireLease: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure, tc.expireLease)
+			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure, tc.expireLease, tc.overlap)
 		})
 	}
 }
 
-func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure, expireLease bool) {
+func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure, expireLease, overlap bool) {
 	t.Helper()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Retire the old worker")
@@ -177,18 +179,36 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure,
 			t.Error(err)
 		}
 	}()
-	<-entered
-	if providerFailure {
-		cause := errors.Join(errors.New("provider protocol failed"), runner.ErrProviderSessionUnretired)
-		if !runner.StopProviderSupervision(e, cause) {
-			t.Fatal("unretired tool did not stop supervision")
+	assertRetirementFence := func(t *testing.T) {
+		t.Helper()
+		if _, stopNext, err := e.Guard(t.Context()); !errors.Is(err, runner.ErrProviderSessionUnretired) {
+			stopNext()
+			t.Errorf("unretired tool allowed another worker: %v", err)
+		}
+		if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("heartbeat did not preserve the retirement fence: %v", err)
+		}
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("renewal did not preserve the retirement fence: %v", err)
 		}
 		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrProviderSessionUnretired) {
 			t.Fatalf("unretired tool allowed claim completion: %v", err)
 		}
-		if _, stopNext, err := e.Guard(t.Context()); !errors.Is(err, runner.ErrProviderSessionUnretired) {
-			stopNext()
-			t.Fatalf("unretired tool allowed another worker: %v", err)
+	}
+	<-entered
+	overlappingWorkerClosed := false
+	if overlap {
+		if err := e.KeepWorker(func(context.Context) error {
+			overlappingWorkerClosed = true
+			return nil
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if providerFailure {
+		cause := errors.Join(errors.New("provider protocol failed"), runner.ErrProviderSessionUnretired)
+		if !runner.StopProviderSupervision(e, cause) {
+			t.Fatal("unretired tool did not stop supervision")
 		}
 	} else {
 		cancel()
@@ -200,15 +220,9 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure,
 	case <-watch.Done():
 		t.Fatal("expired cleanup left the supervisor active")
 	}
-	_, err = h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
 	if providerFailure {
-		if !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-			t.Errorf("heartbeat reported provider retirement as lease loss: %v", err)
-		}
-		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-			t.Errorf("renewal reported provider retirement as lease loss: %v", err)
-		}
-	} else if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		assertRetirementFence(t)
+	} else if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 		t.Errorf("unretired worker retained renewal: %v", err)
 	}
 	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
@@ -231,6 +245,18 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure,
 		stop()
 		if err := retireWorker(); err != nil {
 			t.Fatal(err)
+		}
+		if overlap {
+			if overlappingWorkerClosed {
+				t.Fatal("first close included the worker registered during cleanup")
+			}
+			assertRetirementFence(t)
+			if err := e.CloseWorkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if !overlappingWorkerClosed {
+				t.Fatal("second close did not retire the overlapping worker")
+			}
 		}
 		renewed, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
 		if err != nil || !renewed.LeaseRenewedAt.After(e.claim.lease.RenewedAt) {
