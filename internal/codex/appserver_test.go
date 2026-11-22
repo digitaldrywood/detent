@@ -820,7 +820,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 		{name: "unresolved tool at deadline", blocking: true, hang: true},
 		{name: "unresolved tool at parent deadline", blocking: true, hang: true, parent: true},
 		{name: "recovered refusal then stream stall", blocking: true, stall: true},
-		{name: "unresolved tool at stall deadline", blocking: true, stall: true, hang: true},
+		{name: "unresolved tool at its own deadline", blocking: true, stall: true, hang: true},
 		{name: "tool exceeds retirement bound", blocking: true, stall: true, hang: true, stubborn: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -842,7 +842,11 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				if test.blocking {
 					transport = newBlockingAppServerTransport(messages)
 				}
-				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Minute))
+				turnTimeout := time.Minute
+				if test.hang && test.stall {
+					turnTimeout = time.Hour
+				}
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(turnTimeout))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -877,8 +881,14 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 					defer cancel()
 				}
 				_, err = server.RunTurn(callCtx, request, nil)
+				if test.hang && test.stall {
+					var deadline *sessiontimeout.Error
+					if !errors.As(err, &deadline) || deadline.Kind != sessiontimeout.CommandDeadline || deadline.Limit != dynamicToolTimeout {
+						t.Fatalf("tool deadline = %v, want command deadline after %s", err, dynamicToolTimeout)
+					}
+				}
 				if test.stubborn {
-					if !errors.Is(err, runner.ErrWorkerProcessReap) || !errors.Is(err, ErrStreamStalled) {
+					if !errors.Is(err, runner.ErrWorkerProcessReap) {
 						t.Fatalf("unretired tool error = %v", err)
 					}
 					return
@@ -893,11 +903,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				}
 				if test.hang {
 					failure := tool.NativeTerminalFailure().Public()
-					cause := error(context.DeadlineExceeded)
-					if test.stall {
-						cause = ErrStreamStalled
-					}
-					if !errors.Is(err, cause) || failure.ErrorClass != "tool_error" || failure.Attribution != "instance" {
+					if !errors.Is(err, context.DeadlineExceeded) || failure.ErrorClass != "tool_error" || failure.Attribution != "instance" {
 						t.Fatalf("unresolved failure = %+v, %v", failure, err)
 					}
 				} else if test.stall {
@@ -922,6 +928,59 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				}
 				if err != nil && strings.Contains(err.Error(), "private") {
 					t.Fatalf("private refusal retained: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestAppServerDynamicToolIdleLifetime(t *testing.T) {
+	const idle = 5 * time.Minute
+	for _, test := range []struct {
+		name      string
+		completes bool
+	}{
+		{name: "provider completes after tool returns", completes: true},
+		{name: "idle timer resumes after tool returns"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				messages := []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+					serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-1","tool":"detent_run_validation","arguments":{}}`),
+				}
+				if test.completes {
+					messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+				}
+				transport := newBlockingAppServerTransport(messages)
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithTurnTimeout(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				started := time.Now()
+				toolDuration := idle + time.Minute
+				_, err = server.RunTurn(t.Context(), RunTurnRequest{
+					Model:        "example-model",
+					StallTimeout: idle,
+					ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
+						timer := time.NewTimer(toolDuration)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return DynamicToolResult{}, ctx.Err()
+						case <-timer.C:
+							return DynamicToolResult{Content: "passed", Success: true}, nil
+						}
+					},
+				}, nil)
+				if test.completes {
+					if err != nil || time.Since(started) != toolDuration {
+						t.Fatalf("turn ended after %s with %v, want success after %s", time.Since(started), err, toolDuration)
+					}
+				} else if !errors.Is(err, ErrStreamStalled) || time.Since(started) != toolDuration+idle {
+					t.Fatalf("turn ended after %s with %v, want idle after %s", time.Since(started), err, toolDuration+idle)
 				}
 			})
 		})
