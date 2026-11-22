@@ -458,13 +458,17 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 	message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 	first := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
 	second := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	recordedResume := AgentResume{ThreadID: "implementation-thread", SessionID: "implementation-session"}
 	agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{
 		updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}},
-		result:  AgentTurnResult{ThreadID: "implementation-thread", TurnID: "completed-turn"},
+		result:  AgentTurnResult{ThreadID: recordedResume.ThreadID, SessionID: recordedResume.SessionID, TurnID: "completed-turn"},
 	}}
 	agent.afterTurn = func() {
 		if agent.calls == 1 {
 			return
+		}
+		if agent.request.Resume != recordedResume || agent.verifiedResume != recordedResume {
+			t.Fatalf("correction resume = %+v, verified = %+v, want recorded session %+v", agent.request.Resume, agent.verifiedResume, recordedResume)
 		}
 		if agent.request.Workspace != info.Path || agent.request.ReadOnly || second.published ||
 			!strings.Contains(agent.request.Prompt, "stage any remaining issue changes") {
@@ -485,8 +489,17 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 	if _, err := r.Run(t.Context(), request); !errors.Is(err, ErrNativeRecoveryRequired) || first.finish != "interrupted" || first.published || agent.calls != 1 {
 		t.Fatalf("first run lost unfinished source: error=%v outcome=%q published=%t turns=%d", err, first.finish, first.published, agent.calls)
 	}
+	if first.checkpoint == nil || first.checkpoint.Resume != "resume_session" {
+		t.Fatalf("interrupted attempt did not retain the provider session: %+v", first.checkpoint)
+	}
+	sessions := &fakeSessionStore{sessionID: 18, resumeState: store.AgentResumeState{
+		DetentSessionID: 17, ProviderThreadID: recordedResume.ThreadID, ProviderSessionID: recordedResume.SessionID,
+		RequestedModel: first.identity.Model, AgentBackendID: first.identity.Backend, AgentBackendKind: "codex", AgentRole: first.identity.Role,
+	}}
+	r.store = sessions
+	second.recovery.Lease = tracker.NativeLease{ID: "current-lease", MachineID: "machine", FencingToken: 2}
 	second.recovery.Attempts = []tracker.NativeAttempt{{
-		NativeRunData: tracker.NativeRunData{AttemptID: "first", CompletionBody: message, Steps: first.steps},
+		NativeRunData: tracker.NativeRunData{AttemptID: "first", CompletionBody: message, Steps: first.steps, Identity: &first.identity, MachineID: "machine", LeaseID: "prior-lease", FencingToken: 1},
 		Status:        first.finish, Checkpoint: first.checkpoint,
 	}}
 	recovered := nativeTurnResumeAttempt(second.recovery)
@@ -499,6 +512,9 @@ func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
 		second.checkpoint == nil || second.checkpoint.HeadSHA != "finalized-head" || second.checkpoint.WorktreeState != "clean" {
 		t.Fatalf("retry did not correct the restored source: error=%v state=%s published=%t turns=%d finalizations=%d checkpoint=%+v",
 			err, result.FinalState, second.published, agent.calls, backend.finalizationCalls, second.checkpoint)
+	}
+	if sessions.resumeLookup.NativeAttemptID != "first" || sessions.started.ResumedFromSessionID != 17 {
+		t.Fatalf("correction did not use the recorded Detent session: lookup=%+v session start=%+v", sessions.resumeLookup, sessions.started)
 	}
 }
 
