@@ -661,7 +661,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
-	if retry, err := l.uses.CheckWorkspaceSetup(ctx, l.root, info.Path); err != nil {
+	if retry, err := l.uses.CheckWorkspaceSetup(l.root, info.Path); err != nil {
 		if retry {
 			err = l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
@@ -1040,7 +1040,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		l.deleteCheckpointRef(ctx, issue)
 		return result, nil
 	}
-	if err := errors.Join(l.uses.CheckRemoval(ctx, info.Path), l.uses.CheckWorkspaceSetupRemoval(ctx, l.root, info.Path)); err != nil {
+	if err := errors.Join(l.uses.CheckRemoval(ctx, info.Path), l.uses.CheckWorkspaceSetupRemoval(l.root, info.Path)); err != nil {
 		return result, err
 	}
 	var hookErr error
@@ -1693,7 +1693,7 @@ func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, cu
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
-	if err := l.uses.CheckWorkspaceSetupRemoval(ctx, l.root, path); err != nil {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, path); err != nil {
 		return err
 	}
 	if err := l.uses.Stop(ctx, path); err != nil {
@@ -1726,7 +1726,7 @@ func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string,
 	if metadata.commonDir != sourceCommon {
 		return "", fmt.Errorf("refusing to quarantine worktree not managed by source: %s", path)
 	}
-	if err := l.uses.CheckWorkspaceSetupRemoval(ctx, l.root, path); err != nil {
+	if err := l.uses.CheckWorkspaceSetupRemoval(l.root, path); err != nil {
 		return "", err
 	}
 	if err := l.uses.StopBounded(ctx, path); err != nil {
