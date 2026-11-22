@@ -55,7 +55,7 @@ type dynamicToolScope struct {
 type runningDynamicTool struct {
 	ctx               context.Context
 	scope             dynamicToolScope
-	requestID         string
+	id                string
 	finishObservation func()
 	cancelObservation context.CancelFunc
 }
@@ -121,12 +121,11 @@ func (t *toolTransport) observeTurn(threadID, turnID string) {
 
 func (t *toolTransport) observeCall() {
 	call := t.call
-	if call == nil || t.turn.ThreadID == "" || t.turn.TurnID == "" || call.scope != t.turn || call.requestID == "" {
+	if call == nil || call.id == "" || call.scope != t.turn {
 		return
 	}
-	id := fmt.Sprintf("dynamic/%q/%q/%s", call.scope.ThreadID, call.scope.TurnID, call.requestID)
 	ctx, cancel := context.WithCancel(call.ctx)
-	finish, owned := t.lifetime.BeginOwnedCommand(ctx, id)
+	finish, owned := t.lifetime.BeginOwnedCommand(ctx, call.id)
 	if !owned {
 		cancel()
 		return
@@ -172,8 +171,10 @@ func (t *toolTransport) handleCall(ctx context.Context, msg Message) error {
 	callCtx, cancel := context.WithTimeout(ctx, dynamicToolTimeout)
 	defer cancel()
 	call := &runningDynamicTool{ctx: callCtx}
-	if json.Unmarshal(msg.Params, &call.scope) == nil {
-		call.requestID = dynamicToolRequestID(msg.ID)
+	if json.Unmarshal(msg.Params, &call.scope) == nil && call.scope.ThreadID != "" && call.scope.TurnID != "" {
+		if requestID := dynamicToolRequestID(msg.ID); requestID != "" {
+			call.id = fmt.Sprintf("dynamic/%q/%q/%s", call.scope.ThreadID, call.scope.TurnID, requestID)
+		}
 	}
 	t.mu.Lock()
 	t.call = call
@@ -187,6 +188,8 @@ func (t *toolTransport) handleCall(ctx context.Context, msg Message) error {
 	if call.finishObservation != nil {
 		call.finishObservation()
 		call.cancelObservation()
+	} else if err == nil && call.id != "" {
+		t.lifetime.RememberOwnedCommandCompletion(call.id)
 	}
 	t.call = nil
 	t.mu.Unlock()

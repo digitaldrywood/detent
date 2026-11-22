@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1009,27 +1010,33 @@ func TestAppServerDynamicToolIdleLifetime(t *testing.T) {
 func TestAppServerUnownedToolDoesNotAffectActiveTurn(t *testing.T) {
 	const idle = 5 * time.Minute
 	for _, test := range []struct {
-		name     string
-		threadID string
-		turnID   string
-		followup bool
-		crosses  bool
-		replay   bool
-		deadline bool
+		name      string
+		threadID  string
+		turnID    string
+		followup  bool
+		crosses   bool
+		replay    bool
+		beforeAck bool
+		deadline  bool
 	}{
 		{name: "previous turn cannot stop idle", threadID: "thread-1", turnID: "turn-1", followup: true},
 		{name: "tool still running from the previous turn cannot stop idle", threadID: "thread-1", turnID: "turn-1", followup: true, crosses: true},
 		{name: "another thread cannot stop idle", threadID: "thread-2", turnID: "turn-1"},
 		{name: "replay cannot stop idle", threadID: "thread-1", turnID: "turn-1", replay: true},
+		{name: "replay of a call answered before startup cannot stop idle", threadID: "thread-1", turnID: "turn-1", replay: true, beforeAck: true},
 		{name: "previous turn deadline cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", followup: true, deadline: true},
 		{name: "replay deadline cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", replay: true, deadline: true},
+		{name: "replay of a call answered before startup cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", replay: true, beforeAck: true, deadline: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				messages := []Message{
 					responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
 					responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"}}`),
-					responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-1"}}`),
+				}
+				ack := responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-1"}}`)
+				if !test.beforeAck {
+					messages = append(messages, ack)
 				}
 				activeTurnID := "turn-1"
 				call := serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"`+test.threadID+`","turnId":"`+test.turnID+`","tool":"detent_run_validation","arguments":{}}`)
@@ -1046,6 +1053,9 @@ func TestAppServerUnownedToolDoesNotAffectActiveTurn(t *testing.T) {
 					call.ID = json.RawMessage(`"review-call"`)
 					messages = append(messages, call, notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"answer","delta":"ready"}`))
 					call.ID = json.RawMessage(`"review-\u0063all"`)
+					if test.beforeAck {
+						messages = append(messages, ack)
+					}
 				}
 				if !test.crosses {
 					messages = append(messages, call)
@@ -1082,7 +1092,12 @@ func TestAppServerUnownedToolDoesNotAffectActiveTurn(t *testing.T) {
 				result, err := server.RunTurn(t.Context(), request, func(update Update) error {
 					if test.replay && update.Type == UpdateAgentMessageDelta {
 						synctest.Wait()
-						if !test.deadline {
+						if test.beforeAck && !slices.ContainsFunc(transport.sentMessages(), func(msg Message) bool {
+							return msg.Method == "" && string(msg.ID) == `"review-call"`
+						}) {
+							return errors.New("tool response was not sent before turn/start acknowledgement")
+						}
+						if !test.deadline && !test.beforeAck {
 							<-time.After(idle / 2)
 						}
 					}
