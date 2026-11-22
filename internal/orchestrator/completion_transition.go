@@ -105,13 +105,8 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			cfg,
 		)
 		if targetState == "" {
-			if transitioned, promoted := o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now); transitioned {
+			if transitioned, _ := o.transitionTimedOutCompletedActiveGateWait(ctx, state, issue, completed, cfg, now); transitioned {
 				result.transitioned[issueID] = struct{}{}
-				if mergeWorkerIssue(promoted) {
-					o.recordMergeQueueEntered(state, promoted, now, "completed_active_gate_wait_timeout")
-					result.dispatchCandidates = append(result.dispatchCandidates, promoted)
-					o.logMergeWorkerPickup(promoted, "completed_active_gate_wait_timeout")
-				}
 			}
 			continue
 		}
@@ -121,10 +116,6 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 		if direct {
 			if normalizeState(issue.State) == normalizeState(promoted.State) {
 				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
-			} else if mergeWorkerIssue(promoted) {
-				o.recordMergeQueueEntered(state, promoted, now, "completed_active_auto_promote")
-				result.dispatchCandidates = append(result.dispatchCandidates, promoted)
-				o.logMergeWorkerPickup(promoted, "completed_active_auto_promote")
 			}
 			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
 			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, promoted.State)
@@ -292,7 +283,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		}
 	}
 	targetState := autoPromoteTargetState(decision.Action, cfg)
-	if targetState == "" {
+	if targetState == "" || (issue.PullRequest != nil && normalizeState(targetState) == normalizeState(autoPromoteMergingState)) {
 		o.logAutoPromoteDecision(issue, decision, "")
 		return false, connector.Issue{}, summary, decision
 	}
@@ -543,6 +534,9 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
+		if targetState != "" && issue.PullRequest != nil && normalizeState(targetState) == normalizeState(autoPromoteMergingState) {
+			targetState = cfg.reviewTargetState()
+		}
 		if targetState == "" {
 			recordAutoPromoteSnapshotDecision(state, issueID, decision)
 			o.logAutoPromoteDecision(issue, decision, "")

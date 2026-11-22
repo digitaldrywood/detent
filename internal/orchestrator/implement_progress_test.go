@@ -1216,7 +1216,7 @@ func TestHandleRunResultStopsCompletedGateWaitContinuations(t *testing.T) {
 		wantTerminal   store.WorkAttemptTerminalState
 		wantHydrations int
 	}{
-		{name: "ready current head promotes immediately", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1, wantState: "Merging"},
+		{name: "ready current head does not auto-promote to Merging", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1},
 		{name: "real CI pending waits without continuation", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,
 			mutate: func(issue *connector.Issue, _ *Config) { issue.PullRequest.CIStatus = "pending" }},
 		{name: "omitted checks with no CI producer remains held", ready: true, wantTerminal: store.WorkAttemptTerminalSuccess, wantHydrations: 1,

@@ -1523,10 +1523,7 @@ func staleTodoPullRequestDecision(
 	if gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0 {
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
 	}
-	if !cfg.Enabled {
-		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
-	}
-	return EvaluateAutoPromote(issue, summary, cfg, now)
+	return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
 }
 
 func staleTodoPullRequestShouldStayActive(decision AutoPromoteDecision) bool {

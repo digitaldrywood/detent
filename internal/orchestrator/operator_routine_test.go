@@ -11,6 +11,8 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/coordination"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -207,5 +209,65 @@ func TestOperatorMergeWedgedPullRequestsMergesAndRecords(t *testing.T) {
 				t.Fatalf("activity = %#v", state.RecentEvents)
 			}
 		})
+	}
+}
+
+func TestOperatorMergeWedgedSkipsFailedSecurityAudit(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
+	orch, tracker, issue := mergingSecurityAuditFixture()
+	stage := now.Add(-3 * time.Hour)
+	issue.StageUpdatedAt = &stage
+	tracker.stateIssues = []connector.Issue{issue}
+	orch.cfg.Operator.Actions = []string{workflowconfig.OperatorActionMergeWhenWedged}
+	orch.now = func() time.Time { return now }
+	run := securityAuditPassingRun(issue)
+	run.Verdict = securityaudit.VerdictFail
+	run.Findings = []securityaudit.Finding{{ID: "authz", Severity: "p1", Body: "critical finding"}}
+	if _, err := orch.securityAuditStore.RecordSecurityAuditRun(t.Context(), run); err != nil {
+		t.Fatal(err)
+	}
+	state := newState(orch.cfg)
+	orch.tick(t.Context(), &state, now)
+	if len(tracker.merges) != 0 || len(tracker.updates) != 0 || len(orch.laneWrites) != 0 || len(state.MergeTimings) != 0 {
+		t.Fatalf("failed audit allowed wedged merge: merges=%#v updates=%#v writes=%#v timings=%#v", tracker.merges, tracker.updates, orch.laneWrites, state.MergeTimings)
+	}
+}
+
+func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
+	readyTodo := autoPromoteTickIssue("todo-ready-pr", nil, &connector.PullRequest{
+		Number: 101, URL: "https://github.test/example-org/example-project/pull/101",
+		State: "OPEN", HeadSHA: "head-101", MergeableState: "clean", CIStatus: "success",
+	})
+	readyTodo.State = "Todo"
+	completedActive := autoPromoteTickIssue("active-completed-pr", nil, &connector.PullRequest{
+		Number: 102, URL: "https://github.test/example-org/example-project/pull/102",
+		State: "OPEN", HeadSHA: "head-102", MergeableState: "clean", CIStatus: "success",
+	})
+	completedActive.State = "In Progress"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive}}
+	cfg := normalizeConfig(Config{
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done"},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Human Review",
+			PassState:   "Merging",
+			Gate:        gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+		},
+	})
+	orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+	state := newState(cfg)
+	state.Completed[completedActive.ID] = Completed{Issue: cloneIssue(completedActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
+	orch.tick(t.Context(), &state, now)
+	for _, update := range tracker.updates {
+		if update.state == "Merging" {
+			t.Fatalf("tick auto-promoted PR directly to Merging: %+v", tracker.updates)
+		}
+	}
+	if len(state.Running) != 0 {
+		t.Fatalf("tick dispatched merge worker for PR: %+v", state.Running)
 	}
 }

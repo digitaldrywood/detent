@@ -8,6 +8,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -75,6 +76,11 @@ func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, stat
 		for _, issue := range issues {
 			if !operatorMergeWedgedCandidate(issue, state, o.cfg, now) {
 				continue
+			}
+			if o.cfg.AutoPromote.Gate.SecurityAudit.Enabled {
+				if _, pending := gate.EvaluateSecurityAudit(o.cfg.AutoPromote.Gate.SecurityAudit, o.securityAuditEvaluation(ctx, issue)); pending {
+					continue
+				}
 			}
 			if hasQueueInspector {
 				status, err := queueInspector.InspectPullRequestMergeQueue(ctx, issue)
