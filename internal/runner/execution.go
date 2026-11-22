@@ -421,7 +421,9 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				reviewRequest.retainedReview = retained
 				reviewErr := r.validateNativeChange(guarded, reviewRequest)
 				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
-					change, err := source.SourceReview(guarded)
+					sourceReviewCtx, cancelSourceReview := r.finalizationContext(guarded, r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+					change, err := source.SourceReview(sourceReviewCtx)
+					cancelSourceReview()
 					if err != nil {
 						return "", errors.Join(reviewErr, err)
 					}
@@ -788,7 +790,7 @@ func (r *Runner) artifactCompletionContext(ctx context.Context, execution Execut
 	if availabilityStopped(execution, context.Cause(ctx), time.Now()) {
 		return context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	}
-	return ctx, func() {}
+	return context.WithTimeout(ctx, r.afterRunTimeout)
 }
 
 func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume) error {
