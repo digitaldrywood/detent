@@ -874,6 +874,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}()
 	}
 	finalizationErr := executionCancellation(req)
+	var incomplete *workspace.SourceFinalizationIncomplete
 	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
@@ -882,6 +883,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				base, err := r.finalizeNativeCommit(ctx, req, backend, info, issue, finalizer)
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
+					if errors.As(err, &incomplete) {
+						finalizationErr = errors.Join(ErrNativeRecoveryRequired, finalizationErr)
+					}
 				} else if base != "" {
 					issue.BaseRef = base
 					if diffs, ok := req.Execution.(DiffExecution); ok {
@@ -892,7 +896,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			}
 		}
 	}
-	phaseCompleted := req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
+	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
@@ -955,7 +959,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
 							} else if req.reviewSource != nil && (!agentResumeEmpty(resume) || issue.PhaseSource != nil && req.retainedReview != nil) && sourceBudgetRemaining(ctx) > 0 {
-								return false, &sourceGateRepair{err: failedStep("validation", err), output: receipt.Output}
+								return false, &sourceRepair{err: failedStep("validation", err), output: receipt.Output}
 							}
 						} else {
 							binding.Validation = &receipt
@@ -1048,7 +1052,11 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
 		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
-	completionErr = errors.Join(completionErr, executionCancellation(req))
+	cancellation := executionCancellation(req)
+	completionErr = errors.Join(completionErr, cancellation)
+	if incomplete != nil && cancellation == nil && ctx.Err() == nil {
+		return false, &sourceRepair{err: completionErr, incomplete: incomplete}
+	}
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
 		return false, errors.Join(completionErr, context.Cause(ctx))
 	}

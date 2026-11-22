@@ -63,6 +63,15 @@ func reworkWorktreeDirty(ctx context.Context, path string) (bool, error) {
 	return status != "", err
 }
 
+func reworkHasUnstagedChanges(ctx context.Context, path string) (bool, error) {
+	unstaged, err := runGitAt(ctx, path, "diff", "--name-only", "-z")
+	if err != nil || unstaged != "" {
+		return unstaged != "", err
+	}
+	untracked, err := runGitAt(ctx, path, "ls-files", "--others", "--exclude-standard", "-z")
+	return untracked != "", err
+}
+
 func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (result MergePrepareResult, err error) {
 	defer func() { err = reworkPreparationError(err) }()
 	info, err = l.normalizeInfo(info, issue)
@@ -254,15 +263,11 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if prepared.Status == MergePrepareStatusConflict {
 			return prepared, nil
 		}
-		unstaged, err := runGitAt(ctx, info.Path, "diff", "--name-only", "-z")
+		unstaged, err := reworkHasUnstagedChanges(ctx, info.Path)
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
-		untracked, err := runGitAt(ctx, info.Path, "ls-files", "--others", "--exclude-standard", "-z")
-		if err != nil {
-			return MergePrepareResult{}, err
-		}
-		if unstaged != "" || untracked != "" {
+		if unstaged {
 			prepared.Status = MergePrepareStatusDirty
 			return prepared, nil
 		}
@@ -428,6 +433,30 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 	return prepared, err
 }
 
+type SourceFinalizationIncomplete struct {
+	Status MergePrepareStatus
+}
+
+func (e *SourceFinalizationIncomplete) Error() string {
+	if e.Status == MergePrepareStatusConflict {
+		return "source finalization has unresolved rebase conflicts"
+	}
+	return "source finalization has uncommitted changes"
+}
+
+func (*SourceFinalizationIncomplete) Unwrap() error { return ErrMergeResolutionInvalid }
+
+func verifyFinalizedWorktree(ctx context.Context, path string) error {
+	dirty, err := reworkWorktreeDirty(ctx, path)
+	if err != nil {
+		return err
+	}
+	if dirty {
+		return &SourceFinalizationIncomplete{Status: MergePrepareStatusDirty}
+	}
+	return nil
+}
+
 func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issue, validate func(context.Context) error) (string, error) {
 	info, err := l.normalizeInfo(info, issue)
 	if err != nil {
@@ -449,6 +478,13 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		return "", err
 	}
 	if !paused {
+		unstaged, err := reworkHasUnstagedChanges(ctx, info.Path)
+		if err != nil {
+			return "", err
+		}
+		if unstaged {
+			return "", &SourceFinalizationIncomplete{Status: MergePrepareStatusDirty}
+		}
 		staged, err := runGitAt(ctx, info.Path, "diff", "--cached", "--name-only", "-z")
 		if err != nil {
 			return "", err
@@ -466,29 +502,17 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 		if paused {
 			return "", fmt.Errorf("%w: native code completion has a paused rebase", ErrMergeResolutionInvalid)
 		}
-		return "", nil
+		return "", verifyFinalizedWorktree(ctx, info.Path)
 	}
 	if err := validate(ctx); err != nil {
 		return "", err
-	}
-	if paused {
-		conflicts, err := reworkConflictPaths(ctx, info.Path)
-		if err != nil {
-			return "", err
-		}
-		if len(conflicts) != 0 {
-			return "", fmt.Errorf("%w: unresolved source conflicts: %s", ErrMergeResolutionInvalid, strings.Join(conflicts, ", "))
-		}
 	}
 	prepared, err := l.prepareRework(ctx, info, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}, validate)
 	if err != nil {
 		return "", err
 	}
-	if prepared.Status == MergePrepareStatusDirty {
-		return "", fmt.Errorf("%w: rework changes must be staged before finalization", ErrMergeResolutionInvalid)
-	}
-	if prepared.Status == MergePrepareStatusConflict {
-		return "", nil
+	if prepared.Status == MergePrepareStatusDirty || prepared.Status == MergePrepareStatusConflict {
+		return "", &SourceFinalizationIncomplete{Status: prepared.Status}
 	}
 	if !issue.NoChangeNeeded && issue.Source != nil && prepared.HeadSHA == prepared.BaseSHA && prepared.HeadSHA != issue.Source.Version.HeadSHA {
 		if err := validate(ctx); err != nil {
@@ -498,7 +522,7 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 			return "", err
 		}
 	}
-	return prepared.BaseSHA, nil
+	return prepared.BaseSHA, verifyFinalizedWorktree(ctx, info.Path)
 }
 
 func (l *LocalGit) verifyReworkBranch(ctx context.Context, info Info, issue Issue) (bool, error) {

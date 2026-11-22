@@ -55,13 +55,21 @@ func nativeSourceRework(change *NativeChange, message string) string {
 	return phaserecovery.ReworkFindings(version, change.HeadSHA, change.SecurityAudit, change.ImplementationReview, change.Validator)
 }
 
-type sourceGateRepair struct {
-	err    error
-	output string
+func sourceFinalizationPrompt(status workspace.MergePrepareStatus) string {
+	if status == workspace.MergePrepareStatusConflict {
+		return "The runner paused the rebase at unresolved conflicts. Inspect git status, resolve the conflicts, and stage the resolutions for host finalization. The runner owns native rebase continuation and commit signing."
+	}
+	return "The workspace has uncommitted changes. Inspect git status, stage any remaining issue changes for host finalization, and discard unintended changes you produced. The runner owns native rebase continuation and commit signing."
 }
 
-func (e *sourceGateRepair) Error() string { return e.err.Error() }
-func (e *sourceGateRepair) Unwrap() error { return e.err }
+type sourceRepair struct {
+	err        error
+	output     string
+	incomplete *workspace.SourceFinalizationIncomplete
+}
+
+func (e *sourceRepair) Error() string { return e.err.Error() }
+func (e *sourceRepair) Unwrap() error { return e.err }
 
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
