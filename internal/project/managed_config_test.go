@@ -293,6 +293,7 @@ func TestHubConfigurationAppliesRuntimeWithoutLocalState(t *testing.T) {
 				events := hub.New[Event]()
 				cfg := workflowconfig.Config{Policy: descriptor}
 				cfg.Agents.Routes = []workflowconfig.AgentRoute{{Role: "security_audit", Backend: audit.Backend, Model: audit.Model, Default: true}}
+				cfg.Agents.Backends = []workflowconfig.AgentBackend{{ID: audit.Backend, Kind: workflowconfig.AgentBackendClaudeCode, Protocol: "headless", Command: "test-audit"}}
 				p := &Project{id: ID(id), cfg: globalconfig.Project{ID: id}, workflow: workflowconfig.Workflow{Config: cfg}, events: events}
 				registry := NewRegistry()
 				if err := registry.Set(p); err != nil {
@@ -306,6 +307,9 @@ func TestHubConfigurationAppliesRuntimeWithoutLocalState(t *testing.T) {
 				}
 				if result.LandingAuditRoute == nil || *result.LandingAuditRoute != audit {
 					t.Fatalf("runtime configuration lost the existing audit route: %+v", result.LandingAuditRoute)
+				}
+				if got := result.LandingAuditBackendKinds[audit.Backend]; got != workflowconfig.AgentBackendClaudeCode {
+					t.Fatalf("runtime configuration reported audit backend kind %q", got)
 				}
 				stored, err := os.ReadFile(path)
 				if err != nil {

@@ -74,7 +74,7 @@ func (e *nativeExecution) RegisterAttemptWorker(ctx context.Context, worker trac
 		if reservation := e.ProviderCapacity(); reservation != nil {
 			identity = tracker.NativeExecutionIdentity{Role: reservation.Role, Backend: reservation.Backend, Model: reservation.Model}
 		}
-		if err := e.validateProviderStart(identity); err != nil {
+		if err := e.validateProviderStart(identity, ""); err != nil {
 			return false, err
 		}
 		if observation.Phase == "implementation" && identity.Role == runner.RolePlan && e.scheduler.host.PinnedExecutionPolicy(string(e.claim.lease.WorkItemID)).Gates.PlanEnabled {

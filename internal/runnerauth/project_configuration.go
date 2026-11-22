@@ -42,7 +42,9 @@ type ProjectConfigurationReceipt struct {
 }
 
 type ProjectConfiguration struct {
-	LandingAuditRoute       *policy.AuditRoute  `json:"landing_audit_route,omitempty"`
+	LandingAuditBackendKinds map[string]string  `json:"landing_audit_backend_kinds,omitempty"`
+	LandingAuditRoute        *policy.AuditRoute `json:"landing_audit_route,omitempty"`
+
 	Diagnostics             *ProjectDiagnostics `json:"diagnostics,omitempty"`
 	LocalIntakeEnabled      bool                `json:"local_intake_enabled"`
 	LocalIntakeRemaining    []string            `json:"local_intake_remaining"`
@@ -85,6 +87,15 @@ func (c ProjectConfiguration) MarshalJSON() ([]byte, error) {
 }
 
 func (c ProjectConfiguration) Validate() error {
+	if len(c.LandingAuditBackendKinds) > 128 {
+		return errors.New("too many landing audit backend kinds")
+	}
+	for backend, kind := range c.LandingAuditBackendKinds {
+		requirement := providercapacity.Requirement{Role: "security_audit", Backend: backend, Model: kind}
+		if err := requirement.Validate(); err != nil {
+			return err
+		}
+	}
 	if route := c.LandingAuditRoute; route != nil {
 		requirement := providercapacity.Requirement{Role: "security_audit", Backend: route.Backend, Model: cmp.Or(route.Model, "provider_default")}
 		if err := requirement.Validate(); err != nil {

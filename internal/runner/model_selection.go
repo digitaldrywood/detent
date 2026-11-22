@@ -117,7 +117,7 @@ func resolveAttemptAgentSelection(ctx context.Context, req RunRequest, process A
 		}
 		result := agentSelection{resolvedAgentOverride: resolvedAgentOverride{Model: model, Effort: identity.ReasoningEffort.Value}, Selection: identity.Selection}
 		policy := cfg.EffectiveModelSelection()
-		if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
+		if !policy.ActiveForBackend(backendConfig.Kind) {
 			return result
 		}
 		override, rejections, err := selectionIssueOverride(req.Issue, role)
@@ -170,7 +170,7 @@ func resolveAttemptAgentSelection(ctx context.Context, req RunRequest, process A
 func resolveAgentSelection(ctx context.Context, issue connector.Issue, process AgentProcessRequest, baseModel, role string, cfg config.Config, backendConfig config.AgentBackend, backend AgentBackend) agentSelection {
 	policy := cfg.EffectiveModelSelection()
 	projectEffort, field := cfg.Agent.Effort.Resolve(role)
-	if !policy.Active() || policy.BackendKinds == nil || !slices.Contains(*policy.BackendKinds, backendConfig.Kind) {
+	if !policy.ActiveForBackend(backendConfig.Kind) {
 		resolved, err := resolveAgentOverride(ctx, issue, process, baseModel, role, agentEffortCandidate{Field: field, Effort: projectEffort}, backend)
 		return agentSelection{resolvedAgentOverride: resolved, Err: err}
 	}

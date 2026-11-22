@@ -382,7 +382,7 @@ func (e *nativeExecution) StartPhased(ctx context.Context, identity tracker.Nati
 
 func (e *nativeExecution) start(ctx context.Context, identity tracker.NativeExecutionIdentity, phased bool) (startErr error) {
 	if !phased {
-		if err := e.validateProviderStart(identity); err != nil {
+		if err := e.validateProviderStart(identity, ""); err != nil {
 			return err
 		}
 	}

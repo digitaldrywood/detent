@@ -1285,7 +1285,7 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 		report := capacityReport(now)
 		planner := report
 		planner.Backend, planner.AccountAlias, planner.SharedAccountAlias = "planner", "planning", "planning"
-		planner.Models = []string{"test-model", "verification-model", "test-alias"}
+		planner.Models = []string{"test-model", "verification-model", "test-alias", "provider_default"}
 		planner.ModelDetails = []providercapacity.ModelDetail{{ID: "test-alias", CanonicalModel: "test-model"}}
 		publishCapacity(t, f, r, report, planner)
 		issue := f.create(t, session)
@@ -1522,5 +1522,31 @@ func TestProviderPhaseSwapIsTenantScoped(t *testing.T) {
 	decodeHubResponse(t, response, &renewed)
 	if renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != audit {
 		t.Fatalf("unset operator override lost the configured audit route: %+v", renewed)
+	}
+
+	requireNativeStatus(t, swap(project, landing.lease, landing.runner, audit, original, landing.sequence), http.StatusOK)
+	modelSettings = cloudModelSelectionRequest{Mutation: tracker.Mutation{IdempotencyKey: "codex-only-automatic"}, ExpectedRevision: currentModel.Revision + 2,
+		Selection: new(config.SolFirstModelSelection())}
+	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPut, modelPath, testHubAdminToken, modelSettings), http.StatusOK)
+	observed.LandingAuditRoute = &policy.AuditRoute{Backend: audit.Backend}
+	clockOffset.Add(int64(time.Second))
+	observed.ObservedAt = service.config.Clock()
+	reportRoute(observed)
+	providerDefault := audit
+	providerDefault.Model = "provider_default"
+	response = swap(project, landing.lease, landing.runner, original, providerDefault, landing.sequence)
+	requireNativeStatus(t, response, http.StatusConflict)
+	if !strings.Contains(response.Body.String(), "backend kind has not been observed") {
+		t.Fatalf("missing backend kind did not explain the refusal: %s", response.Body.String())
+	}
+	observed.LandingAuditBackendKinds = map[string]string{audit.Backend: config.AgentBackendClaudeCode}
+	clockOffset.Add(int64(time.Second))
+	observed.ObservedAt = service.config.Clock()
+	reportRoute(observed)
+	response = swap(project, landing.lease, landing.runner, original, providerDefault, landing.sequence)
+	requireNativeStatus(t, response, http.StatusOK)
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ProviderReservation == nil || renewed.ProviderReservation.Requirement != providerDefault {
+		t.Fatalf("Codex-only automatic model policy did not preserve the Claude provider default: %+v", renewed)
 	}
 }

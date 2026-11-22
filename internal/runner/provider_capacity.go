@@ -28,7 +28,7 @@ func (r *Runner) DispatchCapacity(_ context.Context, req RunRequest) (providerca
 	// configured selection as the worker and the provider's advertised models;
 	// catalog discovery belongs to the attempt, after workspace preparation.
 	policy := workflow.Config.EffectiveModelSelection()
-	automatic := policy.Active() && policy.BackendKinds != nil && slices.Contains(*policy.BackendKinds, backendConfig.Kind)
+	automatic := policy.ActiveForBackend(backendConfig.Kind)
 	override, _, overrideErr := selectionIssueOverride(req.Issue, role)
 	explicitModel, _ := override.ModelForRole(role)
 	var models []string

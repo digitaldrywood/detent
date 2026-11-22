@@ -51,7 +51,7 @@ func (e *nativeSecurityAuditTestExecution) SetPhaseProvider(_ context.Context, r
 	e.reservation = &providercapacity.Reservation{Requirement: requirement}
 	return nil
 }
-func (e *nativeSecurityAuditTestExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64) error {
+func (e *nativeSecurityAuditTestExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64, _ string) error {
 	return e.SetPhaseProvider(ctx, requirement)
 }
 
@@ -327,9 +327,14 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 		verify, refuse, providerDefault   bool
 		wrongModel, requireCatalogScratch bool
 		conditional, explicitBackend      bool
+		automaticKind                     string
+		wantPrimaryModel                  string
 	}{
 		{name: "separate audit backend and configured model"},
 		{name: "provider default ignores the issue model", providerDefault: true, models: []string{"selected-by-provider"}},
+		{name: "Codex-only automatic policy keeps the Claude provider default", providerDefault: true, automaticKind: config.AgentBackendClaudeCode, models: []string{"claude-selected"}},
+		{name: "explicit audit model remains valid for excluded backend", automaticKind: config.AgentBackendClaudeCode},
+		{name: "eligible backend uses the automatic primary model", providerDefault: true, automaticKind: config.AgentBackendCodex, wantPrimaryModel: "gpt-5.6-sol"},
 		{name: "catalog alias keeps its spelling and uses live scratch", models: []string{"audit-alias"}, requireCatalogScratch: true},
 		{name: "verification binds the configured complex model", verify: true},
 		{name: "verification using a different model cannot approve", verify: true, models: []string{"audit-model", "different-model"}, wrongModel: true},
@@ -343,6 +348,37 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 				Requirement: providercapacity.Requirement{Role: RoleMerge, Backend: "merge", Model: "issue-model"},
 			}}
 			owner.recovery.Lease = lease
+			auditBackend := config.AgentBackend{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"}
+			if test.automaticKind == config.AgentBackendClaudeCode {
+				auditBackend.Kind = config.AgentBackendClaudeCode
+				auditBackend.Protocol = "headless"
+			}
+			cfg := config.Default()
+			model := "audit-model"
+			if test.providerDefault {
+				model = ""
+			}
+			cfg.Gate.SecurityAudit.Model = model
+			cfg.Agents.ModelSelection.Enabled = new(false)
+			cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
+			cfg.Agents.Backends = []config.AgentBackend{
+				{ID: "merge", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-merge"},
+				auditBackend,
+			}
+			if test.automaticKind != "" {
+				cfg.Agents.ModelSelection = config.SolFirstModelSelection()
+			}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", ModelField: "audit_model", Default: true}}
+			if test.conditional {
+				cfg.Agents.Routes = []config.AgentRoute{
+					{Name: "dedicated", Role: RoleSecurityAudit, Backend: "audit", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"security"}}}},
+					{Name: "default", Role: RoleCode, Backend: "merge", Default: true},
+				}
+			}
+			if test.explicitBackend {
+				cfg.Agents.ModelSelection.Stages = map[string]config.ModelSelectionStage{RoleSecurityAudit: {Backend: new("audit")}}
+			}
+			expectedBackendIdentity := config.ProviderIdentity(cfg.AgentBackendConfigs()[1])
 			request := RunRequest{Execution: owner}
 			wire := NewSSHRunRequest(request)
 			wire.Native = true
@@ -363,6 +399,16 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 				if err := json.Unmarshal(arguments[1], &predecessor); err != nil {
 					return nil, err
 				}
+				var backendIdentity string
+				if len(arguments) != 3 {
+					return nil, errors.New("audit admission did not supply the local backend identity")
+				}
+				if err := json.Unmarshal(arguments[2], &backendIdentity); err != nil {
+					return nil, err
+				}
+				if backendIdentity != expectedBackendIdentity {
+					return nil, errors.New("audit admission used a different local backend identity")
+				}
 				if len(phaseCalls) == 0 && predecessor != 0 || len(phaseCalls) == 1 && predecessor != 73 {
 					return nil, errors.New("audit reservation used the wrong predecessor session")
 				}
@@ -378,33 +424,11 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 			t.Cleanup(worker.Close)
 			execution := wire.Bind(t.Context(), worker).Execution
 
-			cfg := config.Default()
-			model := "audit-model"
-			if test.providerDefault {
-				model = ""
-			}
-			cfg.Gate.SecurityAudit.Model = model
-			cfg.Agents.ModelSelection.Enabled = new(false)
-			cfg.Agents.ModelSelection.ComplexModel = new("complex-model")
-			cfg.Agents.Backends = []config.AgentBackend{
-				{ID: "merge", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-merge"},
-				{ID: "audit", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-audit"},
-			}
-			cfg.Agents.Routes = []config.AgentRoute{{Name: "audit", Role: RoleSecurityAudit, Backend: "audit", ModelField: "audit_model", Default: true}}
-			if test.conditional {
-				cfg.Agents.Routes = []config.AgentRoute{
-					{Name: "dedicated", Role: RoleSecurityAudit, Backend: "audit", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"security"}}}},
-					{Name: "default", Role: RoleCode, Backend: "merge", Default: true},
-				}
-			}
-			if test.explicitBackend {
-				cfg.Agents.ModelSelection.Stages = map[string]config.ModelSelectionStage{RoleSecurityAudit: {Backend: new("audit")}}
-			}
 			merge := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"No findings","findings":[]}`}}}
 			audit := &verificationAuditBackend{t: t, outputs: []string{`{"verdict":"pass","summary":"No findings","findings":[]}`}}
 			audit.observedModels = test.models
 			audit.requireCatalogScratch = test.requireCatalogScratch
-			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}, {ID: "audit-alias", Model: "audit-model"}}
+			audit.models = []AgentModel{{ID: "complex-model", Model: "complex-model"}, {ID: "audit-alias", Model: "audit-model"}, {ID: "gpt-5.6-sol", Model: "gpt-5.6-sol", SupportedReasoningEfforts: []string{"medium"}}}
 			if test.verify {
 				audit.outputs = []string{
 					`{"verdict":"undetermined","summary":"Potential authorization issue","findings":[{"id":"auth","certainty":"undetermined","body":"Requires caller context","unresolved_fact":"Whether the caller checks access","status":"unresolved"}]}`,
@@ -436,7 +460,7 @@ func TestLandingAuditBindsConfiguredProvider(t *testing.T) {
 				}
 				return
 			}
-			want := []providercapacity.Requirement{{Role: RoleSecurityAudit, Backend: "audit", Model: effectiveModel(model, "provider_default")}}
+			want := []providercapacity.Requirement{{Role: RoleSecurityAudit, Backend: "audit", Model: effectiveModel(test.wantPrimaryModel, model, "provider_default")}}
 			if test.verify {
 				want = append(want, providercapacity.Requirement{Role: RoleSecurityAudit, Backend: "audit", Model: "complex-model"})
 			}

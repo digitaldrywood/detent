@@ -288,6 +288,7 @@ func (o *ConfigurationOwner) observe(ctx context.Context, cfg globalconfig.Confi
 	workflow := p.Workflow()
 	view.AllowLocalBinding = workflow.Config.Worker.EffectiveAllowLocalBinding()
 	view.LandingAuditRoute = workflow.Config.ConfiguredLandingAuditRoute()
+	view.LandingAuditBackendKinds = workflow.Config.LandingAuditBackendKinds()
 	view.EffectivePolicy = &workflow.Config.Policy
 	if workflow.Config.Policy.ID == "" {
 		descriptor, err := ResolvePolicy(current, workflow)
@@ -462,6 +463,7 @@ func (o *ConfigurationOwner) mutate(ctx context.Context, mutate func(*globalconf
 func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 	view := desired
 	view.LandingAuditRoute = nil
+	view.LandingAuditBackendKinds = nil
 	view.Authority = "hub_configuration"
 	view.Pending = false
 	view.Applied = false
@@ -474,6 +476,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 			cfg := p.Workflow().Config
 			actual := cfg.Policy
 			view.LandingAuditRoute = cfg.ConfiguredLandingAuditRoute()
+			view.LandingAuditBackendKinds = cfg.LandingAuditBackendKinds()
 			view.EffectivePolicy = &actual
 			view.SelectedPolicy, view.Source = p.reportedPolicy(actual, view.Source)
 			view.Paused = p.Paused()
@@ -528,6 +531,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 		}
 		view = desired
 		view.LandingAuditRoute = nil
+		view.LandingAuditBackendKinds = nil
 		view.RuntimeRegistered = false
 		view.Applied = true
 		view.Saved = true
@@ -582,6 +586,7 @@ func (m *Manager) ApplyHubConfiguration(ctx context.Context, id string, desired 
 	cfg := p.Workflow().Config
 	view.AllowLocalBinding = cfg.Worker.EffectiveAllowLocalBinding()
 	view.LandingAuditRoute = cfg.ConfiguredLandingAuditRoute()
+	view.LandingAuditBackendKinds = cfg.LandingAuditBackendKinds()
 	view.Pending = false
 	view.ObservedAt = time.Now().UTC()
 	if orch := p.Orchestrator(); orch != nil && p.Running() {

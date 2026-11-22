@@ -78,7 +78,7 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			if got := remote.(runner.ProviderCapacityExecution).ProviderCapacity(); !reflect.DeepEqual(got, e.ProviderCapacity()) {
 				t.Fatalf("SSH changed the central reservation: %#v", got)
 			}
-			err := e.validateProviderStart(test.identity)
+			err := e.validateProviderStart(test.identity, "")
 			if test.wantCode == "" {
 				if err != nil || ctx.Err() != nil {
 					t.Fatalf("start error = %v, cancellation = %v", err, context.Cause(ctx))
@@ -98,6 +98,45 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			record := page.Records[0]
 			if record.HostOperation != "native.provider_start" || record.LatestErrorCode != test.wantCode || record.LatestError != "execution authority unavailable [private error text omitted]" {
 				t.Fatalf("operator record = %+v, want redacted provider start with code %q", record, test.wantCode)
+			}
+		})
+	}
+	first := config.AgentBackend{ID: report.Backend, Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "test-account-one"}
+	second := first
+	second.Command = "test-account-two"
+	for _, test := range []struct {
+		name    string
+		actual  config.AgentBackend
+		missing bool
+		refused bool
+	}{
+		{name: "landing audit uses the reserved local account", actual: first},
+		{name: "landing audit refuses another project's account with the same backend ID", actual: second, refused: true},
+		{name: "landing audit refuses an unbound local report", actual: first, missing: true, refused: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			current := report
+			if !test.missing {
+				current.LocalBackendIdentity = config.ProviderIdentity(first)
+			}
+			audit := selected
+			audit.Role = runner.RoleSecurityAudit
+			lease := lease
+			lease.ProviderReservation = &providercapacity.Reservation{Requirement: providercapacity.Requirement{Role: audit.Role, Backend: audit.Backend, Model: audit.Model}, Report: report}
+			ctx, cancel := context.WithCancelCause(t.Context())
+			defer cancel(nil)
+			e := &nativeExecution{scheduler: &executionAuthority{now: func() time.Time { return now }, providerReports: func() ([]providercapacity.Report, error) {
+				return []providercapacity.Report{current}, nil
+			}}, claim: nativeClaim{source: source, lease: lease}, cancel: cancel}
+			err := e.validateProviderStart(audit, config.ProviderIdentity(test.actual))
+			if test.refused {
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !strings.Contains(err.Error(), "backend identity conflicts") {
+					t.Fatalf("audit could start with the wrong local account: %v", err)
+				}
+				return
+			}
+			if err != nil || ctx.Err() != nil {
+				t.Fatalf("audit could not start with the reserved local account: %v", err)
 			}
 		})
 	}

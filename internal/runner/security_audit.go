@@ -116,7 +116,10 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	var backendConfig config.AgentBackend
 	var landingModel string
 	if req.landing {
-		audit := workflow.Config.LandingAuditIdentity(workflow.Config.ConfiguredLandingAuditRoute(), verification)
+		audit, err := workflow.Config.LandingAuditIdentity(workflow.Config.ConfiguredLandingAuditRoute(), workflow.Config.LandingAuditBackendKinds(), verification)
+		if err != nil {
+			return execution, err
+		}
 		if audit.Backend == "" {
 			return execution, errors.New("landing audit requires an operator backend when the configured route depends on issue selection")
 		}
@@ -210,14 +213,14 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	sessionModel := effectiveModel(selectedModel, agentRuntime.defaultModelForRole(RoleSecurityAudit))
 	if req.landing {
 		owner, ok := req.usageExecution.(interface {
-			BindLandingAuditProvider(context.Context, providercapacity.Requirement, int64) error
+			BindLandingAuditProvider(context.Context, providercapacity.Requirement, int64, string) error
 		})
 		if !ok {
 			return execution, errors.New("landing security audit requires a fenced provider")
 		}
 		selectedModel = baseModel
 		requirement := providercapacity.Requirement{Role: RoleSecurityAudit, Backend: selection.BackendID, Model: effectiveModel(selectedModel, "provider_default")}
-		if err := owner.BindLandingAuditProvider(ctx, requirement, req.verificationSession); err != nil {
+		if err := owner.BindLandingAuditProvider(ctx, requirement, req.verificationSession, config.ProviderIdentity(backendConfig)); err != nil {
 			return execution, fmt.Errorf("reserve landing audit provider: %w", err)
 		}
 		sessionModel = selectedModel

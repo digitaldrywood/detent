@@ -689,7 +689,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
 		report.Availability = "exhausted"
 		report.ResetAt = report.ObservedAt.Add(7 * 24 * time.Hour)
-		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
+		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, "", scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
 			t.Fatalf("subscription exhaustion refused the admitted provider: %v", err)
 		}
 		if err := scheduler.nativeClaims[issue.ID].source.NativeClient().Release(t.Context(), held, "released"); err != nil {
@@ -698,7 +698,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		report.Availability = "available"
 		report.ResetAt = time.Time{}
 		report.ObservedAt = time.Now()
-		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
+		if err := provider.ValidateStart(execution.(runner.ProviderCapacityExecution).ProviderCapacity(), identity, "", scheduler.providerReports, func(err error) error { return errors.Join(runner.ErrExecutionAuthorityUnavailable, err) }); err != nil {
 			t.Fatalf("quota did not recover: %v", err)
 		}
 		if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {

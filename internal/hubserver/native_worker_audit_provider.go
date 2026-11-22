@@ -140,17 +140,21 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 	}
 	workflow.Config.Agents.ModelSelection = models.Effective
 	var route *policy.AuditRoute
+	var backendKinds map[string]string
 	if plan.observation.Key != "" {
 		var observed runnerauth.ProjectConfiguration
 		if err := s.readConfigurationPayload(ctx, scope.Organization, plan.observation, &observed); err != nil {
 			return nil, err
 		}
-		if observed.ProjectID == string(scope.Project) && observed.RuntimeRegistered && observed.LandingAuditRoute != nil &&
+		if observed.ProjectID == string(scope.Project) && observed.RuntimeRegistered &&
 			observed.EffectivePolicy != nil && observed.EffectivePolicy.Match(approval.Policy) == nil {
-			route = observed.LandingAuditRoute
+			route, backendKinds = observed.LandingAuditRoute, observed.LandingAuditBackendKinds
 		}
 	}
-	primary := workflow.Config.LandingAuditIdentity(route, false)
+	primary, err := workflow.Config.LandingAuditIdentity(route, backendKinds, false)
+	if err != nil {
+		return nil, hubapi.PolicyMismatch("The configured audit backend kind has not been observed under the pinned policy")
+	}
 	if primary.Backend == "" {
 		return nil, hubapi.PolicyMismatch("The runner's configured audit route has not been observed under the pinned policy")
 	}
@@ -177,7 +181,7 @@ func (s *Service) prepareNativeAuditProvider(ctx context.Context, scope hubscope
 				}
 			}
 		}
-		plan.requirement.Model = workflow.Config.LandingAuditIdentity(route, true).Model
+		plan.requirement.Model = models.Effective.Model("complex")
 	}
 	plan.modelRevision, plan.orgModelRevision = settings.ModelRevision, orgModels.Revision
 	return &plan, nil

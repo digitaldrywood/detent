@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -118,6 +119,10 @@ func SolFirstModelSelection() ModelSelection {
 
 func (p ModelSelection) Active() bool {
 	return p.Enabled != nil && *p.Enabled
+}
+
+func (p ModelSelection) ActiveForBackend(kind string) bool {
+	return p.Active() && p.BackendKinds != nil && slices.Contains(*p.BackendKinds, kind)
 }
 
 func (p ModelSelection) Configured() bool {
@@ -398,7 +403,18 @@ func (c Config) ConfiguredLandingAuditRoute() *policy.AuditRoute {
 	return nil
 }
 
-func (c Config) LandingAuditIdentity(configured *policy.AuditRoute, verification bool) policy.AuditRoute {
+func (c Config) LandingAuditBackendKinds() map[string]string {
+	backends := c.AgentBackendConfigs()
+	kinds := make(map[string]string, len(backends))
+	for _, backend := range backends {
+		if !backend.Disabled {
+			kinds[backend.ID] = backend.Kind
+		}
+	}
+	return kinds
+}
+
+func (c Config) LandingAuditIdentity(configured *policy.AuditRoute, backendKinds map[string]string, verification bool) (policy.AuditRoute, error) {
 	var route policy.AuditRoute
 	if configured != nil {
 		route = *configured
@@ -408,17 +424,24 @@ func (c Config) LandingAuditIdentity(configured *policy.AuditRoute, verification
 	if backend := selectionString(stage.Backend); backend != "" && backend != route.Backend {
 		route = policy.AuditRoute{Backend: backend}
 	}
+	if route.Backend == "" {
+		return route, nil
+	}
 	if verification {
 		route.Model = models.Model("complex")
-		return route
+		return route, nil
 	}
 	if model := cmp.Or(strings.TrimSpace(c.Gate.SecurityAudit.Model), models.Model(selectionString(stage.Model)), route.Model); model != "" {
 		route.Model = model
-		return route
+		return route, nil
 	}
-	if models.Active() {
+	kind := backendKinds[route.Backend]
+	if models.Active() && models.BackendKinds != nil && len(*models.BackendKinds) != 0 && kind == "" {
+		return policy.AuditRoute{}, errors.New("the configured landing audit backend kind is unavailable")
+	}
+	if models.ActiveForBackend(kind) {
 		level := cmp.Or(selectionString(stage.Level), selectionString(models.DefaultLevel))
 		route.Model = models.Model(selectionString(models.Levels[level].Model))
 	}
-	return route
+	return route, nil
 }

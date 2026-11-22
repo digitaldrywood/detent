@@ -405,7 +405,7 @@ type postAuditConflictExecution struct {
 	restoreErr error
 }
 
-func (e *postAuditConflictExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64) error {
+func (e *postAuditConflictExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, _ int64, _ string) error {
 	return e.SetPhaseProvider(ctx, requirement)
 }
 

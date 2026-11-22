@@ -28,7 +28,7 @@ func (e *IdentityMismatchError) DiagnosticCode() string {
 	return "provider_identity_mismatch_" + strings.Join(e.fields, "_")
 }
 
-func ValidateStart(reservation *providercapacity.Reservation, identity tracker.NativeExecutionIdentity, reportsSource func() ([]providercapacity.Report, error), reject func(error) error) error {
+func ValidateStart(reservation *providercapacity.Reservation, identity tracker.NativeExecutionIdentity, backendIdentity string, reportsSource func() ([]providercapacity.Report, error), reject func(error) error) error {
 	if reservation == nil {
 		if reportsSource != nil {
 			return reject(errors.New("provider reservation is missing"))
@@ -61,6 +61,9 @@ func ValidateStart(reservation *providercapacity.Reservation, identity tracker.N
 	}
 	for _, report := range reports {
 		if report.Supports(required) && report.Provider == reservation.Report.Provider && report.AccountAlias == reservation.Report.AccountAlias && report.SharedAccountAlias == reservation.Report.SharedAccountAlias {
+			if backendIdentity != "" && report.LocalBackendIdentity != backendIdentity {
+				return reject(errors.New("local provider backend identity conflicts across projects"))
+			}
 			if report.MaxConcurrent > 0 && (reservation.Report.MaxConcurrent == 0 || report.MaxConcurrent < reservation.Report.MaxConcurrent) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, errors.New("provider capacity decreased after dispatch; release and wait"))
 			}

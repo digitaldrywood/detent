@@ -11,8 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecutionIdentity) error {
-	err := provider.ValidateStart(e.ProviderCapacity(), identity, e.scheduler.providerReports, e.unavailable)
+func (e *nativeExecution) validateProviderStart(identity tracker.NativeExecutionIdentity, backendIdentity string) error {
+	err := provider.ValidateStart(e.ProviderCapacity(), identity, backendIdentity, e.scheduler.providerReports, e.unavailable)
 	if err != nil {
 		e.HostOperation("native.provider_start", e.scheduler.now(), err, false)
 	}
@@ -27,14 +27,17 @@ func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 }
 
 func (e *nativeExecution) SetPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
-	return e.setPhaseProvider(ctx, requirement, 0)
+	return e.setPhaseProvider(ctx, requirement, 0, "")
 }
 
-func (e *nativeExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64) error {
-	return e.setPhaseProvider(ctx, requirement, predecessor)
+func (e *nativeExecution) BindLandingAuditProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64, backendIdentity string) error {
+	return e.setPhaseProvider(ctx, requirement, predecessor, backendIdentity)
 }
 
-func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64) error {
+func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement, predecessor int64, backendIdentity string) error {
+	if requirement.Role == runner.RoleSecurityAudit && backendIdentity == "" {
+		return e.unavailable(errors.New("landing security audit requires the local backend identity"))
+	}
 	if e.scheduler.providerReports == nil && e.ProviderCapacity() == nil {
 		if requirement.Role == runner.RoleSecurityAudit {
 			return e.unavailable(errors.New("landing security audit requires a provider reservation"))
@@ -51,7 +54,7 @@ func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement prov
 	if active := e.ProviderCapacity(); active != nil {
 		expected = active.Requirement
 		if expected == requirement && requirement.Role != runner.RoleSecurityAudit {
-			return e.validateProviderStart(identity)
+			return e.validateProviderStart(identity, backendIdentity)
 		}
 	}
 	if err := e.flushObservations(ctx); err != nil {
@@ -67,5 +70,5 @@ func (e *nativeExecution) setPhaseProvider(ctx context.Context, requirement prov
 		return e.unavailable(errors.New("Hub returned a different phase provider reservation"))
 	}
 	e.phaseReservation.Store(current.ProviderReservation)
-	return e.validateProviderStart(identity)
+	return e.validateProviderStart(identity, backendIdentity)
 }
