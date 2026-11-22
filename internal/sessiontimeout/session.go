@@ -13,6 +13,9 @@ const (
 	DefaultTurn = time.Hour
 	DefaultIdle = 5 * time.Minute
 	maxEvents   = 64 * 1024
+
+	ownedCommandPrefix = "host/"
+	commandEndPrefix   = "command/end/"
 )
 
 var (
@@ -148,7 +151,7 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 
 func (s *Session) BeginOwnedCommand(ctx context.Context, id string) (func(), bool) {
 	deadline, bounded := ctx.Deadline()
-	id = "host/" + id
+	id = ownedCommandPrefix + id
 	if !bounded || ctx.Err() != nil || !s.StartCommand(id) {
 		return func() {}, false
 	}
@@ -166,13 +169,19 @@ func (s *Session) BeginOwnedCommand(ctx context.Context, id string) (func(), boo
 	}, true
 }
 
+func (s *Session) RememberOwnedCommandCompletion(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.newEvent(commandEndPrefix + ownedCommandPrefix + id)
+}
+
 func (s *Session) StartCommand(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, running := s.commands[id]; running || s.ctx.Err() != nil {
 		return false
 	}
-	if _, finished := s.seen[sha256.Sum256([]byte("command/end/"+id))]; finished {
+	if _, finished := s.seen[sha256.Sum256([]byte(commandEndPrefix+id))]; finished {
 		return false
 	}
 	if s.commands == nil {
@@ -192,7 +201,7 @@ func (s *Session) EndCommand(id string) bool {
 		return false
 	}
 	_, running := s.commands[id]
-	if !s.newEvent("command/end/"+id) && !running {
+	if !s.newEvent(commandEndPrefix+id) && !running {
 		return false
 	}
 	delete(s.commands, id)
