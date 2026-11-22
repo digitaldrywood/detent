@@ -212,11 +212,12 @@ func PathAllowed(path string) bool {
 const CheckpointRefPrefix = tracker.CheckpointRefPrefix
 
 type Ref struct {
-	Ref       string
-	CommitSHA string
-	HeadSHA   string
-	BaseSHA   string
-	TreeSHA   string
+	Ref         string
+	CommitSHA   string
+	HeadSHA     string
+	BaseSHA     string
+	TreeSHA     string
+	Transaction *Transaction `json:"-"`
 }
 
 func RefGit(path string, env ...string) GitRunner {
@@ -271,6 +272,9 @@ func Snapshot(ctx context.Context, git, index GitRunner) (head, tree string, inc
 // Matches reports whether an existing worktree already holds the
 // checkpoint, so restoring it would only quarantine an identical copy.
 func Matches(ctx context.Context, path string, checkpoint *Ref) (matched bool) {
+	if checkpoint.Transaction != nil {
+		return TransactionMatches(ctx, path, checkpoint.Transaction)
+	}
 	scratch, err := gitexec.Scratch()
 	if err != nil {
 		return false
@@ -281,6 +285,9 @@ func Matches(ctx context.Context, path string, checkpoint *Ref) (matched bool) {
 }
 
 func RestoreTree(ctx context.Context, path string, checkpoint *Ref) error {
+	if checkpoint.Transaction != nil {
+		return RestoreTransaction(ctx, path, checkpoint)
+	}
 	if _, err := gitexec.Run(ctx, path, "-c", "core.hooksPath="+os.DevNull, "read-tree", "-u", "--reset", checkpoint.TreeSHA); err != nil {
 		return fmt.Errorf("restore checkpoint tree: %w", err)
 	}

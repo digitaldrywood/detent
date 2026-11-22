@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -171,7 +172,17 @@ func TestSourceTurnBudget(t *testing.T) {
 type phaseCheckoutExecution struct {
 	*testExecution
 	PhaseReceiptExecution
-	continuation tracker.NativePhaseContinuation
+	continuation    tracker.NativePhaseContinuation
+	publishedSource workspace.ChangeSource
+	recoveryCalls   int
+}
+
+func (*phaseCheckoutExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *phaseCheckoutExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	e.recoveryCalls++
+	return e.publishedSource, nil
 }
 
 func (e *phaseCheckoutExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
@@ -220,24 +231,62 @@ func (w *phaseCheckoutWorkspace) Create(_ context.Context, issue workspace.Issue
 	return workspace.Info{}, w.stop
 }
 
-func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T) {
-	for _, priorPhase := range []bool{false, true} {
-		t.Run(map[bool]string{false: "ignore uncommitted progress", true: "resume pushed phase"}[priorPhase], func(t *testing.T) {
+func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                                                   string
+		change, selected, phase, matching, live, currentAttempt, released, staleFence, missing bool
+	}{
+		{name: "lease loss discards local work"},
+		{name: "live lease keeps work before first receipt", live: true},
+		{name: "current phase execution retains work when history omits its attempt", currentAttempt: true},
+		{name: "released attempt cannot keep work", live: true, released: true},
+		{name: "stale fence cannot keep work", live: true, staleFence: true},
+		{name: "resume newer receipt over an older receipted Change", change: true, phase: true, matching: true},
+		{name: "pre-upgrade published Change without a receipt", change: true},
+		{name: "merge resolution newer than the receipt", change: true, phase: true},
+		{name: "explicit published version without a current reference", selected: true},
+		{name: "unavailable published Change refuses checkout", change: true, missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_22222222222222222222222222222222"}
 			head := strings.Repeat("a", 40)
-			change := &tracker.NativeChangeReference{VersionID: "older-version", HeadSHA: strings.Repeat("b", 40)}
-			execution := &phaseCheckoutExecution{
-				testExecution: &testExecution{recovery: tracker.NativeRecovery{
-					Lease:  tracker.NativeLease{ID: "replacement-lease", MachineID: "same-runner"},
-					Change: change, SourceVersionID: change.VersionID,
-					Attempts: []tracker.NativeAttempt{{
-						NativeRunData: tracker.NativeRunData{AttemptID: "attempt_11111111111111111111111111111111", LeaseID: "old-lease", MachineID: "same-runner"},
-						Checkpoint:    &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: change.HeadSHA},
-					}},
-				}},
+			change := tracker.NativeChangeReference{VersionID: "published-version", HeadSHA: strings.Repeat("b", 40)}
+			lease := tracker.NativeLease{ID: "replacement-lease", MachineID: "same-runner", FencingToken: 2}
+			attempt := tracker.NativeAttempt{
+				NativeRunData: tracker.NativeRunData{AttemptID: scope.Attempt, LeaseID: "old-lease", MachineID: lease.MachineID, FencingToken: 1},
+				Checkpoint:    &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: change.HeadSHA},
 			}
-			if priorPhase {
+			if tc.live {
+				attempt.LeaseID = lease.ID
+				if !tc.staleFence {
+					attempt.FencingToken = lease.FencingToken
+				}
+				if tc.released {
+					now := time.Now()
+					attempt.ClaimReleasedAt = &now
+				}
+			}
+			recovery := tracker.NativeRecovery{Lease: lease, Attempts: []tracker.NativeAttempt{attempt}}
+			if tc.change {
+				recovery.Change = &change
+			}
+			if tc.selected {
+				recovery.SourceVersionID = change.VersionID
+			}
+			execution := &phaseCheckoutExecution{testExecution: &testExecution{recovery: recovery}}
+			if tc.currentAttempt {
+				execution.recovery.Attempts = nil
+				execution.continuation.ActiveAttemptID = scope.Attempt
+			}
+			if tc.phase {
 				execution.continuation.LastPushed = &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
 				execution.continuation.NextPhase = "project_gate"
+			}
+			if tc.matching {
+				execution.continuation.PublishedChangeReceipt = &tracker.NativePhaseReceipt{HeadSHA: change.HeadSHA, Phase: "implement"}
+			}
+			if !tc.missing {
+				execution.publishedSource.Version = tracker.ChangeVersion{ID: change.VersionID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: change.HeadSHA}}
 			}
 			backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
 			r, err := NewRunner(Dependencies{
@@ -247,18 +296,31 @@ func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"},
-				AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_22222222222222222222222222222222"},
-			})
+			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"}, AttemptWorkspace: scope})
+			issue := backend.issue
+			if tc.missing {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || issue.ID != "" || execution.recoveryCalls != 1 {
+					t.Fatalf("missing published source reached checkout: issue=%+v calls=%d error=%v", issue, execution.recoveryCalls, err)
+				}
+				return
+			}
 			if !errors.Is(err, backend.stop) {
 				t.Fatalf("run did not reach checkout: %v", err)
 			}
-			issue := backend.issue
-			if issue.PhaseSource != execution.continuation.LastPushed || !issue.VerifyPhaseBranch || !issue.FreshCheckout {
-				t.Fatalf("replacement checkout did not select its phase or base: %+v", issue)
+			if (tc.change || tc.selected) && !tc.matching {
+				if issue.Source == nil || issue.Source.Version.HeadSHA != change.HeadSHA || issue.PhaseSource != nil ||
+					issue.VerifyPhaseBranch || !issue.FreshCheckout || execution.recoveryCalls != 1 {
+					t.Fatalf("published Change was not recovered: issue=%+v calls=%d", issue, execution.recoveryCalls)
+				}
+			} else {
+				wantLive := tc.currentAttempt || tc.live && !tc.released && !tc.staleFence
+				if issue.PhaseSource != execution.continuation.LastPushed || !issue.VerifyPhaseBranch || issue.FreshCheckout == wantLive ||
+					issue.RetainPhaseCheckout != wantLive || issue.Source != nil || execution.recoveryCalls != 0 {
+					t.Fatalf("checkout did not select the live lease or receipt: issue=%+v calls=%d", issue, execution.recoveryCalls)
+				}
 			}
-			if issue.Checkpoint != nil || issue.RetainedCheckpoint != nil || issue.LocalCheckpoint != nil || issue.Source != nil || issue.RecoveryAttemptWorkspace.Key() != "" {
-				t.Fatalf("replacement checkout selected an older recovery source: %+v", issue)
+			if issue.Checkpoint != nil || issue.RetainedCheckpoint != nil || issue.LocalCheckpoint != nil {
+				t.Fatalf("checkout selected a local recovery source: %+v", issue)
 			}
 		})
 	}

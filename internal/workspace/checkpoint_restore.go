@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 )
 
 func CheckpointRefName(issue Issue) string {
@@ -103,25 +106,69 @@ func (l *LocalGit) verifyLocalCheckpoint(ctx context.Context, info Info, issue I
 	return nil
 }
 
-func (l *LocalGit) fetchCheckpointRef(ctx context.Context, checkpoint *CheckpointRef) error {
-	if !validLandingHead(checkpoint.CommitSHA) || !validLandingHead(checkpoint.TreeSHA) || !strings.HasPrefix(checkpoint.Ref, CheckpointRefPrefix) {
+func (l *LocalGit) bindCheckpointBranch(issue Issue, info Info, checkpoint *CheckpointRef) error {
+	if checkpoint.Transaction == nil {
+		return nil
+	}
+	if !issue.NativeRework || !ownsCheckpointRef(issue, checkpoint.Ref) {
+		return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+	}
+	if checkpoint.Transaction.Branch != info.Branch {
+		pattern := `^detent/[a-z0-9_.-]+-` + regexp.QuoteMeta(strings.ToLower(SafeKey(issue.Identifier))) + `-[a-f0-9]{12}$`
+		source := issue
+		source.AttemptWorkspace = issue.RecoveryAttemptWorkspace
+		sourceInfo, err := l.infoForIssue(source)
+		if err != nil {
+			return err
+		}
+		legacy := nativeProjectID(issue) != "" && regexp.MustCompile(pattern).MatchString(checkpoint.Transaction.Branch)
+		if issue.AttemptWorkspace.Key() != "" && info.PublicationBranch != "" {
+			legacy = info.PublicationBranch == checkpoint.Transaction.Branch
+		}
+		canonical := source.AttemptWorkspace.Key() != "" && sourceInfo.Branch == checkpoint.Transaction.Branch
+		if !l.autoBranch || issue.WorkspaceSession || issue.Landing != nil ||
+			issue.AttemptWorkspace.Key() == "" && strings.TrimSpace(issue.BranchName) != "" || !legacy && !canonical {
+			return fmt.Errorf("%w: checkpoint belongs to another rework branch", ErrCheckpointUnsafe)
+		}
+	}
+	transaction := *checkpoint.Transaction
+	transaction.Branch = info.Branch
+	checkpoint.Transaction = &transaction
+	return nil
+}
+
+func (l *LocalGit) fetchCheckpointRef(ctx context.Context, ref *CheckpointRef) error {
+	if !validLandingHead(ref.CommitSHA) || !validLandingHead(ref.TreeSHA) || !strings.HasPrefix(ref.Ref, CheckpointRefPrefix) {
 		return errors.New("checkpoint reference is incomplete")
 	}
-	if _, err := l.runGit(ctx, "cat-file", "-e", checkpoint.CommitSHA+"^{commit}"); err != nil {
-		if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, checkpoint.CommitSHA)...); err != nil {
-			if _, refErr := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+checkpoint.Ref+":"+checkpoint.Ref)...); refErr != nil {
-				return fmt.Errorf("fetch checkpoint %s: %w", checkpoint.Ref, errors.Join(err, refErr))
+	if _, err := l.runGit(ctx, "cat-file", "-e", ref.CommitSHA+"^{commit}"); err != nil {
+		if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, ref.CommitSHA)...); err != nil {
+			if _, refErr := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+ref.Ref+":"+ref.Ref)...); refErr != nil {
+				return fmt.Errorf("fetch checkpoint %s: %w", ref.Ref, errors.Join(err, refErr))
 			}
 		}
 	}
-	tree, err := l.runGit(ctx, "rev-parse", checkpoint.CommitSHA+"^{tree}")
-	if err != nil || strings.TrimSpace(tree) != checkpoint.TreeSHA {
+	kind, err := l.runGit(ctx, "cat-file", "-t", ref.TreeSHA)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(kind) == "blob" {
+		transaction, err := checkpoint.ReadTransaction(ctx, checkpointRefGit(l.sourceRoot), ref)
+		if err != nil {
+			return err
+		}
+		ref.Transaction = transaction
+		ref.HeadSHA, ref.BaseSHA = transaction.Head, transaction.Onto
+		return nil
+	}
+	tree, err := l.runGit(ctx, "rev-parse", ref.CommitSHA+"^{tree}")
+	if err != nil || strings.TrimSpace(tree) != ref.TreeSHA {
 		return errors.Join(errors.New("checkpoint commit differs from its recorded tree"), err)
 	}
-	parent, err := l.runGit(ctx, "rev-parse", checkpoint.CommitSHA+"^1")
+	parent, err := l.runGit(ctx, "rev-parse", ref.CommitSHA+"^1")
 	if err != nil {
 		return fmt.Errorf("read checkpoint head: %w", err)
 	}
-	checkpoint.HeadSHA = strings.TrimSpace(parent)
+	ref.HeadSHA = strings.TrimSpace(parent)
 	return nil
 }

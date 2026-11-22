@@ -373,12 +373,15 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
 	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
 	mode := runworkspace.NormalizeRunMode(req.Mode)
+	legacyPublishedSource := false
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
-		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
+		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
+			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
+		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
 		if req.phaseReceipts {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
 		}
@@ -392,7 +395,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts {
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts && !legacyPublishedSource {
 		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
 	}
 	sourceReviewed := false
@@ -627,6 +630,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if result.NativeChange != nil && errors.As(runErr, &reviewErr) {
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
+	}
+	var phaseRefusal *workspace.LandRefusal
+	if req.phaseReceipts && mode == RunModeImplement && errors.As(runErr, &phaseRefusal) && phaseRefusal.Kind == workspace.LandRefusalHeadMoved {
+		if result.NativeChange == nil {
+			result.NativeChange = &NativeChange{}
+		}
+		result.NativeChange.VersionCode, result.NativeChange.VersionError = phaseRefusal.Kind, phaseRefusal.Reason
 	}
 	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
 		result.FinalMessage = change.SecurityAudit.Run.CompletionMessage(result.FinalMessage)

@@ -125,10 +125,24 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	pinnedPolicy := e.scheduler.host.PinnedExecutionPolicy(string(lease.WorkItemID))
 	gates := pinnedPolicy.Gates
 	continuation := tracker.NativePhaseContinuation{RepositoryURL: project.CloneURL}
+	e.mu.Lock()
+	if e.data.Identity != nil && e.data.Sequence > 0 && e.data.Outcome == "" &&
+		e.data.LeaseID == lease.ID && e.data.FencingToken == lease.FencingToken {
+		continuation.ActiveAttemptID = e.data.AttemptID
+	}
+	e.mu.Unlock()
 	if gates.PlanEnabled {
 		continuation.Plan, err = client.ResolvePlan(ctx, e.Recovery(), pinnedPolicy, receipts)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if change := e.Recovery().Change; change != nil {
+		for _, receipt := range receipts {
+			if receipt.HeadSHA == change.HeadSHA && !tracker.IsPlanPhase(receipt.Phase) {
+				continuation.PublishedChangeReceipt = &receipt
+				break
+			}
 		}
 	}
 	planPending := continuation.Plan != nil && !continuation.Plan.Accepted
@@ -276,6 +290,9 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	if err == nil {
 		e.mu.Lock()
 		e.phaseSource = &recorded
+		if phase == "implement" && e.mergeResolution {
+			e.sourceRequired = false
+		}
 		if phase == "plan" {
 			e.phasePlanDigest = digest
 		}

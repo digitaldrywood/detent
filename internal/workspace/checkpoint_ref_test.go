@@ -1,11 +1,16 @@
 package workspace
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 )
 
 func publishLegacyCheckpointFixture(t *testing.T, info Info, issue Issue) CheckpointRef {
@@ -18,6 +23,108 @@ func publishLegacyCheckpointFixture(t *testing.T, info Info, issue Issue) Checkp
 	ref := CheckpointRefName(issue)
 	runGit(t, info.Path, "push", "origin", commit+":"+ref)
 	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: head, TreeSHA: tree}
+}
+
+func TestLegacyPausedRebaseCheckpointRestoresOnReplacement(t *testing.T) {
+	remote, source := initBareRemote(t), initSourceRepo(t)
+	runGit(t, source, "remote", "add", "origin", remote)
+	runGit(t, source, "push", "-u", "origin", "main")
+	newBackend := func(source string) *LocalGit {
+		t.Helper()
+		backend, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return backend
+	}
+	ctx := t.Context()
+	authorize := func(ctx context.Context) error { return ctx.Err() }
+	backend := newBackend(source)
+	issue := Issue{ID: "wi_example", Identifier: "prj_example#1", NativeRework: true}
+	old, err := backend.Create(ctx, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCheckpointFile(t, old.Path, "README.md", "feature\n")
+	runGit(t, old.Path, "add", "README.md")
+	runGit(t, old.Path, "commit", "-m", "feature")
+	runGit(t, old.Path, "push", "origin", "HEAD:refs/heads/"+old.PublishBranch())
+	writeCheckpointFile(t, source, "README.md", "updated base\n")
+	runGit(t, source, "add", "README.md")
+	runGit(t, source, "commit", "-m", "advance base")
+	runGit(t, source, "push", "origin", "main")
+	prepared, err := backend.PrepareRework(ctx, old, issue, MergePrepareOptions{TargetBranch: "main"}, authorize)
+	if err != nil || prepared.Status != MergePrepareStatusConflict {
+		t.Fatalf("pause rebase: %+v, %v", prepared, err)
+	}
+	writeCheckpointFile(t, old.Path, "README.md", "staged resolution\n")
+	runGit(t, old.Path, "add", "README.md")
+	writeCheckpointFile(t, old.Path, "README.md", "unstaged follow-up\n")
+
+	tx, err := checkpoint.CaptureTransaction(ctx, old.Path, old.Branch, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	manifest := filepath.Join(scratch, "transaction.json")
+	if err := os.WriteFile(manifest, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := strings.TrimSpace(runGit(t, old.Path, "hash-object", "-w", manifest))
+	indexEnv := "GIT_INDEX_FILE=" + filepath.Join(scratch, "index")
+	git := checkpoint.RefGit(old.Path, indexEnv)
+	if _, err := git(ctx, "read-tree", "--empty"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, "update-index", "--add", "--cacheinfo", "100644,"+digest+",transaction.json"); err != nil {
+		t.Fatal(err)
+	}
+	var alternatives strings.Builder
+	for i, entry := range tx.Index {
+		fmt.Fprintf(&alternatives, "100644 %s\talternatives/%d\x00", entry.Blob, i)
+	}
+	if _, err := runGitAtWithInput(ctx, old.Path, []string{indexEnv}, false, alternatives.String(), "update-index", "-z", "--index-info"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(ctx, "read-tree", "--prefix=worktree/", tx.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	wrapper, err := git(ctx, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := strings.TrimSpace(runGit(t, old.Path, "commit-tree", strings.TrimSpace(wrapper), "-p", tx.Head, "-p", tx.Original, "-m", "legacy paused rebase"))
+	ref := CheckpointRefName(issue)
+	runGit(t, old.Path, "push", "origin", commit+":"+ref)
+
+	replacementSource := initSourceRepo(t)
+	runGit(t, replacementSource, "remote", "add", "origin", remote)
+	replacement := newBackend(replacementSource)
+	issue.Checkpoint = &CheckpointRef{Ref: ref, CommitSHA: commit, TreeSHA: digest}
+	info, err := replacement.Create(ctx, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paused, err := replacement.verifyReworkBranch(ctx, info, issue); err != nil || !paused {
+		t.Fatalf("restored rebase paused=%t, error=%v", paused, err)
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "show", ":README.md")); got != "staged resolution" {
+		t.Fatalf("restored index = %q", got)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "unstaged follow-up\n" {
+		t.Fatalf("restored worktree = %q", got)
+	}
+	runGit(t, info.Path, "add", "README.md")
+	if _, err := replacement.FinalizeNativeWork(ctx, info, issue, authorize); err != nil {
+		t.Fatalf("continue restored rebase: %v", err)
+	}
+	if paused, err := rebaseInProgress(ctx, info.Path); err != nil || paused {
+		t.Fatalf("continued rebase paused=%t, error=%v", paused, err)
+	}
 }
 
 func TestTerminalCleanupDeletesCheckpointRef(t *testing.T) {
