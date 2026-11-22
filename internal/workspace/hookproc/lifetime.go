@@ -12,6 +12,11 @@ import (
 
 const defaultProcessTerminationGrace = 250 * time.Millisecond
 
+type lifetimeFileIdentity struct {
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
 type Lifetime struct {
 	instances          hookProcessInstances
 	starts             map[int]string

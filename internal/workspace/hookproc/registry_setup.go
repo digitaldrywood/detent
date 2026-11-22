@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 
+	"github.com/digitaldrywood/detent/internal/procstart"
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
@@ -61,16 +65,23 @@ func (u *Registry) CheckWorkspaceSetup(root, path string) (retryCleanup bool, er
 	if exists, _, err := workpath.PathExists(path); err != nil || !exists {
 		return false, err
 	}
-	if _, err := dir.Lstat(filepath.Join(marker, "ready")); err == nil && u.ownsRetainedSetup(path) {
+	if _, err := dir.Lstat(filepath.Join(marker, "retired")); err == nil {
+		return true, incomplete
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+	if _, err := dir.Lstat(filepath.Join(marker, "ready")); err == nil {
+		if u.ownsRetainedSetup(path) {
+			return false, nil
+		}
+		if err := verifyWorkspaceSetupExited(dir, marker); err != nil {
+			return false, errors.Join(incomplete, err)
+		}
 		return false, nil
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
-	if _, err := dir.Lstat(filepath.Join(marker, "retired")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
-	} else {
-		return err == nil, incomplete
-	}
+	return false, incomplete
 }
 
 func (u *Registry) CheckWorkspaceSetupRemoval(root, path string) error {
@@ -98,6 +109,89 @@ func recordWorkspaceSetupStatus(root, path, status string) error {
 		return err
 	}
 	return file.Close()
+}
+
+type retainedSetup struct {
+	DescriptorDir string               `json:"descriptor_dir"`
+	Descriptor    lifetimeFileIdentity `json:"descriptor"`
+	Processes     map[int]string       `json:"processes"`
+}
+
+func recordWorkspaceSetupReady(root, path string, lifetime *Lifetime) error {
+	processes := make(map[int]string, len(lifetime.witnesses)+len(lifetime.starts))
+	maps.Copy(processes, lifetime.witnesses)
+	maps.Copy(processes, lifetime.starts)
+	identity, err := lifetime.fileIdentity()
+	if err != nil {
+		return err
+	}
+	record := retainedSetup{DescriptorDir: filepath.Base(lifetime.dir), Descriptor: identity, Processes: processes}
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	marker := pendingWorkspaceSetupPath(path)
+	temporary := filepath.Join(marker, record.DescriptorDir, "ready")
+	file, err := dir.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(json.NewEncoder(file).Encode(record), file.Close()); err != nil {
+		return errors.Join(err, dir.Remove(temporary))
+	}
+	if err := dir.Rename(temporary, filepath.Join(marker, "ready")); err != nil {
+		return errors.Join(err, dir.Remove(temporary))
+	}
+	return nil
+}
+
+func verifyWorkspaceSetupExited(dir *os.Root, marker string) error {
+	file, err := dir.Open(filepath.Join(marker, "ready"))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	var record retainedSetup
+	if err := json.NewDecoder(io.LimitReader(file, 128<<10)).Decode(&record); err != nil {
+		return fmt.Errorf("read retained hook lifetime: %w", err)
+	}
+	if !filepath.IsLocal(record.DescriptorDir) || filepath.Base(record.DescriptorDir) != record.DescriptorDir ||
+		!strings.HasPrefix(record.DescriptorDir, "detent-hook-") || len(record.Processes) == 0 {
+		return errors.New("invalid retained hook lifetime")
+	}
+	for pid, start := range record.Processes {
+		if pid <= 0 || start == "" {
+			return errors.New("invalid retained hook process identity")
+		}
+		alive, err := procstart.Matches(pid, start)
+		if err != nil {
+			return err
+		}
+		if alive {
+			return errors.New("retained workspace hook process is still running")
+		}
+	}
+	lifetime, err := openRetainedLifetime(dir, filepath.Join(marker, record.DescriptorDir, "lifetime"))
+	if err != nil {
+		return err
+	}
+	defer lifetime.reader.Close()
+	identity, err := lifetime.fileIdentity()
+	if err != nil {
+		return err
+	}
+	if identity != record.Descriptor {
+		return errors.New("retained workspace hook descriptor does not match its recorded identity")
+	}
+	active, err := lifetime.Active()
+	if err != nil {
+		return err
+	}
+	if active {
+		return errors.New("retained workspace hook descriptor still has a writer")
+	}
+	return nil
 }
 
 type workspaceSetup struct {

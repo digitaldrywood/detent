@@ -19,7 +19,11 @@ import (
 )
 
 func NewLifetime() (*Lifetime, error) {
-	dir, err := os.MkdirTemp("", "detent-hook-")
+	return newLifetime("")
+}
+
+func newLifetime(parent string) (*Lifetime, error) {
+	dir, err := os.MkdirTemp(parent, "detent-hook-")
 	if err != nil {
 		return nil, err
 	}
@@ -31,6 +35,33 @@ func NewLifetime() (*Lifetime, error) {
 		return nil, errors.Join(err, os.RemoveAll(dir))
 	}
 	return l, nil
+}
+
+func (l *Lifetime) fileIdentity() (lifetimeFileIdentity, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(l.reader.Fd()), &stat); err != nil {
+		return lifetimeFileIdentity{}, err
+	}
+	return lifetimeFileIdentity{Device: uint64(stat.Dev), Inode: uint64(stat.Ino)}, nil
+}
+
+func openRetainedLifetime(root *os.Root, path string) (*Lifetime, error) {
+	info, err := root.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		return nil, errors.New("retained hook lifetime is not a FIFO")
+	}
+	reader, err := root.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := reader.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil, errors.Join(errors.New("retained hook lifetime changed"), err, reader.Close())
+	}
+	return &Lifetime{reader: reader}, nil
 }
 
 func (l *Lifetime) Capture(ctx context.Context, path, owner string) (bool, error) {
