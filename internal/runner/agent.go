@@ -2744,21 +2744,18 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	req.activityProfile = r.startActivityProfile(ctx, profileRequest, sessionID, info.Path, workflow, profileStage)
 	defer req.activityProfile.finish()
 	ctx = r.withCacheWaitObserver(ctx, req)
+	capable, supportsLoopDetection := backend.(interface{ SupportsToolLoopDetection() bool })
+	detectToolLoops := req.phaseReceipts && mode == RunModeImplement && supportsLoopDetection && capable.SupportsToolLoopDetection()
 	sessionDuration := durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS)
-	sessionCtx, cancelSession := r.sessionLimit(
-		ctx,
-		sessionDuration,
-		ErrSessionDurationExceeded,
-	)
+	sessionMaxTurns := workflow.Config.Agent.MaxTurns
+	if detectToolLoops {
+		sessionDuration = 0
+		sessionMaxTurns = 0
+	}
+	sessionCtx, cancelSession := r.sessionLimit(ctx, sessionDuration, ErrSessionDurationExceeded)
 	defer cancelSession()
 	sessionCtx, cancelSessionBrake := context.WithCancelCause(sessionCtx)
 	defer cancelSessionBrake(context.Canceled)
-	capable, supportsLoopDetection := backend.(interface{ SupportsToolLoopDetection() bool })
-	detectToolLoops := req.phaseReceipts && mode == RunModeImplement && supportsLoopDetection && capable.SupportsToolLoopDetection()
-	sessionMaxTurns := workflow.Config.Agent.MaxTurns
-	if detectToolLoops {
-		sessionMaxTurns = 0
-	}
 	sessionBrake := newSessionBrakeController(
 		sessionCtx,
 		runStartedAt,
@@ -2936,7 +2933,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			r.rememberPrompt(promptKey, prompt, execution)
 		}
 		execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
-		execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
+		execution.err = sessionBrake.wrapDuration(ctx, execution.err, sessionDuration)
 		execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		if req.Execution == nil && execution.err != nil && !IsCapacityError(execution.err) && !durationLimitError(execution.err) && !errors.Is(execution.err, ErrWorkerProcessReap) && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
 			r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
@@ -2970,7 +2967,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			execution.result.TurnStartRefused = resumeRefused && execution.result.TurnStartRefused
 			r.rememberPrompt(promptKey, prompt, execution)
 			execution.err = sessionBrake.wrapTurnLimit(ctx, execution.err)
-			execution.err = sessionBrake.wrapDuration(ctx, execution.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
+			execution.err = sessionBrake.wrapDuration(ctx, execution.err, sessionDuration)
 			execution.err = classifyAgentCapacityError(backend, selection, backendConfig, execution.result.RuntimeIdentity, execution.err, execution.result.RateLimits, runStartedAt)
 		}
 		if req.ForgeRetry != nil && forgeRetryReadOperation(req.ForgeRetry.Operation) {
@@ -3009,7 +3006,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			recoveryRunRequest.sessionTokenOffset = execution.result.Tokens.TotalTokens
 			recovery := runWithCheckpoint(recoveryRequest, recoveryRunRequest, execution.result.RuntimeIdentity, budgetCostOffsetUSD)
 			recovery.err = sessionBrake.wrapTurnLimit(ctx, recovery.err)
-			recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, durationFromMillis(workflow.Config.Agent.MaxSessionDurationMS))
+			recovery.err = sessionBrake.wrapDuration(ctx, recovery.err, sessionDuration)
 			recovery.err = classifyAgentCapacityError(backend, selection, backendConfig, recovery.result.RuntimeIdentity, recovery.err, recovery.result.RateLimits, runStartedAt)
 			initialErr := execution.err
 			execution = mergeAgentTurnExecutions(execution, recovery)
