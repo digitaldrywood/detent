@@ -1061,6 +1061,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 		if autoPromoteDecisionNeedsWorkpadHydration(decision) {
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, o.cfg.AutoPromote, now)
 		}
+		if decision.Action == AutoPromoteActionPromote {
+			decision = autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
+		}
 		// An unproduced local status is worker-owned work, not a stale Todo PR.
 		// Preserve explicit Workpad blockers before leaving the work dispatchable.
 		if decision.Reason != AutoPromoteReasonWorkpadBlocker && issue.PullRequest.HasMissingLocalStatus(gate.Effective(o.cfg.AutoPromote.Gate).LocalStatus) {
@@ -1523,7 +1526,7 @@ func staleTodoPullRequestDecision(
 	if gateRequiresPullRequest(cfg.Gate) && len(summary.UnresolvedReviewThreads) > 0 {
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonUnresolvedReviewThreads)
 	}
-	return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
+	return EvaluateAutoPromote(issue, summary, cfg, now)
 }
 
 func staleTodoPullRequestShouldStayActive(decision AutoPromoteDecision) bool {
@@ -1532,6 +1535,9 @@ func staleTodoPullRequestShouldStayActive(decision AutoPromoteDecision) bool {
 
 func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromoteConfig) string {
 	cfg = normalizeAutoPromoteConfig(cfg)
+	if decision.Action == AutoPromoteActionPromote {
+		return cfg.reviewTargetState()
+	}
 	if targetState := autoPromoteTargetState(decision.Action, cfg); targetState != "" {
 		return targetState
 	}

@@ -283,7 +283,7 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		}
 	}
 	targetState := autoPromoteTargetState(decision.Action, cfg)
-	if targetState == "" || (issue.PullRequest != nil && normalizeState(targetState) == normalizeState(autoPromoteMergingState)) {
+	if targetState == "" || (issue.PullRequest != nil && decision.Action == AutoPromoteActionPromote) {
 		o.logAutoPromoteDecision(issue, decision, "")
 		return false, connector.Issue{}, summary, decision
 	}
@@ -534,7 +534,7 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 			issue, decision = o.hydrateAutoPromoteWorkpadDecision(ctx, issue, summary, cfg, now)
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
-		if targetState != "" && issue.PullRequest != nil && normalizeState(targetState) == normalizeState(autoPromoteMergingState) {
+		if issue.PullRequest != nil && decision.Action == AutoPromoteActionPromote {
 			targetState = cfg.reviewTargetState()
 		}
 		if targetState == "" {

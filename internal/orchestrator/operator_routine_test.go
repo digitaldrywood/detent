@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -237,37 +238,117 @@ func TestOperatorMergeWedgedSkipsFailedSecurityAudit(t *testing.T) {
 func TestTickDoesNotAutoPromoteGitHubPullRequests(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 1, 6, 0, 0, 0, time.UTC)
-	readyTodo := autoPromoteTickIssue("todo-ready-pr", nil, &connector.PullRequest{
-		Number: 101, URL: "https://github.test/example-org/example-project/pull/101",
-		State: "OPEN", HeadSHA: "head-101", MergeableState: "clean", CIStatus: "success",
-	})
-	readyTodo.State = "Todo"
-	completedActive := autoPromoteTickIssue("active-completed-pr", nil, &connector.PullRequest{
-		Number: 102, URL: "https://github.test/example-org/example-project/pull/102",
-		State: "OPEN", HeadSHA: "head-102", MergeableState: "clean", CIStatus: "success",
-	})
-	completedActive.State = "In Progress"
-	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive}}
+	cases := []struct {
+		name      string
+		passState string
+	}{
+		{name: "default_merging_pass_state", passState: "Merging"},
+		{name: "custom_pass_state", passState: "Ready for Pickup"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			readyTodo := autoPromoteTickIssue("todo-ready-pr", nil, &connector.PullRequest{
+				Number: 101, URL: "https://github.test/example-org/example-project/pull/101",
+				State: "OPEN", HeadSHA: "head-101", MergeableState: "clean", CIStatus: "success",
+			})
+			readyTodo.State = "Todo"
+			completedActive := autoPromoteTickIssue("active-completed-pr", nil, &connector.PullRequest{
+				Number: 102, URL: "https://github.test/example-org/example-project/pull/102",
+				State: "OPEN", HeadSHA: "head-102", MergeableState: "clean", CIStatus: "success",
+			})
+			completedActive.State = "In Progress"
+			timedOutActive := autoPromoteTickIssue("active-timeout-pr", nil, &connector.PullRequest{
+				Number: 103, URL: "https://github.test/example-org/example-project/pull/103",
+				State: "OPEN", HeadSHA: "head-103", MergeableState: "clean", CIStatus: "success",
+			})
+			timedOutActive.State = "In Progress"
+			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{readyTodo, completedActive, timedOutActive}}
+			cfg := normalizeConfig(Config{
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done"},
+				AutoPromote: AutoPromoteConfig{
+					Enabled:               true,
+					SourceState:           "Human Review",
+					PassState:             tc.passState,
+					GateWaitTimeout:       15 * time.Minute,
+					GateWaitTimeoutAction: "merge",
+					Gate:                  gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+				},
+			})
+			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+			state := newState(cfg)
+			state.Completed[completedActive.ID] = Completed{Issue: cloneIssue(completedActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
+			state.Completed[timedOutActive.ID] = Completed{Issue: cloneIssue(timedOutActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-30 * time.Minute)}
+			orch.tick(t.Context(), &state, now)
+			for _, update := range tracker.updates {
+				if update.state == tc.passState || update.state == "Merging" {
+					t.Fatalf("tick auto-promoted PR to %q: %+v", update.state, tracker.updates)
+				}
+			}
+			if len(state.Running) != 0 {
+				t.Fatalf("tick dispatched merge worker for PR: %+v", state.Running)
+			}
+		})
+	}
+}
+
+func TestTickReconcilesStaleTodoHydratesWorkpadBlockerBeforePromotion(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 6, 16, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
 	cfg := normalizeConfig(Config{
-		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-		TerminalStates: []string{"Done"},
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
 		AutoPromote: AutoPromoteConfig{
-			Enabled:     true,
-			SourceState: "Human Review",
-			PassState:   "Merging",
-			Gate:        gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			PassState:     "Ready for Pickup",
+			Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
 		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
 	})
+	blocked := autoPromoteTickIssue("issue-stale-todo-workpad-blocker", []string{"bug"}, &connector.PullRequest{
+		Number:                 180,
+		URL:                    "https://github.test/example-org/example-project/pull/180",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	blocked.State = "Todo"
+	blocked.Identifier = "example-org/example-project#175"
+	clean := autoPromoteTickIssue("issue-stale-todo-clean", []string{"bug"}, &connector.PullRequest{
+		Number:                 181,
+		URL:                    "https://github.test/example-org/example-project/pull/181",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "pass",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	clean.State = "Todo"
+	clean.Identifier = "example-org/example-project#176"
+	tracker := &autoPromoteTickConnector{
+		stateIssues: []connector.Issue{blocked, clean},
+		issueComments: map[string][]connector.IssueComment{
+			blocked.ID: {{
+				Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve copying the assets\n```",
+			}},
+		},
+	}
 	orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
 	state := newState(cfg)
-	state.Completed[completedActive.ID] = Completed{Issue: cloneIssue(completedActive), FinalState: FinalStateCompleted, CompletedAt: now.Add(-time.Minute)}
 	orch.tick(t.Context(), &state, now)
-	for _, update := range tracker.updates {
-		if update.state == "Merging" {
-			t.Fatalf("tick auto-promoted PR directly to Merging: %+v", tracker.updates)
-		}
+
+	wantUpdates := []autoPromoteTickUpdate{
+		{issueID: blocked.ID, state: "Blocked"},
+		{issueID: clean.ID, state: "Human Review"},
 	}
-	if len(state.Running) != 0 {
-		t.Fatalf("tick dispatched merge worker for PR: %+v", state.Running)
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if got, want := tracker.fetchComments, []string{blocked.ID, clean.ID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueComments issue IDs = %#v, want %#v", got, want)
 	}
 }
