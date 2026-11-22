@@ -142,7 +142,7 @@ func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next runner
 
 func lifecycleTransition(from, to runnerauth.LifecycleState) bool {
 	if from == to {
-		return true
+		return to != runnerauth.LifecycleStarting
 	}
 	switch from {
 	case runnerauth.LifecycleStarting, runnerauth.LifecycleStartFailed:

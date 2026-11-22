@@ -553,6 +553,8 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
+		cfg.Plan.Enabled = false
+		cfg.Agent.MaxTurns = 2
 	}
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
@@ -623,6 +625,10 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		probe = &sshNativeProbe{producerFailure: failingReview}
 		request.Execution = probe
 	}
+	if failingReview {
+		request.Mode = runnerpkg.RunModeImplement
+		request.Routine = nil
+	}
 	result, err := run.Run(ctx, request)
 	if failingReview {
 		if probe == nil {
@@ -631,6 +637,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		var status interface{ BackendErrorStatus() string }
 		if err == nil || !strings.Contains(err.Error(), "parse validator result") || !errors.As(err, &status) || status.BackendErrorStatus() != "interrupted" || probe.outcome != "interrupted" || probe.finished != 1 || result.NativeChange == nil || result.NativeChange.VersionID != "central-version" || result.NativeChange.HeadSHA != probe.lastDiff.HeadSHA || result.NativeChange.ImplementationReviewError == "" || !strings.Contains(result.FinalMessage, "status: complete") || probe.lastDiff.HeadSHA == probe.base {
 			t.Fatalf("remote producer failure lost preserved source or interrupted owner: error=%v outcome=%s finishes=%d change=%+v", err, probe.outcome, probe.finished, result.NativeChange)
+		}
+		if receipt := probe.sourceValidation; receipt.Command != gate || receipt.ExitCode != 0 || receipt.HeadSHA != probe.lastDiff.HeadSHA {
+			t.Fatalf("source validation did not precede review on the preserved head: %+v", receipt)
 		}
 		return
 	}

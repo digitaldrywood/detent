@@ -54,7 +54,8 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 		}
 		now := s.deps.Now().UTC()
 		presented := report
-		if report.State == runnerauth.LifecycleUpdating || report.State == runnerauth.LifecycleDraining && report.TargetVersion != "" {
+		if report.State == runnerauth.LifecycleUpdating || report.TargetVersion != "" &&
+			(report.State == runnerauth.LifecycleDraining || report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update") {
 			refusal, err = authorizeLifecycleUpdate(ctx, w, id, report)
 		} else {
 			var target string
