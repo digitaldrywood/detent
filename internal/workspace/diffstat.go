@@ -646,11 +646,15 @@ func gitDiffFingerprint(ctx context.Context, workspacePath string, env []string,
 }
 
 func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) string {
+	return gitDiffBaseAt(ctx, workspacePath, baseRef, "HEAD")
+}
+
+func gitDiffBaseAt(ctx context.Context, workspacePath, baseRef, head string) string {
 	baseRef = strings.TrimSpace(baseRef)
 	if baseRef == "" {
-		return "HEAD"
+		return head
 	}
-	output, err := runGitAt(ctx, workspacePath, "merge-base", baseRef, "HEAD")
+	output, err := runGitAt(ctx, workspacePath, "merge-base", baseRef, head)
 	if err != nil {
 		return baseRef
 	}

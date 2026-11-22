@@ -482,7 +482,8 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	defer e.mu.Unlock()
 	checkpoint.Publication = nil
 	if e.data.Identity == nil {
-		return e.captureCheckpointDiff(ctx, false)
+		e.captureCheckpointDiff(ctx)
+		return nil
 	}
 	if previous := e.data.Handoff; previous.UncertainForgeEffect() && checkpoint.EffectState == "none" {
 		checkpoint = *previous
@@ -491,11 +492,7 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 	e.worktreeHead = checkpoint.HeadSHA
 	if err := e.flush(ctx); err != nil {
 		if nativeTransportUnavailable(err) {
-			if e.diffSource != nil {
-				if captureErr := e.captureCheckpointDiff(ctx, e.worktreeState == "clean" || e.worktreeState == "unpushed"); captureErr != nil {
-					return captureErr
-				}
-			}
+			e.captureCheckpointDiff(ctx)
 			slog.Default().Warn("native checkpoint publication unavailable", "work_item", e.claim.lease.WorkItemID, "error", err)
 			return nil
 		}
@@ -510,7 +507,8 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 		return err
 	}
 	if string(previous) == string(current) {
-		return e.captureCheckpointDiff(ctx, e.worktreeState == "clean" || e.worktreeState == "unpushed")
+		e.captureCheckpointDiff(ctx)
+		return nil
 	}
 	if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
 		if nativeTransportUnavailable(err) {
@@ -969,19 +967,24 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	if e.diffSource == nil && e.lastDiff == nil {
 		return errors.New("the run's final attempt diff source is unavailable")
 	}
-	if e.diffSource == nil {
-		return nil
+	finalized := e.worktreeState == "clean" || e.worktreeState == "unpushed"
+	diff := e.lastDiff
+	available := false
+	if e.diffSource != nil {
+		if request, ok := e.diffSource(ctx); ok {
+			diff = &request
+			available = true
+		}
 	}
-	request, ok := e.diffSource(ctx)
-	switch {
-	case ok:
-		last := request
-		e.lastDiff = &last
-	case e.lastDiff == nil:
+	if diff == nil {
 		return errors.New("the run's final attempt diff is unavailable")
 	}
-	if e.worktreeState == "clean" || e.worktreeState == "unpushed" {
-		return e.retainChangeSource(ctx, *e.lastDiff)
+	if !available && finalized && e.worktreeHead != "" && diff.HeadSHA != e.worktreeHead {
+		return errors.New("the attempt diff does not match the final checkpoint head")
+	}
+	e.lastDiff = diff
+	if finalized && e.diffSource != nil {
+		return e.retainChangeSource(ctx, *diff)
 	}
 	return nil
 }
@@ -1016,6 +1019,14 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 
 const checkpointDiffTimeout = 10 * time.Second
 
+func checkpointDiffContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := checkpointDiffTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)/2)
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
 func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, worker *tracker.NativeAttemptWorker, immediate bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
@@ -1048,11 +1059,7 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
 		diffCtx, cancelDiff := ctx, func() {}
 		if kind == "run.checkpointed" {
-			diffBudget := checkpointDiffTimeout
-			if deadline, ok := ctx.Deadline(); ok {
-				diffBudget = min(diffBudget, time.Until(deadline)/2)
-			}
-			diffCtx, cancelDiff = context.WithTimeout(ctx, diffBudget)
+			diffCtx, cancelDiff = checkpointDiffContext(ctx)
 		}
 		diffErr := e.postDiff(diffCtx, data.Sequence)
 		cancelDiff()
@@ -1252,15 +1259,13 @@ func (e *nativeExecution) AvailabilityDeadline() time.Time {
 
 func (e *nativeCompletionRejection) CompletionRejected() {}
 
-func (e *nativeExecution) captureCheckpointDiff(ctx context.Context, required bool) error {
+func (e *nativeExecution) captureCheckpointDiff(ctx context.Context) {
 	if e.diffSource == nil {
-		return nil
+		return
 	}
+	ctx, cancel := checkpointDiffContext(ctx)
+	defer cancel()
 	if err := e.captureDiff(ctx); err != nil {
-		if required {
-			return err
-		}
 		slog.Default().Debug("checkpoint diff not yet available", "work_item", e.claim.lease.WorkItemID, "error", err)
 	}
-	return nil
 }
