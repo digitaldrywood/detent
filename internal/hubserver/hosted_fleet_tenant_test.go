@@ -358,6 +358,28 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		t.Fatalf("other tenant overflow affected stable customer plan: %+v %v", stable, err)
 	}
 
+	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+		if err := w.(runnerstore.UpdateTargetWriter).SetRunnerUpdateTarget(t.Context(), "runner_1", runnerstore.UpdateTarget{Version: "0.177.4"}); err != nil {
+			return err
+		}
+		report := runnerauth.LifecycleReport{ProcessID: "example-process", Sequence: 1, State: runnerauth.LifecycleStarting, Version: "0.177.5", BuildRevision: "example-revision"}
+		return w.(runnerstore.LifecycleWriter).ReportRunnerLifecycle(t.Context(), "runner_1", report, "example-start", now.Add(-runnerauth.RunnerReadyTimeout))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fleet, err = service.readHostedFleet(t.Context(), credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := slices.IndexFunc(fleet.Runners, func(r hostedFleetRunner) bool { return r.ID == "runner_1" })
+	if index < 0 {
+		t.Fatal("failed runner missing from fleet")
+	}
+	failed := fleet.Runners[index]
+	if failed.Health != "needs_attention" || failed.Version != "0.177.5" || failed.Update.TargetVersion != "0.177.4" || !failed.Update.TargetHeld || failed.Lifecycle == nil || failed.Lifecycle.ConsecutiveFailedStarts != 1 {
+		t.Fatalf("failed runner lost lifecycle or target: %+v", failed)
+	}
+
 	owner := hubapi.APICredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
 	provider := newHostedSecurityProvider()
 	membership := auth.Membership{ID: "membership_example", UserID: "user_example", OrganizationID: "provider_example", Status: "active"}
