@@ -73,6 +73,7 @@ type Scheduler struct {
 	enrolledReceipt    *runnerauth.UpdateReceipt
 	enrolledStateValid bool
 	enrolledDiscovery  string
+	verifiedRunning    bool
 	cfg                SchedulerConfig
 	operationMu        sync.Mutex
 	mu                 sync.RWMutex
@@ -187,7 +188,7 @@ func NewScheduler(cfg SchedulerConfig) (*Scheduler, error) {
 			Critical:           critical,
 		},
 	}
-	observation := scheduler.enrolledObservation(cfg.RunningBuild)
+	observation := scheduler.EnrolledObservation(cfg.RunningBuild)
 	cfg.Logger.Info("enrolled runner update support", "supported", observation.Supported,
 		"state_valid", stateValid, "updater_available", cfg.Updater != nil,
 		"drain_available", cfg.ReserveDrain != nil, "restart_available", cfg.RequestRestart != nil,
@@ -205,7 +206,7 @@ func (s *Scheduler) PrepareWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if receipt := s.enrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
+	if receipt := s.EnrolledObservation(s.cfg.RunningBuild).Receipt; receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease {
 		opts := s.cfg.ApplyOptions
 		opts.ExpectedVersion = receipt.Applied.Version
 		opts.FromRelease = receipt.Request.FromRelease
@@ -236,6 +237,7 @@ func (s *Scheduler) prepareWorkersLocked(ctx context.Context) (Status, error) {
 	if err := artifact.Release(); err != nil {
 		return Status{}, err
 	}
+	s.verifyRunningRelease(artifact.Status)
 	return artifact.Status, nil
 }
 
@@ -514,17 +516,20 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 	if err := artifact.Release(); err != nil {
 		return applied, errors.Join(err, s.recordFailure(s.cfg.Now(), err))
 	}
-	if s.cfg.ReserveIdle != nil {
-		releaseIdle, idle := s.cfg.ReserveIdle(ctx)
-		if idle {
-			return s.applyWithOptionsLocked(ctx, releaseIdle, opts)
+	alreadyRunning := s.verifyRunningRelease(applied)
+	if !alreadyRunning {
+		if s.cfg.ReserveIdle != nil {
+			releaseIdle, idle := s.cfg.ReserveIdle(ctx)
+			if idle {
+				return s.applyWithOptionsLocked(ctx, releaseIdle, opts)
+			}
+			if releaseIdle != nil {
+				releaseIdle()
+			}
 		}
-		if releaseIdle != nil {
-			releaseIdle()
+		if installed, ok := s.installControlLocked(ctx, opts, applied.LatestVersion); ok {
+			applied = installed
 		}
-	}
-	if installed, ok := s.installControlLocked(ctx, opts, applied.LatestVersion); ok {
-		applied = installed
 	}
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "applied"
@@ -535,7 +540,9 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 	})
 	s.recordEnrolledApplied(applied, true)
 	persistErr := s.persistCurrentState()
-	s.restartBehindControlLocked()
+	if !alreadyRunning {
+		s.restartBehindControlLocked()
+	}
 	return applied, persistErr
 }
 
@@ -706,11 +713,15 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		status.LastError = ""
 		clearPending(status)
 	})
+	alreadyRunning := s.verifyRunningRelease(applied)
 	s.recordEnrolledApplied(applied, false)
 	persistErr := s.persistCurrentState()
 	if persistErr != nil {
 		applied.FailureReason = "Update state persistence failed"
 		return applied, persistErr
+	}
+	if alreadyRunning {
+		return applied, nil
 	}
 	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
 	if !restartRequested {
@@ -722,7 +733,6 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		s.controlRestart = &controlRestart{installed: applied}
 		s.mu.Unlock()
 		s.cfg.Logger.Warn("Detent update applied; restart deferred because shutdown is already in progress or restart is unavailable", "version", applied.LatestVersion)
-		applied.FailureReason = "Update restart request was declined"
 		return applied, persistErr
 	}
 	s.mu.Lock()

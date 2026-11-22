@@ -27,7 +27,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			if ctx.Err() == nil {
 				if _, pending := s.restartBehindControlLocked(); pending {
 					s.operationMu.Unlock()
-					return s.enrolledObservation(running)
+					return s.EnrolledObservation(running)
 				}
 			}
 			lastCheck := s.Status().LastCheckAt
@@ -57,7 +57,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 					}
 				}
 			}
-			observed := s.enrolledObservation(running)
+			observed := s.EnrolledObservation(running)
 			if observed.Receipt != nil && observed.Receipt.Status == "running" {
 				s.mu.RLock()
 				needsReceipt := s.enrolledReceipt != nil && s.enrolledReceipt.Running == nil
@@ -72,20 +72,37 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 			}
 			s.operationMu.Unlock()
 		}
-		return s.enrolledObservation(running)
+		return s.EnrolledObservation(running)
 	}
 	if request.Urgent || request.FollowHub {
 		s.operationMu.Lock()
 	} else if !s.operationMu.TryLock() {
-		return s.enrolledObservation(running)
+		return s.EnrolledObservation(running)
 	}
 	defer s.operationMu.Unlock()
-	observed := s.enrolledObservation(running)
+	observed := s.EnrolledObservation(running)
 	s.mu.RLock()
 	stateValid := s.enrolledStateValid
 	s.mu.RUnlock()
-	if !stateValid {
+	if !stateValid || ctx.Err() != nil || request.Validate() != nil {
 		return observed
+	}
+	if observed.Supported && request.Release && observed.Running.VerifiedRelease &&
+		displayVersion(request.Version) == displayVersion(observed.Running.Version) {
+		if receipt, ok := s.runningEnrolledReceipt(*request, observed.Running); ok {
+			if receipt != nil {
+				previous, _ := s.enrolledState()
+				s.setEnrolledReceipt(receipt)
+				if s.persistCurrentState() != nil {
+					s.mu.Lock()
+					s.enrolledReceipt = previous
+					s.mu.Unlock()
+					return nil
+				}
+				return s.EnrolledObservation(running)
+			}
+			return observed
+		}
 	}
 	retry := observed.Receipt != nil && observed.Receipt.Request == *request && observed.Receipt.FailureReason != "" && observed.Receipt.FailureReason != enrolledTargetRefusal && (observed.Receipt.Status == "refused" || observed.Receipt.Status == "uncertain")
 	if observed.Receipt != nil && observed.Receipt.Request.ID == request.ID {
@@ -102,9 +119,6 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		if !retry || s.cfg.Now().Before(observed.Receipt.ObservedAt.Add(s.cfg.CheckInterval)) {
 			return observed
 		}
-	}
-	if request.Validate() != nil {
-		return observed
 	}
 	var installed *runnerauth.BuildEvidence
 	if observed.Receipt != nil {
@@ -148,9 +162,33 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 		if s.persistCurrentState() != nil {
 			return nil
 		}
-		return s.enrolledObservation(running)
+		return s.EnrolledObservation(running)
 	}
 	return s.applyEnrolledRequestLocked(ctx, running, receipt, nil)
+}
+
+func (s *Scheduler) runningEnrolledReceipt(request runnerauth.UpdateRequest, running runnerauth.BuildEvidence) (*runnerauth.UpdateReceipt, bool) {
+	receipt, _ := s.enrolledState()
+	if receipt != nil && receipt.Request.ID == request.ID {
+		if !receipt.Request.Matches(request) {
+			return nil, false
+		}
+		for _, target := range []*runnerauth.BuildEvidence{receipt.Applied, receipt.VerifiedTarget} {
+			if target != nil && target.VerifiedRelease && !running.Matches(*target) {
+				return nil, false
+			}
+		}
+		if receipt.Status == "running" && receipt.Running != nil {
+			return nil, true
+		}
+	} else if request.Urgent && receipt != nil && receipt.Applied != nil && receipt.Applied.VerifiedRelease && running.Matches(*receipt.Applied) {
+		return nil, true
+	} else {
+		receipt = &runnerauth.UpdateReceipt{Request: request}
+	}
+	receipt.Status, receipt.FailureReason, receipt.ObservedAt = "running", "", running.ObservedAt
+	receipt.Applied, receipt.Running = &running, &running
+	return receipt, true
 }
 
 func (s *Scheduler) applyEnrolledRequestLocked(ctx context.Context, running runnerauth.BuildEvidence, receipt *runnerauth.UpdateReceipt, releaseIdle func()) *runnerauth.UpdateObservation {
@@ -179,7 +217,7 @@ func (s *Scheduler) applyEnrolledRequestLocked(ctx context.Context, running runn
 	if err != nil || applied.Action != ActionUpdated || applied.FailureReason != "" {
 		receipt.Status = "refused"
 		if applied.Action == ActionUpdated {
-			if current := s.enrolledObservation(running).Receipt; current != nil {
+			if current := s.EnrolledObservation(running).Receipt; current != nil {
 				receipt = current
 			}
 			receipt.Status = "uncertain"
@@ -199,18 +237,23 @@ func (s *Scheduler) applyEnrolledRequestLocked(ctx context.Context, running runn
 			return nil
 		}
 	}
-	return s.enrolledObservation(running)
+	return s.EnrolledObservation(running)
 }
 
-func (s *Scheduler) enrolledObservation(running runnerauth.BuildEvidence) *runnerauth.UpdateObservation {
-	status := s.Status()
+func (s *Scheduler) EnrolledObservation(running runnerauth.BuildEvidence) *runnerauth.UpdateObservation {
 	s.mu.RLock()
+	status := cloneAutoStatus(s.status)
 	receipt := cloneEnrolledReceipt(s.enrolledReceipt)
 	valid := s.enrolledStateValid
 	discovery := s.enrolledDiscovery
+	verifiedRunning := s.verifiedRunning
 	s.mu.RUnlock()
 	now := s.cfg.Now().UTC()
 	running.ObservedAt = now
+	if verifiedRunning && running.Matches(s.cfg.RunningBuild) {
+		running.VerifiedRelease = true
+		running.Source = "release"
+	}
 	if !valid {
 		receipt = nil
 	}
@@ -299,15 +342,34 @@ func (s *Scheduler) recordEnrolledApplied(applied Status, executionArtifact bool
 	s.enrolledReceipt.ExecutionArtifact = executionArtifact
 	s.enrolledReceipt.Status = "applied"
 	s.enrolledReceipt.ObservedAt = s.cfg.Now().UTC()
-	s.enrolledReceipt.Applied = &runnerauth.BuildEvidence{
-		Version: applied.LatestVersion, Commit: enrolledCommit(applied.LatestCommit), Source: string(InstallSourceRelease), SHA256: applied.BinarySHA256,
-		OS: s.cfg.RunningBuild.OS, Architecture: s.cfg.RunningBuild.Architecture, VerifiedRelease: applied.VerifiedRelease, ObservedAt: s.cfg.Now().UTC(),
-	}
+	evidence := s.releaseBuildEvidence(applied)
+	s.enrolledReceipt.Applied = &evidence
 	if applied.ReplacementPending {
 		s.enrolledReceipt.VerifiedTarget = s.enrolledReceipt.Applied
 		s.enrolledReceipt.Applied = nil
 		s.enrolledReceipt.Status = "uncertain"
+	} else if evidence.VerifiedRelease && s.verifiedRunning && s.cfg.RunningBuild.Matches(evidence) {
+		s.enrolledReceipt.Running = &evidence
+		s.enrolledReceipt.Status = "running"
 	}
+}
+
+func (s *Scheduler) releaseBuildEvidence(applied Status) runnerauth.BuildEvidence {
+	return runnerauth.BuildEvidence{
+		Version: applied.LatestVersion, Commit: enrolledCommit(applied.LatestCommit), Source: string(InstallSourceRelease), SHA256: applied.BinarySHA256,
+		OS: s.cfg.RunningBuild.OS, Architecture: s.cfg.RunningBuild.Architecture, VerifiedRelease: applied.VerifiedRelease, ObservedAt: s.cfg.Now().UTC(),
+	}
+}
+
+func (s *Scheduler) verifyRunningRelease(applied Status) bool {
+	evidence := s.releaseBuildEvidence(applied)
+	if !evidence.VerifiedRelease || evidence.Validate() != nil || applied.ReplacementPending || !s.cfg.RunningBuild.Matches(evidence) {
+		return false
+	}
+	s.mu.Lock()
+	s.verifiedRunning = true
+	s.mu.Unlock()
+	return true
 }
 
 func (s *Scheduler) enrolledApplyOptions(opts ApplyOptions) ApplyOptions {

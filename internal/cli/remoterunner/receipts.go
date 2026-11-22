@@ -23,7 +23,11 @@ func NewUpdateReceipts(ctx context.Context, client *api.Client, running runnerau
 		save: func(receipt *runnerauth.UpdateReceipt) error {
 			saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			return client.StoreRunnerUpdateReceipt(saveCtx, receipt, running)
+			observed := running
+			if receipt.Status == "running" && receipt.Running != nil && receipt.Running.VerifiedRelease && running.Matches(*receipt.Running) {
+				observed = *receipt.Running
+			}
+			return client.StoreRunnerUpdateReceipt(saveCtx, receipt, observed)
 		},
 	}
 }

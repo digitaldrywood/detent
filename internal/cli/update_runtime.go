@@ -409,13 +409,38 @@ func runnerRunningBuild(ctx context.Context, info buildinfo.Info, version string
 	return build
 }
 
-func enrolledUpdateOwner(runtimeCtx context.Context, scheduler *detentupdate.Scheduler, running runnerauth.BuildEvidence) func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
-	return func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
-		if request != nil && (request.Urgent || request.FollowHub) {
-			copy := *request
-			go scheduler.EnrolledUpdate(runtimeCtx, running, &copy)
-			return scheduler.EnrolledUpdate(ctx, running, nil)
+func enrolledUpdateOwner(scheduler *detentupdate.Scheduler) (func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation, func(context.Context)) {
+	running := scheduler.RunningBuild()
+	var mu sync.Mutex
+	var pending *runnerauth.UpdateRequest
+	wake := make(chan struct{}, 1)
+	observe := func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
+		if ctx.Err() == nil {
+			mu.Lock()
+			if request != nil {
+				pending = new(*request)
+			}
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+			mu.Unlock()
 		}
-		return scheduler.EnrolledUpdate(ctx, running, request)
+		return scheduler.EnrolledObservation(running)
 	}
+	run := func(ctx context.Context) {
+		for ctx.Err() == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wake:
+				mu.Lock()
+				request := pending
+				pending = nil
+				mu.Unlock()
+				scheduler.EnrolledUpdate(ctx, running, request)
+			}
+		}
+	}
+	return observe, run
 }

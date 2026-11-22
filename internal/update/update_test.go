@@ -548,7 +548,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "provenance failure releases idle reservation", current: "1.2.3", failureStage: "provenance", failureReason: "Update provenance verification failed"},
 		{name: "checksum failure releases idle reservation", current: "1.2.3", failureStage: "checksum", failureReason: "Update checksum verification failed"},
 		{name: "install failure releases idle reservation", current: "1.2.3", failureStage: "install", failureReason: "Update installation failed"},
-		{name: "urgent restart failure releases idle reservation", current: "1.2.3", urgent: true, failureStage: "restart", failureReason: "Update restart request was declined"},
+		{name: "urgent restart deferral releases idle reservation", current: "1.2.3", urgent: true, failureStage: "restart"},
 		{name: "explicit release refuses wrong lock selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_INSTALL_LOCK"},
 		{name: "explicit release refuses wrong state selector", current: "1.2.3", explicit: true, invalidSelector: "DETENT_STATE_DIR"},
 		{name: "explicit release", current: "1.2.3", explicit: true},
@@ -797,6 +797,9 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 				}
 				if test.failureStage == "restart" {
+					if observed.Receipt.Status != "applied" || owner.Status().State != "applied_restart_deferred" {
+						t.Fatalf("deferred restart lost verified installation: %+v", observed.Receipt)
+					}
 					config.LastAppliedVersion = "1.2.4"
 				}
 				resumed, err := NewScheduler(config)
@@ -804,7 +807,11 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					t.Fatal(err)
 				}
 				observed = resumed.EnrolledUpdate(t.Context(), running, &request)
-				if observed.Receipt.FailureReason != test.failureReason || reservations != 1 {
+				wantFailure := test.failureReason
+				if test.failureStage == "restart" {
+					wantFailure = "Update did not restart into the verified build"
+				}
+				if observed.Receipt.FailureReason != wantFailure || reservations != 1 {
 					t.Fatalf("restart lost failure or retried early: %+v reservations=%d", observed.Receipt, reservations)
 				}
 				now = now.Add(time.Hour - time.Nanosecond)

@@ -87,12 +87,11 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	if err := update.PrepareWorkers(ctx); err != nil {
 		return fmt.Errorf("prepare runner worker artifacts: %w", err)
 	}
+	observeUpdate, runEnrolledUpdates := enrolledUpdateOwner(update)
 	if owner, ok := scheduling.(interface {
 		SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
 	}); ok {
-		owner.SetUpdateOwner(func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
-			return update.EnrolledUpdate(ctx, update.RunningBuild(), request)
-		})
+		owner.SetUpdateOwner(observeUpdate)
 	}
 	provider := project.Dependencies{
 		Scheduling: scheduling, Logger: logger, GlobalDispatchGate: gate,
@@ -142,6 +141,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			workers.Wait()
 		}()
 		workers.Go(func() { update.Run(runCtx) })
+		workers.Go(func() { runEnrolledUpdates(runCtx) })
 		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
 			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
 		}

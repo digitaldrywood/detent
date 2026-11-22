@@ -112,6 +112,84 @@ func enrolledSignedReleaseFixture(t *testing.T) (SchedulerConfig, *workerRelease
 	return config, fixture, publish
 }
 
+func TestSchedulerEnrolledAlreadyRunningRelease(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		verified     bool
+		differentSHA bool
+		want         string
+		wantRestarts int
+	}{
+		{name: "manually installed signed release", want: "running"},
+		{name: "previously verified release", verified: true, want: "running"},
+		{name: "same version with different bytes", differentSHA: true, want: "applied", wantRestarts: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			config, _, publish := enrolledSignedReleaseFixture(t)
+			const version = "1.0.1"
+			publish(version)
+			service := config.Updater.(*Service)
+			service.cfg.CurrentVersion = version
+			service.cfg.CurrentCommit = testUpdatedCommit
+			binary := []byte("version: v" + version + "\ncommit: " + testUpdatedCommit + "\n")
+			if test.differentSHA {
+				binary = append(binary, '\n')
+			}
+			if err := os.WriteFile(service.cfg.ExecutablePath, binary, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.Stat(service.cfg.ExecutablePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(binary)
+			running := config.RunningBuild
+			running.Version, running.Commit, running.SHA256 = version, testUpdatedCommit, hex.EncodeToString(sum[:])
+			running.VerifiedRelease = test.verified
+			config.RunningBuild = running
+			config.WorkerArtifacts, err = NewWorkerArtifacts(service, filepath.Join(t.TempDir(), "workers"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reservationCalls, reservations, restarts := 0, 0, 0
+			config.ReserveIdle = func(context.Context) (func(), bool) {
+				reservationCalls++
+				reservations++
+				return func() { reservations-- }, true
+			}
+			config.RequestRestart = func(string) bool { restarts++; return false }
+			scheduler, err := NewScheduler(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initial := scheduler.EnrolledUpdate(t.Context(), running, nil)
+			request := runnerauth.UpdateRequest{ID: "follow-current", Service: "detent", Version: version, Release: true, FollowHub: true, ExpectedBuildRevision: initial.Revision, RequestedAt: running.ObservedAt}
+			if err := scheduler.PrepareWorkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				observed := scheduler.EnrolledUpdate(t.Context(), running, &request)
+				if observed == nil || observed.Validate() != nil || observed.Receipt == nil || observed.Receipt.Status != test.want || observed.Receipt.FailureReason != "" {
+					t.Fatalf("update observation = %+v", observed)
+				}
+			}
+			state, found, err := loadSchedulerState(config.StatePath)
+			if err != nil || !found || state.EnrolledReceipt.Status != test.want || state.EnrolledReceipt.Applied == nil {
+				t.Fatalf("saved receipt = %+v, found = %t, error = %v", state.EnrolledReceipt, found, err)
+			}
+			if restarts != test.wantRestarts || reservationCalls != test.wantRestarts || reservations != 0 {
+				t.Fatalf("restarts = %d, reservations = %d, want both %d, active reservations = %d", restarts, reservationCalls, test.wantRestarts, reservations)
+			}
+			after, err := os.Stat(service.cfg.ExecutablePath)
+			if err != nil || os.SameFile(before, after) == test.differentSHA {
+				t.Fatalf("unexpected installation result, error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSchedulerEnrolledLegacyReleaseAdvance(t *testing.T) {
 	t.Parallel()
 	for _, owner := range []string{"enrolled", "automatic", "worker scheduler"} {
@@ -293,7 +371,7 @@ func TestSchedulerEnrolledUpdate(t *testing.T) {
 		release        bool
 		prior          bool
 	}{
-		{name: "restart declined", want: "uncertain", calls: 1, logged: true},
+		{name: "restart declined", want: "applied", calls: 1},
 		{name: "detached replacement remains pending", pending: true, restart: true, want: "uncertain", calls: 1},
 		{name: "restart requested", restart: true, want: "restart_requested", calls: 1},
 		{name: "urgent release bypasses discovery and automatic opt outs", urgent: true, restart: true, want: "restart_requested", calls: 1},

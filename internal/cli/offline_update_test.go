@@ -202,7 +202,7 @@ func offlineUpdateControllerProcess() error {
 	if err != nil {
 		return err
 	}
-	heartbeat := enrolledUpdateOwner(context.Background(), scheduler, scheduler.RunningBuild())(context.Background(), nil)
+	heartbeat := scheduler.EnrolledUpdate(context.Background(), scheduler.RunningBuild(), nil)
 	if drained {
 		return errors.New("offline repair unexpectedly drained")
 	}

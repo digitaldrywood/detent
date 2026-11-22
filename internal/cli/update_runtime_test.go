@@ -211,18 +211,21 @@ func (u urgentRuntimeUpdater) Apply(ctx context.Context, opts detentupdate.Apply
 
 func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		follow bool
-		active int
-		repair bool
+		name     string
+		follow   bool
+		active   int
+		repair   bool
+		operator bool
 	}{
 		{name: "critical urgent finishes active leases", active: 2},
 		{name: "critical heartbeat target finishes active leases", follow: true, active: 2},
 		{name: "critical heartbeat target updates idle runner", follow: true},
 		{name: "critical same version repair finishes active leases", follow: true, repair: true, active: 2},
+		{name: "operator same version repair finishes active leases", repair: true, operator: true, active: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			follow := test.follow
+			urgent := !follow && !test.operator
 			runtimeCtx, cancelRuntime := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancelRuntime()
 			requestCtx, cancelRequest := context.WithCancel(t.Context())
@@ -240,7 +243,7 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 				Enabled: true, CheckInterval: time.Hour, StatePath: filepath.Join(t.TempDir(), "update.json"), RunningBuild: running,
 				Updater: urgentRuntimeUpdater{apply: func(ctx context.Context, opts detentupdate.ApplyOptions) (detentupdate.Status, error) {
 					applies++
-					if ctx.Err() != nil || opts.Urgent != !follow || opts.FollowHub != follow || opts.ExpectedVersion != "1.2.4" {
+					if ctx.Err() != nil || opts.Urgent != urgent || opts.FollowHub != follow || opts.ExpectedVersion != "1.2.4" {
 						t.Errorf("invalid update context/options: %v %+v", ctx.Err(), opts)
 					}
 					return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.2.4", LatestCommit: strings.Repeat("c", 40), BinarySHA256: strings.Repeat("d", 64), VerifiedRelease: true}, nil
@@ -262,9 +265,15 @@ func TestEnrolledUpdateOwnerKeepsHeartbeatsAvailable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			owner := enrolledUpdateOwner(runtimeCtx, scheduler, running)
-			request := &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "urgent-test", Service: "detent", Version: "1.2.4", Release: true, Urgent: !follow, FollowHub: follow}
-			if follow {
+			owner, run := enrolledUpdateOwner(scheduler)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				run(runtimeCtx)
+			}()
+			defer func() { cancelRuntime(); <-done }()
+			request := &runnerauth.UpdateRequest{RequestedAt: time.Now(), ID: "update-test", Service: "detent", Version: "1.2.4", Release: true, Urgent: urgent, FollowHub: follow}
+			if !urgent {
 				request.ExpectedBuildRevision = owner(t.Context(), nil).Revision
 			}
 			owner(requestCtx, request)
