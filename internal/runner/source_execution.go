@@ -102,6 +102,12 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if !req.phaseReceipts {
 		return nil
 	}
+	if issue.ExpectedPhaseRemoteHead == "" && info.RecoveredPhase.HeadSHA != "" {
+		issue.ExpectedPhaseRemoteHead = info.RecoveredPhase.HeadSHA
+		if latest := req.publishedPhaseSource; latest != nil && latest.HeadSHA != "" {
+			issue.ExpectedPhaseRemoteHead = latest.HeadSHA
+		}
+	}
 	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
 	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
 		*req.publishedPhaseSource = source

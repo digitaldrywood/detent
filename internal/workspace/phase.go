@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,7 +20,8 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", err
 	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, issue.ExpectedPhaseRemoteHead, authorize, func(ctx context.Context) error {
+	expected := cmp.Or(issue.ExpectedPhaseRemoteHead, info.RecoveredPhase.HeadSHA)
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
