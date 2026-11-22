@@ -185,10 +185,12 @@ type phaseCompletionExecution struct {
 
 type phaseCompletionWorkspace struct {
 	*workspace.LocalGit
-	afterPreservation func()
+	beforePreservation func()
+	afterPreservation  func()
 }
 
 func (w *phaseCompletionWorkspace) PreserveItemPhaseHistory(ctx context.Context, info workspace.Info, issue workspace.Issue, receipt tracker.NativePhaseReceipt, authorize func(context.Context) error) (string, error) {
+	w.beforePreservation()
 	expected, err := w.LocalGit.PreserveItemPhaseHistory(ctx, info, issue, receipt, authorize)
 	if err != nil {
 		return "", err
@@ -342,14 +344,16 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 
 func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		advanceBase       bool
-		moveItem          bool
-		afterPreservation string
+		name                 string
+		advanceBase          bool
+		moveItem             bool
+		remoteMatchesRebased bool
+		afterPreservation    string
 	}{
 		{name: "already published"},
 		{name: "base advances", advanceBase: true},
 		{name: "item ref moves", advanceBase: true, moveItem: true},
+		{name: "remote matches rebased head without published history", advanceBase: true, remoteMatchesRebased: true},
 		{name: "item ref rewinds after preservation", advanceBase: true, afterPreservation: "rewind"},
 		{name: "intended head arrives after preservation", advanceBase: true, afterPreservation: "publish"},
 	} {
@@ -395,6 +399,10 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			receipt := tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: published, TreeSHA: git(prior.Path, "rev-parse", "HEAD^{tree}")}
 			if tc.advanceBase {
 				commitFile(source, "base.txt")
+				if tc.remoteMatchesRebased {
+					commitFile(source, "item.txt")
+					commitFile(source, "item-extra.txt")
+				}
 				git(source, "push", "origin", "main")
 			}
 			base := git(source, "rev-parse", "HEAD")
@@ -412,16 +420,29 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 				remoteHead = commitFile(prior.Path, "other.txt")
 				git(prior.Path, "push", "origin", "HEAD:"+ref)
 			}
-			publication := &phaseCompletionWorkspace{LocalGit: backend, afterPreservation: func() {
-				switch tc.afterPreservation {
-				case "rewind":
-					git(info.Path, "merge-base", "--is-ancestor", firstCommit, "HEAD")
-					git(remote, "update-ref", ref, firstCommit, published)
-					remoteHead = firstCommit
-				case "publish":
-					git(info.Path, "push", "origin", "HEAD:"+ref)
-				}
-			}}
+			publication := &phaseCompletionWorkspace{
+				LocalGit: backend,
+				beforePreservation: func() {
+					if !tc.remoteMatchesRebased {
+						return
+					}
+					if head := git(info.Path, "rev-parse", "HEAD"); head != base {
+						t.Fatalf("rebased checkout = %s, want base %s", head, base)
+					}
+					git(remote, "update-ref", ref, base, published)
+					remoteHead = base
+				},
+				afterPreservation: func() {
+					switch tc.afterPreservation {
+					case "rewind":
+						git(info.Path, "merge-base", "--is-ancestor", firstCommit, "HEAD")
+						git(remote, "update-ref", ref, firstCommit, published)
+						remoteHead = firstCommit
+					case "publish":
+						git(info.Path, "push", "origin", "HEAD:"+ref)
+					}
+				},
+			}
 			execution := &phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
 				testExecution: &testExecution{}, continuation: tracker.NativePhaseContinuation{LastPushed: &receipt},
 			}}
@@ -439,7 +460,7 @@ func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
 			if execution.checkpoint == nil || execution.checkpoint.HeadSHA != head {
 				t.Fatalf("checkpoint = %+v, want finalized checkout %s", execution.checkpoint, head)
 			}
-			if tc.moveItem || tc.afterPreservation == "rewind" {
+			if tc.moveItem || tc.remoteMatchesRebased || tc.afterPreservation == "rewind" {
 				var refusal *workspace.LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved || actualRemote != remoteHead || execution.publication.HeadSHA != "" {
 					t.Fatalf("moved item ref = %s, receipt = %+v, error = %v", actualRemote, execution.publication, err)
