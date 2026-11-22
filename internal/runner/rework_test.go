@@ -351,16 +351,20 @@ func newReworkWorkspace(t *testing.T, source, root string) *workspace.LocalGit {
 
 func publishReworkCheckpoint(t *testing.T, backend *workspace.LocalGit, info workspace.Info, issue workspace.Issue) tracker.NativeCheckpoint {
 	t.Helper()
-	ref, pushed, err := backend.PushCheckpointRef(t.Context(), info, issue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
-	if err != nil || !pushed {
-		t.Fatalf("publish fixture: %+v, %v", ref, err)
-	}
+	head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+	base := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", "HEAD", "origin/main"))
+	runRunnerGit(t, info.Path, "add", "-A")
+	tree := strings.TrimSpace(runRunnerGit(t, info.Path, "write-tree"))
+	runRunnerGit(t, info.Path, "reset", "-q", "HEAD")
+	commit := strings.TrimSpace(runRunnerGit(t, info.Path, "commit-tree", tree, "-p", head, "-m", "legacy checkpoint"))
+	ref := workspace.CheckpointRefName(issue)
+	runRunnerGit(t, info.Path, "push", "origin", commit+":"+ref)
 	state, err := backend.RecoveryState(t.Context(), info, issue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	checkpoint := executionCheckpoint(&state)
-	checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+	checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref, commit, base, tree
 	return checkpoint
 }
 

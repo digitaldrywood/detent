@@ -8,6 +8,8 @@ type Info struct {
 	PublicationBranch string
 	StartHeadSHA      string
 	RecoveredPhase    PhaseSource
+	PhaseRemoteHead   string
+	ReplayPhase       bool
 	Created           bool
 }
 

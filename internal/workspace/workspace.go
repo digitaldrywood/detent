@@ -256,7 +256,6 @@ type Issue struct {
 	RetainedLanding         bool
 	finalizationBranch      string
 	PhaseSource             *tracker.NativePhaseReceipt
-	PhaseChangeHeadSHA      string
 	VerifyPhaseBranch       bool
 	PinStartHead            bool
 	Landing                 *LandOptions
@@ -685,12 +684,14 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return info, nil
 	}
 	if issue.VerifyPhaseBranch {
-		info.RecoveredPhase, err = l.recoverItemPhaseBranch(ctx, info, issue)
-		if err != nil {
+		if err := l.recoverItemPhaseBranch(ctx, &info, issue); err != nil {
 			return Info{}, err
 		}
-		if info.RecoveredPhase.HeadSHA != "" {
+		if info.RecoveredPhase.HeadSHA != "" || info.ReplayPhase {
 			issue.FreshCheckout = true
+		}
+		if info.ReplayPhase && issue.PhaseSource == nil {
+			issue.PinStartHead = true
 		}
 	}
 	localHead, err := l.verifiedLocalCheckpointHead(ctx, info, issue)
@@ -728,12 +729,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err != nil {
 			return Info{}, err
 		}
-		retainProgress := issue.Checkpoint == nil && checkpoint.Transaction == nil
-		if checkpoint.Transaction != nil && !issue.NativeRework && !issue.RequireCheckpoint && ownsCheckpointRef(issue, checkpoint.Ref) {
-			issue.Checkpoint, issue.FreshCheckout = nil, true
-		} else if err := l.bindCheckpointBranch(issue, info, &checkpoint); err != nil {
-			return Info{}, err
-		} else if _, isDir, err := pathExists(info.Path); err != nil {
+		retainProgress := issue.Checkpoint == nil
+		if _, isDir, err := pathExists(info.Path); err != nil {
 			return Info{}, err
 		} else if !issue.FreshCheckout && isDir && l.isSourceWorktree(ctx, info.Path) && (retainProgress || checkpointMatches(ctx, info.Path, &checkpoint)) {
 			issue.Checkpoint = nil
