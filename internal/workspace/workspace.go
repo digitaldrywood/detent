@@ -258,6 +258,7 @@ type Issue struct {
 	PhaseSource             *tracker.NativePhaseReceipt
 	VerifyPhaseBranch       bool
 	RetainPhaseCheckout     bool
+	PublishedChangeHeadSHA  string
 	PinStartHead            bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
@@ -689,12 +690,14 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			_, err := l.Existing(issue)
 			switch {
 			case err == nil:
-				paused, err := l.verifyReworkBranch(ctx, info, issue)
-				if err != nil {
+				if err := l.verifyRetainedItemPhaseCheckout(ctx, info, issue); err != nil {
 					return Info{}, err
 				}
-				if paused && !issue.NativeRework {
-					return Info{}, ErrMergeResolutionInvalid
+				if receipt := issue.PhaseSource; receipt != nil {
+					if !validItemPhaseReceipt(info, receipt) {
+						return Info{}, ErrItemPhaseSource
+					}
+					info.PhaseRemoteHead = &receipt.HeadSHA
 				}
 				return info, l.recordCleanupOwnership(ctx, info, issue, true)
 			case !errors.Is(err, ErrMissingWorkspace):

@@ -395,8 +395,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts && !legacyPublishedSource {
-		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil {
+		if req.phaseContinuation == nil {
+			return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
+		}
+		if gate.EffectivePlan(workflow.Config.Plan).Review != gate.PlanReviewAutomated && req.phaseContinuation.Plan == nil {
+			return RunResult{}, failedStep("publication", errors.New("native human plan approval is unavailable"))
+		}
 	}
 	sourceReviewed := false
 	if runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement {

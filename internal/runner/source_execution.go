@@ -106,13 +106,15 @@ func retainsPhaseCheckout(recovery tracker.NativeRecovery, scope workspace.Attem
 	return scope.Attempt == activeAttemptID
 }
 
-func verifyReplacementItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
-	head := info.RecoveredPhase.HeadSHA
-	if head == "" && issue.PhaseSource != nil {
-		head = issue.PhaseSource.HeadSHA
-	}
-	if head == "" || state == nil || state.HeadSHA != head {
-		return fmt.Errorf("%w: checkout after setup differs from the verified phase head or is unavailable", ErrNativeRecoveryRequired)
+func verifyItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
+	if info.Created {
+		head := info.RecoveredPhase.HeadSHA
+		if head == "" && issue.PhaseSource != nil {
+			head = issue.PhaseSource.HeadSHA
+		}
+		if head == "" || state == nil || state.HeadSHA != head {
+			return fmt.Errorf("%w: checkout after setup differs from the verified phase head or is unavailable", ErrNativeRecoveryRequired)
+		}
 	}
 	verifier, ok := backend.(interface {
 		VerifyItemPhaseCheckout(context.Context, workspace.Info, workspace.Issue) error
