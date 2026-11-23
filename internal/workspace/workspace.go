@@ -1152,8 +1152,10 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		}
 		result.Branches = 1
 	} else {
-		if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
-			return result, err
+		if !issue.Terminal {
+			if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+				return result, err
+			}
 		}
 		branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 		if err != nil {
@@ -2245,8 +2247,22 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool
 	if !exists {
 		return false, nil
 	}
+	tip := ""
+	if issue.Terminal && !session {
+		head, err := l.runGit(ctx, "rev-parse", "--verify", "refs/heads/"+branch)
+		if err != nil {
+			return false, err
+		}
+		tip = strings.TrimSpace(head)
+	}
 	if err := l.checkCleanupBranch(ctx, branch, session, issue, false); err != nil {
 		return false, err
+	}
+	if tip != "" {
+		if err := l.deleteBranchAtVerifiedSHA(ctx, branch, tip); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)
 	return err == nil, err
