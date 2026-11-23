@@ -225,6 +225,11 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 			}
 			record.OwnerID = ownerID
 			record.BranchCreated = branchCreated
+			if branchCreated && record.Branch != "" {
+				if err := l.setBranchOwnerID(ctx, record.Branch, ownerID); err != nil {
+					return fmt.Errorf("record branch owner identity: %w", err)
+				}
+			}
 		}
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
@@ -298,6 +303,29 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 		}
 	}
 	return false
+}
+
+func (l *LocalGit) setBranchOwnerID(ctx context.Context, branch, ownerID string) error {
+	_, err := l.runGit(ctx, "config", "--local", "branch."+branch+".detent-owner", ownerID)
+	return err
+}
+
+func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID string) bool {
+	branch = strings.TrimSpace(branch)
+	ownerID = strings.TrimSpace(ownerID)
+	if branch == "" || ownerID == "" {
+		return false
+	}
+	output, err := l.runGit(ctx, "config", "--local", "--get", "branch."+branch+".detent-owner")
+	return err == nil && strings.TrimSpace(output) == ownerID
+}
+
+func (l *LocalGit) clearBranchOwnerID(ctx context.Context, branch string) {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return
+	}
+	_, _ = l.runGit(ctx, "config", "--local", "--unset-all", "branch."+branch+".detent-owner")
 }
 
 func (l *LocalGit) writeOwnershipRecord(record cleanupOwnershipRecord) (returnErr error) {

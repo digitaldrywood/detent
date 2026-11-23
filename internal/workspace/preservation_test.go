@@ -610,4 +610,32 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("branch %s tip = %q, want %q", info.Branch, gotTip, wantTip)
 		}
 	})
+	t.Run("renamed branch replaced by new branch of same name is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-renamed", Identifier: "owner/repo#708"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "branch", "-m", info.Branch, info.Branch+"-renamed")
+		runGit(t, info.Path, "checkout", "-b", info.Branch)
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("replacement branch commit\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "add", "README.md")
+		runGit(t, info.Path, "commit", "-m", "replacement branch commit")
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		exists, err := backend.branchExists(t.Context(), info.Branch)
+		if err != nil || !exists {
+			t.Fatalf("replacement branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+	})
 }

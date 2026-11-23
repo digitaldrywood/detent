@@ -786,11 +786,14 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
-			created, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+			created, branchCreated, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 			if err != nil {
 				return Info{}, err
 			}
 			info.Created = created
+			if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, created, branchCreated); err != nil {
+				return Info{}, err
+			}
 			if created {
 				if err := l.runAfterCreate(ctx, info, issue); err != nil {
 					return Info{}, l.preserveFailedWorkspace(ctx, info.Path, err)
@@ -869,11 +872,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 	} else {
-		restored, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+		restored, restoredBranchCreated, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 		if err != nil {
 			return Info{}, err
 		}
 		info.Created = created || restored
+		branchCreated = branchCreated || restoredBranchCreated
 	}
 	if issue.LocalCheckpoint != nil {
 		if err := l.verifyLocalCheckpoint(ctx, info, issue); err != nil {
@@ -1112,7 +1116,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	if !branchAlreadyDeleted {
+	if branchAlreadyDeleted {
+		l.clearBranchOwnerID(ctx, info.Branch)
+	} else {
 		branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 		if err != nil {
 			return result, err
