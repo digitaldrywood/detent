@@ -654,6 +654,7 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 		runGit(t, info.Path, "branch", "-m", info.Branch, info.Branch+"-orig")
 		runGit(t, info.Path, "branch", "-m", info.Branch+"-copy", info.Branch)
 		runGit(t, info.Path, "checkout", info.Branch)
+		runGit(t, info.Path, "branch", "-d", info.Branch+"-orig")
 		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("copied branch commit\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}

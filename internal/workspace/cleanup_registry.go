@@ -332,7 +332,23 @@ func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID str
 		}
 		matchedWant = true
 	}
-	return matchedWant
+	if !matchedWant {
+		return false
+	}
+	reflog, err := l.runGit(ctx, "log", "-g", "--format=%gs", "refs/heads/"+branch)
+	if err != nil {
+		return false
+	}
+	entries := strings.TrimSpace(reflog)
+	if entries == "" {
+		return false
+	}
+	for _, entry := range strings.Split(entries, "\n") {
+		if strings.HasPrefix(entry, "Branch: copied ") || strings.HasPrefix(entry, "Branch: renamed ") {
+			return false
+		}
+	}
+	return true
 }
 
 func (l *LocalGit) clearBranchOwnerID(ctx context.Context, branch string) {
