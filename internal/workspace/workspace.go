@@ -1084,7 +1084,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 				l.deleteCheckpointRef(ctx, issue)
 				return result, nil
 			}
-			if l.pendingTerminalCleanupBranchAbsent(ctx, info, issue) {
+			if branchExists, branchErr := l.branchExists(ctx, info.Branch); branchErr == nil && !branchExists {
 				if err := l.removeOwnershipRecord(info.Path); err != nil {
 					return result, err
 				}

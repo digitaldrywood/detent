@@ -79,19 +79,6 @@ func (l *LocalGit) ownsLiveCheckout(ctx context.Context, record cleanupOwnership
 	return err == nil && current == strings.TrimSpace(record.OwnerID)
 }
 
-func (l *LocalGit) pendingTerminalCleanupBranchAbsent(ctx context.Context, info Info, issue Issue) bool {
-	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
-	record, err := l.readOwnershipRecord(recordPath)
-	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
-		return false
-	}
-	if !record.CleanupStarted || strings.TrimSpace(record.CleanupBranchSHA) == "" || !recordOwnsCheckout(record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch {
-		return false
-	}
-	exists, err := l.branchExists(ctx, info.Branch)
-	return err == nil && !exists
-}
-
 func (l *LocalGit) ownedInterruptedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) (string, string) {
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
