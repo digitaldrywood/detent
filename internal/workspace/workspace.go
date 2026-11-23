@@ -1122,9 +1122,6 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, err
 	}
 	result.Worktrees = 1
-	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
-		return result, err
-	}
 	if verifiedOwnedBranchSHA != "" {
 		delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
@@ -1133,6 +1130,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		}
 		result.Branches = 1
 	} else {
+		if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+			return result, err
+		}
 		branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 		if err != nil {
 			return result, err

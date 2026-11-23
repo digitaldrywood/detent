@@ -451,7 +451,6 @@ func (l *LocalGit) deleteVerifiedOwnedBranch(ctx context.Context, branch, ownerI
 		defer cancel()
 		_, _ = l.runGit(cleanupCtx, "worktree", "remove", "--force", tmpDir)
 		_ = os.RemoveAll(tmpDir)
-		_, _ = l.runGit(cleanupCtx, "worktree", "prune")
 	}()
 	savedRemote := ""
 	savedMerge := ""
