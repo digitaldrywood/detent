@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -85,12 +84,12 @@ func TestLocalGitCleanupChecksRemovalHooks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue := Issue{Identifier: "cleanup-hook", Terminal: true}
+			issue := Issue{Identifier: "cleanup-hook"}
 			info, err := backend.Create(t.Context(), issue)
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue.CleanupDeliveredHeadSHA = strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			runGit(t, info.Path, "push", "origin", info.Branch)
 			if dirty {
 				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("worker work"), 0o600); err != nil {
 					t.Fatal(err)

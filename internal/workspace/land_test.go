@@ -633,12 +633,8 @@ func TestRetainedWorktreeCleanupRequiresVerifiedLanding(t *testing.T) {
 			}
 			err = f.backend.CleanupLanding(t.Context(), f.info, issue)
 			_, statErr := os.Stat(f.info.Path)
-			if change == "none" {
-				if err != nil || !errors.Is(statErr, os.ErrNotExist) {
-					t.Fatalf("verified landed worktree was not retired: cleanup=%v stat=%v", err, statErr)
-				}
-			} else if !errors.Is(err, ErrWorkspacePreserved) || statErr != nil {
-				t.Fatalf("unpublished work was not preserved: cleanup=%v stat=%v", err, statErr)
+			if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("verified terminal landed worktree was not force-retired (change=%s): cleanup=%v stat=%v", change, err, statErr)
 			}
 		})
 	}

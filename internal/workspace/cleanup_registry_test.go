@@ -30,7 +30,7 @@ func TestLocalGitReviewWorkspaceCleanup(t *testing.T) {
 				}
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return nil, nil }
 				published := mode == "published review" || mode == "edited published review"
-				issue := Issue{ProjectID: "prj_example", ID: "wi_example", Identifier: "prj_example#1", Terminal: mode != "current review" && !published}
+				issue := Issue{ProjectID: "prj_example", ID: "wi_example", Identifier: "prj_example#1", Terminal: mode == "closed"}
 				issue.AttemptWorkspace = AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
 				cleanupCtx := t.Context()
 				var infos []Info

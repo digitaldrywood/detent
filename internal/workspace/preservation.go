@@ -100,20 +100,27 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 		}
 		return fmt.Errorf("%w at %s: worktree registration is unavailable or not managed by source", ErrWorkspacePreserved, info.Path)
 	}
-	changed, err := l.worktreeHasChanges(ctx, info.Path)
-	if err != nil {
-		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
-	}
 	if session {
 		// A workspace session checks out a commit somebody else already
 		// owns, on a detached HEAD. Measuring its HEAD against the remotes
 		// says nothing about work at risk, so what the session could have
 		// produced is checked instead: edits on disk, commits on its own
 		// branch, and commits past the head_sha it was opened on.
+		changed, err := l.worktreeHasChanges(ctx, info.Path)
+		if err != nil {
+			return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
+		}
 		if changed {
 			return fmt.Errorf("%w at %s: uncommitted files remain in the workspace session", ErrWorkspacePreserved, info.Path)
 		}
 		return l.checkWorkspaceSessionCommits(ctx, info.Path, issue.PullRequestHeadSHA)
+	}
+	if issue.Terminal {
+		return nil
+	}
+	changed, err := l.worktreeHasChanges(ctx, info.Path)
+	if err != nil {
+		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
 	if changed {
 		return fmt.Errorf("%w at %s: uncommitted files remain", ErrWorkspacePreserved, info.Path)
@@ -205,6 +212,9 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, sessio
 		if strings.TrimSpace(output) != "0" {
 			return fmt.Errorf("%w: workspace session branch %s contains commits held by no other ref", ErrWorkspacePreserved, branch)
 		}
+		return nil
+	}
+	if issue.Terminal {
 		return nil
 	}
 	if deliveredCleanupHead(issue) != "" {

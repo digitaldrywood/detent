@@ -112,17 +112,17 @@ func TestLocalGitCleanupRecordedLanding(t *testing.T) {
 		wantPreserved bool
 	}{
 		{name: "verified merged PR", method: "squash", terminal: true, verifiedPR: true},
-		{name: "mismatched PR head", method: "squash", terminal: true, verifiedPR: true, wrongHead: true, wantPreserved: true},
-		{name: "verified PR later commit", method: "squash", terminal: true, verifiedPR: true, extraCommit: true, wantPreserved: true},
-		{name: "verified PR dirty", method: "squash", terminal: true, verifiedPR: true, dirty: true, wantPreserved: true},
+		{name: "mismatched PR head", method: "squash", terminal: true, verifiedPR: true, wrongHead: true},
+		{name: "verified PR later commit", method: "squash", terminal: true, verifiedPR: true, extraCommit: true},
+		{name: "verified PR dirty", method: "squash", terminal: true, verifiedPR: true, dirty: true},
 		{name: "active PR proof", method: "squash", verifiedPR: true, wantPreserved: true},
 		{name: "squash landed", method: "squash", terminal: true, recorded: true},
 		{name: "merge landed", method: "merge", terminal: true, recorded: true},
 		{name: "fast-forward landed", method: "fast-forward", terminal: true, recorded: true},
 		{name: "nonterminal squash", method: "squash", recorded: true, wantPreserved: true},
-		{name: "terminal without landing", method: "squash", terminal: true, wantPreserved: true},
-		{name: "work after landing", method: "squash", terminal: true, recorded: true, extraCommit: true, wantPreserved: true},
-		{name: "uncommitted work after landing", method: "squash", terminal: true, recorded: true, dirty: true, wantPreserved: true},
+		{name: "terminal without landing", method: "squash", terminal: true},
+		{name: "work after landing", method: "squash", terminal: true, recorded: true, extraCommit: true},
+		{name: "uncommitted work after landing", method: "squash", terminal: true, recorded: true, dirty: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
