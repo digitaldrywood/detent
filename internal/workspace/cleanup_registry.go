@@ -343,7 +343,11 @@ func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID str
 	if entries == "" {
 		return false
 	}
-	for _, entry := range strings.Split(entries, "\n") {
+	lines := strings.Split(entries, "\n")
+	if !strings.HasPrefix(lines[len(lines)-1], "branch: Created from ") {
+		return false
+	}
+	for _, entry := range lines {
 		if strings.HasPrefix(entry, "Branch: copied ") || strings.HasPrefix(entry, "Branch: renamed ") {
 			return false
 		}
