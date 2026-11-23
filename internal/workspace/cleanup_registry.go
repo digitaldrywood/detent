@@ -578,15 +578,6 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 			} else {
 				worktreePath = filepath.Clean(rawPath)
 			}
-			if worktreePath != targetPath {
-				gd, err := worktreeGitDir(ctx, worktreePath)
-				if err != nil {
-					return true, nil
-				}
-				if held, err := gitDirHoldsBranch(gd, branch); err != nil || held {
-					return true, nil
-				}
-			}
 		case strings.HasPrefix(field, "branch "):
 			if strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef && worktreePath != targetPath {
 				return true, nil
@@ -596,6 +587,16 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 	commonDir, err := gitCommonDir(ctx, l.sourceRoot)
 	if err != nil {
 		return true, nil
+	}
+	if resolved, err := canonicalExistingPath(commonDir); err == nil {
+		commonDir = resolved
+	} else {
+		commonDir = filepath.Clean(commonDir)
+	}
+	if targetGitDir == "" || commonDir != targetGitDir {
+		if held, err := gitDirHoldsBranch(commonDir, branch); err != nil || held {
+			return true, nil
+		}
 	}
 	entries, err := os.ReadDir(filepath.Join(commonDir, "worktrees"))
 	if err != nil {
