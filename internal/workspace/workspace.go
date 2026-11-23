@@ -1093,14 +1093,36 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	branchAlreadyDeleted := false
 	verifiedOwnedBranchSHA := ""
 	verifiedOwnedBranchOwnerID := ""
-	if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
+	savedUpstreamRemote := ""
+	savedUpstreamMerge := ""
+	if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) && worktreeHEADAttachedToBranch(ctx, info.Path, info.Branch) {
 		if sha, ownerID := l.ownedCleanupBranchSHA(ctx, info, issue); sha != "" {
+			if out, err := l.runGit(ctx, "config", "--local", "--get", "branch."+info.Branch+".remote"); err == nil {
+				savedUpstreamRemote = strings.TrimSpace(out)
+			}
+			if out, err := l.runGit(ctx, "config", "--local", "--get", "branch."+info.Branch+".merge"); err == nil {
+				savedUpstreamMerge = strings.TrimSpace(out)
+			}
 			if _, err := runGitAt(ctx, info.Path, "update-ref", "--no-deref", "HEAD", sha); err != nil {
 				return result, fmt.Errorf("%w: detach owned worktree before terminal branch deletion: %w", ErrWorkspacePreserved, err)
+			}
+			if savedUpstreamRemote != "" || savedUpstreamMerge != "" {
+				if _, err := runGitAt(ctx, info.Path, "branch", "--unset-upstream", info.Branch); err != nil {
+					restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+					defer cancel()
+					_, _ = runGitAt(restoreCtx, info.Path, "symbolic-ref", "HEAD", "refs/heads/"+info.Branch)
+					return result, fmt.Errorf("%w: clear upstream before terminal branch deletion: %w", ErrWorkspacePreserved, err)
+				}
 			}
 			if _, err := runGitAt(ctx, info.Path, "branch", "-d", info.Branch); err != nil {
 				restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 				defer cancel()
+				if savedUpstreamRemote != "" {
+					_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+info.Branch+".remote", savedUpstreamRemote)
+				}
+				if savedUpstreamMerge != "" {
+					_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+info.Branch+".merge", savedUpstreamMerge)
+				}
 				_, _ = runGitAt(restoreCtx, info.Path, "symbolic-ref", "HEAD", "refs/heads/"+info.Branch)
 				return result, fmt.Errorf("%w: branch %s changed or checked out elsewhere before terminal deletion: %w", ErrWorkspacePreserved, info.Branch, err)
 			}
@@ -1116,6 +1138,12 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 			defer cancel()
 			_, restoreErr := l.runGit(restoreCtx, "update-ref", "--create-reflog", "-m", branchOwnerReflogPrefix+verifiedOwnedBranchOwnerID, "refs/heads/"+info.Branch, verifiedOwnedBranchSHA, strings.Repeat("0", len(verifiedOwnedBranchSHA)))
 			if restoreErr == nil {
+				if savedUpstreamRemote != "" {
+					_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+info.Branch+".remote", savedUpstreamRemote)
+				}
+				if savedUpstreamMerge != "" {
+					_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+info.Branch+".merge", savedUpstreamMerge)
+				}
 				_, _ = runGitAt(restoreCtx, info.Path, "symbolic-ref", "HEAD", "refs/heads/"+info.Branch)
 			}
 			result.Branches = 0

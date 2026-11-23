@@ -357,6 +357,27 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 	return err == nil && held
 }
 
+func worktreeHEADAttachedToBranch(ctx context.Context, path, branch string) bool {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return false
+	}
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return false
+	}
+	headData, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, "HEAD"))
+	if err != nil || !ok || strings.TrimSpace(string(headData)) != "ref: refs/heads/"+branch {
+		return false
+	}
+	for _, rel := range []string{"rebase-merge", "rebase-apply", "BISECT_START"} {
+		if _, statErr := os.Stat(filepath.Join(gitDir, rel)); statErr == nil || !errors.Is(statErr, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return true
+}
+
 func (l *LocalGit) branchOwnerIDTip(ctx context.Context, branch, ownerID string) (string, bool) {
 	branch = strings.TrimSpace(branch)
 	ownerID = strings.TrimSpace(ownerID)
