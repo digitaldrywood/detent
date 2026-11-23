@@ -438,3 +438,57 @@ func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
+	t.Parallel()
+	t.Run("unowned dirty worktree is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-unowned-wt", Identifier: "owner/repo#701", Terminal: true}
+		info, err := backend.infoForIssue(issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "worktree", "add", "-b", info.Branch, info.Path, "HEAD")
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("manual edits\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		if _, err := os.Stat(filepath.Join(info.Path, "README.md")); err != nil {
+			t.Fatalf("unowned dirty worktree was deleted: %v", err)
+		}
+	})
+	t.Run("unowned branch with unpushed commits is preserved when worktree and record are absent", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		other := Issue{ID: "wi-other", Identifier: "owner/repo#702"}
+		otherInfo, err := backend.Create(t.Context(), other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(otherInfo.Path, "README.md"), []byte("other issue commit\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, otherInfo.Path, "add", "README.md")
+		runGit(t, otherInfo.Path, "commit", "-m", "other issue work")
+		runGit(t, source, "worktree", "remove", "--force", otherInfo.Path)
+		issue := Issue{ID: "wi-terminal", Identifier: "owner/repo#703", BranchName: otherInfo.Branch, Terminal: true}
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		exists, err := backend.branchExists(t.Context(), otherInfo.Branch)
+		if err != nil || !exists {
+			t.Fatalf("unowned branch %s was deleted (exists=%v, err=%v)", otherInfo.Branch, exists, err)
+		}
+	})
+}

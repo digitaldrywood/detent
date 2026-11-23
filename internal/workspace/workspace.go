@@ -1033,6 +1033,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}
+	ownedBranch := l.ownsCleanupBranch(ctx, info, issue)
 	session := l.sessionRecorded(info, issue)
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
@@ -1049,7 +1050,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
-		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue, ownedBranch)
 		if branchErr != nil {
 			return result, branchErr
 		}
@@ -1084,7 +1085,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue, ownedBranch)
 	if err != nil {
 		return result, err
 	}
@@ -2149,7 +2150,7 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 	return false, err
 }
 
-func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue) (bool, error) {
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue, ownedBranch bool) (bool, error) {
 	branch = strings.TrimSpace(branch)
 	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return false, nil
@@ -2161,7 +2162,7 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool
 	if !exists {
 		return false, nil
 	}
-	if err := l.checkCleanupBranch(ctx, branch, session, issue); err != nil {
+	if err := l.checkCleanupBranch(ctx, branch, session, issue, ownedBranch); err != nil {
 		return false, err
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)

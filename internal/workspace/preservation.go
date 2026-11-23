@@ -71,6 +71,34 @@ func (l *LocalGit) PreserveIssue(ctx context.Context, issue Issue) (Preservation
 	return result, nil
 }
 
+func (l *LocalGit) ownsCleanupBranch(ctx context.Context, info Info, issue Issue) bool {
+	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
+	record, err := l.readOwnershipRecord(recordPath)
+	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
+		return false
+	}
+	return recordOwnsCheckout(record, info, issue) && record.Branch != "" && record.Branch == info.Branch
+}
+
+func recordOwnsCheckout(record cleanupOwnershipRecord, info Info, issue Issue) bool {
+	if filepath.Clean(record.Path) != filepath.Clean(info.Path) || record.Key != info.Key {
+		return false
+	}
+	if record.ProjectID != "" && issue.ProjectID != "" && record.ProjectID != issue.ProjectID {
+		return false
+	}
+	if record.IssueID != "" && issue.ID != "" && record.IssueID != issue.ID {
+		return false
+	}
+	if record.Identifier != "" && issue.Identifier != "" && record.Identifier != issue.Identifier {
+		return false
+	}
+	if issue.ID != "" && record.IssueID == issue.ID {
+		return true
+	}
+	return issue.Identifier != "" && record.Identifier == issue.Identifier
+}
+
 func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue Issue) error {
 	session := sessionOwned(info, issue)
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
@@ -78,13 +106,16 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%w at %s: read workspace retention: %w", ErrWorkspacePreserved, info.Path, err)
 	}
-	if err == nil && !l.validOwnershipRecord(ctx, recordPath, record) {
+	hasValidRecord := err == nil
+	if hasValidRecord && !l.validOwnershipRecord(ctx, recordPath, record) {
 		return fmt.Errorf("%w: invalid workspace retention record: %s", ErrWorkspacePreserved, info.Path)
 	}
-	if err == nil && record.WorkspaceSession {
+	if hasValidRecord && record.WorkspaceSession {
 		session = true
 	}
-	if err := l.checkCleanupBranch(ctx, info.Branch, session, issue); err != nil {
+	ownedCheckout := hasValidRecord && recordOwnsCheckout(record, info, issue)
+	ownedBranch := ownedCheckout && record.Branch != "" && record.Branch == info.Branch
+	if err := l.checkCleanupBranch(ctx, info.Branch, session, issue, ownedBranch); err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
 	exists, isDir, err := pathExists(info.Path)
@@ -115,7 +146,7 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 		}
 		return l.checkWorkspaceSessionCommits(ctx, info.Path, issue.PullRequestHeadSHA)
 	}
-	if issue.Terminal {
+	if issue.Terminal && ownedCheckout {
 		return nil
 	}
 	changed, err := l.worktreeHasChanges(ctx, info.Path)
@@ -191,7 +222,7 @@ func issueLandedAtHead(issue Issue) bool {
 	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != ""
 }
 
-func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool, issue Issue) error {
+func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool, issue Issue, ownedBranch bool) error {
 	if !l.autoBranch || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return nil
 	}
@@ -214,7 +245,7 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, sessio
 		}
 		return nil
 	}
-	if issue.Terminal {
+	if issue.Terminal && ownedBranch {
 		return nil
 	}
 	if deliveredCleanupHead(issue) != "" {
