@@ -38,6 +38,7 @@ type cleanupOwnershipRecord struct {
 	// session, so a later pass does not have to infer it from a branch name.
 	WorkspaceSession bool   `json:"workspace_session,omitempty"`
 	ReviewHeadSHA    string `json:"review_head_sha,omitempty"`
+	OwnerID          string `json:"owner_id,omitempty"`
 }
 
 type cleanupInventory struct {
@@ -199,10 +200,93 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	} else if err == nil && l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) {
 		record.ReviewHeadSHA = previous.ReviewHeadSHA
 	}
+	if isDir && l.isSourceWorktree(ctx, path) {
+		existingOwnerID := ""
+		if err == nil && l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) && recordOwnsCheckout(previous, info, issue) {
+			existingOwnerID = previous.OwnerID
+		}
+		ownerID, ownerErr := ensureWorktreeOwnerID(ctx, path, existingOwnerID)
+		if ownerErr != nil {
+			return fmt.Errorf("record worktree owner identity: %w", ownerErr)
+		}
+		record.OwnerID = ownerID
+	}
 	if err := l.writeOwnershipRecord(record); err != nil {
 		return fmt.Errorf("record cleanup ownership: %w", err)
 	}
 	return nil
+}
+
+const worktreeOwnerFileName = "detent-owner"
+
+func worktreeGitDir(ctx context.Context, path string) (string, error) {
+	output, err := runGitAtWithEnv(ctx, path, gitDiscoveryBoundary(path), "rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Clean(strings.TrimSpace(output))
+	if dir == "" || dir == "." {
+		return "", fmt.Errorf("empty git dir for %s", path)
+	}
+	return dir, nil
+}
+
+func readWorktreeOwnerID(ctx context.Context, path string) (string, error) {
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(gitDir, worktreeOwnerFileName))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func ensureWorktreeOwnerID(ctx context.Context, path, existing string) (string, error) {
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		if data, readErr := os.ReadFile(filepath.Join(gitDir, worktreeOwnerFileName)); readErr == nil && strings.TrimSpace(string(data)) == existing {
+			return existing, nil
+		}
+	}
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	ownerID := hex.EncodeToString(token[:])
+	if err := os.WriteFile(filepath.Join(gitDir, worktreeOwnerFileName), []byte(ownerID+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return ownerID, nil
+}
+
+func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return false
+	}
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return false
+	}
+	wantRef := "refs/heads/" + branch
+	if headData, err := os.ReadFile(filepath.Join(gitDir, "HEAD")); err == nil {
+		if strings.TrimSpace(string(headData)) == "ref: "+wantRef {
+			return true
+		}
+	}
+	for _, rel := range []string{filepath.Join("rebase-merge", "head-name"), filepath.Join("rebase-apply", "head-name")} {
+		if data, err := os.ReadFile(filepath.Join(gitDir, rel)); err == nil {
+			if strings.TrimSpace(string(data)) == wantRef {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (l *LocalGit) writeOwnershipRecord(record cleanupOwnershipRecord) (returnErr error) {

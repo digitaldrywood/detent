@@ -491,4 +491,59 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("unowned branch %s was deleted (exists=%v, err=%v)", otherInfo.Branch, exists, err)
 		}
 	})
+	t.Run("replaced worktree at same path is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-replaced", Identifier: "owner/repo#704"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "worktree", "remove", "--force", info.Path)
+		runGit(t, source, "worktree", "add", "-b", "manual-replacement", info.Path, "HEAD")
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("replacement edits\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		if _, err := os.Stat(filepath.Join(info.Path, "README.md")); err != nil {
+			t.Fatalf("replaced worktree was deleted: %v", err)
+		}
+	})
+	t.Run("reused branch after worktree removal is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-reused-branch", Identifier: "owner/repo#705"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "worktree", "remove", "--force", info.Path)
+		altPath := filepath.Join(t.TempDir(), "reused-checkout")
+		runGit(t, source, "worktree", "add", altPath, info.Branch)
+		if err := os.WriteFile(filepath.Join(altPath, "README.md"), []byte("new work on reused branch\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, altPath, "add", "README.md")
+		runGit(t, altPath, "commit", "-m", "new work on reused branch")
+		runGit(t, source, "worktree", "remove", "--force", altPath)
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		exists, err := backend.branchExists(t.Context(), info.Branch)
+		if err != nil || !exists {
+			t.Fatalf("reused branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+	})
 }
