@@ -609,6 +609,13 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 		if gotTip != wantTip {
 			t.Fatalf("branch %s tip = %q, want %q", info.Branch, gotTip, wantTip)
 		}
+		runGit(t, source, "worktree", "unlock", info.Path)
+		if _, err := backend.CleanupIssue(t.Context(), issue); err != nil {
+			t.Fatalf("CleanupIssue() after unlock error = %v", err)
+		}
+		if exists, err := backend.branchExists(t.Context(), info.Branch); err != nil || exists {
+			t.Fatalf("branch %s still exists after unlock cleanup (exists=%v, err=%v)", info.Branch, exists, err)
+		}
 	})
 	t.Run("renamed branch replaced by new branch of same name is preserved", func(t *testing.T) {
 		t.Parallel()

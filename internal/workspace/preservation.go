@@ -79,23 +79,23 @@ func (l *LocalGit) ownsLiveCheckout(ctx context.Context, record cleanupOwnership
 	return err == nil && current == strings.TrimSpace(record.OwnerID)
 }
 
-func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) string {
+func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) (string, string) {
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
 	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
-		return ""
+		return "", ""
 	}
 	if !l.ownsLiveCheckout(ctx, record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) || !l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID) {
-		return ""
+		return "", ""
 	}
 	if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
-		return ""
+		return "", ""
 	}
 	head, err := l.runGit(ctx, "rev-parse", "--verify", "refs/heads/"+info.Branch)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.TrimSpace(head)
+	return strings.TrimSpace(head), strings.TrimSpace(record.OwnerID)
 }
 
 func recordOwnsCheckout(record cleanupOwnershipRecord, info Info, issue Issue) bool {

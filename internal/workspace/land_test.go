@@ -57,8 +57,12 @@ func newLandingFixture(t *testing.T) landingFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, source, "worktree", "add", "-b", info.Branch, info.Path, "main")
-	if err := local.recordCleanupOwnershipWithOwner(t.Context(), info, issue, true, true, true); err != nil {
+	ownerID, _, err := local.createOwnedBranch(t.Context(), info.Branch, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "worktree", "add", info.Path, info.Branch)
+	if err := local.recordCleanupOwnershipWithOwner(t.Context(), info, issue, true, true, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {

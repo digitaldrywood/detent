@@ -161,10 +161,10 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
-	return l.recordCleanupOwnershipWithOwner(ctx, info, issue, isDir, false, false)
+	return l.recordCleanupOwnershipWithOwner(ctx, info, issue, isDir, false, "")
 }
 
-func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Info, issue Issue, isDir bool, mintOwner bool, branchCreated bool) error {
+func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Info, issue Issue, isDir bool, mintOwner bool, createdBranchOwnerID string) error {
 	if isDir && !l.isSourceWorktree(ctx, info.Path) && l.isGitWorkspace(ctx, info.Path) {
 		return fmt.Errorf("refusing to record cleanup ownership for git workspace not managed by source: %s", info.Path)
 	}
@@ -219,17 +219,19 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 			}
 		}
 		if record.OwnerID == "" && mintOwner {
-			ownerID, ownerErr := mintWorktreeOwnerID(ctx, path)
-			if ownerErr != nil {
-				return fmt.Errorf("record worktree owner identity: %w", ownerErr)
-			}
-			record.OwnerID = ownerID
-			record.BranchCreated = branchCreated
-			if branchCreated && record.Branch != "" {
-				if err := l.setBranchOwnerID(ctx, record.Branch, ownerID); err != nil {
-					return fmt.Errorf("record branch owner identity: %w", err)
+			ownerID := strings.TrimSpace(createdBranchOwnerID)
+			if ownerID == "" {
+				var ownerErr error
+				ownerID, ownerErr = newWorktreeOwnerID()
+				if ownerErr != nil {
+					return fmt.Errorf("generate worktree owner identity: %w", ownerErr)
 				}
 			}
+			if err := writeWorktreeOwnerID(ctx, path, ownerID); err != nil {
+				return fmt.Errorf("record worktree owner identity: %w", err)
+			}
+			record.OwnerID = ownerID
+			record.BranchCreated = strings.TrimSpace(createdBranchOwnerID) != ""
 		}
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
@@ -238,7 +240,41 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 	return nil
 }
 
-const worktreeOwnerFileName = "detent-owner"
+const (
+	worktreeOwnerFileName    = "detent-owner"
+	branchOwnerReflogPrefix  = "detent-owner:"
+)
+
+func newWorktreeOwnerID() (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func writeWorktreeOwnerID(ctx context.Context, path, ownerID string) error {
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(gitDir, worktreeOwnerFileName), []byte(ownerID+"\n"), 0o600)
+}
+
+func (l *LocalGit) createOwnedBranch(ctx context.Context, branch, baseRef string) (string, string, error) {
+	sha, err := l.resolveWorktreeStartHead(ctx, baseRef)
+	if err != nil {
+		return "", "", err
+	}
+	ownerID, err := newWorktreeOwnerID()
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := l.runGit(ctx, "update-ref", "--create-reflog", "-m", branchOwnerReflogPrefix+ownerID, "refs/heads/"+branch, sha, strings.Repeat("0", len(sha))); err != nil {
+		return "", "", err
+	}
+	return ownerID, sha, nil
+}
 
 func worktreeGitDir(ctx context.Context, path string) (string, error) {
 	output, err := runGitAtWithEnv(ctx, path, gitDiscoveryBoundary(path), "rev-parse", "--path-format=absolute", "--git-dir")
@@ -262,22 +298,6 @@ func readWorktreeOwnerID(ctx context.Context, path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
-}
-
-func mintWorktreeOwnerID(ctx context.Context, path string) (string, error) {
-	gitDir, err := worktreeGitDir(ctx, path)
-	if err != nil {
-		return "", err
-	}
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", err
-	}
-	ownerID := hex.EncodeToString(token[:])
-	if err := os.WriteFile(filepath.Join(gitDir, worktreeOwnerFileName), []byte(ownerID+"\n"), 0o600); err != nil {
-		return "", err
-	}
-	return ownerID, nil
 }
 
 func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
@@ -305,34 +325,10 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 	return false
 }
 
-func (l *LocalGit) setBranchOwnerID(ctx context.Context, branch, ownerID string) error {
-	_, err := l.runGit(ctx, "config", "--local", "branch."+branch+".detent-owner", ownerID)
-	return err
-}
-
 func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID string) bool {
 	branch = strings.TrimSpace(branch)
 	ownerID = strings.TrimSpace(ownerID)
 	if branch == "" || ownerID == "" {
-		return false
-	}
-	output, err := l.runGit(ctx, "config", "--local", "--get-regexp", `^branch\..*\.detent-owner$`)
-	if err != nil {
-		return false
-	}
-	wantKey := "branch." + branch + ".detent-owner"
-	matchedWant := false
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		key, val, ok := strings.Cut(strings.TrimSpace(line), " ")
-		if !ok || strings.TrimSpace(val) != ownerID {
-			continue
-		}
-		if key != wantKey {
-			return false
-		}
-		matchedWant = true
-	}
-	if !matchedWant {
 		return false
 	}
 	reflog, err := l.runGit(ctx, "log", "-g", "--format=%gs", "refs/heads/"+branch)
@@ -343,24 +339,17 @@ func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID str
 	if entries == "" {
 		return false
 	}
-	lines := strings.Split(entries, "\n")
-	if !strings.HasPrefix(lines[len(lines)-1], "branch: Created from ") {
-		return false
-	}
-	for _, entry := range lines {
+	wantEntry := branchOwnerReflogPrefix + ownerID
+	foundOwner := false
+	for _, entry := range strings.Split(entries, "\n") {
 		if strings.HasPrefix(entry, "Branch: copied ") || strings.HasPrefix(entry, "Branch: renamed ") {
 			return false
 		}
+		if entry == wantEntry {
+			foundOwner = true
+		}
 	}
-	return true
-}
-
-func (l *LocalGit) clearBranchOwnerID(ctx context.Context, branch string) {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return
-	}
-	_, _ = l.runGit(ctx, "config", "--local", "--unset-all", "branch."+branch+".detent-owner")
+	return foundOwner
 }
 
 func (l *LocalGit) writeOwnershipRecord(record cleanupOwnershipRecord) (returnErr error) {

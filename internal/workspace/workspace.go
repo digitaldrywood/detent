@@ -786,12 +786,12 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
-			created, branchCreated, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+			created, branchOwnerID, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 			if err != nil {
 				return Info{}, err
 			}
 			info.Created = created
-			if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, created, branchCreated); err != nil {
+			if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, created, branchOwnerID); err != nil {
 				return Info{}, err
 			}
 			if created {
@@ -804,9 +804,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	}
 
 	var created bool
-	var branchCreated bool
+	var branchOwnerID string
 	if issue.Landing != nil {
-		info, created, branchCreated, err = l.createLandingWorktree(ctx, info, issue)
+		info, created, branchOwnerID, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		head := "HEAD"
 		if issue.FreshCheckout && issue.BaseRef != "" {
@@ -833,7 +833,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			head = receipt.HeadSHA
 		}
 		head = cmp.Or(info.RecoveredPhase.HeadSHA, head)
-		created, branchCreated, err = l.createWorktree(ctx, &info, issue, head)
+		created, branchOwnerID, err = l.createWorktree(ctx, &info, issue, head)
 	}
 	preservationAttempted := false
 	if issue.Landing != nil && created {
@@ -872,19 +872,21 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 	} else {
-		restored, restoredBranchCreated, err := l.prepareChangeSourceWorktree(ctx, info, issue)
+		restored, restoredBranchOwnerID, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 		if err != nil {
 			return Info{}, err
 		}
 		info.Created = created || restored
-		branchCreated = branchCreated || restoredBranchCreated
+		if restoredBranchOwnerID != "" {
+			branchOwnerID = restoredBranchOwnerID
+		}
 	}
 	if issue.LocalCheckpoint != nil {
 		if err := l.verifyLocalCheckpoint(ctx, info, issue); err != nil {
 			return Info{}, err
 		}
 	}
-	if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, info.Created, branchCreated); err != nil {
+	if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, info.Created, branchOwnerID); err != nil {
 		return Info{}, err
 	}
 
@@ -904,18 +906,18 @@ func (l *LocalGit) runAfterCreate(ctx context.Context, info Info, issue Issue) e
 	})
 }
 
-func (l *LocalGit) createWorktree(ctx context.Context, info *Info, issue Issue, baseRef string) (bool, bool, error) {
+func (l *LocalGit) createWorktree(ctx context.Context, info *Info, issue Issue, baseRef string) (bool, string, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
-		return false, false, err
+		return false, "", err
 	}
 	defer release()
 	path, branch := info.Path, info.Branch
 	exists, _, err := pathExists(path)
 	if err != nil {
-		return false, false, err
+		return false, "", err
 	}
 	if baseRef == "HEAD" {
 		switch {
@@ -928,35 +930,35 @@ func (l *LocalGit) createWorktree(ctx context.Context, info *Info, issue Issue, 
 			baseRef, err = l.newBranchStartRef(ctx, info.PublishBranch())
 		}
 		if err != nil {
-			return false, false, err
+			return false, "", err
 		}
 	}
 	if issue.PinStartHead {
 		info.StartHeadSHA, err = l.resolveWorktreeStartHead(ctx, baseRef)
 		if err != nil {
-			return false, false, err
+			return false, "", err
 		}
 		baseRef = info.StartHeadSHA
 	}
 	if issue.FreshCheckout {
 		if scope, _ := splitCheckoutIssueKey(info.Key); scope == "" {
 			if err := l.releaseBranchHolders(ctx, branch, path); err != nil {
-				return false, false, err
+				return false, "", err
 			}
 		}
 		if exists {
 			if _, err := l.quarantineWorktree(ctx, path); err != nil {
-				return false, false, err
+				return false, "", err
 			}
 		}
 		if l.autoBranch {
 			branchExists, err := l.branchExists(ctx, branch)
 			if err != nil {
-				return false, false, err
+				return false, "", err
 			}
 			if branchExists {
 				if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
-					return false, false, withCommandOutput(err)
+					return false, "", withCommandOutput(err)
 				}
 			}
 		}
@@ -1090,12 +1092,14 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	}
 	branchAlreadyDeleted := false
 	verifiedOwnedBranchSHA := ""
+	verifiedOwnedBranchOwnerID := ""
 	if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
-		if sha := l.ownedCleanupBranchSHA(ctx, info, issue); sha != "" {
+		if sha, ownerID := l.ownedCleanupBranchSHA(ctx, info, issue); sha != "" {
 			if _, err := l.runGit(ctx, "update-ref", "-d", "refs/heads/"+info.Branch, sha); err != nil {
 				return result, fmt.Errorf("%w: branch %s moved before terminal deletion: %w", ErrWorkspacePreserved, info.Branch, err)
 			}
 			verifiedOwnedBranchSHA = sha
+			verifiedOwnedBranchOwnerID = ownerID
 			result.Branches = 1
 			branchAlreadyDeleted = true
 		}
@@ -1104,7 +1108,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if branchAlreadyDeleted {
 			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-			_, restoreErr := l.runGit(restoreCtx, "update-ref", "refs/heads/"+info.Branch, verifiedOwnedBranchSHA, strings.Repeat("0", len(verifiedOwnedBranchSHA)))
+			_, restoreErr := l.runGit(restoreCtx, "update-ref", "--create-reflog", "-m", branchOwnerReflogPrefix+verifiedOwnedBranchOwnerID, "refs/heads/"+info.Branch, verifiedOwnedBranchSHA, strings.Repeat("0", len(verifiedOwnedBranchSHA)))
 			result.Branches = 0
 			if restoreErr != nil {
 				return result, errors.Join(err, fmt.Errorf("restore branch %s after failed worktree removal: %w", info.Branch, restoreErr))
@@ -1116,9 +1120,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	if branchAlreadyDeleted {
-		l.clearBranchOwnerID(ctx, info.Branch)
-	} else {
+	if !branchAlreadyDeleted {
 		branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue)
 		if err != nil {
 			return result, err
@@ -1314,62 +1316,62 @@ func (l *LocalGit) publicationBranch(issue Issue, key string) string {
 	return l.branchName(issue, issueKey(issue))
 }
 
-func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, bool, error) {
+func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string, baseRef string) (bool, string, error) {
 	if err := l.checkDanglingSourceWorktree(ctx, path); err != nil {
-		return false, false, err
+		return false, "", err
 	}
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
-		return false, false, fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
+		return false, "", fmt.Errorf("prune stale worktree registrations during preparation: %w", withCommandOutput(err))
 	}
 	exists, isDir, err := pathExists(path)
 	if err != nil {
-		return false, false, err
+		return false, "", err
 	}
 	if exists {
 		if isDir {
 			if l.isSourceWorktree(ctx, path) {
 				matches, current, err := l.workspaceOnExpectedBranch(ctx, path, branch)
 				if err != nil {
-					return false, false, err
+					return false, "", err
 				}
 				if matches {
-					return false, false, nil
+					return false, "", nil
 				}
 				if err := l.recoverStaleSourceWorktree(ctx, path, current, branch); err != nil {
-					return false, false, err
+					return false, "", err
 				}
 				exists = false
 			} else if l.isGitWorkspace(ctx, path) {
-				return false, false, fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
+				return false, "", fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
 			} else {
 				empty, err := dirIsEmpty(path)
 				if err != nil {
-					return false, false, err
+					return false, "", err
 				}
 				if !empty {
-					return false, false, fmt.Errorf("workspace path exists but is not a git worktree: %s", path)
+					return false, "", fmt.Errorf("workspace path exists but is not a git worktree: %s", path)
 				}
 			}
 		}
 		if exists {
 			if err := removeWorkspacePath(l.root, path); err != nil {
-				return false, false, fmt.Errorf("remove stale workspace path: %w", err)
+				return false, "", fmt.Errorf("remove stale workspace path: %w", err)
 			}
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false, false, fmt.Errorf("create workspace parent: %w", err)
+		return false, "", fmt.Errorf("create workspace parent: %w", err)
 	}
 
 	if err := hookproc.MarkWorkspaceSetupPending(l.root, path, l.hooks.AfterCreate); err != nil {
-		return false, false, err
+		return false, "", err
 	}
 	if l.autoBranch {
-		branchCreated, err := l.addBranchedWorktree(ctx, path, branch, baseRef)
+		branchOwnerID, err := l.addBranchedWorktree(ctx, path, branch, baseRef)
 		if err != nil {
-			return false, false, &worktreeCreationError{err: err}
+			return false, "", &worktreeCreationError{err: err}
 		}
-		return true, branchCreated, nil
+		return true, branchOwnerID, nil
 	}
 
 	err = l.addWorktreeWithPrune(ctx, func() error {
@@ -1377,9 +1379,9 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 		return addErr
 	})
 	if err != nil {
-		return false, false, &worktreeCreationError{err: err}
+		return false, "", &worktreeCreationError{err: err}
 	}
-	return true, false, nil
+	return true, "", nil
 }
 
 func (l *LocalGit) validateCreatedWorktree(ctx context.Context, path string) error {
@@ -1434,10 +1436,10 @@ func (l *LocalGit) sourceWorktreeRegistered(ctx context.Context, path string) (b
 	return false, nil
 }
 
-func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string, sourceHead ...string) (bool, error) {
-	branchCreated := false
+func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch string, sourceHead ...string) (string, error) {
+	branchOwnerID := ""
 	err := l.addWorktreeWithPrune(ctx, func() error {
-		branchCreated = false
+		branchOwnerID = ""
 		exists, err := l.branchExists(ctx, branch)
 		if err != nil {
 			return err
@@ -1472,13 +1474,20 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 				return err
 			}
 		}
-		_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, baseRef)
-		if err == nil {
-			branchCreated = true
+		ownerID, baseSHA, err := l.createOwnedBranch(ctx, branch, baseRef)
+		if err != nil {
+			return err
 		}
-		return err
+		if _, err := l.runGit(ctx, "worktree", "add", path, branch); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			_, _ = l.runGit(cleanupCtx, "update-ref", "-d", "refs/heads/"+branch, baseSHA)
+			return err
+		}
+		branchOwnerID = ownerID
+		return nil
 	})
-	return branchCreated, err
+	return branchOwnerID, err
 }
 
 func (l *LocalGit) branchWorktreePath(ctx context.Context, branch string, targetPath string) (string, bool, error) {

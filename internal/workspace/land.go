@@ -171,39 +171,39 @@ func refuse(kind, reason string) error {
 	return &LandRefusal{Kind: kind, Reason: reason}
 }
 
-func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue Issue) (Info, bool, bool, error) {
+func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue Issue) (Info, bool, string, error) {
 	l.createMu.Lock()
 	defer l.createMu.Unlock()
 	release, err := l.acquireSourceOperation(ctx)
 	if err != nil {
-		return info, false, false, err
+		return info, false, "", err
 	}
 	defer release()
 	opts := *issue.Landing
 	if opts.Repository == "" || RepositoryURL(ctx, l.sourceRoot) != opts.Repository {
-		return info, false, false, refuse(LandRefusalProtected, "the reviewed repository differs from the runner's authorized source")
+		return info, false, "", refuse(LandRefusalProtected, "the reviewed repository differs from the runner's authorized source")
 	}
 	if !validLandingHead(opts.HeadSHA) {
-		return info, false, false, refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
+		return info, false, "", refuse(LandRefusalMissingHead, "landing requires an immutable commit identity")
 	}
 	if err := ensurePrivateDirectories(l.root, filepath.Dir(info.Path)); err != nil {
-		return info, false, false, err
+		return info, false, "", err
 	}
 	if opts.External != nil {
 		base := opts.TargetBranch
 		if base == "" {
 			base, err = remoteDefaultBranch(ctx, l.sourceRoot, defaultGitRemote)
 			if err != nil {
-				return info, false, false, err
+				return info, false, "", err
 			}
 		}
 		pull, err := readExternalLandingPull(ctx, opts.GitHubClient, opts.Repository, opts.External, opts.HeadSHA, base)
 		if err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 		info.ReviewBranch = pull.Head.Ref
 		if _, err := l.runGit(ctx, "check-ref-format", "--branch", info.ReviewBranch); err != nil || strings.HasPrefix(info.ReviewBranch, "-") {
-			return info, false, false, refuse(LandRefusalProtected, "the external pull request branch is invalid")
+			return info, false, "", refuse(LandRefusalProtected, "the external pull request branch is invalid")
 		}
 		issue.PullRequestNumber = pull.Number
 		issue.PullRequestHeadSHA = opts.HeadSHA
@@ -211,66 +211,72 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 	}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
-		return info, false, false, err
+		return info, false, "", err
 	}
 	if exists {
 		if !isDir || !l.isSourceWorktree(ctx, info.Path) {
-			return info, false, false, refuse(LandRefusalProtected, "the landing workspace is not owned by the authorized source")
+			return info, false, "", refuse(LandRefusalProtected, "the landing workspace is not owned by the authorized source")
 		}
 		if err := l.VerifyReviewTree(ctx, info, issue); err != nil {
-			return info, false, false, refuse(LandRefusalHeadMoved, err.Error())
+			return info, false, "", refuse(LandRefusalHeadMoved, err.Error())
 		}
 		matches, _, err := l.workspaceOnExpectedBranch(ctx, info.Path, info.Branch)
 		if err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 		head, err := l.Head(ctx, info, issue)
 		if err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 		if !matches || strings.TrimSpace(head) != opts.HeadSHA {
-			return info, false, false, refuse(LandRefusalHeadMoved, "the existing landing workspace differs from the reviewed branch or head")
+			return info, false, "", refuse(LandRefusalHeadMoved, "the existing landing workspace differs from the reviewed branch or head")
 		}
-		return info, false, false, nil
+		return info, false, "", nil
 	}
 	if scope, _ := splitCheckoutIssueKey(info.Key); scope == "" && info.Branch != "" {
 		if err := l.releaseBranchHolders(ctx, info.Branch, info.Path); err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 	}
 	if opts.External != nil {
 		if _, err := fetchReviewHead(ctx, l.sourceRoot, info.ReviewBranch, issue); err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 	} else if _, err := l.runGit(ctx, "cat-file", "-e", opts.HeadSHA+"^{commit}"); err != nil {
 		if _, err := l.runGit(ctx, "fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, opts.HeadSHA); err != nil {
-			return info, false, false, fmt.Errorf("hydrate reviewed landing head: %w", err)
+			return info, false, "", fmt.Errorf("hydrate reviewed landing head: %w", err)
 		}
 	}
 	if _, err := l.runGit(ctx, "cat-file", "-e", opts.HeadSHA+"^{commit}"); err != nil {
-		return info, false, false, refuse(LandRefusalMissingHead, "the reviewed commit is unavailable in the authorized source")
+		return info, false, "", refuse(LandRefusalMissingHead, "the reviewed commit is unavailable in the authorized source")
 	}
 	args := []string{"worktree", "add"}
-	branchCreated := false
+	branchOwnerID := ""
+	createdBranchSHA := ""
 	if info.Branch == "" {
 		args = append(args, "--detach", info.Path, opts.HeadSHA)
 	} else {
 		exists, err := l.branchExists(ctx, info.Branch)
 		if err != nil {
-			return info, false, false, err
+			return info, false, "", err
 		}
 		if exists {
 			head, err := l.runGit(ctx, "rev-parse", "refs/heads/"+info.Branch)
 			if err != nil {
-				return info, false, false, err
+				return info, false, "", err
 			}
 			if strings.TrimSpace(head) != opts.HeadSHA {
-				return info, false, false, refuse(LandRefusalHeadMoved, "the local landing branch differs from the reviewed head")
+				return info, false, "", refuse(LandRefusalHeadMoved, "the local landing branch differs from the reviewed head")
 			}
 			args = append(args, info.Path, info.Branch)
 		} else {
-			args = append(args, "-b", info.Branch, info.Path, opts.HeadSHA)
-			branchCreated = true
+			ownerID, sha, err := l.createOwnedBranch(ctx, info.Branch, opts.HeadSHA)
+			if err != nil {
+				return info, false, "", err
+			}
+			branchOwnerID = ownerID
+			createdBranchSHA = sha
+			args = append(args, info.Path, info.Branch)
 		}
 	}
 	prepared := false
@@ -279,19 +285,24 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 			if err := l.removeLandingWorktree(context.WithoutCancel(ctx), l.sourceRoot, info.Path); err != nil {
 				l.logger.Warn("landing worktree left behind", "path", info.Path, "error", err)
 			}
+			if createdBranchSHA != "" {
+				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+				_, _ = l.runGit(cleanupCtx, "update-ref", "-d", "refs/heads/"+info.Branch, createdBranchSHA)
+			}
 		}
 	}()
 	if err := hookproc.MarkWorkspaceSetupPending(l.root, info.Path, l.hooks.AfterCreate); err != nil {
-		return info, false, false, err
+		return info, false, "", err
 	}
 	if err := l.addWorktreeWithPrune(ctx, func() error {
 		_, err := l.runGit(ctx, args...)
 		return err
 	}); err != nil {
-		return info, false, false, &worktreeCreationError{err: err}
+		return info, false, "", &worktreeCreationError{err: err}
 	}
 	prepared = true
-	return info, true, branchCreated, nil
+	return info, true, branchOwnerID, nil
 }
 
 func (l *LocalGit) verifyLandingWorktree(ctx context.Context, info Info, issue Issue, opts LandOptions) error {
