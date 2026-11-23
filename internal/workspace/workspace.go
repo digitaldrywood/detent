@@ -1095,8 +1095,14 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	verifiedOwnedBranchOwnerID := ""
 	if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
 		if sha, ownerID := l.ownedCleanupBranchSHA(ctx, info, issue); sha != "" {
-			if _, err := l.runGit(ctx, "update-ref", "-d", "refs/heads/"+info.Branch, sha); err != nil {
-				return result, fmt.Errorf("%w: branch %s moved before terminal deletion: %w", ErrWorkspacePreserved, info.Branch, err)
+			if _, err := runGitAt(ctx, info.Path, "update-ref", "--no-deref", "HEAD", sha); err != nil {
+				return result, fmt.Errorf("%w: detach owned worktree before terminal branch deletion: %w", ErrWorkspacePreserved, err)
+			}
+			if _, err := runGitAt(ctx, info.Path, "branch", "-d", info.Branch); err != nil {
+				restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+				defer cancel()
+				_, _ = runGitAt(restoreCtx, info.Path, "symbolic-ref", "HEAD", "refs/heads/"+info.Branch)
+				return result, fmt.Errorf("%w: branch %s changed or checked out elsewhere before terminal deletion: %w", ErrWorkspacePreserved, info.Branch, err)
 			}
 			verifiedOwnedBranchSHA = sha
 			verifiedOwnedBranchOwnerID = ownerID
@@ -1109,6 +1115,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			_, restoreErr := l.runGit(restoreCtx, "update-ref", "--create-reflog", "-m", branchOwnerReflogPrefix+verifiedOwnedBranchOwnerID, "refs/heads/"+info.Branch, verifiedOwnedBranchSHA, strings.Repeat("0", len(verifiedOwnedBranchSHA)))
+			if restoreErr == nil {
+				_, _ = runGitAt(restoreCtx, info.Path, "symbolic-ref", "HEAD", "refs/heads/"+info.Branch)
+			}
 			result.Branches = 0
 			if restoreErr != nil {
 				return result, errors.Join(err, fmt.Errorf("restore branch %s after failed worktree removal: %w", info.Branch, restoreErr))
