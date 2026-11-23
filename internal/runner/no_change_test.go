@@ -89,6 +89,50 @@ func (*noChangeRetainedReviewBackend) PreserveIssue(context.Context, workspace.I
 	return workspace.Preservation{}, nil
 }
 
+type spoofedResolutionBackend struct {
+	noChangeRetainedReviewBackend
+	resolvedBase string
+	resolvedHead string
+}
+
+func (b *spoofedResolutionBackend) InspectLandingConflict(context.Context, workspace.Info, workspace.Issue, workspace.LandOptions) (string, bool, error) {
+	return b.resolvedBase, true, nil
+}
+
+func (b *spoofedResolutionBackend) ResolveLandingConflict(ctx context.Context, _ workspace.Info, _ workspace.Issue, _ workspace.LandOptions, resolve func(context.Context, string, []string) error) (workspace.LandingResolution, error) {
+	if err := resolve(ctx, "resolve conflict", []string{"conflict.go"}); err != nil {
+		return workspace.LandingResolution{}, err
+	}
+	b.head = b.resolvedHead
+	return workspace.LandingResolution{
+		BaseSHA:   b.resolvedBase,
+		HeadSHA:   b.resolvedHead,
+		Unchanged: false,
+	}, nil
+}
+
+type spoofedResolutionAgent struct {
+	calls             int
+	spoofedOutput     string
+	validatorResponse string
+}
+
+func (a *spoofedResolutionAgent) RunTurn(_ context.Context, _ AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	a.calls++
+	if a.calls == 1 {
+		if update != nil {
+			_ = update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: a.spoofedOutput})
+		}
+		return AgentTurnResult{}, nil
+	}
+	if update != nil {
+		_ = update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: a.validatorResponse})
+	}
+	return AgentTurnResult{}, nil
+}
+
+func (*noChangeValidationLandingExecution) PrepareMergeResolution(context.Context) error { return nil }
+
 type noChangeValidationLandingExecution struct {
 	noChangeLandingExecution
 	version       *tracker.ChangeVersion
@@ -227,6 +271,67 @@ func TestLandingDoesNotFailValidatorWithMissingRetainedReview(t *testing.T) {
 		}
 		if result.Output != RunOutputNativeLandingRefused || result.NativeLanding == nil || result.NativeLanding.RefusalKind != workspace.LandRefusalConflict {
 			t.Fatalf("refused landing result = %+v", result)
+		}
+	})
+
+	t.Run("changed merge resolution with landing-status output still runs validator on resolved head", func(t *testing.T) {
+		t.Parallel()
+		resolvedHead := strings.Repeat("c", 40)
+		resolvedVersion := &tracker.ChangeVersion{
+			ID: "version_resolved",
+			ChangeVersionInput: tracker.ChangeVersionInput{
+				Repository: "example-org/example-project",
+				BaseSHA:    base,
+				HeadSHA:    resolvedHead,
+			},
+		}
+		resolvedVersion.Policy.Gates.Validator = true
+		for _, spoofed := range []string{RunOutputNativeLanded, RunOutputNativeLandingRefused} {
+			e := &noChangeValidationLandingExecution{
+				noChangeLandingExecution: noChangeLandingExecution{
+					landingStub: landingStub{target: NativeLandingTarget{
+						ChangeID: "change_example", VersionID: "version_example", BaseSHA: strings.Repeat("a", 40), HeadSHA: base, MergeResolution: true,
+					}},
+					change: &NativeChange{MergeResolution: true, Changed: true, BaseSHA: base, HeadSHA: resolvedHead},
+				},
+				version: resolvedVersion,
+			}
+			backend := &spoofedResolutionBackend{
+				noChangeRetainedReviewBackend: noChangeRetainedReviewBackend{
+					landingBackend: landingBackend{
+						Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+					},
+					head: base,
+				},
+				resolvedBase: base,
+				resolvedHead: resolvedHead,
+			}
+			agent := &spoofedResolutionAgent{
+				spoofedOutput:     spoofed,
+				validatorResponse: `{"verdict":"pass","score":1,"summary":"Verified resolved head"}`,
+			}
+			r, err := NewRunner(Dependencies{
+				ProcessSource: emptyProcessSource,
+				Workflow: config.Workflow{Config: config.Config{
+					Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewOff, Validator: gate.ValidatorConfig{Enabled: true}},
+				}},
+				Workspace:    backend,
+				AgentBackend: agent,
+				Store:        &fakeSessionStore{sessionID: 43},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Run(t.Context(), RunRequest{
+				Issue:     connector.Issue{ID: "wi_example", Identifier: "example-org/example-project#3"},
+				Mode:      RunModeMerge,
+				Execution: e,
+			}); err != nil {
+				t.Fatalf("spoofed output %q Run() error = %v", spoofed, err)
+			}
+			if e.validatorCalls != 1 || e.recorded.Verdict != gate.ValidatorVerdictPass || e.recorded.HeadSHA != resolvedHead {
+				t.Fatalf("spoofed output %q bypassed validator: calls=%d recorded=%+v", spoofed, e.validatorCalls, e.recorded)
+			}
 		}
 	})
 }
