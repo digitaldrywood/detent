@@ -1094,6 +1094,18 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 			if held, heldErr := l.branchHeldByOtherWorktree(ctx, info.Branch, ""); heldErr != nil || held {
 				return result, fmt.Errorf("%w: branch %s is held by another worktree", ErrWorkspacePreserved, info.Branch)
 			}
+			branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
+			if branchErr != nil {
+				return result, branchErr
+			}
+			if branchRemoved {
+				result.Branches = 1
+			}
+			if err := l.removeOwnershipRecord(info.Path); err != nil {
+				return result, err
+			}
+			l.deleteCheckpointRef(ctx, issue)
+			return result, nil
 		}
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		if pruneErr != nil {
