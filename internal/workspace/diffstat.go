@@ -197,15 +197,19 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
+	base, excludedRemoteRefs, extraPublished, verifiedRemote, err := l.localProgressBaseWithSource(ctx, normalized.Path, issue)
+	if err != nil {
+		return RecoveryState{}, fmt.Errorf("resolve recovery base: %w", err)
+	}
+	return l.recoveryStateWithBase(ctx, normalized, issue, base, excludedRemoteRefs, extraPublished, verifiedRemote)
+}
+
+func (l *LocalGit) recoveryStateWithBase(ctx context.Context, normalized Info, issue Issue, base string, excludedRemoteRefs, extraPublished []string, verifiedRemote bool) (RecoveryState, error) {
 	observation, err := observeGitDiff(ctx, normalized.Path, true, nil)
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	base, err := l.localProgressBase(ctx, normalized.Path, issue)
-	if err != nil {
-		return RecoveryState{}, fmt.Errorf("resolve recovery base: %w", err)
-	}
-	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, normalized.Path, base)
+	unpushedCommits, unpushedCommitRefs, err := gitUnpushedCommitEvidence(ctx, normalized.Path, base, excludedRemoteRefs, extraPublished, verifiedRemote)
 	if err != nil {
 		return RecoveryState{}, err
 	}
@@ -427,15 +431,43 @@ func gitDiffWithIndex(ctx context.Context, workspacePath, tempIndex string, inde
 	return observation, nil
 }
 
-func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base string) (int, []string, error) {
+func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base string, excludedRemoteRefs, extraPublished []string, verifiedRemote bool) (int, []string, error) {
 	remoteRefs, err := runGitAt(ctx, workspacePath, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes")
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list remote refs: %w", err)
 	}
-	if strings.TrimSpace(remoteRefs) == "" {
+	hasRemoteRefs := strings.TrimSpace(remoteRefs) != ""
+	if !hasRemoteRefs && !verifiedRemote {
 		return 0, nil, nil
 	}
-	output, err := runGitAt(ctx, workspacePath, "rev-list", "--count", "HEAD", "--not", "--remotes", base)
+	revArgs := []string{"HEAD", "--not"}
+	if !hasRemoteRefs {
+		revArgs = append(revArgs, base)
+	} else if len(excludedRemoteRefs) > 0 {
+		originHeadTarget := ""
+		if target, symErr := runGitAt(ctx, workspacePath, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); symErr == nil {
+			originHeadTarget = strings.TrimSpace(target)
+		}
+		excludedHead := false
+		for _, excludedRemoteRef := range excludedRemoteRefs {
+			if excludedRemoteRef == "" {
+				continue
+			}
+			revArgs = append(revArgs, "--exclude="+excludedRemoteRef)
+			if excludedRemoteRef == "refs/remotes/origin/HEAD" && originHeadTarget != "" {
+				revArgs = append(revArgs, "--exclude="+originHeadTarget)
+				excludedHead = true
+			} else if originHeadTarget != "" && originHeadTarget == excludedRemoteRef && !excludedHead {
+				revArgs = append(revArgs, "--exclude=refs/remotes/origin/HEAD")
+				excludedHead = true
+			}
+		}
+		revArgs = append(revArgs, "--glob=refs/remotes/", base)
+	} else {
+		revArgs = append(revArgs, "--remotes", base)
+	}
+	revArgs = append(revArgs, extraPublished...)
+	output, err := runGitAt(ctx, workspacePath, append([]string{"rev-list", "--count"}, revArgs...)...)
 	if err != nil {
 		return 0, nil, fmt.Errorf("git count unpushed commits: %w", err)
 	}
@@ -446,7 +478,7 @@ func gitUnpushedCommitEvidence(ctx context.Context, workspacePath string, base s
 	if count == 0 {
 		return 0, nil, nil
 	}
-	refs, err := gitCommitEvidence(ctx, workspacePath, "HEAD", "--not", "--remotes", base)
+	refs, err := gitCommitEvidence(ctx, workspacePath, revArgs...)
 	if err != nil {
 		return 0, nil, fmt.Errorf("git list unpushed commits: %w", err)
 	}
