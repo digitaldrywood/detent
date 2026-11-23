@@ -205,10 +205,9 @@ prepare_setup_cache() {
 }
 
 prepare_setup_revision() {
-    local docker_state=unavailable manifest="$lib_dir/setup-manifest.json" candidate="$scratch/setup-manifest.json" differences
+    local manifest="$lib_dir/setup-manifest.json" candidate="$scratch/setup-manifest.json" differences
     local go_build go_modules go_build_state go_modules_state npm_cache npm_state distribution=unknown gopath_default node_version npm_version
     local -a customizations=()
-    [[ $docker_status == skipped:* ]] || docker_state=$docker_package_version
     if [[ -r /etc/os-release ]]; then
         distribution=$(. /etc/os-release && printf '%s-%s' "${ID:-linux}" "${VERSION_ID:-rolling}")
     fi
@@ -457,6 +456,80 @@ as_root() {
     if [[ $(id -u) == 0 ]]; then "$@"; else sudo "$@"; fi
 }
 
+docker_local() {
+    local deadline=$1
+    shift
+    timeout --kill-after=5s "$deadline" env -u DOCKER_CONTEXT docker --host "$docker_endpoint" "$@"
+}
+
+verify_docker_snapshot() {
+    local container_id=$1 pid options upperdir
+    pid=$(docker_local 5s inspect --format '{{.State.Pid}}' "$container_id") ||
+        die 'cannot inspect the Docker probe container'
+    [[ $pid =~ ^[1-9][0-9]*$ ]] || die 'the Docker probe container has no running PID'
+    options=$(as_root findmnt -n -o FS-OPTIONS --task "$pid" --mountpoint /) ||
+        die 'cannot read the Docker probe container root mount'
+    [[ ,$options, =~ ,upperdir=([^,]+), ]] || die 'the Docker probe container root mount has no OverlayFS upperdir'
+    upperdir=${BASH_REMATCH[1]}
+    [[ $upperdir == "$docker_root"/containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/*/fs ]] ||
+        die 'the Docker probe snapshot upperdir is outside /var/lib/docker/containerd/daemon overlayfs storage'
+    [[ $(as_root findmnt -n -o FSTYPE -T "$upperdir") == ext4 ]] ||
+        die 'the Docker probe snapshot upperdir is not on ext4'
+}
+
+verify_docker_runtime() (
+    cidfile=$scratch/docker-probe.cid
+    cleanup_docker_probe() {
+        if [[ -s $cidfile ]]; then
+            container_id=$(<"$cidfile")
+            if [[ $container_id =~ ^[a-f0-9]{64}$ ]]; then
+                docker_local 15s rm --volumes --force "$container_id" >/dev/null ||
+                    printf 'sprite bootstrap: could not remove Docker probe container %s\n' "$container_id" >&2
+            fi
+        fi
+    }
+    trap cleanup_docker_probe EXIT
+    probe_image=docker.io/library/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    docker_local 120s create --cidfile "$cidfile" --network none \
+        --tmpfs /var/lib/postgresql/data --env POSTGRES_HOST_AUTH_METHOD=trust "$probe_image" >/dev/null ||
+        die 'Docker could not create the isolated PostgreSQL probe container'
+    container_id=$(<"$cidfile")
+    [[ $container_id =~ ^[a-f0-9]{64}$ ]] || die 'Docker did not return a probe container ID'
+    docker_local 30s start "$container_id" >/dev/null || die 'Docker could not start the isolated PostgreSQL probe container'
+    if [[ $docker_managed == true ]]; then
+        verify_docker_snapshot "$container_id"
+    fi
+    ready_deadline=$((SECONDS + 30))
+    until readiness=$(docker_local 5s exec "$container_id" sh -c '
+        pg_isready -h 127.0.0.1 -t 2
+        status=$?
+        case $status in
+            1|2) exit 42 ;;
+            *) exit "$status" ;;
+        esac
+    ' 2>&1); do
+        exec_status=$?
+        if [[ $exec_status != 42 || $SECONDS -ge $ready_deadline ]]; then
+            printf '%s\n' "$readiness" >&2
+            [[ $exec_status != 42 ]] || die 'Docker PostgreSQL readiness timed out'
+            die 'Docker exec failed in the isolated PostgreSQL probe container'
+        fi
+        sleep 1
+    done
+    if [[ $docker_managed == true ]]; then
+        docker_local 5s exec "$container_id" sh -ec '
+            read -r name </proc/1/comm
+            [ "$name" = docker-init ]
+            awk '\''$1 == "Uid:" { exit ($2 != 0) }'\'' /proc/1/status
+        ' || die 'Docker must start PostgreSQL with root docker-init as PID 1'
+    fi
+    docker_local 15s stop --timeout 10 "$container_id" >/dev/null || die 'Docker could not stop the PostgreSQL probe container'
+    [[ $(docker_local 5s inspect --format '{{.State.ExitCode}}' "$container_id") == 0 ]] ||
+        die 'the Docker PostgreSQL probe container did not shut down cleanly'
+    docker_local 15s rm --volumes "$container_id" >/dev/null || die 'Docker could not remove the PostgreSQL probe container'
+    trap - EXIT
+)
+
 apt_updated=false
 apt_update() {
     if [[ $apt_updated == false ]]; then
@@ -495,17 +568,48 @@ done
 [[ $psql_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
     die "configured APT repositories provide no supported PostgreSQL client (18 or 17); configure repositories matching this distribution"
 
-docker_package_version=
+docker_root=/var/lib/docker
+docker_launcher="$lib_dir/start-docker"
+docker_default_endpoint=unix:///var/run/docker.sock
+docker_endpoint=${DOCKER_HOST:-$docker_default_endpoint}
+docker_state=unavailable
 docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
-if command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
+docker_managed=false
+if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]] && command -v docker >/dev/null; then
+    docker_endpoint=$(timeout 5s docker context inspect --format '{{.Endpoints.docker.Host}}') ||
+        die 'cannot resolve the active Docker endpoint'
+fi
+if [[ $docker_endpoint != unix:///* ]]; then
+    docker_status='skipped: Docker endpoint is not a local Unix socket'
+elif command -v docker >/dev/null && docker_local 5s info >/dev/null 2>&1; then
+    docker_package=$(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true)
+    docker_state=external
+    if [[ $docker_package == 'install ok installed '* ]]; then
+        docker_state=${docker_package#install ok installed }
+    fi
+elif command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
     as_root test -w /sys/fs/cgroup; then
-    docker_package_version=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
-    [[ $docker_package_version =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
-        die "configured APT repositories provide no Docker package; configure repositories matching this distribution"
+    if [[ $docker_endpoint != "$docker_default_endpoint" || -n ${DOCKER_CONTEXT:-} ||
+        -e $docker_launcher || -L $docker_launcher ||
+        -e $HOME/.local/share/detent-runner/docker ||
+        -L $HOME/.local/share/detent-runner/docker ]] ||
+        as_root test -S /var/run/docker.sock || as_root test -e /etc/docker/daemon.json ||
+        sprite-env services get detent-docker >/dev/null 2>&1; then
+        die 'existing Docker installation is unavailable; inspect its service and storage before rerunning'
+    fi
+    [[ $(as_root findmnt -n -o FSTYPE --mountpoint "$docker_root") == ext4 ]] ||
+        die 'managed Docker requires an ext4 mount at /var/lib/docker'
+    docker_root_entry=$(as_root find "$docker_root" -mindepth 1 -maxdepth 1 ! -name lost+found -print -quit) ||
+        die 'cannot inspect /var/lib/docker for existing Docker data'
+    [[ -z $docker_root_entry ]] || die 'existing Docker installation is unavailable; /var/lib/docker already contains data'
+    docker_state=$(LC_ALL=C apt-cache policy docker.io | awk '$1 == "Candidate:" && !found++ {print $2}')
+    [[ $docker_state =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
+        die 'configured APT repositories provide no Docker package; configure repositories matching this distribution'
+    docker_managed=true
 fi
 last_completed='distribution package candidates checked'
 printf 'Package compatibility checked: %s=%s; Docker: %s\n' \
-    "$psql_package" "$psql_package_version" "${docker_package_version:-$docker_status}"
+    "$psql_package" "$psql_package_version" "$docker_state"
 
 if [[ -n $source_root ]]; then
     source_root=$(cd -- "$source_root" && pwd)
@@ -653,24 +757,36 @@ fi
 
 last_completed='Chromium headless screenshot verified'
 
-if [[ -n $docker_package_version ]]; then
-    if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_package_version" ]]; then
-        printf 'Installing Docker %s\n' "$docker_package_version"
-        apt_install "docker.io=$docker_package_version"
+if [[ $docker_managed == true ]]; then
+    if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_state" ]]; then
+        printf 'Installing Docker %s\n' "$docker_state"
+        apt_install "docker.io=$docker_state"
     fi
-    if ! docker info >/dev/null 2>&1; then
-        docker_launcher="$lib_dir/start-docker"
-        {
+    if ! docker_local 5s info >/dev/null 2>&1; then
+        dockerd_path=$(command -v dockerd) || die 'dockerd is missing after package installation'
+        (
+            set -o noclobber
             printf '#!/usr/bin/env bash\nset -euo pipefail\n'
             if [[ $(id -u) != 0 ]]; then printf 'exec sudo '; else printf 'exec '; fi
-            printf '%q --data-root %q --group %q\n' "$(command -v dockerd)" "$HOME/.local/share/detent-runner/docker" "$(id -gn)"
-        } > "$docker_launcher"
+            printf '%q --data-root %q --group %q --init\n' "$dockerd_path" "$docker_root" "$(id -gn)"
+        ) > "$docker_launcher" || die 'could not create the Docker launcher; inspect the existing service'
         chmod 700 "$docker_launcher"
         sprite-env services create detent-docker --cmd "$docker_launcher" --dir "$HOME" --no-stream
     fi
-    docker_status=$(docker --version)
-else
-    printf 'Docker %s\n' "$docker_status"
+    docker_deadline=$((SECONDS + 30))
+    until docker_layout=$(docker_local 5s info --format '{{.DockerRootDir}} {{.Driver}}' 2>&1); do
+        if [[ $SECONDS -ge $docker_deadline ]]; then
+            printf '%s\n' "$docker_layout" >&2
+            die 'the Docker daemon did not become responsive; inspect the detent-docker service'
+        fi
+        sleep 1
+    done
+    [[ $docker_layout == "$docker_root overlayfs" ]] ||
+        die 'managed Docker requires /var/lib/docker and the containerd overlayfs snapshotter'
+fi
+if [[ $docker_state != unavailable ]]; then
+    verify_docker_runtime
+    docker_status="$(docker_local 5s --version); container start, PostgreSQL exec and graceful stop verified"
 fi
 
 last_completed='Docker installation checked (see capability result)'
