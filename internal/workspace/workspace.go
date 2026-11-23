@@ -879,7 +879,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 	}
-	if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
+	if err := l.recordCleanupOwnershipWithOwner(ctx, info, issue, true, info.Created); err != nil {
 		return Info{}, err
 	}
 
@@ -1033,7 +1033,6 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err
 	}
-	ownedBranch := l.ownsCleanupBranch(ctx, info, issue)
 	session := l.sessionRecorded(info, issue)
 	if !takeCleanupSlot(ctx) {
 		return result, fmt.Errorf("%w: cleanup batch complete", ErrWorkspacePreserved)
@@ -1050,7 +1049,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
-		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue, ownedBranch)
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue, "")
 		if branchErr != nil {
 			return result, branchErr
 		}
@@ -1078,6 +1077,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
 		return result, err
 	}
+	verifiedOwnedBranchSHA := l.ownedCleanupBranchSHA(ctx, info, issue)
 	if err := l.removePath(ctx, info.Path); err != nil {
 		return result, err
 	}
@@ -1085,7 +1085,7 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
 		return result, err
 	}
-	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue, ownedBranch)
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch, session, issue, verifiedOwnedBranchSHA)
 	if err != nil {
 		return result, err
 	}
@@ -2150,7 +2150,7 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 	return false, err
 }
 
-func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue, ownedBranch bool) (bool, error) {
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool, issue Issue, verifiedOwnedBranchSHA string) (bool, error) {
 	branch = strings.TrimSpace(branch)
 	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return false, nil
@@ -2162,8 +2162,15 @@ func (l *LocalGit) deleteBranch(ctx context.Context, branch string, session bool
 	if !exists {
 		return false, nil
 	}
+	ownedBranch := strings.TrimSpace(verifiedOwnedBranchSHA) != ""
 	if err := l.checkCleanupBranch(ctx, branch, session, issue, ownedBranch); err != nil {
 		return false, err
+	}
+	if issue.Terminal && !session && ownedBranch {
+		if _, err := l.runGit(ctx, "update-ref", "-d", "refs/heads/"+branch, strings.TrimSpace(verifiedOwnedBranchSHA)); err != nil {
+			return false, fmt.Errorf("%w: branch %s moved before terminal deletion: %w", ErrWorkspacePreserved, branch, err)
+		}
+		return true, nil
 	}
 	_, err = l.runGit(ctx, "branch", "-D", branch)
 	return err == nil, err

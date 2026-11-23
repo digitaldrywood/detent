@@ -508,6 +508,9 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("replacement edits\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := backend.PreserveIssue(t.Context(), issue); err != nil {
+			t.Fatal(err)
+		}
 		issue.Terminal = true
 		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
 			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)

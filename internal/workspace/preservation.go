@@ -79,13 +79,20 @@ func (l *LocalGit) ownsLiveCheckout(ctx context.Context, record cleanupOwnership
 	return err == nil && current == strings.TrimSpace(record.OwnerID)
 }
 
-func (l *LocalGit) ownsCleanupBranch(ctx context.Context, info Info, issue Issue) bool {
+func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) string {
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
 	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
-		return false
+		return ""
 	}
-	return l.ownsLiveCheckout(ctx, record, info, issue) && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch)
+	if !l.ownsLiveCheckout(ctx, record, info, issue) || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) {
+		return ""
+	}
+	head, err := l.runGit(ctx, "rev-parse", "--verify", "refs/heads/"+info.Branch)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(head)
 }
 
 func recordOwnsCheckout(record cleanupOwnershipRecord, info Info, issue Issue) bool {

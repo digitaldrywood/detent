@@ -160,6 +160,10 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
+	return l.recordCleanupOwnershipWithOwner(ctx, info, issue, isDir, false)
+}
+
+func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Info, issue Issue, isDir bool, mintOwner bool) error {
 	if isDir && !l.isSourceWorktree(ctx, info.Path) && l.isGitWorkspace(ctx, info.Path) {
 		return fmt.Errorf("refusing to record cleanup ownership for git workspace not managed by source: %s", info.Path)
 	}
@@ -203,13 +207,20 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	if isDir && l.isSourceWorktree(ctx, path) {
 		existingOwnerID := ""
 		if err == nil && l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) && recordOwnsCheckout(previous, info, issue) {
-			existingOwnerID = previous.OwnerID
+			existingOwnerID = strings.TrimSpace(previous.OwnerID)
 		}
-		ownerID, ownerErr := ensureWorktreeOwnerID(ctx, path, existingOwnerID)
-		if ownerErr != nil {
-			return fmt.Errorf("record worktree owner identity: %w", ownerErr)
+		if existingOwnerID != "" {
+			if current, readErr := readWorktreeOwnerID(ctx, path); readErr == nil && current == existingOwnerID {
+				record.OwnerID = existingOwnerID
+			}
 		}
-		record.OwnerID = ownerID
+		if record.OwnerID == "" && mintOwner {
+			ownerID, ownerErr := mintWorktreeOwnerID(ctx, path)
+			if ownerErr != nil {
+				return fmt.Errorf("record worktree owner identity: %w", ownerErr)
+			}
+			record.OwnerID = ownerID
+		}
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
 		return fmt.Errorf("record cleanup ownership: %w", err)
@@ -243,15 +254,10 @@ func readWorktreeOwnerID(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func ensureWorktreeOwnerID(ctx context.Context, path, existing string) (string, error) {
+func mintWorktreeOwnerID(ctx context.Context, path string) (string, error) {
 	gitDir, err := worktreeGitDir(ctx, path)
 	if err != nil {
 		return "", err
-	}
-	if existing != "" {
-		if data, readErr := os.ReadFile(filepath.Join(gitDir, worktreeOwnerFileName)); readErr == nil && strings.TrimSpace(string(data)) == existing {
-			return existing, nil
-		}
 	}
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
