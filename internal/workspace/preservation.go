@@ -319,26 +319,30 @@ func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, sessio
 	return nil
 }
 
-func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue Issue, isDir bool) error {
+func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue Issue, isDir bool) (string, string, error) {
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
-		return err
+		return "", "", err
 	}
 	cleanupBranchSHA := ""
+	cleanupBranchOwnerID := ""
 	if issue.Terminal && !sessionOwned(info, issue) && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
-		cleanupBranchSHA, _ = l.ownedCleanupBranchSHA(ctx, info, issue)
+		cleanupBranchSHA, cleanupBranchOwnerID = l.ownedCleanupBranchSHA(ctx, info, issue)
 	}
 	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
-		return err
+		return "", "", err
 	}
 	record, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(info.Path))
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	record.CleanupStarted = true
 	if cleanupBranchSHA != "" {
 		record.CleanupBranchSHA = cleanupBranchSHA
 	}
-	return l.writeOwnershipRecord(record)
+	if err := l.writeOwnershipRecord(record); err != nil {
+		return "", "", err
+	}
+	return cleanupBranchSHA, cleanupBranchOwnerID, nil
 }
 
 func retainedGitCommitCount(ctx context.Context, path, revision string) (int, error) {

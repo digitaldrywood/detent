@@ -157,6 +157,35 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 			issues = append(issues, issue)
 		}
 	}
+	if cursor == "" {
+		if regEntries, regErr := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir)); regErr == nil {
+			for _, regEntry := range regEntries {
+				if ctx.Err() != nil {
+					return nil, cursor, ctx.Err()
+				}
+				if regEntry.IsDir() {
+					continue
+				}
+				relative := filepath.Join(cleanupOwnershipRegistryDir, regEntry.Name())
+				record, readErr := l.readOwnershipRecord(relative)
+				if readErr != nil || !l.validOwnershipRecord(ctx, relative, record) {
+					continue
+				}
+				if inventory.recorded[record.Path] || !record.CleanupStarted || strings.TrimSpace(record.CleanupBranchSHA) == "" {
+					continue
+				}
+				exists, _, statErr := pathExists(record.Path)
+				if statErr != nil || exists {
+					continue
+				}
+				inventory.recorded[record.Path] = true
+				inventory.records = append(inventory.records, record)
+				if issue := record.issue(); issue.Identifier != "" && !record.requiresAttemptOwner() {
+					issues = append(issues, issue)
+				}
+			}
+		}
+	}
 	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
 		batch.inventories[l.cleanupInventory] = inventory
 	}

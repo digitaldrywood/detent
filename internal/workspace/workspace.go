@@ -1111,13 +1111,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	if hookErr != nil || err != nil {
 		return result, errors.Join(hookErr, err)
 	}
-	if err := l.beginWorkspaceCleanup(ctx, info, issue, isDir); err != nil {
+	verifiedOwnedBranchSHA, verifiedOwnedBranchOwnerID, err := l.beginWorkspaceCleanup(ctx, info, issue, isDir)
+	if err != nil {
 		return result, err
-	}
-	verifiedOwnedBranchSHA := ""
-	verifiedOwnedBranchOwnerID := ""
-	if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
-		verifiedOwnedBranchSHA, verifiedOwnedBranchOwnerID = l.ownedCleanupBranchSHA(ctx, info, issue)
 	}
 	if err := l.removePath(ctx, info.Path); err != nil {
 		return result, err

@@ -695,7 +695,7 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 		runGit(t, info.Path, "add", "README.md")
 		runGit(t, info.Path, "commit", "-m", "unpushed work")
 		issue.Terminal = true
-		if err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
+		if _, _, err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
 			t.Fatal(err)
 		}
 		runGit(t, source, "worktree", "remove", "--force", info.Path)

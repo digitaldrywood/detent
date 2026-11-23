@@ -260,7 +260,7 @@ func strandCleanupWorkspace(t *testing.T, backend *LocalGit, source string, issu
 	if err := os.Chmod(locked, 0o500); err != nil {
 		t.Fatalf("lock artifact directory: %v", err)
 	}
-	if err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
+	if _, _, err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), "git", "-C", source, "worktree", "remove", "--force", info.Path)
