@@ -223,8 +223,8 @@ func (e *nativeExecution) RetryPhasePublication(ctx context.Context, send func()
 
 func (e *nativeExecution) retryPhasePublication(ctx context.Context, err error, send func() error) error {
 	for api.NativePublicationUnavailable(err) {
-		if ctx.Err() != nil {
-			return errors.Join(err, context.Cause(ctx))
+		if effectErr := api.MutationEffectError(ctx); effectErr != nil {
+			return errors.Join(err, effectErr)
 		}
 		lease := e.claim.lease
 		claim, ok := e.scheduler.host.ExecutionClaim(string(lease.WorkItemID))

@@ -94,6 +94,7 @@ func (s *RunnerSessions) BindExecution(ctx context.Context, execution runner.Exe
 		inherited.scope == scope && inherited.lease.WorkItemID == lease.WorkItemID &&
 		inherited.lease.ID == lease.ID && inherited.lease.FencingToken == lease.FencingToken {
 		authority.guard = inherited.guard
+		authority.cancellation = inherited.cancellation
 		authority.retry = inherited.retry
 		authority.publications = inherited.publications
 	}
@@ -194,6 +195,9 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 			current, err := s.snapshot(ctx, request.SessionID)
 			if err != nil {
 				s.forgetRevision(request.SessionID)
+				if NativeAuthorityLost(err) {
+					err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+				}
 				return current, err
 			}
 			request.ExpectedRevision = current.Revision
@@ -231,7 +235,7 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	if err != nil && (!errors.As(err, &api) || api == nil || api.Status < 400 || api.Status >= 500) {
 		delete(s.acknowledged, request.SessionID)
 	}
-	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Code == "stale_fencing_token" || api.Code == "policy_mismatch") {
+	if NativeAuthorityLost(err) || api != nil && api.Code == "policy_mismatch" {
 		err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}
 	if err == nil && request.SessionID > 0 {

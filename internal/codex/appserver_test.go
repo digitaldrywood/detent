@@ -1204,6 +1204,54 @@ func TestCodexTurnCompletionSurvivesSlowRuntimeObservation(t *testing.T) {
 	}
 }
 
+func TestCodexStreamContinuesAfterHubActivityOutage(t *testing.T) {
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+		responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"},"model":"example-model"}`),
+		responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-1"}}`),
+		notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":"still "}`),
+		notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":"working"}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewAgentBackend(server, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := runner.NewRunner(runner.Dependencies{
+		ProcessSource: func(context.Context, string) ([]int, error) { return nil, nil },
+		Workflow:      config.Workflow{Prompt: "Complete the issue"},
+		Workspace:     &artifactBlockedWorkspace{path: t.TempDir()},
+		AgentBackend:  backend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deltas, completed := 0, 0
+	result, err := r.Run(t.Context(), runner.RunRequest{
+		Issue: connector.Issue{ID: "example", Identifier: "example#1", ModelOverride: "example-model"},
+		Mode:  runner.RunModeImplement,
+		OnActivityUpdate: func(update runner.AgentActivityUpdate) error {
+			switch update.Type {
+			case runner.AgentUpdateMessageDelta:
+				deltas++
+				if deltas == 1 {
+					return runner.ErrHubUnavailable
+				}
+			case runner.AgentUpdateTurnCompleted:
+				completed++
+			}
+			return nil
+		},
+	})
+	if err != nil || result.FinalMessage != "still working" || deltas != 2 || completed != 1 {
+		t.Fatalf("stream did not finish after activity outage: final=%q deltas=%d completed=%d error=%v", result.FinalMessage, deltas, completed, err)
+	}
+}
+
 type artifactBlockedStream struct {
 	*fakeAppServerTransport
 	artifactStarted, toolStarted <-chan struct{}

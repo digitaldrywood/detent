@@ -227,8 +227,20 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	if err := e.Validate(ctx); err != nil {
 		return ctx, func() {}, err
 	}
-	live, cancel := context.WithCancelCause(ctx)
-	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
+	live, cancelLive := context.WithCancelCause(ctx)
+	cancel := func(cause error) {
+		if errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
+			cause = errors.Join(runner.NewCancellationCause(cause, "runner.execution_lease"), cause)
+		}
+		cancelLive(cause)
+	}
+	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
+		cause := context.Cause(live)
+		if !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) && !e.claimActive() {
+			return errors.Join(runner.ErrExecutionAuthorityUnavailable, cause)
+		}
+		return cause
+	})
 	e.cancelMu.Lock()
 	if e.unretiredProvider {
 		e.cancelMu.Unlock()
@@ -570,11 +582,13 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		err = e.executionError(ctx, err)
 		err = errors.Join(err, api.MutationEffectError(ctx))
 		e.observeCompletionOutage(err)
-		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) && api.MutationEffectError(ctx) == nil {
-			if e.change == nil {
-				e.change = &runner.NativeChange{}
+		if outcome == "succeeded" && api.NativePublicationUnavailable(err) && api.MutationEffectError(ctx) == nil {
+			if e.ownsChangeCompletion() {
+				if e.change == nil {
+					e.change = &runner.NativeChange{}
+				}
+				e.change.Error = err.Error()
 			}
-			e.change.Error = err.Error()
 			return nil
 		}
 		e.preparedOutcome = "failed"
@@ -629,18 +643,16 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				}
 			}
 		}
-		if diffErr != nil && e.ownsChangeCompletion() {
+		if diffErr != nil {
 			err := e.executionError(ctx, diffErr)
-			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || api.NativePublicationUnavailable(err) {
+				return err
 			}
-			if nativeTransportUnavailable(err) {
-				e.change = &runner.NativeChange{Error: err.Error()}
-			} else {
+			if e.ownsChangeCompletion() {
 				e.change = &runner.NativeChange{VersionError: err.Error(), VersionCode: hubErrorCode(err)}
 				e.settled = true
+				return nil
 			}
-			return nil
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
 			err = e.executionError(ctx, err)
@@ -707,6 +719,7 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
 	previous := e.data.Outcome
 	err := e.finish(ctx, outcome)
+	e.observeCompletionOutage(err)
 	refresh := previous == "" && e.data.Outcome != ""
 	e.mu.Unlock()
 	if refresh {
@@ -719,11 +732,7 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
-	if nativeTransportUnavailable(preparationErr) {
-		e.observeCompletionOutage(preparationErr)
-		return preparationErr
-	}
-	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
+	if nativeTransportUnavailable(preparationErr) || errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
 		return preparationErr
 	}
 	if outcome == "succeeded" && preparationErr != nil && e.publication != nil {
@@ -1014,6 +1023,9 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
 	}
 	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
+	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		return err
+	}
 	if _, err := e.claim.source.NativeClient().PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
 		return err
 	}
@@ -1071,7 +1083,13 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 		}
 		diffErr := e.postDiff(diffCtx, data.Sequence)
 		cancelDiff()
+		if nativeLeaseLost(diffErr) {
+			return e.executionError(ctx, diffErr)
+		}
 		if diffErr != nil {
+			if errors.Is(diffErr, runner.ErrExecutionAuthorityUnavailable) || kind == "run.finished" && api.NativePublicationUnavailable(diffErr) {
+				return diffErr
+			}
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", diffErr)
 		}
 	}
@@ -1150,6 +1168,9 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	publishedRuntime, err := json.Marshal(e.pending.Data.Runtime)
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
+	}
+	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+		return err
 	}
 	if err := e.claim.source.NativeClient().AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError

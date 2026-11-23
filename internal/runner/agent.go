@@ -989,6 +989,9 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 			boundedUpdateHandler = func(update AgentUpdate) error {
 				updateMu.Lock()
 				defer updateMu.Unlock()
+				if cause := context.Cause(turnCtx); cause != nil {
+					return cause
+				}
 				update.workerScratchPath = request.TempDir
 				if onUpdate != nil {
 					if err := onUpdate(turnCtx, update); err != nil {
@@ -1323,7 +1326,7 @@ func (r *Runner) runAgentTurn(
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
+		if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath)); err != nil {
 			return err
 		}
 		if !update.AuxiliaryTurn {
@@ -1337,14 +1340,14 @@ func (r *Runner) runAgentTurn(
 		if runRequest.Execution == nil {
 			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
 		}
-		if err := publishAgentActivity(updates, detentSessionID, update, eventAt); err != nil {
+		if err := turnObservationError(updateCtx, publishAgentActivity(updates, detentSessionID, update, eventAt)); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
 			if runRequest.Execution == nil {
-				if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+				if err := turnObservationError(updateCtx, r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity)); err != nil {
 					return err
 				}
 			}
@@ -1366,7 +1369,7 @@ func (r *Runner) runAgentTurn(
 			}
 			activity = false
 		}
-		if err := r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity, isCompletedAgentTurn(update)); err != nil {
+		if err := turnObservationError(updateCtx, r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity, isCompletedAgentTurn(update))); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -4487,13 +4490,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
+		if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath)); err != nil {
 			return err
 		}
 		if req.NativeVersion == nil {
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 		}
-		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
+		if err := turnObservationError(updateCtx, publishAgentActivity(runReq, sessionID, update, eventAt)); err != nil {
 			return err
 		}
 		if update.Type == AgentUpdateMessageDelta {
@@ -4506,7 +4509,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			if req.NativeVersion == nil {
-				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+				if err := turnObservationError(updateCtx, r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity)); err != nil {
 					return err
 				}
 			}
@@ -4515,7 +4518,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			}
 		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update), isCompletedAgentTurn(update)); err != nil {
+		if err := turnObservationError(updateCtx, r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update), isCompletedAgentTurn(update))); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
@@ -6622,6 +6625,16 @@ func ObserveProviderActivity(lifetime *sessiontimeout.Session, update AgentUpdat
 		}
 	}
 	return false
+}
+
+func turnObservationError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return errors.Join(cause, err)
+	}
+	if errors.Is(err, ErrHubUnavailable) && !errors.Is(err, ErrExecutionAuthorityUnavailable) && !errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {

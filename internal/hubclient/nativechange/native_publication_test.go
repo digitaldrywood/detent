@@ -376,3 +376,138 @@ func TestRunnerSessionStartSurvivesHubOutageWithSameFence(t *testing.T) {
 		})
 	}
 }
+
+func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
+	for _, tc := range []struct {
+		name, outcome  string
+		expire, revoke bool
+	}{
+		{name: "successful diff", outcome: "succeeded"},
+		{name: "failed turn diff", outcome: "failed"},
+		{name: "expired before renewal acknowledgement", outcome: "succeeded", expire: true},
+		{name: "revoked on reconnect", outcome: "succeeded", revoke: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const ttl = time.Minute
+				started := time.Now()
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", FencingToken: 1, PolicyID: descriptor.ID}
+				offline := false
+				holdRenewal := make(chan struct{})
+				var diff tracker.AttemptDiffRequest
+				var finished tracker.NativeRunEvent
+				diffWrites, completions := 0, 0
+				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					switch {
+					case strings.HasSuffix(request.URL.Path, "/validate"):
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(request.URL.Path, "/renew"):
+						if offline {
+							return nil, io.ErrUnexpectedEOF
+						}
+						if tc.expire {
+							<-holdRenewal
+						}
+						if tc.revoke {
+							response.WriteHeader(http.StatusConflict)
+							io.WriteString(response, `{"code":"stale_fencing_token"}`)
+							return response.Result(), nil
+						}
+						renewed := lease
+						renewed.ServerTime, renewed.RenewedAt = time.Now(), time.Now()
+						renewed.ExpiresAt = renewed.ServerTime.Add(ttl)
+						if err := json.NewEncoder(response).Encode(renewed); err != nil {
+							return nil, err
+						}
+					case strings.HasSuffix(request.URL.Path, "/diff"):
+						diffWrites++
+						if offline {
+							return nil, io.ErrUnexpectedEOF
+						}
+						if err := json.NewDecoder(request.Body).Decode(&diff); err != nil {
+							return nil, err
+						}
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(request.URL.Path, "/events"):
+						if err := json.NewDecoder(request.Body).Decode(&finished); err != nil {
+							return nil, err
+						}
+						completions++
+						response.WriteHeader(http.StatusNoContent)
+					case strings.HasSuffix(request.URL.Path, "/release"):
+						response.WriteHeader(http.StatusNoContent)
+					default:
+						t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+					}
+					return response.Result(), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, LeaseTTL: ttl, HeartbeatInterval: time.Second, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: started.Add(ttl), execution: execution}, descriptor, "project")
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "triage", Backend: "codex", Model: "example"}
+				head := nativeChangeFixtureHead("c")
+				execution.SetDiffSource(nativeChangeDiff(head, "README.md"))
+				guarded, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				detached := context.WithoutCancel(guarded)
+				offline = true
+				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); !errors.Is(err, api.ErrUnavailable) || guarded.Err() != nil {
+					t.Fatalf("renewal outage stopped an active lease: renewal=%v guard=%v", err, context.Cause(guarded))
+				}
+				if err := execution.Finish(detached, tc.outcome); !tc.expire && (!nativeTransportUnavailable(err) || completions != 0 || diffWrites != 1) {
+					t.Fatalf("published without final diff: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
+				}
+				offline = false
+				if tc.expire || tc.revoke {
+					renewal := make(chan error, 1)
+					go func() {
+						_, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now())
+						renewal <- err
+					}()
+					if tc.expire {
+						<-guarded.Done()
+						close(holdRenewal)
+					}
+					if err := <-renewal; err == nil {
+						t.Fatal("renewal succeeded after loss of authority")
+					}
+					var cause *runner.CancellationCause
+					if !errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
+						t.Fatalf("guard cancellation cause = %v", context.Cause(guarded))
+					}
+					if err := execution.Finish(detached, tc.outcome); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || completions != 0 || diffWrites != 1 {
+						t.Fatalf("expired lease published: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
+					}
+					return
+				}
+				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := execution.Finish(detached, tc.outcome); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if completions != 1 || diffWrites != 2 || diff.HeadSHA != head || diff.Generation.Seq != finished.Data.Sequence || finished.Data.Outcome != tc.outcome || finished.IdempotencyKey != finished.Data.AttemptID+":1" {
+					t.Fatalf("diff was not reconciled with one terminal event: diff=%+v event=%+v completions=%d", diff, finished, completions)
+				}
+			})
+		})
+	}
+}

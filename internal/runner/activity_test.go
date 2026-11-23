@@ -2,14 +2,19 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/sessiontimeout"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -152,4 +157,116 @@ func TestDistinctRepeatedOutputRemainsActive(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestProviderTurnSurvivesHubObservationOutage(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		fail error
+		want error
+	}{
+		{path: "worker", fail: ErrHubUnavailable},
+		{path: "rss", fail: ErrHubUnavailable},
+		{path: "activity", fail: ErrHubUnavailable},
+		{path: "usage", fail: ErrHubUnavailable},
+		{path: "worker", fail: errors.Join(ErrHubUnavailable, ErrExecutionAuthorityUnavailable), want: ErrExecutionAuthorityUnavailable},
+		{path: "activity", fail: errors.Join(ErrHubUnavailable, context.Canceled), want: context.Canceled},
+	} {
+		name := tc.path
+		if tc.want != nil {
+			name += "/" + tc.want.Error()
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				at := time.Now()
+				failures, recovered := 0, 0
+				failOnce := func() error {
+					if failures == 0 {
+						failures++
+						return encodeSSHError(tc.fail).err()
+					}
+					recovered++
+					return nil
+				}
+				session := &outageObservationStore{fakeSessionStore: &fakeSessionStore{}}
+				identity := procgroup.Identity{PID: 42, GroupID: 42, StartedAt: at}
+				rssPolled := make(chan struct{})
+				reads := 0
+				if tc.path == "worker" || tc.path == "rss" {
+					session.register = func() error {
+						if tc.path == "rss" && reads < 2 {
+							return nil
+						}
+						return failOnce()
+					}
+				}
+				r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workspace: &fakeWorkspaceBackend{}, Store: session, AgentBackend: nonVerifyingAgentBackend{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := RunRequest{Admission: &AdmissionRequest{}}
+				if tc.path == "activity" {
+					req.OnActivityUpdate = func(AgentActivityUpdate) error { return failOnce() }
+				}
+				if tc.path == "usage" {
+					req.OnUsageUpdate = func(UsageUpdate) error { return failOnce() }
+				}
+				turn := AgentTurnRequest{}
+				if tc.path == "rss" {
+					turn.MaxRSSBytes = 512
+					turn.RSSPollInterval = time.Second
+					turn.processRSS = func(context.Context, procgroup.Identity) (uint64, error) {
+						reads++
+						if reads == 2 {
+							close(rssPolled)
+						}
+						return 256, nil
+					}
+				}
+				backend := observationTurn(func(ctx context.Context, update AgentUpdateHandler) (AgentTurnResult, error) {
+					if err := update(AgentUpdate{Type: AgentUpdateProcessStarted, WorkerProcess: identity}); err != nil {
+						return AgentTurnResult{}, err
+					}
+					if tc.path == "rss" {
+						select {
+						case <-rssPolled:
+							synctest.Wait()
+						case <-ctx.Done():
+							return AgentTurnResult{}, context.Cause(ctx)
+						}
+					}
+					if err := update(AgentUpdate{Type: AgentUpdateTurnCompleted, TurnID: "turn", WorkerProcess: identity}); err != nil {
+						return AgentTurnResult{}, err
+					}
+					return AgentTurnResult{TurnID: "turn"}, ctx.Err()
+				})
+				got := r.runAgentTurn(t.Context(), backend, turn, req, workspace.Info{}, workspace.Issue{}, config.Agent{}, "", nil, at, 1, agentidentity.Identity{}, nil, 0, "test-model", config.AgentBackendCodex)
+				if tc.want != nil {
+					if !errors.Is(got.err, tc.want) || recovered != 0 {
+						t.Fatalf("provider did not stop on %v: error=%v recovered=%d", tc.want, got.err, recovered)
+					}
+				} else if got.err != nil || got.cleanupErr != nil || got.turnResult.TurnID != "turn" || failures != 1 || recovered == 0 {
+					t.Fatalf("provider did not finish through outage: turn=%q error=%v cleanup=%v failures=%d recovered=%d", got.turnResult.TurnID, got.err, got.cleanupErr, failures, recovered)
+				}
+			})
+		})
+	}
+}
+
+type outageObservationStore struct {
+	*fakeSessionStore
+	register func() error
+}
+
+func (s *outageObservationStore) UpdateSessionWorkerProcess(context.Context, int64, store.WorkerProcessRegistration) error {
+	if s.register != nil {
+		return s.register()
+	}
+	return nil
+}
+
+type observationTurn func(context.Context, AgentUpdateHandler) (AgentTurnResult, error)
+
+func (run observationTurn) RunTurn(ctx context.Context, _ AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	return run(ctx, update)
 }
