@@ -39,6 +39,7 @@ type cleanupOwnershipRecord struct {
 	WorkspaceSession bool   `json:"workspace_session,omitempty"`
 	ReviewHeadSHA    string `json:"review_head_sha,omitempty"`
 	OwnerID          string `json:"owner_id,omitempty"`
+	BranchCreated    bool   `json:"branch_created,omitempty"`
 }
 
 type cleanupInventory struct {
@@ -160,10 +161,10 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
-	return l.recordCleanupOwnershipWithOwner(ctx, info, issue, isDir, false)
+	return l.recordCleanupOwnershipWithOwner(ctx, info, issue, isDir, false, false)
 }
 
-func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Info, issue Issue, isDir bool, mintOwner bool) error {
+func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Info, issue Issue, isDir bool, mintOwner bool, branchCreated bool) error {
 	if isDir && !l.isSourceWorktree(ctx, info.Path) && l.isGitWorkspace(ctx, info.Path) {
 		return fmt.Errorf("refusing to record cleanup ownership for git workspace not managed by source: %s", info.Path)
 	}
@@ -212,6 +213,7 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 		if existingOwnerID != "" {
 			if current, readErr := readWorktreeOwnerID(ctx, path); readErr == nil && current == existingOwnerID {
 				record.OwnerID = existingOwnerID
+				record.BranchCreated = previous.BranchCreated
 			}
 		}
 		if record.OwnerID == "" && mintOwner {
@@ -220,6 +222,7 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 				return fmt.Errorf("record worktree owner identity: %w", ownerErr)
 			}
 			record.OwnerID = ownerID
+			record.BranchCreated = branchCreated
 		}
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {

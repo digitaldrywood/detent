@@ -85,7 +85,10 @@ func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue I
 	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
 		return ""
 	}
-	if !l.ownsLiveCheckout(ctx, record, info, issue) || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) {
+	if !l.ownsLiveCheckout(ctx, record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) {
+		return ""
+	}
+	if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
 		return ""
 	}
 	head, err := l.runGit(ctx, "rev-parse", "--verify", "refs/heads/"+info.Branch)
@@ -129,7 +132,12 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 		session = true
 	}
 	ownedCheckout := hasValidRecord && l.ownsLiveCheckout(ctx, record, info, issue)
-	ownedBranch := ownedCheckout && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch)
+	ownedBranch := ownedCheckout && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch)
+	if ownedBranch {
+		if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
+			ownedBranch = false
+		}
+	}
 	if err := l.checkCleanupBranch(ctx, info.Branch, session, issue, ownedBranch); err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}

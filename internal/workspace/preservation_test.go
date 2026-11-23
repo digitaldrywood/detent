@@ -549,4 +549,37 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("reused branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
 		}
 	})
+	t.Run("pre-existing branch with unpushed commits attached by Create is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-preexisting", Identifier: "owner/repo#706"}
+		planned, err := backend.infoForIssue(issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedPath := filepath.Join(t.TempDir(), "seed")
+		runGit(t, source, "worktree", "add", "-b", planned.Branch, seedPath, "HEAD")
+		if err := os.WriteFile(filepath.Join(seedPath, "README.md"), []byte("predates detent\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, seedPath, "add", "README.md")
+		runGit(t, seedPath, "commit", "-m", "predates detent")
+		runGit(t, source, "worktree", "remove", "--force", seedPath)
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		exists, err := backend.branchExists(t.Context(), info.Branch)
+		if err != nil || !exists {
+			t.Fatalf("pre-existing branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+	})
 }
