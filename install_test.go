@@ -660,6 +660,8 @@ chmod 755 "$5"
 }
 
 func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "")
+
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
