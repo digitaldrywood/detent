@@ -803,7 +803,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	var created bool
 	var branchCreated bool
 	if issue.Landing != nil {
-		info, created, err = l.createLandingWorktree(ctx, info, issue)
+		info, created, branchCreated, err = l.createLandingWorktree(ctx, info, issue)
 	} else {
 		head := "HEAD"
 		if issue.FreshCheckout && issue.BaseRef != "" {
@@ -946,8 +946,14 @@ func (l *LocalGit) createWorktree(ctx context.Context, info *Info, issue Issue, 
 			}
 		}
 		if l.autoBranch {
-			if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
-				return false, false, withCommandOutput(err)
+			branchExists, err := l.branchExists(ctx, branch)
+			if err != nil {
+				return false, false, err
+			}
+			if branchExists {
+				if _, err := l.runGit(ctx, "branch", "-f", branch, baseRef); err != nil {
+					return false, false, withCommandOutput(err)
+				}
 			}
 		}
 	}

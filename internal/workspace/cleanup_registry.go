@@ -213,7 +213,9 @@ func (l *LocalGit) recordCleanupOwnershipWithOwner(ctx context.Context, info Inf
 		if existingOwnerID != "" {
 			if current, readErr := readWorktreeOwnerID(ctx, path); readErr == nil && current == existingOwnerID {
 				record.OwnerID = existingOwnerID
-				record.BranchCreated = previous.BranchCreated
+				if previous.Branch != "" && previous.Branch == record.Branch {
+					record.BranchCreated = previous.BranchCreated
+				}
 			}
 		}
 		if record.OwnerID == "" && mintOwner {
