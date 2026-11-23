@@ -567,7 +567,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err != nil {
 			runErr = errors.Join(runErr, failedStep("publication", err))
 			outcome = "failed"
-		} else if outcome == "succeeded" && !sourceReviewed && result.Output != RunOutputPlanApprovalWait {
+		} else if outcome == "succeeded" && !sourceReviewed && !result.sourceReviewed &&
+			result.Output != RunOutputPlanApprovalWait &&
+			result.Output != RunOutputNativeLanded &&
+			result.Output != RunOutputNativeLandingRefused {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
 				sourceUnavailable = errors.Is(err, ErrNativeRecoveryRequired) && errors.Is(err, connector.ErrTrackerUnavailable)

@@ -338,8 +338,10 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 							return RunResult{}, err
 						}
 						if eligible {
-							err := r.validateNativeChange(ctx, req)
-							completion := RunResult{FinalState: FinalStateCompleted, FinalMessage: message}
+							reviewReq := req
+							reviewReq.retainedReview = &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: message}
+							err := r.validateNativeChange(ctx, reviewReq)
+							completion := RunResult{FinalState: FinalStateCompleted, FinalMessage: message, sourceReviewed: true}
 							if changes, ok := req.Execution.(ChangeExecution); ok {
 								completion.NativeChange = changes.NativeChange()
 							}
