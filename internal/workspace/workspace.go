@@ -601,6 +601,17 @@ func (l *sourceOperationLock) acquire(ctx context.Context) (func(), error) {
 	}
 }
 
+type heldSourceOperationKey struct{}
+
+func withHeldSourceOperation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, heldSourceOperationKey{}, true)
+}
+
+func sourceOperationHeld(ctx context.Context) bool {
+	held, _ := ctx.Value(heldSourceOperationKey{}).(bool)
+	return held
+}
+
 func (l *LocalGit) acquireSourceOperation(ctx context.Context) (func(), error) {
 	key := l.sourceRoot
 	if key != "" {
@@ -1062,6 +1073,19 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if pruneErr != nil {
 			return result, pruneErr
 		}
+		if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
+			if sha, ownerID := l.ownedInterruptedCleanupBranchSHA(ctx, info, issue); sha != "" {
+				if err := l.deleteVerifiedOwnedBranch(ctx, info.Branch, ownerID, sha); err != nil {
+					return result, err
+				}
+				result.Branches = 1
+				if err := l.removeOwnershipRecord(info.Path); err != nil {
+					return result, err
+				}
+				l.deleteCheckpointRef(ctx, issue)
+				return result, nil
+			}
+		}
 		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
 		if branchErr != nil {
 			return result, branchErr
@@ -1103,7 +1127,9 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		return result, err
 	}
 	if verifiedOwnedBranchSHA != "" {
-		if err := l.deleteVerifiedOwnedBranch(ctx, info.Branch, verifiedOwnedBranchOwnerID, verifiedOwnedBranchSHA); err != nil {
+		delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		if err := l.deleteVerifiedOwnedBranch(delCtx, info.Branch, verifiedOwnedBranchOwnerID, verifiedOwnedBranchSHA); err != nil {
 			return result, err
 		}
 		result.Branches = 1

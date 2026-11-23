@@ -79,6 +79,25 @@ func (l *LocalGit) ownsLiveCheckout(ctx context.Context, record cleanupOwnership
 	return err == nil && current == strings.TrimSpace(record.OwnerID)
 }
 
+func (l *LocalGit) ownedInterruptedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) (string, string) {
+	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
+	record, err := l.readOwnershipRecord(recordPath)
+	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
+		return "", ""
+	}
+	if !record.CleanupStarted || !recordOwnsCheckout(record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || strings.TrimSpace(record.OwnerID) == "" {
+		return "", ""
+	}
+	if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, ""); err != nil || heldElsewhere {
+		return "", ""
+	}
+	head, ok := l.branchOwnerIDTip(ctx, info.Branch, record.OwnerID)
+	if !ok {
+		return "", ""
+	}
+	return head, strings.TrimSpace(record.OwnerID)
+}
+
 func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue Issue) (string, string) {
 	recordPath := cleanupOwnershipRecordRelativePath(info.Path)
 	record, err := l.readOwnershipRecord(recordPath)
@@ -131,18 +150,25 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	if hasValidRecord && record.WorkspaceSession {
 		session = true
 	}
+	exists, isDir, err := pathExists(info.Path)
+	if err != nil {
+		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
+	}
 	ownedCheckout := hasValidRecord && l.ownsLiveCheckout(ctx, record, info, issue)
 	ownedBranch := ownedCheckout && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch) && l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID)
+	if !ownedBranch && !exists && hasValidRecord && record.CleanupStarted && recordOwnsCheckout(record, info, issue) && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID) {
+		ownedBranch = true
+	}
 	if ownedBranch {
-		if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
+		otherTarget := info.Path
+		if !exists {
+			otherTarget = ""
+		}
+		if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, otherTarget); err != nil || heldElsewhere {
 			ownedBranch = false
 		}
 	}
 	if err := l.checkCleanupBranch(ctx, info.Branch, session, issue, ownedBranch); err != nil {
-		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
-	}
-	exists, isDir, err := pathExists(info.Path)
-	if err != nil {
 		return fmt.Errorf("%w at %s: %w", ErrWorkspacePreserved, info.Path, err)
 	}
 	if !exists {

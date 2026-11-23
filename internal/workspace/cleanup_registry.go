@@ -358,6 +358,13 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 }
 
 func (l *LocalGit) deleteVerifiedOwnedBranch(ctx context.Context, branch, ownerID, expectedSHA string) error {
+	if !sourceOperationHeld(ctx) {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if held, err := l.branchHeldByOtherWorktree(ctx, branch, ""); err != nil || held {
 		return fmt.Errorf("%w: branch %s is held by another worktree", ErrWorkspacePreserved, branch)
 	}
@@ -396,7 +403,7 @@ func (l *LocalGit) deleteVerifiedOwnedBranch(ctx context.Context, branch, ownerI
 			return fmt.Errorf("%w: clear upstream before terminal branch deletion: %w", ErrWorkspacePreserved, err)
 		}
 	}
-	if _, err := runGitAt(ctx, tmpDir, "branch", "-d", branch); err != nil {
+	restoreUpstream := func() {
 		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		if savedRemote != "" {
@@ -405,6 +412,17 @@ func (l *LocalGit) deleteVerifiedOwnedBranch(ctx context.Context, branch, ownerI
 		if savedMerge != "" {
 			_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+branch+".merge", savedMerge)
 		}
+	}
+	if held, err := l.branchHeldByOtherWorktree(ctx, branch, ""); err != nil || held {
+		restoreUpstream()
+		return fmt.Errorf("%w: branch %s is held by another worktree", ErrWorkspacePreserved, branch)
+	}
+	if tip, ok := l.branchOwnerIDTip(ctx, branch, ownerID); !ok || tip != expectedSHA {
+		restoreUpstream()
+		return fmt.Errorf("%w: branch %s changed before terminal deletion", ErrWorkspacePreserved, branch)
+	}
+	if _, err := runGitAt(ctx, tmpDir, "branch", "-d", branch); err != nil {
+		restoreUpstream()
 		return fmt.Errorf("%w: branch %s changed or checked out elsewhere before terminal deletion: %w", ErrWorkspacePreserved, branch, err)
 	}
 	return nil

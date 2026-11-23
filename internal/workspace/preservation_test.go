@@ -677,4 +677,33 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("copied branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
 		}
 	})
+	t.Run("interrupted cleanup retry finishes deleting owned unpushed branch", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-interrupted", Identifier: "owner/repo#710"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("unpushed work\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "add", "README.md")
+		runGit(t, info.Path, "commit", "-m", "unpushed work")
+		issue.Terminal = true
+		if err := backend.beginWorkspaceCleanup(t.Context(), info, issue, true); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "worktree", "remove", "--force", info.Path)
+		if _, err := backend.CleanupIssue(t.Context(), issue); err != nil {
+			t.Fatalf("CleanupIssue() retry after interrupted worktree removal error = %v", err)
+		}
+		if exists, err := backend.branchExists(t.Context(), info.Branch); err != nil || exists {
+			t.Fatalf("owned branch %s still exists after interrupted cleanup retry (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+	})
 }

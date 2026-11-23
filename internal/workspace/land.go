@@ -49,6 +49,7 @@ func (l *LocalGit) CleanupLanding(ctx context.Context, info Info, issue Issue) e
 		return err
 	}
 	defer release()
+	ctx = withHeldSourceOperation(ctx)
 	if issue.RetainedLanding {
 		_, err := l.cleanupWorkspace(ctx, normalized, issue)
 		return err
