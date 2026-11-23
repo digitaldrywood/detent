@@ -17,6 +17,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -28,7 +29,7 @@ const maxResponseBytes = 1 << 20
 
 var (
 	ErrNoClaimableWork = errors.New("no Hub work is claimable")
-	ErrUnavailable     = errors.New("hub unavailable")
+	ErrUnavailable     = runner.ErrHubUnavailable
 )
 
 type responseSizeError struct {

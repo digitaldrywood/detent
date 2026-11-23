@@ -287,7 +287,7 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if update.WorkerProcess.PID > 0 {
 				execution.WorkerProcess = update.WorkerProcess
 			}
-			if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, auditWorkspace); err != nil {
+			if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, auditWorkspace)); err != nil {
 				return err
 			}
 			if req.usageExecution == nil {
@@ -308,12 +308,12 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 				runResult.Tokens = addAgentTokenTotals(previousUsage, runResult.Tokens)
 			}
 			if req.OnUsageUpdate != nil {
-				if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits}); err != nil {
+				if err := turnObservationError(updateCtx, req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, Tokens: runResult.Tokens, RuntimeIdentity: runResult.RuntimeIdentity, RateLimits: runResult.RateLimits})); err != nil {
 					return err
 				}
 			}
 			if req.usageExecution == nil && !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
-				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+				if err := turnObservationError(updateCtx, r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity)); err != nil {
 					return err
 				}
 			}

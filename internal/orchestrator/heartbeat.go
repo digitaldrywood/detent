@@ -16,6 +16,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -61,6 +62,7 @@ type heartbeatTarget struct {
 	livenessError        error
 	sequence             uint64
 	nextDue              time.Time
+	claimFailures        int
 	inFlight             bool
 	flightDone           chan struct{}
 }
@@ -169,6 +171,10 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 	if ok && current.workAttemptHeartbeat.AttemptID == target.workAttemptHeartbeat.AttemptID && current.progress == target.progress {
 		target.sequence = current.sequence
 		target.nextDue = current.nextDue
+		target.claimFailures = current.claimFailures
+		if current.localLeaseDeadline.After(target.localLeaseDeadline) {
+			target.localLeaseDeadline = current.localLeaseDeadline
+		}
 		target.inFlight = current.inFlight
 		target.flightDone = current.flightDone
 		target.workspaceModifiedAt = current.workspaceModifiedAt
@@ -409,6 +415,20 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		return
 	}
 	current.inFlight = false
+	if result.claimRenewed {
+		current.claimFailures = 0
+		if !result.claim.LocalLeaseDeadline.IsZero() {
+			current.localLeaseDeadline = result.claim.LocalLeaseDeadline
+		}
+	} else if result.claimError != nil && !result.claimOwnerLost && !current.localLeaseDeadline.IsZero() {
+		now := m.now()
+		if remaining := current.localLeaseDeadline.Sub(now); remaining > time.Second {
+			current.claimFailures = min(current.claimFailures+1, 6)
+			backoff := time.Second << (current.claimFailures - 1)
+			delay := min(backoff, 30*time.Second, m.settings.interval, remaining/2)
+			current.nextDue = now.Add(runpkg.JitteredFailureRetryDelay(delay))
+		}
+	}
 	current.workerAlive = result.workerAlive
 	current.workerChecked = result.workerChecked
 	current.livenessError = result.livenessError

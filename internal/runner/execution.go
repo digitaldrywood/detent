@@ -30,6 +30,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
+var ErrHubUnavailable = errors.New("hub unavailable")
+
 var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
 var ErrNativeRecoveryRequired = errors.New("native checkpoint requires recovery")
 var ErrChangeSourceVersionSuperseded = errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")

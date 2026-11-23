@@ -45,6 +45,7 @@ func NewCancellationCause(cause error, source string) *CancellationCause {
 		reason string
 	}{
 		{ErrOperatorStopped, "operator_stopped"},
+		{ErrExecutionAuthorityUnavailable, "execution_authority_unavailable"},
 		{ErrLaneRevoked, "lane_revoked"},
 		{ErrMergeRevoked, "merge_revoked"},
 		{ErrCIUnavailable, "ci_unavailable"},
