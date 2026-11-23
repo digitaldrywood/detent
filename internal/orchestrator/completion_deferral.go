@@ -437,6 +437,7 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 			progress:             record.Running.progress,
 			issueID:              record.Running.Issue.ID,
 			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
+			localLeaseDeadline:   claimRenewalDeadline(state.Claimed[record.Running.Issue.ID]),
 			workAttemptHeartbeat: heartbeat,
 			workerProcess:        record.Running.WorkerProcess,
 			workspacePath:        record.Running.WorkspacePath,
@@ -447,6 +448,9 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 			o.logger.Error("deferred completion persistence failed", "attempt_id", record.Running.WorkAttemptID, "issue_id", record.Running.Issue.ID, "error", err)
 		}
 		return false
+	}
+	if record.Running.progress != nil {
+		record.Running.progress.persisted.Store(&heartbeat)
 	}
 	o.applyWorkAttemptHeartbeatSnapshot(state, record.Running.WorkAttemptID, heartbeat, nil)
 	return true

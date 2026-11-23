@@ -2,11 +2,11 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -46,7 +46,8 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 				state.Running[id] = running
 			}
 			issue := readyMergeCapacityIssue("ready", 2371)
-			tracker := &contextCheckedMergeConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
+			limit := &controlledMergeDurationLimit{}
+			tracker := &contextCheckedMergeConnector{workerLimit: limit, autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
 			global := scheduler.NewStrictPriority(scheduler.Config{Capacity: 1})
 			globalGate := scheduler.NewGlobalDispatchGate(global)
 			if tt.full {
@@ -55,8 +56,12 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 					t.Fatalf("fill global capacity: acquired=%t err=%v", acquired, err)
 				}
 			}
-			orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: globalGate, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			orch := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: globalGate, mergeWorkerLimit: limit.Context, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+				defer cancel()
+				orch.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
+			})
 			if len(tracker.merges) != 1 {
 				t.Fatalf("merges = %v, want one ready merge with %d validation waiters (global full %t)", tracker.merges, tt.workers, tt.full)
 			}
@@ -350,15 +355,16 @@ func TestReadyMergeRespectsGlobalPause(t *testing.T) {
 }
 
 type contextCheckedMergeConnector struct {
+	workerLimit *controlledMergeDurationLimit
 	*autoPromoteTickMergeConnector
 }
 
 func (c *contextCheckedMergeConnector) MergePullRequest(ctx context.Context, repository string, number int, head, method string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		return errors.New("control merge has no deadline")
+	c.workerLimit.Expire()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(40 * time.Second):
 	}
 	return c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method)
 }

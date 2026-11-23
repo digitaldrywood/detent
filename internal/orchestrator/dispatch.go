@@ -1062,16 +1062,14 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	)
 	o.publishRuntimeState(state)
 	running := state.Running[issue.ID]
+	o.trackRunningHeartbeat(state, running, claim, now)
 	if mergeControl {
-		completionCtx, cancelCompletion := context.WithTimeout(ctx, min(o.cfg.MergeWorkerMaxDuration, 30*time.Second))
-		defer cancelCompletion()
-		o.handleRunResult(completionCtx, state, runpkg.Completion{
+		o.handleRunResult(ctx, state, runpkg.Completion{
 			IssueID: issue.ID, Request: request, CompletedAt: now,
 			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
 	}
-	o.trackRunningHeartbeat(state, running, claim, now)
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
 	durationLimitTransferred = true
