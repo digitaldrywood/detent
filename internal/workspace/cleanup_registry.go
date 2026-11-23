@@ -357,25 +357,57 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 	return err == nil && held
 }
 
-func worktreeHEADAttachedToBranch(ctx context.Context, path, branch string) bool {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return false
+func (l *LocalGit) deleteVerifiedOwnedBranch(ctx context.Context, branch, ownerID, expectedSHA string) error {
+	if held, err := l.branchHeldByOtherWorktree(ctx, branch, ""); err != nil || held {
+		return fmt.Errorf("%w: branch %s is held by another worktree", ErrWorkspacePreserved, branch)
 	}
-	gitDir, err := worktreeGitDir(ctx, path)
+	tip, ok := l.branchOwnerIDTip(ctx, branch, ownerID)
+	if !ok || tip != expectedSHA {
+		return fmt.Errorf("%w: branch %s changed before terminal deletion", ErrWorkspacePreserved, branch)
+	}
+	tmpDir, err := os.MkdirTemp(l.root, ".detent-branch-delete-*")
 	if err != nil {
-		return false
+		return fmt.Errorf("%w: create temporary worktree for branch deletion: %w", ErrWorkspacePreserved, err)
 	}
-	headData, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, "HEAD"))
-	if err != nil || !ok || strings.TrimSpace(string(headData)) != "ref: refs/heads/"+branch {
-		return false
+	if err := os.Remove(tmpDir); err != nil {
+		return fmt.Errorf("%w: prepare temporary worktree path: %w", ErrWorkspacePreserved, err)
 	}
-	for _, rel := range []string{"rebase-merge", "rebase-apply", "BISECT_START"} {
-		if _, statErr := os.Stat(filepath.Join(gitDir, rel)); statErr == nil || !errors.Is(statErr, fs.ErrNotExist) {
-			return false
+	if _, err := l.runGit(ctx, "worktree", "add", "--no-checkout", "--detach", tmpDir, expectedSHA); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("%w: attach temporary worktree for branch deletion: %w", ErrWorkspacePreserved, err)
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_, _ = l.runGit(cleanupCtx, "worktree", "remove", "--force", tmpDir)
+		_ = os.RemoveAll(tmpDir)
+		_, _ = l.runGit(cleanupCtx, "worktree", "prune")
+	}()
+	savedRemote := ""
+	savedMerge := ""
+	if out, err := runGitAt(ctx, tmpDir, "config", "--get", "branch."+branch+".remote"); err == nil {
+		savedRemote = strings.TrimSpace(out)
+	}
+	if out, err := runGitAt(ctx, tmpDir, "config", "--get", "branch."+branch+".merge"); err == nil {
+		savedMerge = strings.TrimSpace(out)
+	}
+	if savedRemote != "" || savedMerge != "" {
+		if _, err := runGitAt(ctx, tmpDir, "branch", "--unset-upstream", branch); err != nil {
+			return fmt.Errorf("%w: clear upstream before terminal branch deletion: %w", ErrWorkspacePreserved, err)
 		}
 	}
-	return true
+	if _, err := runGitAt(ctx, tmpDir, "branch", "-d", branch); err != nil {
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if savedRemote != "" {
+			_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+branch+".remote", savedRemote)
+		}
+		if savedMerge != "" {
+			_, _ = l.runGit(restoreCtx, "config", "--local", "branch."+branch+".merge", savedMerge)
+		}
+		return fmt.Errorf("%w: branch %s changed or checked out elsewhere before terminal deletion: %w", ErrWorkspacePreserved, branch, err)
+	}
+	return nil
 }
 
 func (l *LocalGit) branchOwnerIDTip(ctx context.Context, branch, ownerID string) (string, bool) {
