@@ -582,4 +582,32 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("pre-existing branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
 		}
 	})
+	t.Run("locked worktree removal failure preserves branch ref", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-locked", Identifier: "owner/repo#707"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("unpushed work\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "add", "README.md")
+		runGit(t, info.Path, "commit", "-m", "unpushed work")
+		wantTip := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+		runGit(t, source, "worktree", "lock", info.Path)
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); err == nil {
+			t.Fatal("CleanupIssue() succeeded on locked worktree, want error")
+		}
+		gotTip := strings.TrimSpace(runGit(t, source, "rev-parse", "--verify", "refs/heads/"+info.Branch))
+		if gotTip != wantTip {
+			t.Fatalf("branch %s tip = %q, want %q", info.Branch, gotTip, wantTip)
+		}
+	})
 }

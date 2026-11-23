@@ -164,7 +164,7 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		if _, err := l.runGit(ctx, "branch", "-f", info.Branch, issue.Source.Version.HeadSHA); err != nil {
 			return false, err
 		}
-		created, err := l.ensureWorktree(ctx, info.Path, info.Branch, issue.Source.Version.HeadSHA)
+		created, _, err := l.ensureWorktree(ctx, info.Path, info.Branch, issue.Source.Version.HeadSHA)
 		if err != nil {
 			return false, l.preserveFailedWorkspace(ctx, info.Path, err)
 		}
