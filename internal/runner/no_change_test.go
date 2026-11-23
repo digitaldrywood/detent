@@ -274,6 +274,51 @@ func TestLandingDoesNotFailValidatorWithMissingRetainedReview(t *testing.T) {
 		}
 	})
 
+	t.Run("landing wait with empty refusal kind skips post-run validateNativeChange", func(t *testing.T) {
+		t.Parallel()
+		e := &noChangeValidationLandingExecution{
+			noChangeLandingExecution: noChangeLandingExecution{
+				landingStub: landingStub{target: NativeLandingTarget{
+					ChangeID: "change_example", VersionID: "version_example", BaseSHA: strings.Repeat("a", 40), HeadSHA: base,
+				}},
+				change: &NativeChange{NoChange: &tracker.NativeNoChangeCompletion{VerifiedSHA: base}},
+			},
+			version: version,
+		}
+		backend := &noChangeRetainedReviewBackend{
+			landingBackend: landingBackend{
+				Backend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}},
+				result:  workspace.LandResult{CI: &tracker.NativeLandingCIReceipt{State: "pending", HeadSHA: base}},
+			},
+			head: base,
+		}
+		r, err := NewRunner(Dependencies{
+			ProcessSource: emptyProcessSource,
+			Workflow: config.Workflow{Config: config.Config{
+				Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewOff, Validator: gate.ValidatorConfig{Enabled: true}},
+			}},
+			Workspace:    backend,
+			AgentBackend: &fakeCodexClient{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := r.Run(t.Context(), RunRequest{
+			Issue:     connector.Issue{ID: "wi_example", Identifier: "example-org/example-project#4"},
+			Mode:      RunModeMerge,
+			Execution: e,
+		})
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil", err)
+		}
+		if e.validatorCalls != 0 {
+			t.Fatalf("landing wait called validator %d times, want 0", e.validatorCalls)
+		}
+		if result.NativeLanding == nil || result.NativeLanding.RefusalKind != "" || result.NativeLanding.Landed {
+			t.Fatalf("landing wait result = %+v", result)
+		}
+	})
+
 	t.Run("changed merge resolution with landing-status output still runs validator on resolved head", func(t *testing.T) {
 		t.Parallel()
 		resolvedHead := strings.Repeat("c", 40)
@@ -286,7 +331,7 @@ func TestLandingDoesNotFailValidatorWithMissingRetainedReview(t *testing.T) {
 			},
 		}
 		resolvedVersion.Policy.Gates.Validator = true
-		for _, spoofed := range []string{RunOutputNativeLanded, RunOutputNativeLandingRefused} {
+		for _, spoofed := range []string{RunOutputNativeLanded, RunOutputNativeLandingRefused, RunOutputPlanApprovalWait} {
 			e := &noChangeValidationLandingExecution{
 				noChangeLandingExecution: noChangeLandingExecution{
 					landingStub: landingStub{target: NativeLandingTarget{

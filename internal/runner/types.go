@@ -801,6 +801,7 @@ type SecurityAuditExecution struct {
 type RunResult struct {
 	retainedReview             *retainedReviewWorkspace
 	sourceReviewed             bool
+	planApprovalWait           bool
 	BillingMode                string
 	ReportedCostMicros         *int64
 	CostSource                 string
