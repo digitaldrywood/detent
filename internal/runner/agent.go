@@ -2502,7 +2502,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if wait != "" {
 			afterRunPending = false
-			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait}, nil
+			return RunResult{FinalState: FinalStateCompleted, Output: RunOutputPlanApprovalWait, FinalMessage: wait, planApprovalWait: true}, nil
 		}
 		if planPending && legacyPublishedSource && req.publicationRecovery(mode) {
 			if !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, executionIdentity, workspaceIssue.Source) {
