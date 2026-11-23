@@ -103,12 +103,67 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
 		batch.inventories[l.cleanupInventory] = cleanupInventory{}
 	}
+	inventory := cleanupInventory{recorded: make(map[string]bool)}
+	var issues []Issue
+	regDir := filepath.Join(l.root, cleanupOwnershipRegistryDir)
+	scanPending := func(pendingCursor string, budget int) (string, error) {
+		if budget <= 0 {
+			if _, statErr := os.Stat(regDir); statErr == nil {
+				return "pending:", nil
+			}
+			return "", nil
+		}
+		regEntries, pNext, regErr := l.pendingInventory.page(regDir, pendingCursor, budget)
+		if regErr != nil {
+			if errors.Is(regErr, fs.ErrNotExist) {
+				return "", nil
+			}
+			return pendingCursor, regErr
+		}
+		for _, regEntry := range regEntries {
+			if ctx.Err() != nil {
+				return pendingCursor, ctx.Err()
+			}
+			if regEntry.IsDir() {
+				continue
+			}
+			relative := filepath.Join(cleanupOwnershipRegistryDir, regEntry.Name())
+			record, readErr := l.readOwnershipRecord(relative)
+			if readErr != nil || !l.validOwnershipRecord(ctx, relative, record) {
+				continue
+			}
+			if inventory.recorded[record.Path] || !record.CleanupStarted || strings.TrimSpace(record.CleanupBranchSHA) == "" {
+				continue
+			}
+			exists, _, statErr := pathExists(record.Path)
+			if statErr != nil || exists {
+				continue
+			}
+			inventory.recorded[record.Path] = true
+			inventory.records = append(inventory.records, record)
+			if issue := record.issue(); issue.Identifier != "" && !record.requiresAttemptOwner() {
+				issues = append(issues, issue)
+			}
+		}
+		if pNext != "" {
+			return "pending:" + pNext, nil
+		}
+		return "", nil
+	}
+	if strings.HasPrefix(cursor, "pending:") {
+		next, err := scanPending(strings.TrimPrefix(cursor, "pending:"), limit)
+		if err != nil {
+			return nil, cursor, err
+		}
+		if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
+			batch.inventories[l.cleanupInventory] = inventory
+		}
+		return issues, next, nil
+	}
 	entries, next, err := l.cleanupInventory.page(l.root, cursor, limit)
 	if err != nil {
 		return nil, cursor, err
 	}
-	inventory := cleanupInventory{recorded: make(map[string]bool)}
-	var issues []Issue
 	for _, entry := range entries {
 		if ctx.Err() != nil {
 			return nil, cursor, ctx.Err()
@@ -157,33 +212,11 @@ func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) 
 			issues = append(issues, issue)
 		}
 	}
-	if cursor == "" {
-		if regEntries, regErr := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir)); regErr == nil {
-			for _, regEntry := range regEntries {
-				if ctx.Err() != nil {
-					return nil, cursor, ctx.Err()
-				}
-				if regEntry.IsDir() {
-					continue
-				}
-				relative := filepath.Join(cleanupOwnershipRegistryDir, regEntry.Name())
-				record, readErr := l.readOwnershipRecord(relative)
-				if readErr != nil || !l.validOwnershipRecord(ctx, relative, record) {
-					continue
-				}
-				if inventory.recorded[record.Path] || !record.CleanupStarted || strings.TrimSpace(record.CleanupBranchSHA) == "" {
-					continue
-				}
-				exists, _, statErr := pathExists(record.Path)
-				if statErr != nil || exists {
-					continue
-				}
-				inventory.recorded[record.Path] = true
-				inventory.records = append(inventory.records, record)
-				if issue := record.issue(); issue.Identifier != "" && !record.requiresAttemptOwner() {
-					issues = append(issues, issue)
-				}
-			}
+	if next == "" {
+		var pendingErr error
+		next, pendingErr = scanPending("", limit-len(entries))
+		if pendingErr != nil {
+			return nil, cursor, pendingErr
 		}
 	}
 	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {

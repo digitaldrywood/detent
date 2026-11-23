@@ -309,6 +309,7 @@ type LocalGitOptions struct {
 
 type LocalGit struct {
 	cleanupInventory *cleanupInventoryScanner
+	pendingInventory *cleanupInventoryScanner
 
 	commits            commitPolicy
 	uses               *workspaceUses
@@ -459,6 +460,7 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 			}
 			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
 				next.cleanupInventory = previous.cleanupInventory
+				next.pendingInventory = previous.pendingInventory
 			}
 		}
 	case *Filesystem:
@@ -525,6 +527,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 	return &LocalGit{
 		uses:               &workspaceUses{},
 		cleanupInventory:   &cleanupInventoryScanner{},
+		pendingInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
 		commits:            commits,
 		root:               root,
