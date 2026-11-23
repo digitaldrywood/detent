@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -301,30 +302,50 @@ func readWorktreeOwnerID(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func gitDirHoldsBranch(gitDir, branch string) bool {
+func readOptionalGitMetadataFile(path string) ([]byte, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func gitDirHoldsBranch(gitDir, branch string) (bool, error) {
 	branch = strings.TrimSpace(branch)
 	if gitDir == "" || branch == "" {
-		return false
+		return false, nil
 	}
 	wantRef := "refs/heads/" + branch
-	if headData, err := os.ReadFile(filepath.Join(gitDir, "HEAD")); err == nil {
-		if strings.TrimSpace(string(headData)) == "ref: "+wantRef {
-			return true
-		}
+	if headData, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, "HEAD")); err != nil {
+		return false, err
+	} else if ok && strings.TrimSpace(string(headData)) == "ref: "+wantRef {
+		return true, nil
 	}
 	for _, rel := range []string{filepath.Join("rebase-merge", "head-name"), filepath.Join("rebase-apply", "head-name")} {
-		if data, err := os.ReadFile(filepath.Join(gitDir, rel)); err == nil {
-			if strings.TrimSpace(string(data)) == wantRef {
-				return true
+		if data, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, rel)); err != nil {
+			return false, err
+		} else if ok && strings.TrimSpace(string(data)) == wantRef {
+			return true, nil
+		}
+	}
+	if data, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, "BISECT_START")); err != nil {
+		return false, err
+	} else if ok && strings.TrimSpace(string(data)) == branch {
+		return true, nil
+	}
+	if data, ok, err := readOptionalGitMetadataFile(filepath.Join(gitDir, "rebase-merge", "update-refs")); err != nil {
+		return false, err
+	} else if ok {
+		for _, field := range strings.Fields(string(data)) {
+			if field == wantRef {
+				return true, nil
 			}
 		}
 	}
-	if data, err := os.ReadFile(filepath.Join(gitDir, "BISECT_START")); err == nil {
-		if strings.TrimSpace(string(data)) == branch {
-			return true
-		}
-	}
-	return false
+	return false, nil
 }
 
 func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
@@ -332,7 +353,8 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 	if err != nil {
 		return false
 	}
-	return gitDirHoldsBranch(gitDir, branch)
+	held, err := gitDirHoldsBranch(gitDir, branch)
+	return err == nil && held
 }
 
 func (l *LocalGit) branchOwnerIDTip(ctx context.Context, branch, ownerID string) (string, bool) {
@@ -427,7 +449,7 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 				if err != nil {
 					return true, nil
 				}
-				if gitDirHoldsBranch(gd, branch) {
+				if held, err := gitDirHoldsBranch(gd, branch); err != nil || held {
 					return true, nil
 				}
 			}
@@ -441,21 +463,26 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 	if err != nil {
 		return true, nil
 	}
-	if entries, err := os.ReadDir(filepath.Join(commonDir, "worktrees")); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			adminDir := filepath.Join(commonDir, "worktrees", entry.Name())
-			if resolved, err := canonicalExistingPath(adminDir); err == nil {
-				adminDir = resolved
-			}
-			if targetGitDir != "" && adminDir == targetGitDir {
-				continue
-			}
-			if gitDirHoldsBranch(adminDir, branch) {
-				return true, nil
-			}
+	entries, err := os.ReadDir(filepath.Join(commonDir, "worktrees"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return true, nil
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		adminDir := filepath.Join(commonDir, "worktrees", entry.Name())
+		if resolved, err := canonicalExistingPath(adminDir); err == nil {
+			adminDir = resolved
+		}
+		if targetGitDir != "" && adminDir == targetGitDir {
+			continue
+		}
+		if held, err := gitDirHoldsBranch(adminDir, branch); err != nil || held {
+			return true, nil
 		}
 	}
 	return false, nil
