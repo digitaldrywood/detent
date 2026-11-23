@@ -42,6 +42,7 @@ type cleanupOwnershipRecord struct {
 	ReviewHeadSHA    string `json:"review_head_sha,omitempty"`
 	OwnerID          string `json:"owner_id,omitempty"`
 	BranchCreated    bool   `json:"branch_created,omitempty"`
+	CleanupBranchSHA string `json:"cleanup_branch_sha,omitempty"`
 }
 
 type cleanupInventory struct {

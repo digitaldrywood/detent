@@ -83,6 +83,11 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 			continue
 		}
 		if _, err := root.Lstat(relativePath); errors.Is(err, fs.ErrNotExist) {
+			if record.CleanupStarted && strings.TrimSpace(record.CleanupBranchSHA) != "" && strings.TrimSpace(record.Branch) != "" {
+				if exists, branchErr := l.branchExists(ctx, record.Branch); branchErr != nil || exists {
+					continue
+				}
+			}
 			recordError(removeRetentionPath(root, relative, &totals.Ownership))
 			continue
 		} else if err != nil {

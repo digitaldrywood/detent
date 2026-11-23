@@ -85,14 +85,15 @@ func (l *LocalGit) ownedInterruptedCleanupBranchSHA(ctx context.Context, info In
 	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
 		return "", ""
 	}
-	if !record.CleanupStarted || !recordOwnsCheckout(record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || strings.TrimSpace(record.OwnerID) == "" {
+	wantSHA := strings.TrimSpace(record.CleanupBranchSHA)
+	if !record.CleanupStarted || wantSHA == "" || !recordOwnsCheckout(record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || strings.TrimSpace(record.OwnerID) == "" {
 		return "", ""
 	}
 	if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, ""); err != nil || heldElsewhere {
 		return "", ""
 	}
 	head, ok := l.branchOwnerIDTip(ctx, info.Branch, record.OwnerID)
-	if !ok {
+	if !ok || head != wantSHA {
 		return "", ""
 	}
 	return head, strings.TrimSpace(record.OwnerID)
@@ -156,8 +157,10 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	}
 	ownedCheckout := hasValidRecord && l.ownsLiveCheckout(ctx, record, info, issue)
 	ownedBranch := ownedCheckout && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch) && l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID)
-	if !ownedBranch && !exists && hasValidRecord && record.CleanupStarted && recordOwnsCheckout(record, info, issue) && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID) {
-		ownedBranch = true
+	if !ownedBranch && !exists && hasValidRecord && record.CleanupStarted && strings.TrimSpace(record.CleanupBranchSHA) != "" && recordOwnsCheckout(record, info, issue) && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch {
+		if tip, ok := l.branchOwnerIDTip(ctx, info.Branch, record.OwnerID); ok && tip == strings.TrimSpace(record.CleanupBranchSHA) {
+			ownedBranch = true
+		}
 	}
 	if ownedBranch {
 		otherTarget := info.Path
@@ -320,6 +323,10 @@ func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue I
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return err
 	}
+	cleanupBranchSHA := ""
+	if issue.Terminal && !sessionOwned(info, issue) && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
+		cleanupBranchSHA, _ = l.ownedCleanupBranchSHA(ctx, info, issue)
+	}
 	if err := l.recordCleanupOwnership(ctx, info, issue, isDir); err != nil {
 		return err
 	}
@@ -328,6 +335,9 @@ func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue I
 		return err
 	}
 	record.CleanupStarted = true
+	if cleanupBranchSHA != "" {
+		record.CleanupBranchSHA = cleanupBranchSHA
+	}
 	return l.writeOwnershipRecord(record)
 }
 
