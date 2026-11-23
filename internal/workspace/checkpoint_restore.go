@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func CheckpointRefName(issue Issue) string {
@@ -142,10 +143,8 @@ func (l *LocalGit) fetchCheckpointRef(ctx context.Context, ref *CheckpointRef) e
 		return errors.New("checkpoint reference is incomplete")
 	}
 	if _, err := l.runGit(ctx, "cat-file", "-e", ref.CommitSHA+"^{commit}"); err != nil {
-		if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, ref.CommitSHA)...); err != nil {
-			if _, refErr := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+ref.Ref+":"+ref.Ref)...); refErr != nil {
-				return fmt.Errorf("fetch checkpoint %s: %w", ref.Ref, errors.Join(err, refErr))
-			}
+		if err := gitexec.FetchCheckpoint(ctx, l.sourceRoot, defaultGitRemote, ref.CommitSHA, ref.Ref); err != nil {
+			return err
 		}
 	}
 	kind, err := l.runGit(ctx, "cat-file", "-t", ref.TreeSHA)

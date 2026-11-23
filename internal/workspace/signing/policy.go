@@ -228,7 +228,7 @@ func (p Policy) run(ctx context.Context, path string, baseEnv, env []string, arg
 			flag = ""
 		}
 	}
-	if args[command] == "rebase" && slices.Contains(args[command+1:], "--continue") {
+	if args[command] == "rebase" && (slices.Contains(args[command+1:], "--continue") || slices.Contains(args[command+1:], "--skip")) {
 		flag = ""
 		for _, kind := range []string{"rebase-merge", "rebase-apply"} {
 			state, err := gitexec.PathFor(ctx, path, kind+"/gpg_sign_opt")

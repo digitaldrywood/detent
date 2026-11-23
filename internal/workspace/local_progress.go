@@ -7,15 +7,20 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 const (
-	localProgressTimeout    = 5 * time.Second
-	localProgressPatchLimit = 8 << 20
+	localProgressTimeout     = 5 * time.Second
+	localProgressPatchLimit  = 8 << 20
+	worktreeReworkBasePrefix = "refs/worktree/detent-rework-base/"
+	worktreeReworkDefaultRef = worktreeReworkBasePrefix + "default"
+	worktreeReworkPendingRef = worktreeReworkBasePrefix + "pending"
 )
 
 type LocalProgressProvider interface {
@@ -40,7 +45,7 @@ func (l *LocalGit) LocalProgress(ctx context.Context, info Info, issue Issue) (L
 		return LocalProgress{}, err
 	}
 	head = strings.TrimSpace(head)
-	base, err := l.localProgressBase(ctx, normalized.Path, issue)
+	base, err := l.localOnlyProgressBase(ctx, normalized.Path, issue)
 	if err != nil {
 		return LocalProgress{}, err
 	}
@@ -66,28 +71,210 @@ func (l *LocalGit) LocalProgress(ctx context.Context, info Info, issue Issue) (L
 	return LocalProgress{HeadSHA: head, CommitFingerprint: committed, TrackedFingerprint: tracked}, nil
 }
 
-func (l *LocalGit) localProgressBase(ctx context.Context, path string, issue Issue) (string, error) {
+func worktreeReworkBranchRef(branch string) string {
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		return worktreeReworkDefaultRef
+	}
+	return worktreeReworkBasePrefix + "refs/heads/" + branch
+}
+
+func (l *LocalGit) localOnlyProgressBase(ctx context.Context, path string, issue Issue) (string, error) {
 	if issue.ReleaseDelivery != nil {
 		base, err := runGitAt(ctx, path, "rev-parse", "--verify", "--end-of-options", issue.ReleaseDelivery.BaseSHA+"^{commit}")
 		return strings.TrimSpace(base), err
 	}
+	recordedRef := worktreeReworkBranchRef(issue.ProgressBaseRef)
+	if raw, recErr := runGitAt(ctx, path, "rev-parse", "--verify", "--quiet", recordedRef+"^{commit}"); recErr == nil {
+		if recorded := strings.TrimSpace(raw); recorded != "" {
+			return recorded, nil
+		}
+	}
+	base, _, err := l.configuredProgressBaseWithRef(ctx, path, issue)
+	return base, err
+}
+
+func (l *LocalGit) localProgressBase(ctx context.Context, path string, issue Issue) (string, error) {
+	base, _, _, _, err := l.localProgressBaseWithSource(ctx, path, issue)
+	return base, err
+}
+
+func (l *LocalGit) localProgressBaseWithSource(ctx context.Context, path string, issue Issue) (string, []string, []string, bool, error) {
+	if issue.ReleaseDelivery != nil {
+		base, err := runGitAt(ctx, path, "rev-parse", "--verify", "--end-of-options", issue.ReleaseDelivery.BaseSHA+"^{commit}")
+		return strings.TrimSpace(base), nil, nil, false, err
+	}
+	recordedRef := worktreeReworkBranchRef(issue.ProgressBaseRef)
+	base, baseRef, err := l.configuredProgressBaseWithRef(ctx, path, issue)
+	liveBase, liveTarget, verified, verifyErr := l.verifiedWorktreeReworkBase(ctx, path, issue, recordedRef)
+	if verifyErr != nil {
+		return "", nil, nil, false, verifyErr
+	}
+	if verified {
+		var excluded []string
+		var extraPublished []string
+		if liveTarget != "" {
+			var trackErr error
+			excluded, extraPublished, trackErr = l.targetRemoteTrackingRefs(ctx, path, issue, defaultGitRemote, liveTarget, strings.TrimSpace(issue.ProgressBaseRef) == "")
+			if trackErr != nil {
+				return "", nil, nil, false, trackErr
+			}
+		}
+		if err == nil && liveBase != base && baseRef != "" && !slices.Contains(excluded, baseRef) {
+			excluded = append(excluded, baseRef)
+		}
+		return liveBase, excluded, extraPublished, true, nil
+	}
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+	return base, nil, nil, false, nil
+}
+
+func (l *LocalGit) targetRemoteTrackingRefs(ctx context.Context, path string, issue Issue, remote, target string, isDefaultTarget bool) ([]string, []string, error) {
+	if remote == "" || target == "" {
+		return nil, nil, nil
+	}
+	refs := []string{"refs/remotes/" + remote + "/" + target}
+	var extraPublished []string
+	matchesDefault := isDefaultTarget
+	defaultBase := ""
+	defaultTarget := ""
+	if !isDefaultTarget {
+		liveDefaultBase, liveDefaultTarget, defErr := l.resolveRemoteHeadTarget(ctx, path, remote, issue)
+		if defErr != nil {
+			return nil, nil, defErr
+		}
+		defaultBase = liveDefaultBase
+		defaultTarget = liveDefaultTarget
+		matchesDefault = defaultTarget == target || defaultBase == ""
+		if defaultTarget != "" && defaultTarget != target {
+			defaultTracking := "refs/remotes/" + remote + "/" + defaultTarget
+			if !slices.Contains(refs, defaultTracking) {
+				refs = append(refs, defaultTracking)
+			}
+		}
+		if !matchesDefault && validLandingHead(defaultBase) {
+			if _, existsErr := runGitAt(ctx, path, "cat-file", "-e", defaultBase+"^{commit}"); existsErr != nil {
+				if fetchErr := gitexec.FetchCheckpoint(ctx, path, remote, defaultBase, "HEAD"); fetchErr != nil {
+					return nil, nil, fetchErr
+				}
+			}
+			if _, existsErr := runGitAt(ctx, path, "cat-file", "-e", defaultBase+"^{commit}"); existsErr != nil {
+				return nil, nil, existsErr
+			}
+			extraPublished = append(extraPublished, defaultBase)
+		}
+	}
+	remoteHeadRef := "refs/remotes/" + remote + "/HEAD"
+	if matchesDefault {
+		if !slices.Contains(refs, remoteHeadRef) {
+			refs = append(refs, remoteHeadRef)
+		}
+	} else if rawHeadRef, headRefErr := runGitAt(ctx, path, "rev-parse", "--verify", "--quiet", remoteHeadRef+"^{commit}"); headRefErr == nil && strings.TrimSpace(rawHeadRef) != defaultBase {
+		if !slices.Contains(refs, remoteHeadRef) {
+			refs = append(refs, remoteHeadRef)
+		}
+	}
+	raw, err := runGitAt(ctx, path, "config", "--get-all", "remote."+remote+".fetch")
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return refs, extraPublished, nil
+	}
+	sourceBranches := []string{target}
+	if defaultTarget != "" && defaultTarget != target {
+		sourceBranches = append(sourceBranches, defaultTarget)
+	}
+	for spec := range strings.SplitSeq(raw, "\n") {
+		spec = strings.TrimSpace(spec)
+		if spec == "" || strings.HasPrefix(spec, "^") {
+			continue
+		}
+		spec = strings.TrimPrefix(spec, "+")
+		src, dst, ok := strings.Cut(spec, ":")
+		if !ok || !strings.HasPrefix(dst, "refs/remotes/") {
+			continue
+		}
+		if src == "HEAD" {
+			var mapped string
+			if matchesDefault {
+				mapped = dst
+			} else if rawDst, dstErr := runGitAt(ctx, path, "rev-parse", "--verify", "--quiet", dst+"^{commit}"); dstErr == nil && strings.TrimSpace(rawDst) != defaultBase {
+				mapped = dst
+			}
+			if mapped != "" && !slices.Contains(refs, mapped) {
+				refs = append(refs, mapped)
+			}
+			continue
+		}
+		for _, branch := range sourceBranches {
+			fullSource := "refs/heads/" + branch
+			var mapped string
+			if src == fullSource || src == branch {
+				mapped = dst
+			} else if srcPrefix, srcSuffix, srcWild := strings.Cut(src, "*"); srcWild {
+				if dstPrefix, dstSuffix, dstWild := strings.Cut(dst, "*"); dstWild &&
+					len(fullSource) >= len(srcPrefix)+len(srcSuffix) &&
+					strings.HasPrefix(fullSource, srcPrefix) &&
+					strings.HasSuffix(fullSource, srcSuffix) {
+					mid := fullSource[len(srcPrefix) : len(fullSource)-len(srcSuffix)]
+					mapped = dstPrefix + mid + dstSuffix
+				}
+			}
+			if mapped != "" && !slices.Contains(refs, mapped) {
+				refs = append(refs, mapped)
+			}
+		}
+	}
+	return refs, extraPublished, nil
+}
+
+func (l *LocalGit) configuredProgressBaseWithRef(ctx context.Context, path string, issue Issue) (string, string, error) {
 	if branch := strings.TrimSpace(issue.ProgressBaseRef); branch != "" {
 		for _, ref := range []string{"refs/remotes/origin/" + branch, "refs/heads/" + branch} {
 			if base, err := runGitAt(ctx, path, "rev-parse", "--verify", ref+"^{commit}"); err == nil {
-				return strings.TrimSpace(base), nil
+				remoteRef := ""
+				if strings.HasPrefix(ref, "refs/remotes/") {
+					remoteRef = ref
+				}
+				return strings.TrimSpace(base), remoteRef, nil
 			}
 		}
-		return "", fmt.Errorf("local progress base branch %q is unavailable", branch)
+		return "", "", fmt.Errorf("local progress base branch %q is unavailable", branch)
 	}
 	if ref := strings.TrimSpace(issue.BaseRef); ref != "" {
 		base, err := runGitAt(ctx, path, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
-		return strings.TrimSpace(base), err
+		if err != nil {
+			return "", "", err
+		}
+		remoteRef := ""
+		if full, symErr := runGitAt(ctx, path, "rev-parse", "--symbolic-full-name", "--end-of-options", ref); symErr == nil {
+			if trimmed := strings.TrimSpace(full); strings.HasPrefix(trimmed, "refs/remotes/") {
+				remoteRef = trimmed
+			}
+		}
+		return strings.TrimSpace(base), remoteRef, nil
 	}
 	if base, err := l.runGit(ctx, "rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"); err == nil {
-		return strings.TrimSpace(base), nil
+		return strings.TrimSpace(base), "refs/remotes/origin/HEAD", nil
 	}
 	base, err := l.runGit(ctx, "rev-parse", "--verify", "HEAD")
-	return strings.TrimSpace(base), err
+	return strings.TrimSpace(base), "", err
+}
+
+func (l *LocalGit) verifiedWorktreeReworkBase(ctx context.Context, path string, issue Issue, recordedRef string) (string, string, bool, error) {
+	raw, err := runGitAt(ctx, path, "rev-parse", "--verify", "--quiet", recordedRef+"^{commit}")
+	if err != nil {
+		return "", "", false, nil
+	}
+	recorded := strings.TrimSpace(raw)
+	if recorded == "" {
+		return "", "", false, nil
+	}
+	liveBase, liveTarget, liveErr := l.resolveReworkTargetBase(ctx, path, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef})
+	if liveErr != nil {
+		return "", "", false, liveErr
+	}
+	return liveBase, strings.TrimSpace(liveTarget), true, nil
 }
 
 func gitProgressPatch(ctx context.Context, path string, revisions ...string) (string, error) {

@@ -613,6 +613,104 @@ func (l *LocalGit) acquireSourceOperation(ctx context.Context) (func(), error) {
 	return sourceOperationLockFor(key).acquire(ctx)
 }
 
+type worktreeOperationLock struct {
+	permit chan struct{}
+	refs   int
+}
+
+var worktreeOperationLocks = struct {
+	sync.Mutex
+	byPath map[string]*worktreeOperationLock
+}{byPath: map[string]*worktreeOperationLock{}}
+
+type worktreeOperationHeldKey string
+
+func withHeldWorktreeOperation(ctx context.Context, path string) context.Context {
+	return context.WithValue(ctx, worktreeOperationHeldKey(worktreeOperationKey(path)), struct{}{})
+}
+
+func worktreeOperationHeld(ctx context.Context, path string) bool {
+	return ctx != nil && ctx.Value(worktreeOperationHeldKey(worktreeOperationKey(path))) != nil
+}
+
+func worktreeOperationKey(path string) string {
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return filepath.Clean(resolved)
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(cleaned)); err == nil {
+		return filepath.Join(filepath.Clean(parent), filepath.Base(cleaned))
+	}
+	return cleaned
+}
+
+func acquireWorktreeOperation(ctx context.Context, path string) (func(), error) {
+	key := worktreeOperationKey(path)
+	worktreeOperationLocks.Lock()
+	lock, ok := worktreeOperationLocks.byPath[key]
+	if !ok {
+		lock = &worktreeOperationLock{permit: make(chan struct{}, 1)}
+		lock.permit <- struct{}{}
+		worktreeOperationLocks.byPath[key] = lock
+	}
+	lock.refs++
+	worktreeOperationLocks.Unlock()
+
+	releaseRef := func() {
+		worktreeOperationLocks.Lock()
+		lock.refs--
+		if lock.refs == 0 && worktreeOperationLocks.byPath[key] == lock {
+			delete(worktreeOperationLocks.byPath, key)
+		}
+		worktreeOperationLocks.Unlock()
+	}
+
+	select {
+	case <-ctx.Done():
+		releaseRef()
+		return nil, ctx.Err()
+	case <-lock.permit:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				lock.permit <- struct{}{}
+				releaseRef()
+			})
+		}, nil
+	}
+}
+
+func tryAcquireWorktreeOperation(path string) (func(), bool) {
+	key := worktreeOperationKey(path)
+	worktreeOperationLocks.Lock()
+	lock, ok := worktreeOperationLocks.byPath[key]
+	if !ok {
+		lock = &worktreeOperationLock{permit: make(chan struct{}, 1)}
+		lock.permit <- struct{}{}
+		worktreeOperationLocks.byPath[key] = lock
+	}
+	select {
+	case <-lock.permit:
+		lock.refs++
+		worktreeOperationLocks.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				lock.permit <- struct{}{}
+				worktreeOperationLocks.Lock()
+				lock.refs--
+				if lock.refs == 0 && worktreeOperationLocks.byPath[key] == lock {
+					delete(worktreeOperationLocks.byPath, key)
+				}
+				worktreeOperationLocks.Unlock()
+			})
+		}, true
+	default:
+		worktreeOperationLocks.Unlock()
+		return nil, false
+	}
+}
+
 func SafeKey(identifier string) string {
 	key := unsafeKeyPattern.ReplaceAllString(strings.TrimSpace(identifier), "_")
 	if key == "" || key == "." || key == ".." || key == ".detent" {
@@ -662,6 +760,18 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return Info{}, err
+	}
+	worktreeReleased := false
+	releaseWorktreeNow := func() {
+		if !worktreeReleased {
+			worktreeReleased = true
+			releaseWorktree()
+		}
+	}
+	defer releaseWorktreeNow()
 	if retry, err := l.uses.CheckWorkspaceSetup(l.root, info.Path); err != nil {
 		if retry {
 			err = l.preserveFailedWorkspace(ctx, info.Path, err)
@@ -736,13 +846,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if issue.AttemptWorkspace.Key() != "" && !ownsCheckpointRef(issue, checkpoint.Ref) {
 			return Info{}, fmt.Errorf("%w: checkpoint belongs to another attempt", ErrCheckpointUnsafe)
 		}
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return Info{}, err
-		}
-		err = l.fetchCheckpointRef(ctx, &checkpoint)
-		release()
-		if err != nil {
+		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
 			return Info{}, err
 		}
 		retainProgress := issue.Checkpoint == nil && checkpoint.Transaction == nil
@@ -786,6 +890,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
+			releaseWorktreeNow()
 			created, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 			if err != nil {
 				return Info{}, err
@@ -867,7 +972,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err := restoreCheckpointTree(ctx, info.Path, issue.Checkpoint); err != nil {
 			return Info{}, err
 		}
+		releaseWorktreeNow()
 	} else {
+		releaseWorktreeNow()
 		restored, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 		if err != nil {
 			return Info{}, err
@@ -1491,16 +1598,26 @@ func (l *LocalGit) releaseBranchHolders(ctx context.Context, branch string, targ
 		}
 	}
 	for _, h := range holders {
+		if !h.rebasing && !h.attached {
+			continue
+		}
+		releaseHolder, ok := tryAcquireWorktreeOperation(h.path)
+		if !ok {
+			return fmt.Errorf("%w: branch %s is actively in use at %s", ErrMergeResolutionInvalid, branch, h.path)
+		}
 		if h.rebasing {
 			if _, err := runGitAt(ctx, h.path, "rebase", "--quit"); err != nil {
+				releaseHolder()
 				return fmt.Errorf("release %s from interrupted rebase at %s: %w", branch, h.path, withCommandOutput(err))
 			}
 		}
 		if h.attached {
 			if _, err := runGitAt(ctx, h.path, "checkout", "--detach", "--quiet"); err != nil {
+				releaseHolder()
 				return fmt.Errorf("release %s from worktree %s: %w", branch, h.path, withCommandOutput(err))
 			}
 		}
+		releaseHolder()
 	}
 	return nil
 }

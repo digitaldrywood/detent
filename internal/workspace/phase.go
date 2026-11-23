@@ -18,6 +18,33 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if err != nil {
 		return "", "", "", err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer releaseWorktree()
+	ctx = withHeldWorktreeOperation(ctx, info.Path)
+	paused, pausedErr := rebaseInProgress(ctx, info.Path)
+	if pausedErr != nil {
+		return "", "", "", pausedErr
+	}
+	if paused {
+		return "", "", "", refuse(LandRefusalHeadMoved, "cannot publish an item phase while a rebase is in progress")
+	}
+	if !issue.NoChangeNeeded && issue.Source != nil {
+		headNow, headErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+		if headErr != nil {
+			return "", "", "", headErr
+		}
+		headNow = strings.TrimSpace(headNow)
+		if headNow != issue.Source.Version.HeadSHA {
+			for _, recordedRef := range []string{worktreeReworkBranchRef(issue.ProgressBaseRef), worktreeReworkPendingRef} {
+				if rawBase, recErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "--quiet", recordedRef+"^{commit}"); recErr == nil && strings.TrimSpace(rawBase) == headNow {
+					return "", "", "", refuse(LandRefusalHeadMoved, "reconciled item branch requires a reconciliation commit before publication")
+				}
+			}
+		}
+	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
 	expected := info.PhaseRemoteHead
 	if issue.ExpectedPhaseRemoteHead != "" {
@@ -38,6 +65,12 @@ func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issu
 	if err != nil {
 		return "", err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return "", err
+	}
+	defer releaseWorktree()
+	ctx = withHeldWorktreeOperation(ctx, info.Path)
 	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
 		return l.fetchItemPhase(ctx, info, issue, previous)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
@@ -50,6 +83,13 @@ func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (s
 	if err != nil {
 		return "", "", err
 	}
+	if !worktreeOperationHeld(ctx, info.Path) {
+		releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+		if err != nil {
+			return "", "", err
+		}
+		defer releaseWorktree()
+	}
 	return phasegit.Head(ctx, info.Path)
 }
 
@@ -58,6 +98,11 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 	if err != nil {
 		return err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseWorktree()
 	if issue.RetainPhaseCheckout && !info.Created {
 		return l.verifyRetainedItemPhaseCheckout(ctx, info, issue)
 	}
@@ -89,8 +134,10 @@ func (l *LocalGit) verifyRetainedItemPhaseCheckout(ctx context.Context, info Inf
 	if err != nil {
 		return err
 	}
-	if paused && !issue.NativeRework {
-		return ErrMergeResolutionInvalid
+	if paused {
+		if _, _, _, _, _, err := l.verifyPausedRebaseState(ctx, info.Path, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}); err != nil {
+			return err
+		}
 	}
 	if issue.PublishedChangeHeadSHA == "" {
 		return nil
