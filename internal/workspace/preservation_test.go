@@ -699,11 +699,20 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatal(err)
 		}
 		runGit(t, source, "worktree", "remove", "--force", info.Path)
+		offlinePath := filepath.Join(t.TempDir(), "offline-wt")
+		runGit(t, source, "worktree", "add", "-b", "offline-branch", offlinePath, "HEAD")
+		offlineAdmin := filepath.Join(source, ".git", "worktrees", "offline-wt")
+		if err := os.RemoveAll(offlinePath); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := backend.CleanupIssue(t.Context(), issue); err != nil {
 			t.Fatalf("CleanupIssue() retry after interrupted worktree removal error = %v", err)
 		}
 		if exists, err := backend.branchExists(t.Context(), info.Branch); err != nil || exists {
 			t.Fatalf("owned branch %s still exists after interrupted cleanup retry (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+		if _, err := os.Stat(offlineAdmin); err != nil {
+			t.Fatalf("unrelated offline worktree registration was pruned: %v", err)
 		}
 	})
 }

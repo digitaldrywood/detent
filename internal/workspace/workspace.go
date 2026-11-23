@@ -1072,10 +1072,6 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 		if err := l.uses.Stop(ctx, info.Path); err != nil {
 			return result, err
 		}
-		_, pruneErr := l.runGit(ctx, "worktree", "prune")
-		if pruneErr != nil {
-			return result, pruneErr
-		}
 		if issue.Terminal && !session && l.autoBranch && strings.HasPrefix(info.Branch, autoBranchPrefix) {
 			if sha, ownerID := l.ownedInterruptedCleanupBranchSHA(ctx, info, issue); sha != "" {
 				if err := l.deleteVerifiedOwnedBranch(ctx, info.Branch, ownerID, sha); err != nil {
@@ -1088,6 +1084,10 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 				l.deleteCheckpointRef(ctx, issue)
 				return result, nil
 			}
+		}
+		_, pruneErr := l.runGit(ctx, "worktree", "prune")
+		if pruneErr != nil {
+			return result, pruneErr
 		}
 		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch, session, issue)
 		if branchErr != nil {
