@@ -301,13 +301,9 @@ func readWorktreeOwnerID(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
+func gitDirHoldsBranch(gitDir, branch string) bool {
 	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return false
-	}
-	gitDir, err := worktreeGitDir(ctx, path)
-	if err != nil {
+	if gitDir == "" || branch == "" {
 		return false
 	}
 	wantRef := "refs/heads/" + branch
@@ -323,7 +319,20 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 			}
 		}
 	}
+	if data, err := os.ReadFile(filepath.Join(gitDir, "BISECT_START")); err == nil {
+		if strings.TrimSpace(string(data)) == branch {
+			return true
+		}
+	}
 	return false
+}
+
+func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
+	gitDir, err := worktreeGitDir(ctx, path)
+	if err != nil {
+		return false
+	}
+	return gitDirHoldsBranch(gitDir, branch)
 }
 
 func (l *LocalGit) branchOwnerIDTip(ctx context.Context, branch, ownerID string) (string, bool) {
@@ -388,11 +397,19 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 		return false, withCommandOutput(err)
 	}
 	wantRef := "refs/heads/" + strings.TrimSpace(branch)
+	targetGitDir := ""
 	if targetPath != "" {
 		if resolved, err := canonicalExistingPath(targetPath); err == nil {
 			targetPath = resolved
 		} else {
 			targetPath = filepath.Clean(targetPath)
+		}
+		if gd, err := worktreeGitDir(ctx, targetPath); err == nil {
+			if resolved, err := canonicalExistingPath(gd); err == nil {
+				targetGitDir = resolved
+			} else {
+				targetGitDir = filepath.Clean(gd)
+			}
 		}
 	}
 	var worktreePath string
@@ -405,11 +422,38 @@ func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string,
 			} else {
 				worktreePath = filepath.Clean(rawPath)
 			}
-			if worktreePath != targetPath && worktreeHoldsBranch(ctx, worktreePath, branch) {
-				return true, nil
+			if worktreePath != targetPath {
+				gd, err := worktreeGitDir(ctx, worktreePath)
+				if err != nil {
+					return true, nil
+				}
+				if gitDirHoldsBranch(gd, branch) {
+					return true, nil
+				}
 			}
 		case strings.HasPrefix(field, "branch "):
 			if strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef && worktreePath != targetPath {
+				return true, nil
+			}
+		}
+	}
+	commonDir, err := gitCommonDir(ctx, l.sourceRoot)
+	if err != nil {
+		return true, nil
+	}
+	if entries, err := os.ReadDir(filepath.Join(commonDir, "worktrees")); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			adminDir := filepath.Join(commonDir, "worktrees", entry.Name())
+			if resolved, err := canonicalExistingPath(adminDir); err == nil {
+				adminDir = resolved
+			}
+			if targetGitDir != "" && adminDir == targetGitDir {
+				continue
+			}
+			if gitDirHoldsBranch(adminDir, branch) {
 				return true, nil
 			}
 		}
