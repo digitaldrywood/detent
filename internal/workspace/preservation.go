@@ -274,6 +274,20 @@ func issueLandedAtHead(issue Issue) bool {
 	return issue.Terminal && strings.TrimSpace(issue.LandedHeadSHA) != ""
 }
 
+func (l *LocalGit) checkCleanupBranchTip(ctx context.Context, branch string, tip string, issue Issue) error {
+	if deliveredCleanupHead(issue) != "" && tip == deliveredCleanupHead(issue) {
+		return nil
+	}
+	count, err := retainedGitCommitCount(ctx, l.sourceRoot, tip)
+	if err != nil {
+		return fmt.Errorf("inspect cleanup branch: %w", err)
+	}
+	if count != 0 {
+		return fmt.Errorf("%w: branch %s contains commits absent from remote refs", ErrWorkspacePreserved, branch)
+	}
+	return nil
+}
+
 func (l *LocalGit) checkCleanupBranch(ctx context.Context, branch string, session bool, issue Issue, ownedBranch bool) error {
 	if !l.autoBranch || !strings.HasPrefix(branch, autoBranchPrefix) {
 		return nil
