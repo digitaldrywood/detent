@@ -316,8 +316,23 @@ func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID str
 	if branch == "" || ownerID == "" {
 		return false
 	}
-	output, err := l.runGit(ctx, "config", "--local", "--get", "branch."+branch+".detent-owner")
-	return err == nil && strings.TrimSpace(output) == ownerID
+	output, err := l.runGit(ctx, "config", "--local", "--get-regexp", `^branch\..*\.detent-owner$`)
+	if err != nil {
+		return false
+	}
+	wantKey := "branch." + branch + ".detent-owner"
+	matchedWant := false
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || strings.TrimSpace(val) != ownerID {
+			continue
+		}
+		if key != wantKey {
+			return false
+		}
+		matchedWant = true
+	}
+	return matchedWant
 }
 
 func (l *LocalGit) clearBranchOwnerID(ctx context.Context, branch string) {

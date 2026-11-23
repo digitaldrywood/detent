@@ -638,4 +638,34 @@ func TestLocalGitTerminalCleanupRequiresOwnershipRecord(t *testing.T) {
 			t.Fatalf("replacement branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
 		}
 	})
+	t.Run("copied branch swapped into original name is preserved", func(t *testing.T) {
+		t.Parallel()
+		source := initSourceRepo(t)
+		backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{ID: "wi-copied", Identifier: "owner/repo#709"}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "branch", "-c", info.Branch, info.Branch+"-copy")
+		runGit(t, info.Path, "branch", "-m", info.Branch, info.Branch+"-orig")
+		runGit(t, info.Path, "branch", "-m", info.Branch+"-copy", info.Branch)
+		runGit(t, info.Path, "checkout", info.Branch)
+		if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("copied branch commit\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "add", "README.md")
+		runGit(t, info.Path, "commit", "-m", "copied branch commit")
+		issue.Terminal = true
+		if _, err := backend.CleanupIssue(t.Context(), issue); !errors.Is(err, ErrWorkspacePreserved) {
+			t.Fatalf("CleanupIssue() error = %v, want ErrWorkspacePreserved", err)
+		}
+		exists, err := backend.branchExists(t.Context(), info.Branch)
+		if err != nil || !exists {
+			t.Fatalf("copied branch %s was deleted (exists=%v, err=%v)", info.Branch, exists, err)
+		}
+	})
 }
