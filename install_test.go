@@ -660,6 +660,8 @@ chmod 755 "$5"
 }
 
 func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
+	t.Setenv("GIT_ALLOW_PROTOCOL", "")
+
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd() error = %v", err)
@@ -724,7 +726,8 @@ func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
 	t.Helper()
 
-	clone := exec.CommandContext(t.Context(), "git", "clone", "--shared", "--no-checkout", "--", source, checkout)
+	clone := exec.CommandContext(t.Context(), "git", "clone", "--local", "--shared", "--no-checkout", "--", source, checkout)
+	clone.Env = append(clone.Environ(), "GIT_ALLOW_PROTOCOL=file")
 	if output, err := clone.CombinedOutput(); err != nil {
 		t.Fatalf("clone install checkout: %v\n%s", err, output)
 	}
