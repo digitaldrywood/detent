@@ -1479,9 +1479,7 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 			return err
 		}
 		if _, err := l.runGit(ctx, "worktree", "add", path, branch); err != nil {
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			defer cancel()
-			_, _ = l.runGit(cleanupCtx, "update-ref", "-d", "refs/heads/"+branch, baseSHA)
+			l.rollbackCreatedBranch(ctx, branch, ownerID, baseSHA)
 			return err
 		}
 		branchOwnerID = ownerID

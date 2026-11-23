@@ -286,9 +286,7 @@ func (l *LocalGit) createLandingWorktree(ctx context.Context, info Info, issue I
 				l.logger.Warn("landing worktree left behind", "path", info.Path, "error", err)
 			}
 			if createdBranchSHA != "" {
-				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-				defer cancel()
-				_, _ = l.runGit(cleanupCtx, "update-ref", "-d", "refs/heads/"+info.Branch, createdBranchSHA)
+				l.rollbackCreatedBranch(ctx, info.Branch, branchOwnerID, createdBranchSHA)
 			}
 		}
 	}()

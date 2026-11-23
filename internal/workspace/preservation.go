@@ -85,17 +85,17 @@ func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue I
 	if err != nil || !l.validOwnershipRecord(ctx, recordPath, record) {
 		return "", ""
 	}
-	if !l.ownsLiveCheckout(ctx, record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) || !l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID) {
+	if !l.ownsLiveCheckout(ctx, record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) {
 		return "", ""
 	}
 	if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
 		return "", ""
 	}
-	head, err := l.runGit(ctx, "rev-parse", "--verify", "refs/heads/"+info.Branch)
-	if err != nil {
+	head, ok := l.branchOwnerIDTip(ctx, info.Branch, record.OwnerID)
+	if !ok {
 		return "", ""
 	}
-	return strings.TrimSpace(head), strings.TrimSpace(record.OwnerID)
+	return head, strings.TrimSpace(record.OwnerID)
 }
 
 func recordOwnsCheckout(record cleanupOwnershipRecord, info Info, issue Issue) bool {

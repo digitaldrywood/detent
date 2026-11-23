@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 var nativeWorkspaceKeyPattern = regexp.MustCompile(`^(.+)-(prj_[a-z0-9]+)_([1-9][0-9]*)-([a-f0-9]{12})(?:-review-(.+))?$`)
@@ -325,31 +326,60 @@ func worktreeHoldsBranch(ctx context.Context, path, branch string) bool {
 	return false
 }
 
-func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID string) bool {
+func (l *LocalGit) branchOwnerIDTip(ctx context.Context, branch, ownerID string) (string, bool) {
 	branch = strings.TrimSpace(branch)
 	ownerID = strings.TrimSpace(ownerID)
 	if branch == "" || ownerID == "" {
-		return false
+		return "", false
 	}
-	reflog, err := l.runGit(ctx, "log", "-g", "--format=%gs", "refs/heads/"+branch)
+	reflog, err := l.runGit(ctx, "log", "-g", "--format=%H%x00%gs", "refs/heads/"+branch)
 	if err != nil {
-		return false
+		return "", false
 	}
 	entries := strings.TrimSpace(reflog)
 	if entries == "" {
-		return false
+		return "", false
 	}
 	wantEntry := branchOwnerReflogPrefix + ownerID
+	tip := ""
 	foundOwner := false
-	for _, entry := range strings.Split(entries, "\n") {
-		if strings.HasPrefix(entry, "Branch: copied ") || strings.HasPrefix(entry, "Branch: renamed ") {
-			return false
+	for i, line := range strings.Split(entries, "\n") {
+		sha, msg, ok := strings.Cut(line, "\x00")
+		if !ok {
+			return "", false
 		}
-		if entry == wantEntry {
+		if i == 0 {
+			tip = strings.TrimSpace(sha)
+		}
+		if strings.HasPrefix(msg, "Branch: copied ") || strings.HasPrefix(msg, "Branch: renamed ") {
+			return "", false
+		}
+		if msg == wantEntry {
 			foundOwner = true
 		}
 	}
-	return foundOwner
+	if !foundOwner || tip == "" {
+		return "", false
+	}
+	return tip, true
+}
+
+func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID string) bool {
+	_, ok := l.branchOwnerIDTip(ctx, branch, ownerID)
+	return ok
+}
+
+func (l *LocalGit) rollbackCreatedBranch(ctx context.Context, branch, ownerID, baseSHA string) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if _, held, err := l.branchWorktreePath(cleanupCtx, branch, ""); err != nil || held {
+		return
+	}
+	tip, ok := l.branchOwnerIDTip(cleanupCtx, branch, ownerID)
+	if !ok || tip != baseSHA {
+		return
+	}
+	_, _ = l.runGit(cleanupCtx, "branch", "-D", branch)
 }
 
 func (l *LocalGit) writeOwnershipRecord(record cleanupOwnershipRecord) (returnErr error) {
