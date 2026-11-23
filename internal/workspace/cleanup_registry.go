@@ -372,14 +372,49 @@ func (l *LocalGit) branchOwnerIDMatches(ctx context.Context, branch, ownerID str
 func (l *LocalGit) rollbackCreatedBranch(ctx context.Context, branch, ownerID, baseSHA string) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if _, held, err := l.branchWorktreePath(cleanupCtx, branch, ""); err != nil || held {
+	if held, err := l.branchHeldByOtherWorktree(cleanupCtx, branch, ""); err != nil || held {
 		return
 	}
 	tip, ok := l.branchOwnerIDTip(cleanupCtx, branch, ownerID)
 	if !ok || tip != baseSHA {
 		return
 	}
-	_, _ = l.runGit(cleanupCtx, "branch", "-D", branch)
+	_, _ = l.runGit(cleanupCtx, "branch", "-d", branch)
+}
+
+func (l *LocalGit) branchHeldByOtherWorktree(ctx context.Context, branch string, targetPath string) (bool, error) {
+	output, err := l.runGit(ctx, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return false, withCommandOutput(err)
+	}
+	wantRef := "refs/heads/" + strings.TrimSpace(branch)
+	if targetPath != "" {
+		if resolved, err := canonicalExistingPath(targetPath); err == nil {
+			targetPath = resolved
+		} else {
+			targetPath = filepath.Clean(targetPath)
+		}
+	}
+	var worktreePath string
+	for _, field := range strings.Split(output, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			rawPath := strings.TrimPrefix(field, "worktree ")
+			if resolved, err := canonicalExistingPath(rawPath); err == nil {
+				worktreePath = resolved
+			} else {
+				worktreePath = filepath.Clean(rawPath)
+			}
+			if worktreePath != targetPath && worktreeHoldsBranch(ctx, worktreePath, branch) {
+				return true, nil
+			}
+		case strings.HasPrefix(field, "branch "):
+			if strings.TrimSpace(strings.TrimPrefix(field, "branch ")) == wantRef && worktreePath != targetPath {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (l *LocalGit) writeOwnershipRecord(record cleanupOwnershipRecord) (returnErr error) {

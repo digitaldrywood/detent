@@ -88,7 +88,7 @@ func (l *LocalGit) ownedCleanupBranchSHA(ctx context.Context, info Info, issue I
 	if !l.ownsLiveCheckout(ctx, record, info, issue) || !record.BranchCreated || record.Branch == "" || record.Branch != info.Branch || !worktreeHoldsBranch(ctx, info.Path, info.Branch) {
 		return "", ""
 	}
-	if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
+	if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
 		return "", ""
 	}
 	head, ok := l.branchOwnerIDTip(ctx, info.Branch, record.OwnerID)
@@ -134,7 +134,7 @@ func (l *LocalGit) checkWorkspaceCleanup(ctx context.Context, info Info, issue I
 	ownedCheckout := hasValidRecord && l.ownsLiveCheckout(ctx, record, info, issue)
 	ownedBranch := ownedCheckout && record.BranchCreated && record.Branch != "" && record.Branch == info.Branch && worktreeHoldsBranch(ctx, info.Path, info.Branch) && l.branchOwnerIDMatches(ctx, info.Branch, record.OwnerID)
 	if ownedBranch {
-		if _, heldElsewhere, err := l.branchWorktreePath(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
+		if heldElsewhere, err := l.branchHeldByOtherWorktree(ctx, info.Branch, info.Path); err != nil || heldElsewhere {
 			ownedBranch = false
 		}
 	}
