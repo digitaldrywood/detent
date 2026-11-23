@@ -11,52 +11,83 @@ import (
 
 type errorHeartbeatStore struct {
 	store.WorkAttemptStore
-	first    error
 	calls    int
-	cancel   context.CancelFunc
+	err      error
 	recorded store.WorkAttemptHeartbeat
 }
 
 func (s *errorHeartbeatStore) RecordWorkAttemptHeartbeat(_ context.Context, heartbeat store.WorkAttemptHeartbeat) error {
 	s.calls++
-	if s.calls == 1 {
-		if s.cancel != nil {
-			s.cancel()
-		}
-		return s.first
+	if s.err == nil {
+		s.recorded = heartbeat
 	}
-	s.recorded = heartbeat
-	return nil
+	return s.err
 }
 
 func TestHeartbeatWriteRetryErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		first     error
-		cancel    bool
-		wantCalls int
-		wantErr   error
+		name     string
+		err      error
+		failures int
+		expires  bool
 	}{
-		{"failed write retries", errors.New("temporary write failure"), false, 2, nil},
-		{"cancellation does not retry", context.Canceled, false, 1, context.Canceled},
-		{"shutdown does not retry", context.DeadlineExceeded, true, 1, context.Canceled},
-		{"missing attempt does not retry", store.ErrNotFound, false, 1, store.ErrNotFound},
+		{"transient persistence failure", errors.New("temporarily unavailable"), 7, false},
+		{"expired before retry", context.DeadlineExceeded, 1, true},
+		{"retired attempt", store.ErrNotFound, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), heartbeatOperationTimeout)
-			defer cancel()
-			backend := &errorHeartbeatStore{first: tc.first}
-			if tc.cancel {
-				backend.cancel = cancel
+			now := time.Now()
+			const interval = 10 * time.Second
+			backend := &errorHeartbeatStore{err: tc.err}
+			manager := newHeartbeatManager(Config{Claiming: ClaimingConfig{LeaseTTL: time.Minute, HeartbeatInterval: interval}}, nil, backend, func() time.Time { return now }, nil)
+			expires := now.Add(time.Minute)
+			target := heartbeatTarget{issueID: "worker", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004, LeaseExpiresAt: expires}}
+			manager.upsert(target)
+			now = now.Add(interval)
+			for i := range tc.failures {
+				due := manager.due(now)
+				if len(due) != 1 {
+					t.Fatalf("due=%v", due)
+				}
+				manager.execute(t.Context(), due[0])
+				if result := <-manager.results; !errors.Is(result.workAttemptError, tc.err) || backend.calls != i+1 {
+					t.Fatalf("calls=%d write error=%v, want %d calls and %v", backend.calls, result.workAttemptError, i+1, tc.err)
+				}
+				manager.upsert(target)
+				delay := manager.nextDelay(now)
+				if errors.Is(tc.err, store.ErrNotFound) {
+					if delay != interval {
+						t.Fatalf("retired attempt retry in %s", delay)
+					}
+					return
+				}
+				maximum := min(time.Second<<i, interval, expires.Sub(now)/3)
+				if delay < maximum-maximum/8 || delay > maximum {
+					t.Fatalf("failure %d delay=%s maximum=%s", i+1, delay, maximum)
+				}
+				now = now.Add(delay)
 			}
-			now := time.Now().UTC()
-			manager := newHeartbeatManager(Config{}, nil, backend, func() time.Time { return now }, nil)
-			got, err := manager.persistHeartbeat(ctx, heartbeatTarget{workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004}}, manager.settingsSnapshot())
-			if !errors.Is(err, tc.wantErr) || backend.calls != tc.wantCalls {
-				t.Fatalf("calls=%d err=%v", backend.calls, err)
+			if tc.expires {
+				now = expires
+				due := manager.due(now)
+				if len(due) != 1 {
+					t.Fatalf("due=%v", due)
+				}
+				manager.execute(t.Context(), due[0])
+				if result := <-manager.results; !errors.Is(result.workAttemptError, store.ErrNotFound) || backend.calls != tc.failures {
+					t.Fatalf("expired attempt: calls=%d write error=%v", backend.calls, result.workAttemptError)
+				}
+				return
 			}
-			if err == nil && (backend.recorded.AttemptID != 6004 || !backend.recorded.HeartbeatAt.Equal(now) || !got.LeaseExpiresAt.After(now)) {
-				t.Fatalf("heartbeat not persisted: %+v", backend.recorded)
+			backend.err = nil
+			due := manager.due(now)
+			if len(due) != 1 {
+				t.Fatalf("due=%v", due)
+			}
+			manager.execute(t.Context(), due[0])
+			result := <-manager.results
+			if !result.workAttemptRenewed || !now.Before(expires) || !backend.recorded.LeaseExpiresAt.After(expires) || manager.nextDelay(now) != interval {
+				t.Fatalf("renewal=%+v at %s original expiry %s", result, now, expires)
 			}
 		})
 	}

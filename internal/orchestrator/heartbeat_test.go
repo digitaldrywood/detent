@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -21,46 +22,110 @@ import (
 type independentClaimHeartbeat struct {
 	hubSchedulingSource
 	renewed chan time.Duration
+	expires time.Time
+	err     error
 }
 
 type blockedClaimHeartbeatPersistence struct {
 	store.WorkAttemptStore
 	entered chan struct{}
 	release chan struct{}
+	once    sync.Once
 }
 
-func (s *blockedClaimHeartbeatPersistence) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
-	close(s.entered)
-	<-s.release
-	return nil
+func (s *blockedClaimHeartbeatPersistence) RecordWorkAttemptHeartbeat(ctx context.Context, _ store.WorkAttemptHeartbeat) error {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.release:
+		return nil
+	}
 }
 
 func (s *independentClaimHeartbeat) RenewClaimHeartbeat(ctx context.Context, _ string, _ time.Time) (Claimed, error) {
 	deadline, _ := ctx.Deadline()
 	s.renewed <- time.Until(deadline)
-	return Claimed{}, nil
+	if !time.Now().Before(s.expires) {
+		return Claimed{}, ErrSchedulingClaimLost
+	}
+	select {
+	case <-ctx.Done():
+		return Claimed{}, ctx.Err()
+	case <-time.After(40 * time.Second):
+		now := time.Now()
+		return Claimed{LeaseRenewedAt: now, LocalLeaseDeadline: now.Add(2 * time.Minute)}, s.err
+	}
 }
 
 func TestClaimHeartbeatPrecedesBlockedAttemptPersistence(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source := &independentClaimHeartbeat{renewed: make(chan time.Duration, 1)}
+		expiry := time.Now().Add(2 * time.Minute)
+		source := &independentClaimHeartbeat{renewed: make(chan time.Duration, 1), expires: expiry}
 		attempts := &blockedClaimHeartbeatPersistence{entered: make(chan struct{}), release: make(chan struct{})}
-		manager := newHeartbeatManager(Config{}, nil, attempts, time.Now, nil, source)
-		target := heartbeatTarget{issueID: "wi_example", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 42}}
+		manager := newHeartbeatManager(Config{Claiming: ClaimingConfig{LeaseTTL: 2 * time.Minute}}, nil, attempts, time.Now, nil, source)
+		manager.upsert(heartbeatTarget{issueID: "wi_example", localLeaseDeadline: expiry, workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 42}})
+		target := manager.targets["wi_example"]
+
+		source.err = errors.New("temporary renewal failure")
+		manager.execute(t.Context(), target)
+		if result := <-manager.results; !errors.Is(result.claimError, source.err) || result.claimOwnerLost || result.workAttemptRenewed {
+			t.Fatalf("failed renewal lost=%t attempt renewed=%t, error %v", result.claimOwnerLost, result.workAttemptRenewed, result.claimError)
+		}
+		if budget := <-source.renewed; budget != 2*time.Minute {
+			t.Fatalf("initial renewal budget = %s, want 2m", budget)
+		}
+		select {
+		case <-attempts.entered:
+			t.Fatal("attempt persistence started before claim renewal")
+		default:
+		}
+		retryDue := manager.targets["wi_example"].nextDue
+		if delay := retryDue.Sub(time.Now()); delay < 875*time.Millisecond || delay > time.Second {
+			t.Fatalf("claim retry delay = %s, want jittered 1s", delay)
+		}
+		<-time.After(time.Until(retryDue))
+		source.err = nil
+		due := manager.due(time.Now())
+		if len(due) != 1 {
+			t.Fatalf("due renewals = %d, want 1", len(due))
+		}
 		done := make(chan struct{})
-		go func() { defer close(done); manager.execute(t.Context(), target) }()
-		<-attempts.entered
+		go func() { defer close(done); manager.execute(t.Context(), due[0]) }()
+		t.Cleanup(func() {
+			select {
+			case <-attempts.release:
+			default:
+				close(attempts.release)
+			}
+			<-done
+		})
+		select {
+		case <-attempts.entered:
+		case <-done:
+			t.Fatal("claim renewal failed before attempt persistence")
+		}
 		synctest.Wait()
 		select {
 		case budget := <-source.renewed:
-			if budget != heartbeatOperationTimeout {
-				t.Errorf("renewal budget = %s, want %s", budget, heartbeatOperationTimeout)
+			if want := expiry.Sub(retryDue); budget != want {
+				t.Errorf("renewal budget = %s, want %s", budget, want)
 			}
 		default:
 			t.Error("claim renewal waited behind attempt persistence")
 		}
 		close(attempts.release)
 		<-done
+		if result := <-manager.results; !result.claimRenewed || !result.workAttemptRenewed {
+			t.Fatalf("claim renewed=%t attempt renewed=%t, errors %v / %v", result.claimRenewed, result.workAttemptRenewed, result.claimError, result.workAttemptError)
+		}
+
+		source.expires = time.Now()
+		target.localLeaseDeadline = source.expires
+		manager.execute(t.Context(), target)
+		if result := <-manager.results; !result.claimOwnerLost || !errors.Is(result.claimError, ErrSchedulingClaimLost) || result.workAttemptRenewed {
+			t.Fatalf("expired claim lost=%t attempt renewed=%t, error %v", result.claimOwnerLost, result.workAttemptRenewed, result.claimError)
+		}
 	})
 }
 
