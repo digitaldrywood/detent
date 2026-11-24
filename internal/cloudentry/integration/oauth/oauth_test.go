@@ -850,8 +850,11 @@ func TestOAuthReporterAuthorityAndRevocation(t *testing.T) {
 			var grants struct {
 				Grants []oauth.Grant `json:"grants"`
 			}
-			if listed.StatusCode != 200 || json.Unmarshal([]byte(listed.Body), &grants) != nil || len(grants.Grants) != 1 || grants.Grants[0].LastUsedAt == nil || strings.Contains(listed.Body, token.AccessToken) || strings.Contains(listed.Body, token.RefreshToken) {
+			if listed.StatusCode != 200 || json.Unmarshal([]byte(listed.Body), &grants) != nil || len(grants.Grants) != 1 || grants.Grants[0].LastUsedAt == nil || grants.Grants[0].RevokedAt != nil || strings.Contains(listed.Body, token.AccessToken) || strings.Contains(listed.Body, token.RefreshToken) {
 				t.Fatalf("grants=%+v", listed)
+			}
+			if _, err := time.Parse(time.RFC3339Nano, *grants.Grants[0].LastUsedAt); err != nil {
+				t.Fatalf("decode grant last-use timestamp: %v", err)
 			}
 			foreign := harness.NewBrowser(t, proxy)
 			foreign.Login("/organizations/org_beta/organization", "user_bob:porg_beta")
