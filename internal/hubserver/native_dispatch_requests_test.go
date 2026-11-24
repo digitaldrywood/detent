@@ -875,6 +875,51 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 			}
 		})
 	}
+	t.Run("failed in progress without a Todo transition", func(t *testing.T) {
+		t.Parallel()
+		f := newDispatchGuardFixture(t)
+		configureDispatchGuardState(t, f, tracker.NativeState{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done", "Blocked"}})
+		path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+		move := tracker.Transition{
+			Mutation:         tracker.Mutation{IdempotencyKey: "start-in-progress", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken},
+			ExpectedRevision: f.reload(t).Revision, State: "In Progress", Reason: "worker_progress",
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, move), http.StatusOK)
+		failure := func() tracker.NativeRunEvent {
+			return tracker.NativeRunEvent{
+				Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
+				Data: tracker.NativeRunData{Sequence: 2, Identity: &f.started, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed"},
+			}
+		}
+		claim := hubOwnedRecoveryClaim(f, "")
+		claim.WorkItemID, claim.WorkflowStates = f.issue.WorkItemID, []string{"In Progress"}
+		for range 2 {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, failure()), http.StatusOK)
+			claim.SessionID = hubapi.NewID("competing-session")
+			if response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim); response.Code == http.StatusOK {
+				t.Fatal("failure allowed another claim before lease release")
+			}
+			f.release(t)
+			claim.SessionID = hubapi.NewID("retry-session")
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
+			requireNativeStatus(t, response, http.StatusOK)
+			previous := f.lease
+			decodeHubResponse(t, response, &f.lease)
+			if f.lease.ID == previous.ID || f.lease.FencingToken <= previous.FencingToken || f.reload(t).State != "In Progress" {
+				t.Fatal("in-place retry did not acquire fresh authority in In Progress")
+			}
+			f.run, f.attempt = hubapi.NewID("run"), hubapi.NewID("attempt")
+			f.startAttempt(t, f.started)
+		}
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{
+			Mutation: tracker.Mutation{IdempotencyKey: "operator-hold"}, ExpectedRevision: f.reload(t).Revision, State: "Blocked", Reason: "user_requested",
+		}), http.StatusOK)
+		held := f.reload(t)
+		requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, failure()), http.StatusConflict, "stale_fencing_token")
+		if current := f.reload(t); current.State != "Blocked" || current.Revision != held.Revision || f.candidate(t) {
+			t.Fatal("stale failure completion disturbed the operator hold")
+		}
+	})
 }
 
 // TestRecordNativeAttemptCapturesDispatchState proves the two numbers the

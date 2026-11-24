@@ -212,6 +212,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
 		{Name: "Done", Terminal: true},
 	}
+	configuredRetry := append([]connector.WorkflowState(nil), customRework...)
+	configuredRetry[1].Transitions = []string{"Merging", "Fixing", "Done", "Blocked"}
 	checkpoint := DiffStats{Status: "clean", HeadSHA: strings.Repeat("c", 40), RecoveryStateExpected: true, RecoveryStateAvailable: true}
 	checkpointDeadline := fmt.Errorf("worker cancellation: deadline_exceeded (source: orchestrator.parent_context)\nrun agent turn: %w\nresolve cleanup ownership source: git rev-parse --git-common-dir failed: %w", runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)
 	yes, no := true, false
@@ -325,6 +327,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		sourceState      string
 		reworkState      string
 		wantSameState    bool
+		repeatRetry      bool
 		retryCycles      bool
 		wantDirect       bool
 		directLane       string
@@ -404,6 +407,10 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "failed Rework checkpoint stays in Rework", states: unfinishedWorkflow, sourceState: "Rework", humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, wantContinue: true, wantState: "Rework", wantSameState: true, wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
 		{name: "retained failed checkpoint lane refusal preserves authority", states: unfinishedWorkflow, humanReview: &no, runErr: checkpointDeadline, diffStats: checkpoint, updateErr: connector.ErrStateUpdateBlocked, wantDeferred: true},
 		{name: "failed provider with checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: errors.New("provider failed"), diffStats: checkpoint, wantContinue: true, wantState: "Rework"},
+		{name: "unattributed failure without outgoing retry retries in place", states: noRecoveryLane, humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, repeatRetry: true, wantContinue: true, wantState: "In Progress", wantSameState: true},
+		{name: "unattributed failure without Todo route retries in configured lane", states: configuredRetry, reworkState: "Fixing", humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, repeatRetry: true, wantContinue: true, wantState: "Fixing"},
+		{name: "unattributed failure preserves concurrent operator hold", states: configuredRetry, reworkState: "Fixing", humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, handoffState: "Blocked", wantState: "Blocked", wantSameState: true},
+		{name: "source free completion without Todo route retries in place", states: noRecoveryLane, change: &runpkg.NativeChange{}, humanReview: &no, machineAttempt: 3, wantSettled: true, wantContinue: true, wantState: "In Progress", wantSameState: true},
 		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded), wantContinue: true},
 		{name: "completed checkpoint ownership deadline is instance owned without human review", states: workflow, humanReview: &no, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded), wantContinue: true},
 		{name: "checkpoint mismatch without retained source returns to Todo", states: fourLanes, humanReview: &no, runErr: fmt.Errorf("%w: local_checkpoint_changed", runpkg.ErrNativeRecoveryRequired), wantContinue: true, wantState: "Todo", wantTerminal: store.WorkAttemptTerminalCancelled, wantRecovery: true},
@@ -1473,6 +1480,23 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				for _, update := range tick.updates {
 					if update.state != firstNonBlank(test.wantState, "Todo") {
 						t.Fatalf("failure transition = %#v", update)
+					}
+				}
+				if test.repeatRetry {
+					scheduling.release = nil
+					transitionCount := len(tick.updates)
+					for _, upper := range []time.Duration{160 * time.Second, 300 * time.Second, 300 * time.Second} {
+						retry := state.Retry[issue.ID]
+						event.CompletedAt = retry.DueAt.Add(time.Second)
+						event.Request.Generation++
+						event.Request.WorkAttemptID++
+						state.Running[issue.ID] = Running{Issue: retry.Issue, Attempt: retry.Attempt, Mode: mode, Generation: event.Request.Generation, WorkAttemptID: event.Request.WorkAttemptID, DispatchSourceState: retry.Issue.State, DispatchTargetState: retry.Issue.State}
+						state.Claimed[issue.ID] = Claimed{Issue: retry.Issue, ClaimedAt: retry.DueAt}
+						orch.handleRunResult(t.Context(), &state, event)
+						assertCompletionMachineRetry(t, orch, state, issue.ID, event.CompletedAt, retry.Attempt+1, upper)
+						if state.Retry[issue.ID].Issue.State != test.wantState || len(tick.updates) != transitionCount || len(state.deferredCompletions) != 0 {
+							t.Fatalf("repeated failure changed retry routing: lane=%s transitions=%v deferred=%d", state.Retry[issue.ID].Issue.State, tick.updates, len(state.deferredCompletions))
+						}
 					}
 				}
 				return
