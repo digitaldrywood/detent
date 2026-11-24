@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cli"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -99,6 +101,17 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 	cfg.Global.MaxConcurrentAgents = 1
 	cfg.Client.URL, cfg.Client.IdentityFile, cfg.Client.OrganizationID = server.URL, identityPath, "org_example"
 	cfg.Client.Capacity, cfg.Client.HeartbeatIntervalSeconds = 1, 1
+	cfg.Client.ProviderCapacityFile = filepath.Join(root, "provider-capacity.json")
+	reports, err := json.Marshal([]providercapacity.Report{{
+		Provider: "example", Backend: "example", AccountAlias: "runner", Models: []string{"provider_default"},
+		Availability: "unknown", ObservedAt: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.Client.ProviderCapacityFile, reports, 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := globalconfig.Write(configPath, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 		t.Fatal(err)
 	}
