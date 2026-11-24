@@ -26,12 +26,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
+	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 type hubSchedulingOptions struct {
 	applyProjectConfiguration func(context.Context, string, runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration
 	hubProcessReceipts        bool
 	workspaceSupport          func() workspacerunner.Support
+	workspaceCapabilities     func() workspacesession.Capabilities
 	processStore              releasedExecutionProcessStore
 	releasedStopped           func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
 	providerUsage             *runner.ProviderUsage
@@ -230,8 +232,8 @@ func newHubScheduling(ctx context.Context, cfg globalconfig.Config, version stri
 		Machine: hubclient.Machine{
 			ID: tracker.MachineID(machineID), Hostname: hostname, DisplayName: displayName,
 			Capabilities: hubMachineCapabilities(cfg), Capacity: capacity, Version: strings.TrimSpace(version),
-			WorkspaceCapabilities: workspaceLaneCapabilities(context.Background(), cfg, support),
-			WorkspaceIsolation:    support.TerminalIsolation(),
+			CurrentWorkspaceCapabilities: setupOptions.workspaceCapabilities,
+			WorkspaceIsolation:           support.TerminalIsolation(),
 		},
 		HeartbeatInterval: min(clientConfig.HeartbeatInterval(), providercapacity.MaxAge/2),
 		LeaseTTL:          clientConfig.LeaseTTL(),
