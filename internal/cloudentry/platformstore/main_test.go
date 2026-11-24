@@ -30,7 +30,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+type shortSkippingTemplate struct{ *pgtest.Template }
+
+func (p shortSkippingTemplate) Database(t *testing.T) *sql.DB {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres platformstore test in -short mode")
+	}
+	return p.Template.Database(t)
+}
+
+var template = shortSkippingTemplate{pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 	roles, err := os.ReadFile("../../hubserver/postgres/roles.sql")
 	if err != nil {
 		return err
@@ -48,7 +58,7 @@ var template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 	}
 	_, err = provider.Up(ctx)
 	return err
-})
+})}
 
 func TestMain(m *testing.M) {
 	flag.Parse()
