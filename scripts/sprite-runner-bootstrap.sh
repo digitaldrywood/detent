@@ -462,6 +462,13 @@ docker_local() {
     timeout --kill-after=5s "$deadline" env -u DOCKER_CONTEXT docker --host "$docker_endpoint" "$@"
 }
 
+print_docker_launcher() {
+    local dockerd_path=$1
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n'
+    if [[ $(id -u) != 0 ]]; then printf 'exec sudo '; else printf 'exec '; fi
+    printf '%q --data-root %q --group %q --init\n' "$dockerd_path" "$docker_root" "$(id -gn)"
+}
+
 verify_docker_snapshot() {
     local container_id=$1 pid options upperdir
     pid=$(docker_local 5s inspect --format '{{.State.Pid}}' "$container_id") ||
@@ -575,6 +582,7 @@ docker_endpoint=${DOCKER_HOST:-$docker_default_endpoint}
 docker_state=unavailable
 docker_status='skipped: mount/network/PID namespaces or writable cgroups unavailable'
 docker_managed=false
+docker_install=false
 if [[ -n ${DOCKER_CONTEXT:-} || -z ${DOCKER_HOST:-} ]] && command -v docker >/dev/null; then
     docker_endpoint=$(timeout 5s docker context inspect --format '{{.Endpoints.docker.Host}}') ||
         die 'cannot resolve the active Docker endpoint'
@@ -586,6 +594,12 @@ elif command -v docker >/dev/null && docker_local 5s info >/dev/null 2>&1; then
     docker_state=external
     if [[ $docker_package == 'install ok installed '* ]]; then
         docker_state=${docker_package#install ok installed }
+    fi
+    if [[ $docker_endpoint == "$docker_default_endpoint" && -f $docker_launcher && ! -L $docker_launcher ]] &&
+        dockerd_path=$(command -v dockerd) &&
+        cmp -s "$docker_launcher" <(print_docker_launcher "$dockerd_path") &&
+        sprite-env services get detent-docker >/dev/null 2>&1; then
+        docker_managed=true
     fi
 elif command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork true >/dev/null 2>&1 &&
     as_root test -w /sys/fs/cgroup; then
@@ -606,6 +620,7 @@ elif command -v unshare >/dev/null && as_root unshare --mount --net --pid --fork
     [[ $docker_state =~ ^[0-9][a-zA-Z0-9.+:~_-]*$ ]] ||
         die 'configured APT repositories provide no Docker package; configure repositories matching this distribution'
     docker_managed=true
+    docker_install=true
 fi
 last_completed='distribution package candidates checked'
 printf 'Package compatibility checked: %s=%s; Docker: %s\n' \
@@ -757,7 +772,7 @@ fi
 
 last_completed='Chromium headless screenshot verified'
 
-if [[ $docker_managed == true ]]; then
+if [[ $docker_install == true ]]; then
     if [[ $(dpkg-query -W -f='${Status} ${Version}' docker.io 2>/dev/null || true) != "install ok installed $docker_state" ]]; then
         printf 'Installing Docker %s\n' "$docker_state"
         apt_install "docker.io=$docker_state"
@@ -766,13 +781,13 @@ if [[ $docker_managed == true ]]; then
         dockerd_path=$(command -v dockerd) || die 'dockerd is missing after package installation'
         (
             set -o noclobber
-            printf '#!/usr/bin/env bash\nset -euo pipefail\n'
-            if [[ $(id -u) != 0 ]]; then printf 'exec sudo '; else printf 'exec '; fi
-            printf '%q --data-root %q --group %q --init\n' "$dockerd_path" "$docker_root" "$(id -gn)"
-        ) > "$docker_launcher" || die 'could not create the Docker launcher; inspect the existing service'
+            print_docker_launcher "$dockerd_path" > "$docker_launcher"
+        ) || die 'could not create the Docker launcher; inspect the existing service'
         chmod 700 "$docker_launcher"
         sprite-env services create detent-docker --cmd "$docker_launcher" --dir "$HOME" --no-stream
     fi
+fi
+if [[ $docker_managed == true ]]; then
     docker_deadline=$((SECONDS + 30))
     until docker_layout=$(docker_local 5s info --format '{{.DockerRootDir}} {{.Driver}}' 2>&1); do
         if [[ $SECONDS -ge $docker_deadline ]]; then
