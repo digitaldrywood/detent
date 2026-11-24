@@ -42,7 +42,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-var postgresStartupTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+type shortSkippingTemplate struct{ *pgtest.Template }
+
+func (p shortSkippingTemplate) Database(t *testing.T) *sql.DB {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres hubserver test in -short mode")
+	}
+	return p.Template.Database(t)
+}
+
+var postgresStartupTemplate = shortSkippingTemplate{pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 	roles, err := os.ReadFile("postgres/roles.sql")
 	if err != nil {
 		return err
@@ -60,7 +70,7 @@ var postgresStartupTemplate = pgtest.NewTemplate(func(ctx context.Context, db *s
 	}
 	_, err = provider.Up(ctx)
 	return err
-})
+})}
 
 func startupMigrationProvider(pool *sql.DB) (*goose.Provider, error) {
 	migrations, err := postgres.MigrationFiles()
@@ -891,6 +901,9 @@ func TestDatabaseStartupCancellation(t *testing.T) {
 }
 
 func TestPostgresMigrationAuthorityIsSeparate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres migration authority test in -short mode")
+	}
 	t.Parallel()
 	unmigrated := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("postgres/roles.sql")
