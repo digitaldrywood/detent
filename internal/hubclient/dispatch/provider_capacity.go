@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, limit int) ([]tracker.NativeLease, error) {
+func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, limit int, combinedPreview bool) ([]tracker.NativeLease, error) {
 	discoveryCtx := ctx
 	if request.BeginDiscovery != nil {
 		var finish context.CancelFunc
@@ -27,13 +27,17 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 	s.mu.Lock()
 	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
 	s.mu.Unlock()
-	preview := tracker.NativeCapacityPreview{NativeClaim: claim}
-	boundedPreview, err := source.NativeClient().HubFeature(discoveryCtx, tracker.NativeDispatchWaitCapability)
-	if err != nil {
-		if discoveryCtx.Err() != nil && ctx.Err() == nil {
-			return leases, nil
+	preview := tracker.NativeCapacityPreview{NativeClaim: claim, CheckCapacity: combinedPreview}
+	boundedPreview := combinedPreview
+	if !boundedPreview {
+		var err error
+		boundedPreview, err = source.NativeClient().HubFeature(discoveryCtx, tracker.NativeDispatchWaitCapability)
+		if err != nil {
+			if discoveryCtx.Err() != nil && ctx.Err() == nil {
+				return leases, nil
+			}
+			return leases, err
 		}
-		return leases, err
 	}
 	if providerEnabled {
 		claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
@@ -54,6 +58,9 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		}
 		if discoveryCtx.Err() != nil {
 			return leases, ctx.Err()
+		}
+		if combinedPreview && page.CapacityFull {
+			return leases, nil
 		}
 		if len(page.Items) > 100 {
 			return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider candidate page exceeds the negotiated bound"))
@@ -142,7 +149,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 		if discoveryCtx.Err() != nil {
 			return leases, ctx.Err()
 		}
-		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
+		if !combinedPreview && providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
 			claim.ProviderCandidates = nil
 			claim.WorkItemID = ""
 			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})

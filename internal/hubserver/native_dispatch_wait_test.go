@@ -1040,3 +1040,136 @@ func TestNativeCandidateFiltersAndCursor(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeDispatchPreviewCapacity(t *testing.T) {
+	f, probe := newDispatchWaitFixture(t, "dispatch discovery")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	runner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+	runner.redemption.Capacity = 1
+	runner.enroll(t)
+	runner.reportCapacity(t)
+	token := runner.redemption.Credential
+	claim := tracker.NativeClaim{
+		MachineID: runner.binding.MachineID, SessionID: "example-session", PolicyID: hubTestPolicy().ID,
+		TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+		WorkflowStates: []string{"Todo"},
+	}
+	call := func(name string, routes ...func() *httptest.ResponseRecorder) tracker.NativeCapacityPage {
+		t.Helper()
+		f.service.tokenUseWork.Wait()
+		before := probe.queries.Load()
+		payload := 0
+		var response *httptest.ResponseRecorder
+		for _, route := range routes {
+			response = route()
+			requireNativeStatus(t, response, http.StatusOK)
+			payload += response.Body.Len()
+		}
+		f.service.tokenUseWork.Wait()
+		t.Logf("%s: discovery requests=%d PostgreSQL statements=%d response bytes=%d", name, len(routes), probe.queries.Load()-before, payload)
+		var page tracker.NativeCapacityPage
+		decodeHubResponse(t, response, &page)
+		return page
+	}
+	preview := func(checkCapacity bool, claim tracker.NativeClaim) func() *httptest.ResponseRecorder {
+		return func() *httptest.ResponseRecorder {
+			return performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims/preview", token, tracker.NativeCapacityPreview{NativeClaim: claim, Limit: 3, CheckCapacity: checkCapacity})
+		}
+	}
+	legacy := call("legacy idle", func() *httptest.ResponseRecorder {
+		return performHubAPIRequest(t, f.service, http.MethodGet, runner.identityPath()+"/routing", token, nil)
+	}, preview(false, claim))
+	expect := func(page tracker.NativeCapacityPage, full bool, items ...tracker.NativeWorkItemID) {
+		t.Helper()
+		var ids []tracker.NativeWorkItemID
+		for _, item := range page.Items {
+			ids = append(ids, item.WorkItemID)
+		}
+		if page.CapacityFull != full || page.Next != 0 || !slices.Equal(ids, items) {
+			t.Fatalf("preview: full=%t next=%d items=%v, want full=%t items=%v", page.CapacityFull, page.Next, ids, full, items)
+		}
+	}
+	expect(legacy, false)
+	expect(call("combined idle", preview(true, claim)), false)
+	expect(call("combined idle repeat", preview(true, claim)), false)
+
+	wrongMachine := claim
+	wrongMachine.MachineID = runnerauth.NewBinding().MachineID
+	requireNativeStatus(t, preview(true, wrongMachine)(), http.StatusNotFound)
+
+	cursor := dispatchWaitCursor(t, serveDispatchWait(t.Context(), f, token, ""))
+	ctx, cancel := context.WithCancel(t.Context())
+	waited := make(chan *httptest.ResponseRecorder, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		waited <- serveDispatchWait(ctx, f, token, cursor)
+	}()
+	defer func() { cancel(); <-done }()
+	awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 1, probe)
+	item := f.create(t, "newly eligible work")
+	select {
+	case response := <-waited:
+		if dispatchWaitCursor(t, response) == cursor {
+			t.Fatal("work filing did not advance the dispatch cursor")
+		}
+	case <-testenv.WaitContext(t, ctx).Done():
+		t.Fatal("work filing did not wake the waiting runner")
+	}
+	expect(call("new work after notification", preview(true, claim)), false, item.WorkItemID)
+
+	claim.WorkItemID = item.WorkItemID
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", token, claim)
+	requireNativeStatus(t, response, http.StatusOK)
+	var held tracker.NativeLease
+	decodeHubResponse(t, response, &held)
+	claim.WorkItemID = ""
+	claim.SessionID = "example-next"
+	second := f.create(t, "queued behind active work")
+	expect(call("active lease at capacity", preview(true, claim)), true)
+	expect(call("legacy preview while at capacity", preview(false, claim)), false, second.WorkItemID)
+
+	renewPath := f.base + "/leases/" + string(held.ID) + "/renew"
+	response = performHubAPIRequest(t, f.service, http.MethodPost, renewPath, token, tracker.NativeLeaseMutation{FencingToken: held.FencingToken, TTLSeconds: 180})
+	requireNativeStatus(t, response, http.StatusOK)
+	var renewed tracker.NativeLease
+	decodeHubResponse(t, response, &renewed)
+	if renewed.ID != held.ID || renewed.FencingToken != held.FencingToken || !renewed.ExpiresAt.After(held.ExpiresAt) {
+		t.Fatalf("renewal lost held lease or failed to extend it: %+v", renewed)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, renewPath, token, tracker.NativeLeaseMutation{FencingToken: held.FencingToken + 1, TTLSeconds: 180}), http.StatusConflict)
+
+	repository := f.service.config.TenantRepository
+	fence := leasestore.Fence{LeaseID: string(held.ID), FencingToken: int64(held.FencingToken)}
+	attemptID := hubapi.NewID("attempt")
+	now := f.service.config.Clock()
+	if err := repository.WriteTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
+		_, err := w.RecordAttempt(t.Context(), leasestore.AttemptEvent{ID: attemptID, RunID: hubapi.NewID("run"), Fence: fence, Sequence: 1, Status: "running", StartedAt: now, PayloadObjectKey: "example/attempt"})
+		if err != nil {
+			return err
+		}
+		_, err = w.Release(t.Context(), fence, "released")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReadTenant(t.Context(), f.project.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
+		state, err := r.(runnerstore.ClaimStateReader).RunnerClaimState(t.Context(), runner.binding.RunnerID, f.project.ID, "", 10, now)
+		if err != nil {
+			return err
+		}
+		if len(state.Unclassified) != 1 || state.Unclassified[0].AttemptID != attemptID {
+			return fmt.Errorf("released attempt did not enter cleanup proof lookup")
+		}
+		if _, err := r.LatestRunEvent(t.Context(), f.project.ID, attemptID); !errors.Is(err, corestore.ErrNotFound) {
+			return fmt.Errorf("expected missing cleanup event, got %w", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claim.LabelInclude = []string{"example-missing"}
+	for range 2 {
+		expect(call("idle with missing cleanup proof", preview(true, claim)), false)
+	}
+}

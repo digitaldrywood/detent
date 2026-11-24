@@ -559,7 +559,15 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	} else if !source.NativeClient().ClaimHint() {
 		return nil, nil
 	} else {
-		if s.client.Enrolled() {
+		preview := s.providerReports != nil || request.CandidateReady != nil
+		combinedPreview := false
+		if s.client.Enrolled() && preview {
+			combinedPreview, err = source.NativeClient().HubFeature(ctx, tracker.NativeClaimPreviewCapacityCapability)
+			if err != nil {
+				return nil, schedulingError(err)
+			}
+		}
+		if s.client.Enrolled() && !combinedPreview {
 			file, loadErr := runnerauth.Load(s.client.IdentityFile())
 			if loadErr != nil {
 				return nil, schedulingError(loadErr)
@@ -574,8 +582,8 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 				return nil, nil
 			}
 		}
-		if s.providerReports != nil || request.CandidateReady != nil {
-			leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit)
+		if preview {
+			leases, err = s.claimPreviewCandidates(ctx, request, source, claimRequest, limit, combinedPreview)
 		} else {
 			for len(leases) < limit {
 				if len(leases) > 0 {
