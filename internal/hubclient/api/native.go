@@ -430,7 +430,11 @@ func (c *NativeClient) SetLeaseProviderPhase(ctx context.Context, lease tracker.
 func (c *NativeClient) RenewHeartbeat(ctx context.Context, lease tracker.NativeLease, ttl int64) (tracker.NativeLease, error) {
 	var result tracker.NativeLease
 	path := c.base() + "/leases/" + url.PathEscape(string(lease.ID)) + "/renew"
-	err := c.client.requestOnceWithClient(ctx, c.client.leaseHTTPClient, 0, http.MethodPost, path, nil, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: ttl}, &result)
+	client := c.client.leaseHTTPClient
+	if deadline, ok := ctx.Deadline(); ok {
+		client = clientWithTimeout(client, time.Until(deadline))
+	}
+	err := c.client.requestOnceWithClient(ctx, client, 0, http.MethodPost, path, nil, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: ttl}, &result)
 	result.RunDetailBatching = lease.RunDetailBatching
 	return result, err
 }
