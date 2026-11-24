@@ -486,18 +486,29 @@ verify_docker_snapshot() {
 
 verify_docker_runtime() (
     cidfile=$scratch/docker-probe.cid
+    probe_id=$(node -p 'require("node:crypto").randomUUID()') || die 'could not generate a Docker probe identity'
+    probe_name=detent-postgres-probe-$probe_id
+    probe_label=build.detent.sprite-probe=$probe_id
     cleanup_docker_probe() {
+        local container_id=
         if [[ -s $cidfile ]]; then
             container_id=$(<"$cidfile")
-            if [[ $container_id =~ ^[a-f0-9]{64}$ ]]; then
-                docker_local 15s rm --volumes --force "$container_id" >/dev/null ||
-                    printf 'sprite bootstrap: could not remove Docker probe container %s\n' "$container_id" >&2
+        fi
+        if [[ ! $container_id =~ ^[a-f0-9]{64}$ ]]; then
+            if ! container_id=$(docker_local 5s ps --all --no-trunc \
+                --filter "name=^/$probe_name\$" --filter "label=$probe_label" --format '{{.ID}}') ||
+                [[ -n $container_id && ! $container_id =~ ^[a-f0-9]{64}$ ]]; then
+                printf 'sprite bootstrap: could not reconcile Docker probe container %s\n' "$probe_name" >&2
+                return
             fi
         fi
+        [[ -n $container_id ]] || return 0
+        docker_local 15s rm --volumes --force "$container_id" >/dev/null ||
+            printf 'sprite bootstrap: could not remove Docker probe container %s\n' "$container_id" >&2
     }
     trap cleanup_docker_probe EXIT
     probe_image=docker.io/library/postgres@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
-    docker_local 120s create --cidfile "$cidfile" --network none \
+    docker_local 120s create --cidfile "$cidfile" --name "$probe_name" --label "$probe_label" --network none \
         --tmpfs /var/lib/postgresql/data --env POSTGRES_HOST_AUTH_METHOD=trust "$probe_image" >/dev/null ||
         die 'Docker could not create the isolated PostgreSQL probe container'
     container_id=$(<"$cidfile")
