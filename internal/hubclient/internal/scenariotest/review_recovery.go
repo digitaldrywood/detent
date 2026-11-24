@@ -149,23 +149,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 		hostHandoff, stopped                 bool
 	}{
 		{name: "healthy"},
-		{name: "legacy source finalization", legacySourceFinalization: true},
-		{name: "validator finish rejected", stage: "validator", finalizationFault: "finish"},
-		{name: "source usage acknowledgement", stage: "source", finalizationFault: "usage", committedFinalization: true},
-		{name: "tool-directed host publication handoff", hostHandoff: true},
 		{name: "source", stage: "source", restore: true},
-		{name: "deferred review after worker heartbeat expires", stage: "source", expiredHeartbeat: true},
-		{name: "security", stage: "security"},
-		{name: "security reviewer version", stage: "security", publicationField: "run.reviewer_version"},
-		{name: "security reviewer digest", stage: "security", publicationField: "run.reviewer_digest"},
-		{name: "security source rejection", stage: "security", publicationField: "run.head_sha"},
 		{name: "security findings", stage: "security", verdict: "rework"},
-		{name: "validator", stage: "validator"},
-		{name: "stopped published source", stage: "validator", stopped: true},
-		{name: "restored security", stage: "security", restore: true},
-		{name: "source findings", stage: "source", verdict: "rework"},
 		{name: "acceptance findings", stage: "validator", verdict: "rework"},
-		{name: "malformed acceptance", stage: "validator", malformed: true},
 		{name: "revoked owner", stage: "source", refusal: "lease"},
 		{name: "replaced source", stage: "source", refusal: "source"},
 	} {

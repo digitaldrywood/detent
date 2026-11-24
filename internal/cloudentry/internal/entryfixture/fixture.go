@@ -117,6 +117,9 @@ func NewWithLogger(t *testing.T, logger *slog.Logger, configure ...func(*hubserv
 
 func NewWithConfig(t *testing.T, logger *slog.Logger, configureEntry []func(*cloudentry.Config), configure ...func(*hubserver.Config)) Fixture {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres cloudentry integration test in -short mode")
+	}
 	seed := make([]byte, ed25519.SeedSize)
 	seed[0] = 42
 	key := ed25519.NewKeyFromSeed(seed)
