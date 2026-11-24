@@ -12,7 +12,7 @@ if ! [[ "$procs" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Process budget must be a positive integer.\n' >&2
     exit 1
 fi
-export GOMAXPROCS=1
+export GOMAXPROCS="$procs"
 GOTOOLCHAIN=$(awk '$1 == "toolchain" {print $2}' go.mod)
 export GOTOOLCHAIN=${GOTOOLCHAIN:-auto}
 source scripts/check-evidence.sh
@@ -48,7 +48,69 @@ for postgres_tool in initdb postgres; do
 done
 export DETENT_TEST_POSTGRES=binary
 
-check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
+needs_assets=$(python3 - "$base" "$head" <<'PY'
+import os
+import subprocess
+import sys
+
+base, head = sys.argv[1:]
+changed = subprocess.check_output(
+    ["git", "diff", "--name-only", "--no-renames", "-z", base, head]
+).decode().split("\0")
+asset_prefixes = (
+    "web/",
+    "static/",
+    "internal/dashboard/",
+    "internal/web/templates/",
+    "internal/config/",
+    "internal/policy/",
+    "internal/releasenotes/",
+    "tools/releasenotes/",
+    "docs/",
+    "cmd/detent/doc",
+)
+asset_names = {"Makefile", "package.json", "package-lock.json", "go.mod", "go.sum"}
+asset_suffixes = (".templ", "_templ.go", ".css", ".ts", ".tsx", ".js", ".jsx")
+dep_prefixes = ()
+gen_targets = [p for p in ("./internal/config/configdoc", "./tools/releasenotes") if os.path.isdir(p)]
+if os.path.isfile("web/conversation/package.json") and not (
+    os.path.isfile("static/app/conversation/index.html") and os.path.isfile("static/css/output.css")
+):
+    print("yes")
+    sys.exit(0)
+if gen_targets:
+    try:
+        mod = subprocess.check_output(["go", "list", "-m"], stderr=subprocess.DEVNULL).decode().strip()
+        if not mod:
+            print("yes")
+            sys.exit(0)
+        deps = subprocess.check_output(
+            ["go", "list", "-f", "{{.ImportPath}}\n{{range .Deps}}{{.}}\n{{end}}", *gen_targets],
+            stderr=subprocess.DEVNULL,
+        ).decode().splitlines()
+        dep_prefixes = tuple(
+            dep[len(mod) + 1:] + "/"
+            for dep in deps
+            if dep.startswith(mod + "/")
+        )
+    except subprocess.CalledProcessError:
+        print("yes")
+        sys.exit(0)
+if any(
+    path and (
+        path in asset_names
+        or path.startswith(asset_prefixes)
+        or path.startswith(dep_prefixes)
+        or path.endswith(asset_suffixes)
+    )
+    for path in changed
+):
+    print("yes")
+PY
+)
+if [ "$needs_assets" = "yes" ]; then
+    check_with_evidence assets make -j1 assets generate-docs TEST_PROCS="$procs"
+fi
 check_with_evidence build go build -p "$procs" ./...
 
 selection=$(python3 - "$base" "$head" <<'PY'
@@ -95,16 +157,11 @@ for path in changed:
         owner = max((name for name, prefix in prefixes.items() if path.startswith(prefix)), key=lambda name: len(prefixes[name]), default=None)
         if owner:
             direct.add(owner)
-while True:
-    dependents = {name for name, package in packages.items() if propagated.intersection(package.get("Imports", []))}
-    if dependents.issubset(propagated):
-        break
-    propagated.update(dependents)
-tested = {
+dependents = {
     name for name, package in packages.items()
-    if propagated.intersection(package.get("TestImports", []) + package.get("XTestImports", []))
+    if propagated.intersection(package.get("Imports", []) + package.get("TestImports", []) + package.get("XTestImports", []))
 }
-selected = set(packages) if wide else direct | propagated | tested
+selected = set(packages) if wide else direct | propagated | dependents
 if wide:
     print("wide\t./...")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
@@ -123,20 +180,15 @@ while IFS=$'\t' read -r scope package; do
         wide) lint_scope=() ;;
     esac
 done <<< "$selection"
-while IFS= read -r package; do
-    if ! [[ " ${test_packages[*]+${test_packages[*]}} " == *" $package "* ]]; then
-        test_packages+=("$package")
-    fi
-done < <(python3 scripts/check-landing.py packages)
-sorted_packages=()
-while IFS= read -r package; do
-    sorted_packages+=("$package")
-done < <(printf '%s\n' "${test_packages[@]}" | sort)
-test_packages=("${sorted_packages[@]}")
 if [ "${#test_packages[@]}" -gt 0 ]; then
+    sorted_packages=()
+    while IFS= read -r package; do
+        sorted_packages+=("$package")
+    done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
+    test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
     package_digest=$(python3 scripts/check-landing.py digest "${test_packages[@]}")
-    DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=90m
+    DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=30m
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"

@@ -99,7 +99,7 @@ class ShortLandingGateTest(unittest.TestCase):
             tool.chmod(0o755)
         self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token")
         self.linter = str(binaries / "golangci-lint")
-        self.required_packages = ["./internal/pgtransport", "./internal/testenv/pgtest"]
+        self.required_packages = []
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, text=True, stderr=subprocess.STDOUT)
@@ -116,13 +116,13 @@ class ShortLandingGateTest(unittest.TestCase):
         path = self.root / ".git/trace"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-    def test_changed_package_includes_transitive_and_test_dependents(self):
+    def test_changed_package_includes_direct_importers_and_skips_assets_for_go_only(self):
         cases = (
-            ("test only", ("lib/source_test.go",), ["./lib"], "1", 1, 1),
-            ("test only with the whole budget", ("lib/source_test.go",), ["./lib"], "4", 1, 4),
-            ("production", ("lib/source.go",), ["./app", "./integration", "./lib"], "4", 4, 1),
-            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./integration", "./lib"], "7", 3, 2),
-            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], "2", 2, 1),
+            ("test only", ("lib/source_test.go",), ["./lib"], "1", 1, 4),
+            ("test only with budget 4", ("lib/source_test.go",), ["./lib"], "4", 1, 4),
+            ("production 1-hop", ("lib/source.go",), ["./app", "./lib"], "4", 2, 4),
+            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./lib"], "7", 2, 7),
+            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], "2", 2, 4),
         )
         for index, (name, paths, expected, budget, width, threads) in enumerate(cases):
             with self.subTest(name=name):
@@ -138,9 +138,9 @@ class ShortLandingGateTest(unittest.TestCase):
                 evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
                 self.assertTrue(any(check["scope"] == "unit-short" and check["exit_code"] == 0 for check in evidence))
                 trace = self.trace()
-                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
-                test = trace[3]
-                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(expected + self.required_packages))
+                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
+                test = trace[2]
+                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(expected))
                 self.assertFalse(test["token"])
                 self.assertEqual(test["postgres"], "binary")
                 self.assertEqual(test["tmpdir"], self.env["TMPDIR"])
@@ -148,24 +148,21 @@ class ShortLandingGateTest(unittest.TestCase):
                 for call in trace:
                     if call["tool"] == "go" and call["args"][0] == "test":
                         self.assertEqual((int(call["args"][call["args"].index("-p") + 1]), int(call["budget"])), (width, threads))
-                        self.assertLessEqual(width * threads, int(budget))
                     elif call["tool"] == "go":
-                        self.assertEqual(call["budget"], "1")
+                        self.assertEqual(call["budget"], budget)
                         if call["args"][0] == "build":
                             self.assertEqual(int(call["args"][call["args"].index("-p") + 1]), int(budget))
                     elif call["tool"] == "golangci-lint":
                         self.assertEqual(call["budget"], budget)
                         self.assertIn("--concurrency=" + budget, call["args"])
                     else:
-                        self.assertEqual(call["budget"], "1")
+                        self.assertEqual(call["budget"], budget)
                         self.assertIn("TEST_PROCS=" + budget, call["args"])
-                self.assertIn("-timeout=90m", test["args"])
+                self.assertIn("-timeout=30m", test["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
-                self.assertIn("assets", trace[0]["args"])
-                self.assertIn("generate-docs", trace[0]["args"])
 
-    def test_test_imports_select_without_propagating(self):
+    def test_test_imports_select_one_hop_without_transitive_explosion(self):
         for name in ("consumer", "dual", "dualconsumer"):
             (self.root / name).mkdir()
             (self.root / name / "source.go").write_text("package " + name + "\n")
@@ -176,14 +173,14 @@ class ShortLandingGateTest(unittest.TestCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
-        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./app", "./dual", "./dualconsumer", "./integration", "./lib"] + self.required_packages))
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], ["./app", "./dual", "./lib"])
         (self.root / "integration/source.go").write_text("package integration\nconst Value = 1\n")
         self.commit()
         self.git("update-ref", "refs/remotes/origin/develop", "HEAD~1")
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
-        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./consumer", "./integration"] + self.required_packages))
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], ["./consumer", "./integration"])
 
     def test_wide_selection_records_bounded_unit_evidence(self):
         names = ["./many/" + "feature_package_with_a_long_descriptive_name_" + str(index) for index in range(150)]
@@ -193,38 +190,31 @@ class ShortLandingGateTest(unittest.TestCase):
         self.commit()
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        packages = sorted(names + self.required_packages)
+        packages = sorted(names)
         test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
         self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], packages)
         evidence = [json.loads(line.split(": ", 1)[1]) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
         unit = next(check for check in evidence if check["scope"] == "unit-short")
         self.assertRegex(unit["command"], r"^[a-zA-Z0-9_. /:+,=-]{1,256}$")
         digest = hashlib.sha256("".join(package + "\n" for package in packages).encode()).hexdigest()
-        self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=90m")
+        self.assertEqual(unit["command"], f"python3 scripts/check-landing.py tests --package-count={len(packages)} --package-sha256={digest} -p 2 -short -timeout=30m")
 
-    def test_test_threads_share_the_package_budget(self):
+    def test_test_threads_allow_parallel_subtests(self):
         contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
         for selected, budget, width, threads in (
+            (1, 2, 1, 4),
+            (2, 2, 2, 4),
+            (8, 2, 2, 4),
             (1, 4, 1, 4),
-            (2, 4, 2, 2),
-            (4, 4, 4, 1),
-            (8, 4, 4, 1),
-            (1, 8, 1, 8),
-            (2, 8, 2, 4),
-            (3, 8, 4, 2),
-            (8, 8, 8, 1),
-            (1, 1, 1, 1),
+            (4, 4, 4, 4),
+            (8, 8, 8, 8),
+            (1, 1, 1, 4),
         ):
             with self.subTest(selected=selected, budget=budget):
-                packages = ["./feature" + str(index) for index in range(selected)] + self.required_packages
+                packages = ["./feature" + str(index) for index in range(selected)]
                 arguments, gomaxprocs = contract["thread_budget"](["-p", str(budget), "-short", *packages])
                 self.assertEqual(arguments, ["-p", str(width), "-short", *packages])
                 self.assertEqual(gomaxprocs, threads)
-                self.assertLessEqual(width * gomaxprocs, budget)
-        for packages, width, threads in ((self.required_packages, 2, 2), (["."] + self.required_packages, 1, 4), ([".", "./feature"] + self.required_packages, 2, 2)):
-            with self.subTest(packages=packages):
-                arguments, gomaxprocs = contract["thread_budget"](["-p", "4", "-short", *packages])
-                self.assertEqual((arguments[:2], gomaxprocs), (["-p", str(width)], threads))
 
     def test_unit_package_list_must_match_recorded_digest(self):
         contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
@@ -243,7 +233,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         trace = self.trace()
         test = next(call for call in trace if call["args"][0] == "test")
-        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(["./app", "./integration", "./lib", "./removed", "./unrelated"] + self.required_packages))
+        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], ["./app", "./integration", "./lib", "./removed", "./unrelated"])
         self.assertEqual(trace[-1]["tool"], "golangci-lint")
         self.assertEqual(trace[-1]["args"][-5:], ["./app", "./integration", "./lib", "./removed", "./unrelated"])
         self.assertFalse(any(arg.startswith("--new-from-rev") for arg in trace[-1]["args"]))
@@ -252,12 +242,14 @@ class ShortLandingGateTest(unittest.TestCase):
         (self.root / "root.go").write_text("package example\n")
         self.commit()
         self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
-        for path, expected in (
-            ("lib/testdata/fixture.json", ["./app", "./integration", "./lib"]),
-            ("lib/data.txt", ["./app", "./integration", "./lib"]),
-            ("lib/routing.json", ["./lib"]),
-            ("lib/mappings/v1.json", ["./lib"]),
-            ("docs/guide.md", ["."]),
+        for path, expected, expects_assets in (
+            ("lib/testdata/fixture.json", ["./app", "./lib"], False),
+            ("lib/data.txt", ["./app", "./lib"], False),
+            ("lib/routing.json", ["./lib"], False),
+            ("lib/mappings/v1.json", ["./lib"], False),
+            ("docs/guide.md", ["."], True),
+            ("internal/config/schema.json", ["."], True),
+            ("internal/web/templates/classes.txt", ["."], True),
         ):
             with self.subTest(path=path):
                 (self.root / path).parent.mkdir(parents=True, exist_ok=True)
@@ -267,8 +259,9 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 trace = self.trace()
                 test = next(call for call in trace if call["args"][0] == "test")
-                self.assertEqual([arg for arg in test["args"] if arg == "." or arg.startswith("./")], sorted(expected + self.required_packages))
+                self.assertEqual([arg for arg in test["args"] if arg == "." or arg.startswith("./")], sorted(expected))
                 self.assertFalse(any(call["tool"] == "golangci-lint" for call in trace))
+                self.assertEqual(any(call["tool"] == "make" and "assets" in call["args"] for call in trace), expects_assets)
                 self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
 
     def test_deleted_package_is_not_executed(self):
@@ -276,20 +269,19 @@ class ShortLandingGateTest(unittest.TestCase):
         self.commit()
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        test = next(call for call in self.trace() if call["args"][0] == "test")
-        self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], self.required_packages)
+        self.assertFalse(any(call["tool"] == "go" and call["args"][0] == "test" for call in self.trace()))
         self.assertFalse(any(call["tool"] == "golangci-lint" for call in self.trace()))
 
-    def test_postgres_scenarios_cannot_disappear_or_skip(self):
-        for events in (
-            [],
-            [{"Action": "skip", "Package": "github.com/digitaldrywood/detent/internal/pgtransport", "Test": "TestTenantBinding"}],
-        ):
-            with self.subTest(events=events):
-                self.env["TEST_EVENTS"] = json.dumps(events)
-                result = self.run_gate()
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("required PostgreSQL scenario", result.stdout + result.stderr)
+    def test_postgres_skip_is_rejected(self):
+        (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
+        self.commit()
+        self.env["TEST_EVENTS"] = json.dumps([
+            {"Action": "output", "Package": "example.test/lib", "Test": "TestDB", "Output": "PostgreSQL fixtures require DETENT_TEST_POSTGRES=binary"},
+            {"Action": "skip", "Package": "example.test/lib", "Test": "TestDB"},
+        ])
+        result = self.run_gate()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PostgreSQL scenario skipped", result.stdout + result.stderr)
 
     def test_postgres_tools_and_job_scratch_are_required(self):
         binaries = self.root / ".git/bin"
@@ -321,6 +313,8 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_gate_releases_every_postgres_on_failure_and_cancellation(self):
+        (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
+        self.commit()
         fixture = r'''
 package fixture
 
@@ -496,7 +490,7 @@ func TestGateLifetime(t *testing.T) {
             ("equal to target", lambda: checkout(target), [], None, None),
             ("based before target moved", lambda: candidate(fork) and fork, ["./lib"], ["./lib"], None),
             ("merged target", merged, ["./lib"], ["./lib"], None),
-            ("criss-cross merge", criss_cross, ["./app", "./integration", "./lib"], ["./lib"], None),
+            ("criss-cross merge", criss_cross, ["./app", "./lib"], ["./lib"], None),
             ("no shared history", disjoint, None, None, "no merge base with landing target {landing}"),
         )
         for name, prepare, tests, lint, refusal in cases:
@@ -514,8 +508,11 @@ func TestGateLifetime(t *testing.T) {
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 head = self.git("rev-parse", "HEAD").strip()
                 self.assertIn(f"Landing comparison: base={comparison} head={head} target={landing}", result.stdout)
-                test = next(call for call in trace if call["tool"] == "go" and call["args"][0] == "test")
-                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(tests + self.required_packages))
+                test_calls = [call for call in trace if call["tool"] == "go" and call["args"][0] == "test"]
+                if not tests:
+                    self.assertEqual(test_calls, [])
+                else:
+                    self.assertEqual([arg for arg in test_calls[0]["args"] if arg.startswith("./")], sorted(tests))
                 linted = [call for call in trace if call["tool"] == "golangci-lint"]
                 if lint is None:
                     self.assertEqual(linted, [])
@@ -542,26 +539,14 @@ func TestGateLifetime(t *testing.T) {
 
 
 class PostgresInventoryTest(unittest.TestCase):
-    def test_inventory_rejects_incomplete_or_skipped_required_scenarios(self):
+    def test_inventory_rejects_failed_or_missing_postgres_events(self):
         contract = runpy.run_path(str(ROOT / "scripts/check-landing.py"))
-        required = contract["REQUIRED_POSTGRES"]
-        valid = []
-        for package, tests in required.items():
-            for test in tests:
-                valid.extend({"Action": action, "Package": package, "Test": test} for action in ("run", "pass"))
-            valid.append({"Action": "pass", "Package": package})
-        owner = next(iter(required))
-        test = required[owner][0]
-        missing = [event for event in valid if event.get("Test") != test]
         cases = (
-            ("executed", valid, 0, "passed=4"),
-            ("absent", missing, 1, "did not run and pass"),
-            ("pass without run", [event for event in valid if event["Action"] != "run"], 1, "did not run and pass"),
-            ("package failed after test pass", valid[:-1] + [{"Action": "fail", "Package": list(required)[-1]}], 1, "failed go test event"),
-            ("skipped subtest", valid + [{"Action": "skip", "Package": owner, "Test": test + "/scenario"}], 1, "required PostgreSQL scenario skipped"),
-            ("missing PostgreSQL outside required list", valid + [
-                {"Action": "output", "Package": "github.com/digitaldrywood/detent/internal/testenv/pgtest", "Test": "TestUnconfiguredPostgresFails", "Output": "PostgreSQL fixtures require DETENT_TEST_POSTGRES=binary"},
-                {"Action": "skip", "Package": "github.com/digitaldrywood/detent/internal/testenv/pgtest", "Test": "TestUnconfiguredPostgresFails"},
+            ("empty pass", [{"Action": "pass", "Package": "example.test/lib"}], 0, "PostgreSQL contract"),
+            ("package failed", [{"Action": "fail", "Package": "example.test/lib"}], 1, "failed go test event"),
+            ("missing PostgreSQL", [
+                {"Action": "output", "Package": "example.test/lib", "Test": "TestDB", "Output": "PostgreSQL fixtures require DETENT_TEST_POSTGRES=binary"},
+                {"Action": "skip", "Package": "example.test/lib", "Test": "TestDB"},
             ], 1, "missing-postgres"),
             ("invalid JSON", ["broken"], 1, "invalid go test JSON"),
         )

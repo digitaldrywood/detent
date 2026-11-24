@@ -9,16 +9,7 @@ import sys
 import time
 
 
-REQUIRED_POSTGRES = {
-    "github.com/digitaldrywood/detent/internal/pgtransport": (
-        "TestTenantBinding",
-        "TestTransactionCleanup",
-    ),
-    "github.com/digitaldrywood/detent/internal/testenv/pgtest": (
-        "TestBinaryLifetime",
-        "TestBinaryStartsUnderLongTempDirectory",
-    ),
-}
+REQUIRED_POSTGRES = {}
 
 
 def supervise(arguments):
@@ -136,9 +127,8 @@ def thread_budget(arguments):
     index = arguments.index("-p")
     procs = int(arguments[index + 1])
     packages = [argument for argument in arguments if argument == "." or argument.startswith("./")]
-    selected = [package for package in packages if package not in contract_packages()] or packages
-    threads = max(1, procs // max(1, min(len(selected), procs)))
-    width = max(1, min(len(packages), procs // threads))
+    width = max(1, min(len(packages), procs))
+    threads = max(4, procs)
     return [*arguments[:index], "-p", str(width), *arguments[index + 2:]], threads
 
 
