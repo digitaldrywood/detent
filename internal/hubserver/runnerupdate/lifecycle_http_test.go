@@ -34,6 +34,7 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 						report.ProcessID = "next-process"
 						report.Sequence = 1
 						report.Version = "1.2.4"
+						report.BuildRevision = "next-revision"
 					}
 					if step > 0 && state == runnerauth.LifecycleStarting && test.states[step-1] == runnerauth.LifecycleStarting {
 						report.ProcessID = fmt.Sprintf("process-%d-%d", index, step)
@@ -48,6 +49,7 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 					}
 					if state == runnerauth.LifecycleShuttingDown {
 						report.Reason = "update"
+						report.TargetVersion = "1.2.4"
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], report), http.StatusNoContent)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], report), http.StatusNoContent)
@@ -58,17 +60,21 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 							return err
 						}
 						want := state
+						wantCode := report.ErrorCode
 						if test.failures[step] == 3 {
 							want = runnerauth.LifecycleStartFailed
+							wantCode = "repeated_start"
 						}
-						if current == nil || current.State != want || current.Version != report.Version || current.ProcessID != report.ProcessID || current.Sequence != report.Sequence {
+						if current == nil || current.State != want || current.Version != report.Version ||
+							current.BuildRevision != report.BuildRevision || current.ProcessID != report.ProcessID || current.Sequence != report.Sequence ||
+							current.TargetVersion != report.TargetVersion || current.Reason != report.Reason || current.ErrorCode != wantCode || current.LastTransitionAt.IsZero() {
 							t.Fatalf("current=%+v want state %s", current, want)
 						}
 						history, err := owner.RunnerLifecycleHistory(t.Context(), binding.RunnerID, 100)
 						if err != nil {
 							return err
 						}
-						if len(history) > 0 && (history[0].State != current.State || history[0].ProcessID != current.ProcessID || history[0].Version != current.Version || history[0].Refusal != "") {
+						if len(history) > 0 && (history[0].LifecycleReport != current.LifecycleReport || !history[0].LastTransitionAt.Equal(current.LastTransitionAt) || history[0].Refusal != "") {
 							t.Errorf("history current=%+v state=%+v", history[0], current)
 						}
 						if len(history) != step+1 {
@@ -123,6 +129,7 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			request := runnerauth.UpdateRequest{ID: "offered", RequestedAt: now, Service: "detent", Version: "1.3.0", Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
 			seedMonotonicRequest(t, f, 1, request)
+			seedMonotonicRequest(t, f, 1, runnerauth.UpdateRequest{ID: "urgent", RequestedAt: now, Service: "detent", Version: "1.3.0", Release: true, Urgent: true})
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
 			observation := runnerauth.UpdateObservation{Protocol: 1, Service: "detent", Discovery: "unknown", Running: build, ObservedAt: now, ReceivedAt: now}
 			observation.Revision = observation.BuildRevision()
@@ -187,6 +194,10 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			report.Sequence++
 			report.State = runnerauth.LifecycleShuttingDown
 			report.Reason = "update"
+			targetless := report
+			targetless.TargetVersion = ""
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], targetless), http.StatusConflict)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], targetless), http.StatusConflict)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], report), http.StatusConflict)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[1], report), http.StatusConflict)
 			if err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
@@ -195,11 +206,12 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if current == nil || current.ProcessID != report.ProcessID || current.Sequence != report.Sequence-1 {
+				if current == nil || current.ProcessID != report.ProcessID || current.Sequence != report.Sequence-1 || current.State != runnerauth.LifecycleUpdating || current.TargetVersion != "1.2.4" {
 					t.Fatalf("refused update changed current process: %+v", current)
 				}
 				history, err := owner.RunnerLifecycleHistory(t.Context(), f.bindings[1].RunnerID, 100)
-				if err == nil && (len(history) != 4 || history[0].Refusal != runnerstore.LifecycleUpdateNotOffered || history[0].LifecycleReport != report) {
+				if err == nil && (len(history) != 5 || history[0].Refusal != runnerstore.LifecycleUpdateNotOffered || history[0].LifecycleReport != report ||
+					history[1].Refusal != runnerstore.LifecycleUpdateNotOffered || history[1].LifecycleReport != targetless) {
 					t.Errorf("expected one hold refusal, history: %+v", history)
 				}
 				return err

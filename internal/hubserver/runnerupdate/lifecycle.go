@@ -54,8 +54,9 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 		}
 		now := s.deps.Now().UTC()
 		presented := report
-		if report.State == runnerauth.LifecycleUpdating || report.TargetVersion != "" &&
-			(report.State == runnerauth.LifecycleDraining || report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update") {
+		if report.State == runnerauth.LifecycleUpdating ||
+			report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update" ||
+			report.State == runnerauth.LifecycleDraining && report.TargetVersion != "" {
 			refusal, err = authorizeLifecycleUpdate(ctx, w, id, report)
 		} else {
 			var target string
@@ -81,6 +82,9 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 }
 
 func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id string, report runnerauth.LifecycleReport) (runnerstore.LifecycleRefusal, error) {
+	if report.TargetVersion == "" {
+		return runnerstore.LifecycleUpdateNotOffered, nil
+	}
 	state, err := w.RunnerUpdateState(ctx, id)
 	if err != nil {
 		return "", err
@@ -89,16 +93,14 @@ func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id stri
 	if err != nil {
 		return "", err
 	}
-	runner := runnerauth.Runner{Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
-	ApplyUrgentRouting(&runner, UrgentUpdate{Request: urgent.Request}, report.Version)
-	allowed, err := OfferAllowed(ctx, w, id, runner.UpdateRequest)
-	if err != nil {
+	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: id}, Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
+	if err := ApplyAvailableRouting(ctx, w, &runner, urgent, report.Version); err != nil {
 		return "", err
 	}
 	if state.Observation != nil && (strings.TrimPrefix(state.Observation.Running.Version, "v") != report.Version || state.Observation.Running.Commit != report.BuildRevision) {
 		return runnerstore.LifecycleRunningBuildChanged, nil
 	}
-	if !allowed || runner.UpdateRequest.Version != report.TargetVersion {
+	if runner.UpdateRequest == nil || runner.UpdateRequest.Version != report.TargetVersion {
 		return runnerstore.LifecycleUpdateNotOffered, nil
 	}
 	return "", nil

@@ -63,7 +63,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) (result error) {
 		} else if cfg.Shutdown != nil && cfg.Shutdown.shutdownRequested.Load() {
 			reason = "drain_complete"
 		}
-		if err := lifecycle.Report(reportCtx, runnerauth.LifecycleShuttingDown, reason, ""); err != nil {
+		if err := lifecycle.Shutdown(reportCtx, reason); err != nil {
 			logger.Warn("report runner shutdown", "error", err)
 		}
 	}()

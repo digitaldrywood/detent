@@ -46,6 +46,13 @@ func OfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request 
 	if err != nil {
 		return false, err
 	}
+	return offerAllowedForTarget(ctx, r, request, target, held)
+}
+
+func offerAllowedForTarget(ctx context.Context, r tenantstore.Reader, request *runnerauth.UpdateRequest, target string, held bool) (bool, error) {
+	if request == nil {
+		return false, nil
+	}
 	if held && strings.TrimPrefix(request.Version, "v") != strings.TrimPrefix(target, "v") {
 		return false, nil
 	}
@@ -59,6 +66,31 @@ func OfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request 
 		}
 	}
 	return true, nil
+}
+
+func ApplyAvailableRouting(ctx context.Context, reader tenantstore.Reader, runner *runnerauth.Runner, urgent runnerstore.UrgentUpdate, version string) error {
+	if runner.UpdateRequest == nil && urgent.Request == nil {
+		return nil
+	}
+	target, held, err := EffectiveTarget(ctx, reader, runner.RunnerID, "")
+	if err != nil {
+		return err
+	}
+	allowed, err := offerAllowedForTarget(ctx, reader, runner.UpdateRequest, target, held)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		runner.UpdateRequest = nil
+	}
+	allowed, err = offerAllowedForTarget(ctx, reader, urgent.Request, target, held)
+	if err != nil {
+		return err
+	}
+	if allowed {
+		ApplyUrgentRouting(runner, UrgentUpdate{Revision: urgent.Revision, Request: urgent.Request}, version)
+	}
+	return nil
 }
 
 func (s *Service) SetTarget(ctx context.Context, scope hubapi.Scope, id string, target runnerstore.UpdateTarget) error {

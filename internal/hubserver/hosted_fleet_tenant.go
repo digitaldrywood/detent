@@ -190,13 +190,6 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 				return problem.ProjectID != "" && !visible[tracker.ProjectID(problem.ProjectID)]
 			})
 			if runner.ConnectionHealth == "online" {
-				runner.UpdateTargetVersion = record.Update.TargetVersion
-				runner.UpdateTargetHeld = record.Update.TargetHeld
-				if runner.Lifecycle != nil && record.Update.TargetVersion != "" {
-					lifecycle := *runner.Lifecycle
-					lifecycle.TargetVersion = record.Update.TargetVersion
-					runner.Lifecycle = &lifecycle
-				}
 				runner.Health = "online"
 				if len(runner.Problems) > 0 {
 					runner.Health = "needs_attention"

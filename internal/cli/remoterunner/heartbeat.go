@@ -3,6 +3,7 @@ package remoterunner
 import (
 	"context"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 )
 
@@ -32,6 +33,6 @@ func RunHeartbeats(ctx context.Context, source Heartbeater, newTicker Ticker, lo
 }
 
 func systemTicker(interval time.Duration) (<-chan time.Time, func()) {
-	ticker := time.NewTicker(interval)
+	ticker := time.NewTicker(interval - rand.N(interval/10+1))
 	return ticker.C, ticker.Stop
 }

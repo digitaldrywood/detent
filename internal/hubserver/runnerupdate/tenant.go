@@ -87,7 +87,7 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 		return nil
 	}
 	probe := &runnerauth.UpdateRequest{Version: version}
-	allowed, err := OfferAllowed(ctx, writer, identity.RunnerID, probe)
+	allowed, err := offerAllowedForTarget(ctx, writer, probe, version, held)
 	if err != nil {
 		return err
 	}
@@ -113,7 +113,11 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 	if err != nil {
 		return err
 	}
-	if urgent.Request != nil && !held {
+	urgentAllowed, err := offerAllowedForTarget(ctx, writer, urgent.Request, version, held)
+	if err != nil {
+		return err
+	}
+	if urgentAllowed && !held {
 		comparison, err := update.CompareVersions(urgent.Request.Version, report.Running.Version)
 		if err == nil && comparison > 0 {
 			return nil
@@ -189,12 +193,7 @@ func (s *Service) runner(ctx context.Context, reader tenantstore.Reader, runnerI
 		runner.Lifecycle = lifecycle
 		runner.ApplyLifecycle(now)
 	}
-	ApplyUrgentRouting(&runner, UrgentUpdate{Revision: urgent.Revision, Request: urgent.Request}, machine.Version)
-	allowed, err := OfferAllowed(ctx, reader, runnerID, runner.UpdateRequest)
-	if !allowed {
-		runner.UpdateRequest = nil
-	}
-	if err != nil {
+	if err := ApplyAvailableRouting(ctx, reader, &runner, urgent, machine.Version); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return runner, nil

@@ -21,7 +21,15 @@ func (s *Service) acceptStoredReceipt(ctx context.Context, reader tenantstore.Re
 			next.PreviousFailure = nil
 		}
 	}
-	known, accepted := acceptReceipt(state, urgent, next, running)
+	var offer *runnerauth.UpdateRequest
+	if state.Observation != nil && state.Observation.Receipt != nil && !state.Observation.Receipt.Request.Matches(next.Request) {
+		runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: runnerID}, Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
+		if err := ApplyAvailableRouting(ctx, reader, &runner, urgent, running.Version); err != nil {
+			return false, false, err
+		}
+		offer = runner.UpdateRequest
+	}
+	known, accepted := acceptReceipt(state, urgent, next, running, offer)
 	if known {
 		return known, accepted, nil
 	}
@@ -38,7 +46,7 @@ func (s *Service) acceptStoredReceipt(ctx context.Context, reader tenantstore.Re
 	return true, state.Observation == nil || state.Observation.Receipt == nil, nil
 }
 
-func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, next *runnerauth.UpdateReceipt, running runnerauth.BuildEvidence) (bool, bool) {
+func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, next *runnerauth.UpdateReceipt, running runnerauth.BuildEvidence, offer *runnerauth.UpdateRequest) (bool, bool) {
 	var previous *runnerauth.UpdateReceipt
 	if state.Observation != nil {
 		previous = state.Observation.Receipt
@@ -51,9 +59,7 @@ func acceptReceipt(state runnerstore.UpdateState, urgent runnerstore.UrgentUpdat
 		return true, true
 	}
 	if !previous.Request.Matches(next.Request) {
-		runner := runnerauth.Runner{Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
-		ApplyUrgentRouting(&runner, UrgentUpdate{Revision: urgent.Revision, Request: urgent.Request}, running.Version)
-		if runner.UpdateRequest == nil || !runner.UpdateRequest.Matches(next.Request) {
+		if offer == nil || !offer.Matches(next.Request) {
 			return true, false
 		}
 		next.RetainPreviousFailure(previous)

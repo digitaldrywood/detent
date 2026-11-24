@@ -52,3 +52,30 @@ func TestLifecycleReportsRoutingTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestLifecycleReportsShutdownOnce(t *testing.T) {
+	for _, reason := range []string{"signal", "update"} {
+		t.Run(reason, func(t *testing.T) {
+			var reports []runnerauth.LifecycleReport
+			owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, report runnerauth.LifecycleReport) error {
+				reports = append(reports, report)
+				return nil
+			})
+			var target string
+			if reason == "update" {
+				target = "1.2.4"
+				if err := owner.Report(t.Context(), runnerauth.LifecycleShuttingDown, reason, target); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for range 2 {
+				if err := owner.Shutdown(t.Context(), reason); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(reports) != 1 || reports[0].State != runnerauth.LifecycleShuttingDown || reports[0].Reason != reason || reports[0].TargetVersion != target {
+				t.Fatalf("shutdown reports = %+v", reports)
+			}
+		})
+	}
+}

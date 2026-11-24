@@ -67,6 +67,19 @@ func (l *Lifecycle) Report(ctx context.Context, state runnerauth.LifecycleState,
 	return nil
 }
 
+func (l *Lifecycle) Shutdown(ctx context.Context, reason string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.report.State == runnerauth.LifecycleShuttingDown && l.report.Reason == reason {
+		return nil
+	}
+	var target string
+	if reason == "update" {
+		target = l.report.TargetVersion
+	}
+	return l.reportLocked(ctx, runnerauth.LifecycleShuttingDown, reason, target)
+}
+
 func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.LifecycleState, reason, target string) error {
 	next := l.report
 	next.Sequence++

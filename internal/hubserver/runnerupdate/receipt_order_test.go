@@ -28,7 +28,7 @@ func TestRunnerUpdateExecutionArtifactReceiptOrdering(t *testing.T) {
 			previous := runnerauth.UpdateReceipt{Request: request, Status: "applied", Applied: &applied, ExecutionArtifact: test.previousReady, ObservedAt: now}
 			next := previous
 			next.ExecutionArtifact, next.ObservedAt = test.nextReady, now.Add(test.elapsed)
-			known, accepted := acceptReceipt(runnerstore.UpdateState{Desired: &request, Observation: &runnerauth.UpdateObservation{Receipt: &previous}}, runnerstore.UrgentUpdate{}, &next, runnerauth.BuildEvidence{})
+			known, accepted := acceptReceipt(runnerstore.UpdateState{Desired: &request, Observation: &runnerauth.UpdateObservation{Receipt: &previous}}, runnerstore.UrgentUpdate{}, &next, runnerauth.BuildEvidence{}, &request)
 			if !known || accepted != test.want {
 				t.Fatalf("known=%v accepted=%v want=%v", known, accepted, test.want)
 			}

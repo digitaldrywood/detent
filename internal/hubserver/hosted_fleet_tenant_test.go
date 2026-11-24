@@ -145,7 +145,7 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		t.Fatalf("fleet runners = %+v", fleet.Runners)
 	}
 	for _, runner := range fleet.Runners {
-		if runner.Health != "online" || runner.HostCapacity != 4 || runner.HostUsed != 1 || runner.Capacity == nil || runner.Capacity.Effective == nil || *runner.Capacity.Effective != 2 || len(runner.Leases) != 1 || runner.ProviderCapacity[0].MaxConcurrent != 2 || runner.ProviderCapacity[0].Used != 1 {
+		if runner.Health != "online" || runner.Lifecycle != nil || runner.HostCapacity != 4 || runner.HostUsed != 1 || runner.Capacity == nil || runner.Capacity.Effective == nil || *runner.Capacity.Effective != 2 || len(runner.Leases) != 1 || runner.ProviderCapacity[0].MaxConcurrent != 2 || runner.ProviderCapacity[0].Used != 1 {
 			t.Errorf("runner live facts = %+v", runner)
 		}
 	}
@@ -359,11 +359,26 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 	}
 
 	if err := repository.WriteTenant(t.Context(), "org_first", corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.(runnerstore.UpdateTargetWriter).SetRunnerUpdateTarget(t.Context(), "runner_1", runnerstore.UpdateTarget{Version: "0.177.4"}); err != nil {
+		targets := w.(runnerstore.UpdateTargetWriter)
+		lifecycle := w.(runnerstore.LifecycleWriter)
+		if err := targets.SetRunnerUpdateTarget(t.Context(), "runner_1", runnerstore.UpdateTarget{Version: "0.177.4"}); err != nil {
 			return err
 		}
 		report := runnerauth.LifecycleReport{ProcessID: "example-process", Sequence: 1, State: runnerauth.LifecycleStarting, Version: "0.177.5", BuildRevision: "example-revision"}
-		return w.(runnerstore.LifecycleWriter).ReportRunnerLifecycle(t.Context(), "runner_1", report, "example-start", now.Add(-runnerauth.RunnerReadyTimeout))
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_1", report, "example-start", now.Add(-runnerauth.RunnerReadyTimeout)); err != nil {
+			return err
+		}
+		report.ProcessID = "example-peer-process"
+		report.TargetVersion = "0.177.5"
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, "peer-start", now); err != nil {
+			return err
+		}
+		report.State = runnerauth.LifecycleReady
+		report.Sequence++
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, "peer-ready", now); err != nil {
+			return err
+		}
+		return targets.SetRunnerUpdateTarget(t.Context(), "runner_2", runnerstore.UpdateTarget{Version: "0.177.4"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -376,8 +391,19 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 		t.Fatal("failed runner missing from fleet")
 	}
 	failed := fleet.Runners[index]
-	if failed.Health != "needs_attention" || failed.Version != "0.177.5" || failed.Update.TargetVersion != "0.177.4" || !failed.Update.TargetHeld || failed.Lifecycle == nil || failed.Lifecycle.ConsecutiveFailedStarts != 1 {
+	if failed.Health != "needs_attention" || failed.Version != "0.177.5" || failed.Update.TargetVersion != "0.177.4" || !failed.Update.TargetHeld || failed.Lifecycle == nil || failed.Lifecycle.ErrorCode != "ready_timeout" || failed.Lifecycle.ConsecutiveFailedStarts != 1 || len(failed.Leases) != 1 || failed.Leases[0].LeaseID != "lease_1" {
 		t.Fatalf("failed runner lost lifecycle or target: %+v", failed)
+	}
+	peerIndex := slices.IndexFunc(fleet.Runners, func(r hostedFleetRunner) bool { return r.ID == "runner_2" })
+	if peerIndex < 0 {
+		t.Fatal("ready runner missing from fleet")
+	}
+	peer := fleet.Runners[peerIndex]
+	if peer.Health != "online" || peer.Lifecycle == nil || peer.Lifecycle.State != runnerauth.LifecycleReady || peer.Lifecycle.ProcessID != "example-peer-process" || len(peer.Leases) != 1 || peer.Leases[0].LeaseID != "lease_2" {
+		t.Fatalf("peer runner lost readiness or lease: %+v", peer)
+	}
+	if peer.Lifecycle.TargetVersion != "0.177.5" || peer.Update.TargetVersion != "0.177.4" || !peer.Update.TargetHeld {
+		t.Fatalf("peer runner lifecycle target = %q, current policy target = %q, held = %t", peer.Lifecycle.TargetVersion, peer.Update.TargetVersion, peer.Update.TargetHeld)
 	}
 
 	owner := hubapi.APICredential{ID: "credential_owner", Hash: apikey.HashToken("org_first_owner"), Scope: hubapi.APIScopeOperator, NativeOnly: true, HostedRole: "owner", HostedMembership: "membership_example", HostedKeyScope: apikey.ScopeAdmin, HostedProjectAccess: hubapi.HostedProjectsAll, Hosted: &auth.HostedIdentity{Subject: "user_example", OrganizationID: "provider_example"}}
