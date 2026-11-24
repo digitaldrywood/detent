@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/cli/remoterunner"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -21,7 +22,8 @@ import (
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
-func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
+func startRemoteRunner(ctx context.Context, cfg BootConfig, newScheduling func(context.Context, globalconfig.Config, string, ...hubSchedulingOptions) (orchestrator.SchedulingSource, error)) error {
+	startedAt := time.Now().UTC()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -37,7 +39,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
-	scheduling, err = newHubScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
+	scheduling, err = newScheduling(ctx, cfg.Global, cfg.Version, hubSchedulingOptions{
 		hubProcessReceipts: true,
 		applyProjectConfiguration: func(ctx context.Context, id string, desired runnerauth.ProjectConfiguration) runnerauth.ProjectConfiguration {
 			if manager == nil {
@@ -142,6 +144,18 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			workers.Wait()
 		}()
 		workers.Go(func() { update.Run(runCtx) })
+		if observer, ok := scheduling.(interface {
+			RunHostMetrics(context.Context, string, time.Time)
+		}); ok {
+			root := ""
+			for _, runtimeProject := range manager.Registry().List() {
+				root = runtimeProject.Workflow().Config.Workspace.Root
+				if root != "" {
+					break
+				}
+			}
+			workers.Go(func() { observer.RunHostMetrics(runCtx, root, startedAt) })
+		}
 		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
 			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
 		}

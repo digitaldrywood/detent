@@ -8,11 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -191,4 +198,122 @@ func TestHubRunnerUpdateUsesRemoteReceiptOwner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStartRemoteRunnerHostMetrics(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		roots    []string
+		wantRoot string
+	}{
+		{name: "first configured project root", roots: []string{"", "workspaces", "other-workspaces"}, wantRoot: "workspaces"},
+		{name: "no configured root", roots: []string{""}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			global := globalconfig.Config{
+				Global: globalconfig.Settings{MaxConcurrentAgents: 1},
+				Client: globalconfig.HubClient{URL: "https://hub.example.test"},
+			}
+			for i, root := range tt.roots {
+				id := fmt.Sprintf("project-%d", i)
+				path := filepath.Join(dir, id+".md")
+				workflow := fmt.Sprintf("---\ntracker:\n  kind: hub_native\nworkspace:\n  root: %q\n---\n\nTest workflow prompt.\n", root)
+				if err := os.WriteFile(path, []byte(workflow), 0600); err != nil {
+					t.Fatal(err)
+				}
+				global.Projects = append(global.Projects, globalconfig.Project{ID: id, Workdir: dir, Workflow: path, Weight: 1, Paused: true})
+			}
+			wantRoot := tt.wantRoot
+			if wantRoot != "" {
+				wantRoot = filepath.Join(dir, wantRoot)
+			}
+			synctest.Test(t, func(t *testing.T) {
+				cfg := BootConfig{Global: global, Version: "dev", Isolated: &IsolatedRuntimeInfo{}, Runner: orchestrator.FakeRunner{}, Shutdown: NewShutdownController()}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				scheduling := &hostMetricsScheduling{
+					Source:   &fakehubscheduling.Source{Connector: fakehub.New(fakehub.Config{})},
+					roots:    make(chan string, 1),
+					flushing: make(chan struct{}),
+					flushed:  make(chan struct{}),
+					release:  make(chan struct{}),
+				}
+				finishFlush := sync.OnceFunc(func() { close(scheduling.release) })
+				defer finishFlush()
+				runnerDone := make(chan error, 1)
+				go func() {
+					runnerDone <- startRemoteRunner(ctx, cfg, func(context.Context, globalconfig.Config, string, ...hubSchedulingOptions) (orchestrator.SchedulingSource, error) {
+						return scheduling, nil
+					})
+				}()
+				synctest.Wait()
+				select {
+				case err := <-runnerDone:
+					t.Fatalf("runner stopped before starting metrics: %v", err)
+				default:
+				}
+				if got := scheduling.calls.Load(); got != 1 {
+					t.Fatalf("RunHostMetrics calls = %d, want 1", got)
+				}
+				if got := <-scheduling.roots; got != wantRoot {
+					t.Errorf("RunHostMetrics root = %q, want %q", got, wantRoot)
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case err := <-runnerDone:
+					t.Fatalf("runner returned before the metrics flush finished: %v", err)
+				default:
+				}
+				select {
+				case <-scheduling.flushing:
+				default:
+					t.Fatal("metrics worker did not receive cancellation")
+				}
+				finishFlush()
+				synctest.Wait()
+				select {
+				case err := <-runnerDone:
+					if !errors.Is(err, context.Canceled) {
+						t.Errorf("runner error = %v, want context cancellation", err)
+					}
+				default:
+					t.Fatal("runner did not return after the metrics flush finished")
+				}
+				select {
+				case <-scheduling.flushed:
+				default:
+					t.Fatal("metrics worker did not finish")
+				}
+				if got := scheduling.calls.Load(); got != 1 {
+					t.Errorf("RunHostMetrics calls after shutdown = %d, want 1", got)
+				}
+			})
+		})
+	}
+}
+
+type hostMetricsScheduling struct {
+	*fakehubscheduling.Source
+	calls    atomic.Int32
+	roots    chan string
+	flushing chan struct{}
+	flushed  chan struct{}
+	release  chan struct{}
+}
+
+func (s *hostMetricsScheduling) RunHostMetrics(ctx context.Context, root string, _ time.Time) {
+	if s.calls.Add(1) != 1 {
+		return
+	}
+	s.roots <- root
+	select {
+	case <-ctx.Done():
+	case <-s.release:
+		return
+	}
+	close(s.flushing)
+	<-s.release
+	close(s.flushed)
 }

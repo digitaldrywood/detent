@@ -220,7 +220,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 	if cfg.Global.Client.Configured() {
-		return startRemoteRunner(ctx, cfg)
+		return startRemoteRunner(ctx, cfg, newHubScheduling)
 	}
 	return startRunningWithDependencies(ctx, cfg, startRunningDependencies{})
 }
@@ -229,7 +229,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err := validateRunnerHubStartup(cfg); err != nil {
 		return err
 	}
-	return startRemoteRunner(ctx, cfg)
+	return startRemoteRunner(ctx, cfg, newHubScheduling)
 }
 
 type sessionProjectBackfiller interface {
