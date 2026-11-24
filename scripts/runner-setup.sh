@@ -36,6 +36,31 @@ case "${1:-}" in
 			GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$(dirname "$binary")" go install -p "${TEST_PROCS:-4}" "$package@$version"
 		fi
 		;;
+	go-linter)
+		version="$2"
+		heft_version="$3"
+		binary="$4"
+		module=github.com/golangci/golangci-lint/v2
+		temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}"
+		mkdir -p "$temp_root" "$(dirname "$binary")"
+		build_dir="$(mktemp -d "$temp_root/detent-linter.XXXXXX")"
+		trap 'rm -rf -- "$build_dir"' EXIT
+		export GOWORK=off
+		go mod download "$module@$version"
+		cp "$(go env GOMODCACHE)/$module@$version/cmd/golangci-lint/main.go" "$build_dir/"
+		cat > "$build_dir/plugins.go" <<'EOF'
+package main
+
+import _ "github.com/digitaldrywood/heft/plugin"
+EOF
+		(
+			cd "$build_dir"
+			go mod init example.com/detent-linter
+			go mod edit -require="$module@$version" -require="github.com/digitaldrywood/heft@$heft_version"
+			go build -mod=mod -p "${TEST_PROCS:-4}" -ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=unknown" -o golangci-lint-custom .
+		)
+		mv "$build_dir/golangci-lint-custom" "$binary"
+		;;
 	node-deps)
 		cd "$2"
 		[[ -f package.json ]] || exit 0
