@@ -120,7 +120,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
+	publishCtx := api.WithPublicationRetry(ctx, e.RetryPhasePublication)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {
@@ -149,7 +149,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 		fmt.Fprintf(&body, "\n\nHost command evidence: %s; head=%s tree=%s exit=%d", command.Command, command.HeadSHA, command.TreeSHA, command.ExitCode)
 	}
 	client, item := e.claim.source.NativeClient(), e.claim.lease.WorkItemID
-	_, err := client.ReviewChange(ctx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
+	_, err := client.ReviewChange(publishCtx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":implementation-review:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), ImplementationReview: &result,
 	})
@@ -174,7 +174,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
+	publishCtx := api.WithPublicationRetry(ctx, e.RetryPhasePublication)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {
@@ -208,7 +208,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 		fmt.Fprintf(&body, "Independent acceptance validation for %s. The structured validator result contains the complete summary, findings and command receipts.", result.HeadSHA)
 	}
 	client, item := e.claim.source.NativeClient(), e.claim.lease.WorkItemID
-	err := client.PublishValidator(ctx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
+	err := client.PublishValidator(publishCtx, item, e.change.ChangeID, result.VersionID, tracker.ReviewChange{
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validator:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), Validator: &result,
 	})

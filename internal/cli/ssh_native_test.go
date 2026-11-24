@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -122,6 +123,20 @@ func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation
 func (e *sshNativeProbe) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
 	input, err := e.ReviewVersion(ctx)
 	return workspace.ChangeSource{Version: *input.Version}, err
+}
+
+func (*sshNativeProbe) RecordSourceValidation(_ context.Context, result gate.CommandResult) error {
+	if result.HeadSHA == "" || result.TreeSHA == "" || result.ExitCode != 0 {
+		return errors.New("source gate receipt is missing its successful commit and tree")
+	}
+	return nil
+}
+
+func (*sshNativeProbe) PublishValidationEvidence(_ context.Context, evidence []runner.ValidationEvidence) error {
+	if len(evidence) != 0 {
+		return errors.New("fixture unexpectedly produced validation artifacts")
+	}
+	return nil
 }
 
 func (*sshNativeProbe) RecordReview(context.Context, gate.ValidatorResult) error { return nil }

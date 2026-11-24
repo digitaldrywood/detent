@@ -22,6 +22,8 @@ import (
 
 func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
 	identityPath := filepath.Join(root, "private", "identity.json")
 	desired := runnerauth.ProjectConfiguration{ProjectID: "prj_example", Authority: "hub_configuration", ConfigRevision: strings.Repeat("d", 64), Source: "cloud_workflow", EffectivePolicy: &policy.Descriptor{ID: "policy_example"}, ObservedAt: time.Now().UTC()}

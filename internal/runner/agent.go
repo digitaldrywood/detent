@@ -1776,7 +1776,7 @@ func (r *Runner) resumeRunCheckpoint(ctx context.Context, req *RunRequest, runti
 	return nil
 }
 
-func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runWorkspace workspace.Backend, info *workspace.Info, issue *workspace.Issue) {
+func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runWorkspace workspace.Backend, info *workspace.Info, issue *workspace.Issue, gates gate.Config) {
 	if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
 		evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
 	}
@@ -1786,7 +1786,8 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	needsReviewSource := gates.Validator.Enabled || gates.AutomatedReview == gate.AutomatedReviewRequired || gates.SecurityAudit.Enabled
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (!req.phaseReceipts || needsReviewSource) {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
@@ -2397,7 +2398,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 			start = phased.StartPhased
 		}
-		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
+		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue, gate.Effective(workflow.Config.Gate))
 		if _, binds := req.Execution.(ConversationExecution); binds {
 			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
 				preStartBinding = false
@@ -2530,6 +2531,81 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var restoredSourceCorrection string
 	reworkPrecheck := workspace.MergePrepareResult{}
+	var reworkSourceChanged bool
+	var resolutionStarted time.Time
+	defer func() {
+		if resolutionStarted.IsZero() {
+			return
+		}
+		outcome := "agent-resolved"
+		if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
+			outcome = "rework"
+		}
+		r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
+	}()
+	prepareRework := func() error {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return err
+		}
+		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
+			started := r.now()
+			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
+			r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(precheck.Status, err))
+			outcome := reworkPreparationOutcome(precheck.Status, err)
+			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				resolutionStarted = r.now()
+			}
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
+			}
+			resumeSource := recoveryState
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return ErrNativeRecoveryRequired
+			}
+			reworkSourceChanged = resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && reworkSourceChanged {
+				resumeState = store.AgentResumeState{}
+				req.ResumeState = store.AgentResumeState{}
+				req.RetryMode = RetryModeFresh
+				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
+				if runtime, ok := req.Execution.(RuntimeExecution); ok {
+					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
+						return err
+					}
+				}
+			}
+			if diffs, ok := req.Execution.(DiffExecution); ok {
+				diffIssue := workspaceIssue
+				if precheck.BaseSHA != "" {
+					diffIssue.BaseRef = precheck.BaseSHA
+				}
+				r.setAttemptDiffSource(ctx, &req, diffs, info, diffIssue)
+			}
+			evidenceIssue := workspaceIssue
+			evidenceIssue.BaseRef = recoveryState.HeadSHA
+			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
+			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
+			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
+				checkpoint.Resume = "resume_session"
+			}
+			if err := recordExecutionCheckpoint(ctx, req.Execution, checkpoint); err != nil {
+				return err
+			}
+			reworkPrecheck = precheck
+			promptOptions.RecoveryState = recoveryState
+		}
+		return nil
+	}
+	if req.phaseReceipts && workspaceIssue.NativeRework && (publicationRecovery || turnRecovery != nil) {
+		if err := prepareRework(); err != nil {
+			return RunResult{}, err
+		}
+		if reworkPrecheck.Status == workspace.MergePrepareStatusConflict || reworkSourceChanged {
+			publicationRecovery, turnRecovery = false, nil
+		}
+	}
 	if publicationRecovery || reviewRecovery != nil || turnRecovery != nil {
 		reviewSource := req.reviewSource
 		req.reviewSource = nil
@@ -2619,64 +2695,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		afterRunPending = true
 	}
 	if workspaceIssue.NativeRework && reworkPrecheck.Status == "" {
-		if err := req.Execution.Validate(ctx); err != nil {
+		if err := prepareRework(); err != nil {
 			return RunResult{}, err
-		}
-		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
-			started := r.now()
-			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
-			r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(precheck.Status, err))
-			outcome := reworkPreparationOutcome(precheck.Status, err)
-			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
-			if precheck.Status == workspace.MergePrepareStatusConflict {
-				resolutionStarted := r.now()
-				defer func() {
-					outcome := "agent-resolved"
-					if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
-						outcome = "rework"
-					}
-					r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
-				}()
-			}
-			if err != nil {
-				return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
-			}
-			resumeSource := recoveryState
-			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
-			if recoveryState == nil {
-				return RunResult{}, ErrNativeRecoveryRequired
-			}
-			sourceChanged := resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
-			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && sourceChanged {
-				resumeState = store.AgentResumeState{}
-				req.ResumeState = store.AgentResumeState{}
-				req.RetryMode = RetryModeFresh
-				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
-				if runtime, ok := req.Execution.(RuntimeExecution); ok {
-					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
-						return RunResult{}, err
-					}
-				}
-			}
-			if diffs, ok := req.Execution.(DiffExecution); ok {
-				diffIssue := workspaceIssue
-				if precheck.BaseSHA != "" {
-					diffIssue.BaseRef = precheck.BaseSHA
-				}
-				r.setAttemptDiffSource(ctx, &req, diffs, info, diffIssue)
-			}
-			evidenceIssue := workspaceIssue
-			evidenceIssue.BaseRef = recoveryState.HeadSHA
-			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
-			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
-			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
-				checkpoint.Resume = "resume_session"
-			}
-			if err := recordExecutionCheckpoint(ctx, req.Execution, checkpoint); err != nil {
-				return RunResult{}, err
-			}
-			reworkPrecheck = precheck
-			promptOptions.RecoveryState = recoveryState
 		}
 	}
 	prompt, err := buildRunPrompt(workflow, &req, mode, promptOptions, reworkPrecheck)

@@ -30,7 +30,8 @@ func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow conf
 	var admission RunResult
 	plan, wait, err := planphase.Run(ctx, planphase.Request{
 		Execution: execution, Continuation: req.phaseContinuation, Backend: backend, Info: info, Issue: issue,
-		Description: req.Issue.Description, HumanReview: review != gate.PlanReviewAutomated, AutomatedReview: review != gate.PlanReviewHuman, Now: r.now,
+		PublishedSource: req.publishedPhaseSource,
+		Description:     req.Issue.Description, HumanReview: review != gate.PlanReviewAutomated, AutomatedReview: review != gate.PlanReviewHuman, Now: r.now,
 		Prompt: func() (string, error) {
 			return buildRunPrompt(workflow, &req, RunModePlan, PromptOptions{PlanOnly: true, WorkspacePath: info.Path, Branch: info.Branch}, workspace.MergePrepareResult{})
 		},
