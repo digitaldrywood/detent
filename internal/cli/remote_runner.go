@@ -149,13 +149,21 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	if err := startRunnerProjects(ctx, manager, scheduling); err != nil {
 		return err
 	}
+	workspaceDone := make(chan struct{})
+	defer func() {
+		cancel()
+		<-workspaceDone
+	}()
 	return runWithShutdown(ctx, runningShutdownConfig{
 		Controller: cfg.Shutdown, Registry: manager.Registry(), Logger: logger,
 	}, func(parent context.Context) error {
 		runCtx, stop := context.WithCancel(parent)
 		var workers sync.WaitGroup
+		var workspaceWorkers sync.WaitGroup
 		defer func() {
 			stop()
+			workspaceWorkers.Wait()
+			close(workspaceDone)
 			workers.Wait()
 		}()
 		workers.Go(func() { update.Run(runCtx) })
@@ -163,7 +171,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
 		}
 		for _, lane := range newWorkspaceLanes(runCtx, cfg.Global, scheduling, logger, support) {
-			workers.Go(func() {
+			workspaceWorkers.Go(func() {
 				serving.Add(1)
 				defer serving.Add(-1)
 				runWorkspaceLane(runCtx, lane, logger)
