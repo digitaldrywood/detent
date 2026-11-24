@@ -26,6 +26,7 @@ type sshNativeProbe struct {
 	lastDiff               tracker.AttemptDiffRequest
 	bundle                 artifact.GitCapture
 	producerFailure        bool
+	validation             gate.CommandResult
 	outcome, finalMessage  string
 	repository             string
 }
@@ -108,6 +109,17 @@ func (e *sshNativeProbe) PrepareFinish(_ context.Context, _, finalMessage string
 	return nil
 }
 
+func (e *sshNativeProbe) RecordSourceValidation(_ context.Context, result gate.CommandResult) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.validation = result
+	return nil
+}
+
+func (*sshNativeProbe) PublishValidationEvidence(ctx context.Context, _ []runner.ValidationEvidence) error {
+	return ctx.Err()
+}
+
 func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -116,6 +128,7 @@ func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation
 	}
 	descriptor := policy.Descriptor{Gates: policy.Gates{AutomatedReview: gate.AutomatedReviewRequired}}.WithID()
 	version := tracker.ChangeVersion{ID: "central-version", ChangeID: "central-change", Policy: descriptor, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: e.lastDiff.BaseSHA, HeadSHA: e.lastDiff.HeadSHA, Repository: e.repository, PolicyID: descriptor.ID}}
+	version.Validation = &e.validation
 	return runner.NativeValidation{Version: &version, Diff: &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: "fixture-diff", Files: []string{"feature.txt"}, Patch: e.lastDiff.Files[0].Patch}}, nil
 }
 
