@@ -431,7 +431,7 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 		if identityRefusal != nil {
 			return false, nil
 		}
-		runnerCapacity, projectCapacity, projectConfigured, err := runnerClaimCapacity(identity, scope.Project, now)
+		runnerCapacity, projectCapacity, projectConfigured, err := RunnerClaimCapacity(identity, scope.Project, now)
 		if err != nil || runnerCapacity <= 0 || projectConfigured && projectCapacity <= 0 {
 			return err == nil, err
 		}
@@ -448,7 +448,7 @@ func (r claimRoutingRefusal) holds(ctx context.Context, reader tenantstore.Reade
 	return false, nil
 }
 
-func runnerClaimCapacity(identity runnerstore.Identity, project tracker.ProjectID, now time.Time) (int, int, bool, error) {
+func RunnerClaimCapacity(identity runnerstore.Identity, project tracker.ProjectID, now time.Time) (int, int, bool, error) {
 	projectCapacity, projectConfigured := identity.ProjectCapacityLimits[project]
 	if identity.CapacityLimit <= 0 || identity.CapacityConfig == nil {
 		return 0, projectCapacity, projectConfigured, nil
@@ -1129,7 +1129,7 @@ func (d Deps) ClaimNativeIssueTenantWithPlan(ctx context.Context, scope hubscope
 		}
 		var exposure budget.CostExposure
 		if replay == nil {
-			runnerCapacity, projectCapacity, projectConfigured, err := runnerClaimCapacity(identity, scope.Project, authoritativeNow)
+			runnerCapacity, projectCapacity, projectConfigured, err := RunnerClaimCapacity(identity, scope.Project, authoritativeNow)
 			if err != nil {
 				return err
 			}

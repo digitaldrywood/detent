@@ -33,12 +33,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
-func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
+func TestProviderPreviewAdmission(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain", "drain pending preview", "drain pending readiness", "drain pending second page", "drain during claim"} {
+	for _, mode := range []string{"empty", "combined empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain", "drain pending preview", "drain pending readiness", "drain pending second page", "drain during claim"} {
 		t.Run(mode, func(t *testing.T) {
 			issueID := "wi_test"
-			if mode == "empty" || mode == "empty paused during admission" {
+			if mode == "empty" || mode == "combined empty" || mode == "empty paused during admission" {
 				issueID = ""
 			}
 			discoveryCtx, cancelDiscovery := context.WithCancel(t.Context())
@@ -170,7 +170,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 			if mode == "drain pending second page" {
 				limit = 2
 			}
-			leases, err := scheduler.claimPreviewCandidates(t.Context(), request, fixtureConnector(native), tracker.NativeClaim{}, limit)
+			leases, err := scheduler.claimPreviewCandidates(t.Context(), request, fixtureConnector(native), tracker.NativeClaim{}, limit, mode == "combined empty")
 			if strings.HasPrefix(mode, "drain pending") || mode == "drain during claim" {
 				wantClaims := 0
 				if mode == "drain pending second page" || mode == "drain during claim" {
@@ -191,6 +191,12 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 				return
 			}
 
+			if mode == "combined empty" {
+				if previews != 1 || claims != 0 || observations != 0 || !errors.Is(err, ErrNoClaimableWork) {
+					t.Fatalf("empty discovery: previews=%d claims=%d observations=%d err=%v", previews, claims, observations, err)
+				}
+				return
+			}
 			if claims != 1 || issueID == "" && (!errors.Is(err, ErrNoClaimableWork) || observations != 0) || issueID != "" && (hubErrorCode(err) != "provider_capacity" || observations != 1) {
 				t.Fatalf("preview: claims=%d observations=%d error=%v", claims, observations, err)
 			}
