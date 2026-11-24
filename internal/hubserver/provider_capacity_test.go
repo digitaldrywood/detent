@@ -911,7 +911,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	}
 	hold, err := writer.Begin(t.Context())
 	if err != nil {
-		closeContext, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+		closeContext, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 		defer cancel()
 		_ = writer.Close(closeContext)
 		t.Fatal(err)
@@ -920,7 +920,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	releaseWriter := func() {
 		t.Helper()
 		release.Do(func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 			defer cancel()
 			if err := hold.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 				t.Error(err)
@@ -959,7 +959,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 		t.Cleanup(func() {
 			cancel()
 			releaseWriter()
-			cleanup, stop := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+			cleanup, stop := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 			defer stop()
 			select {
 			case <-finished:

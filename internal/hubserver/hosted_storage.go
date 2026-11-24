@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 var (
@@ -52,8 +51,6 @@ func (s *Service) readHostedMetadata(ctx context.Context) (hostedMetadataRespons
 	if s.config.Hosted == nil || s.database == nil {
 		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	health, status := s.readInstanceHealth(ctx)
 	if status != http.StatusOK {
 		return hostedMetadataResponse{}, ErrHostedMetadataUnavailable

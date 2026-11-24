@@ -27,8 +27,6 @@ func (s *Service) hostedAccountCredential(ctx context.Context, hash string) (hub
 }
 
 func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hubapi.APICredential, name string) (string, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	if credential.Hosted == nil || credential.Hosted.SupportActor != "" || credential.Hosted.Subject != s.config.Hosted.BootstrapSubject {
 		return "", operatortool.ErrAccessDenied
 	}
@@ -37,9 +35,9 @@ func (s *Service) createHostedOrganizationFor(ctx context.Context, credential hu
 		return "", operatortool.ErrAccessDenied
 	}
 	var members []accessstore.Member
-	if err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		var err error
-		members, err = r.AccessMembers(readCtx, "", 1)
+		members, err = r.AccessMembers(ctx, "", 1)
 		return err
 	}); err != nil || len(members) != 0 {
 		return "", operatortool.ErrAccessDenied

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
@@ -17,14 +16,13 @@ func (s *Service) RecoverPending(ctx context.Context, session auth.Session) (boo
 	if session.Identity == nil || session.Identity.SupportActor != "" || session.Email == "" || emailListed(s.deps.StaffEmails, session.Email) {
 		return false, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	var id string
 	var err error
 	var latest time.Time
 	after := ""
-	err = s.read(readCtx, s.deps.Organization, func(r tenantstore.Reader) error {
+	err = s.read(ctx, s.deps.Organization, func(r tenantstore.Reader) error {
 		for {
-			page, err := r.AccessInvitations(readCtx, after, 200)
+			page, err := r.AccessInvitations(ctx, after, 200)
 			if err != nil {
 				return err
 			}
@@ -42,7 +40,6 @@ func (s *Service) RecoverPending(ctx context.Context, session auth.Session) (boo
 	if err == nil && id == "" {
 		err = sql.ErrNoRows
 	}
-	cancel()
 	if err != nil {
 		if !errors.Is(s.deps.Classify(err), operatortool.ErrAccessDenied) {
 			return false, s.deps.Classify(err)

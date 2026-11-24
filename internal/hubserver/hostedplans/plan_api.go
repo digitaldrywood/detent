@@ -52,8 +52,6 @@ type EntitlementReport struct {
 }
 
 func (d *Service) Entitlements(ctx context.Context, historyAfter int64, historyLimit int) (EntitlementReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var report EntitlementReport
 	if d.Plans() == nil {
 		return report, hubapi.NotFound()

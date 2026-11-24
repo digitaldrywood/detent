@@ -10,8 +10,6 @@ import (
 )
 
 func (s *Service) projectOnboardingBatch(ctx context.Context, organization tracker.OrganizationID, projects []appBootstrapProject) (map[tracker.ProjectID]onboarding.Project, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if len(projects) == 0 {
 		return map[tracker.ProjectID]onboarding.Project{}, nil
 	}

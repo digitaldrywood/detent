@@ -65,8 +65,6 @@ func (s *Service) hostedReportsDetailPostgres(c echo.Context, credential hubapi.
 }
 
 func (s *Service) readPostgresHostedReport(ctx context.Context, credential hubapi.APICredential, projects []string, w operatortool.AnalyticsWindow, filter reportsFilter, compare bool) (hostedReportsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	prior := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}
 	ids := projectIDs(projects)
 	priorities := make([]int, len(filter.Priorities))

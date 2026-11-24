@@ -28,6 +28,7 @@ const NativeDispatchPriorityCapability = "dispatch_priority"
 const NativeLandingCapacityCapability = "project_landing_capacity"
 
 const NativeDispatchWaitCapability = "native_dispatch_wait"
+const NativeDispatchWaitRequestBudget = 40 * time.Second
 const NativeHostMetricsCapability = "runner_host_metrics"
 
 const NativeHeartbeatChangesCapability = "native_heartbeat_changes"

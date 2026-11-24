@@ -25,8 +25,6 @@ import (
 )
 
 func (e hubProjectExecutor) read(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if operatortool.IsModelSelection(call.Name) {
 		return e.readModelSelection(ctx, call)
 	}
@@ -308,8 +306,6 @@ func boundedProjectBatch(view githubBatchView, request operatortool.ProjectReadR
 }
 
 func (s *Service) operatorProjectList(ctx context.Context, scope hubscope.NativeScope, r operatortool.ProjectReadRequest) (operatorProjectPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return operatorProjectPage{}, operatortool.ErrServiceUnavailable
 	}
@@ -425,8 +421,6 @@ func readHostedProject[T any](ctx context.Context, s *Service, scope hubscope.Na
 }
 
 func (s *Service) readCutoverReceipt(ctx context.Context, scope hubscope.NativeScope) (CutoverReceipt, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return CutoverReceipt{}, operatortool.ErrServiceUnavailable
 	}
@@ -469,8 +463,6 @@ type projectImportRecordPage struct {
 }
 
 func (s *Service) readProjectImportRecords(ctx context.Context, scope hubscope.NativeScope, r operatortool.ProjectReadRequest) (projectImportRecordPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	result := projectImportRecordPage{Records: []GitHubImportRecord{}}
 	if r.ImportID == "" {
 		return result, operatortool.ErrInvalidArguments

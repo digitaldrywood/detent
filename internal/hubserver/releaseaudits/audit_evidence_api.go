@@ -110,8 +110,7 @@ func (s *ChangeEvidence) GetAuditDispositions(c echo.Context) error {
 	if err != nil || id < 1 {
 		return s.deps.NativeAPIError(c, hubapi.NativeNotFound())
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	value, err := s.auditDispositions(ctx, hubscope.NativeRequestScope(c), id)
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
@@ -123,8 +122,7 @@ func (s *ChangeEvidence) GetAuditEvidence(c echo.Context) error {
 	if c.QueryParam("change_id") != "" || c.QueryParam("version_id") != "" || c.QueryParam("before_review_sequence") != "" {
 		return s.getPriorAuditEvidence(c)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	pr, err := strconv.Atoi(c.QueryParam("pull_request"))
 	if err != nil || pr < 0 || c.QueryParam("repository") == "" {
@@ -185,8 +183,7 @@ type priorAuditEvidence struct {
 }
 
 func (s *ChangeEvidence) getPriorAuditEvidence(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	query := eventstore.PriorAuditQuery{
 		Project: scope.Project, ChangeID: c.QueryParam("change_id"), VersionID: c.QueryParam("version_id"),

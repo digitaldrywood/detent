@@ -157,8 +157,6 @@ func (s *Service) hostedReportOptionsPostgres(c echo.Context) error {
 }
 
 func (s *Service) readOrganizationProductivityPostgres(ctx context.Context, credential hubapi.APICredential, projectIDsValue []string, w operatortool.AnalyticsWindow, filter reportsFilter) (postgresOrganizationProductivity, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	w.Bucket = time.Hour
 	if w.To.Sub(w.From) >= 6*24*time.Hour {
 		w.Bucket = 24 * time.Hour

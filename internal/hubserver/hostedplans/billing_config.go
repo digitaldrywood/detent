@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tenantauth"
 )
@@ -109,8 +108,6 @@ func (c *HostedBillingConfig) CreditMode() string {
 var ErrBillingUnbound = errors.New("organization has no billing customer yet")
 
 func (d *Service) BillingBinding(ctx context.Context, c *HostedBillingConfig) (billing.Binding, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 
 	var result billing.Binding
 	err := d.ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {

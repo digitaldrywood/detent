@@ -107,8 +107,6 @@ func diagnosticReporterIssues(ctx context.Context, reader tenantstore.Reader, sc
 }
 
 func (d DiagnosticDeps) readRunnerProjectDiagnosticsTenant(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (runnerauth.DiagnosticPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	scope.Project = tracker.ProjectID(args.ProjectID)
 	now := d.Now().UTC()
 	page, err := (*runnerauth.ProjectDiagnostics)(nil).Page(args.ProjectID, args.RunnerID, args.IssueID, args.AttemptID, args.Cursor, args.Limit, now)

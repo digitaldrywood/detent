@@ -60,8 +60,7 @@ func (s *Service) entryKeyReadAuthority(next echo.HandlerFunc) echo.HandlerFunc 
 			}
 			c.Set(hostedSharedClaimsKey, claims)
 		}
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		c.SetRequest(c.Request().WithContext(ctx))
 		read := func() error {
 			return repository.ReadRequest(c.Request().Context(), s.accessOrganization(), func(ctx context.Context) error {

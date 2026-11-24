@@ -40,7 +40,7 @@ func (s *Service) retainClosedWorkItems(ctx context.Context, organization tracke
 	}
 
 	advance := func(next corestore.WorkItemRetentionCursor) (bool, error) {
-		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
+		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 		defer cancel()
 		changed := false
 		err := s.config.TenantRepository.WriteTenant(checkpoint, organization, corestore.Background, func(w tenantstore.Writer) error {

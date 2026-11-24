@@ -30,8 +30,7 @@ func (s *Service) boardModelEndpoint(c echo.Context, status bool) error {
 	selection.WindowAsOf = new(s.config.Clock())
 	selection.SearchText = params.Get("q")
 	selection.WorkItemIDs = nil
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	var response any
 	read := func(ctx context.Context) error {
 		return s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {

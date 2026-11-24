@@ -170,8 +170,6 @@ func (e nativeOperatorExecutor) executeAttachmentDeletion(ctx context.Context, a
 }
 
 func (e nativeOperatorExecutor) attachmentActionResult(ctx context.Context, action chat.Action) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	ctx, scope, r, err := e.attachmentAuthority(ctx, operatortool.DeleteAttachment, action.Arguments)
 	if err != nil {
 		return operatortool.Result{}, err

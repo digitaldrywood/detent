@@ -10,8 +10,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 func BillingWindow(now time.Time, subscription billing.Snapshot) Window {
@@ -29,8 +27,6 @@ func (s *Service) UsageSummary(ctx context.Context, organization tracker.Organiz
 	if s.deps.Repository == nil {
 		return summary, errors.New("billing repository is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		row, err := r.ConversationUsageSummary(ctx, window.From, window.To, projects)
 		if err != nil {
@@ -51,8 +47,6 @@ func (s *Service) UsageBuckets(ctx context.Context, organization tracker.Organiz
 	if len(projects) == 0 {
 		return []billingstore.ConversationUsageBucket{}, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var buckets []billingstore.ConversationUsageBucket
 	err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		var err error

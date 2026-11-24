@@ -411,8 +411,6 @@ func safeHubOperatorError(err error) error {
 	return fmt.Errorf("%w: %w", errHubOperatorUnavailable, err)
 }
 func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments json.RawMessage) (chatpkg.Action, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var r hubFleetRequest
 	if operatortool.DecodeArguments(arguments, &r) != nil {
 		return chatpkg.Action{}, operatortool.ErrInvalidArguments

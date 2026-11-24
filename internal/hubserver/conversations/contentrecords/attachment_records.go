@@ -135,8 +135,7 @@ func (s AttachmentRecords) AttachmentWriteAuthority(ctx context.Context, w tenan
 	return item, nil
 }
 func (s AttachmentRecords) PrepareCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if err := s.deps.CheckEvidence(c, input.Evidence); err != nil {
 		return s.deps.APIError(c, err)
 	}
@@ -307,8 +306,7 @@ func (s AttachmentRecords) PrepareEvidenceCommentRecord(ctx context.Context, sco
 	return result, err
 }
 func (s AttachmentRecords) RecordCloudAttachmentTenant(c echo.Context, input attachment.UploadRequest) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if input.Validate() != nil || input.WorkItemID != "" || input.CommentID != "" || len(input.ReferencedBy) != 0 || input.DeletedAt != nil || input.Evidence != nil && (input.RequestID == "" || input.Evidence.IdempotencyKey != input.RequestID) {
 		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment metadata"))
 	}
@@ -784,8 +782,7 @@ func (s AttachmentRecords) FinishCloudAttachmentDeletionTenant(c echo.Context) e
 	if err := c.Bind(&input); err != nil || conversation.ValidateAttachmentID(input.ID) != nil {
 		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	err := s.deps.WriteTenant(ctx, tracker.OrganizationID(claims.Audience), corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(attachmentstore.DeletionWriter)
 		if !ok {
@@ -804,8 +801,7 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
 		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	organization := tracker.OrganizationID(claims.Audience)
 	now := s.deps.Now().UTC()
 	cutoff := now.Add(-attachment.OrphanTTL)

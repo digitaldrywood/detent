@@ -75,8 +75,6 @@ func (s *Service) getGitHubBatch(c echo.Context) error {
 }
 
 func (s *Service) projectGitHubBatch(ctx context.Context, scope hubscope.NativeScope) (githubBatchView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return githubBatchView{}, ErrHostedDatabaseBinding
 	}

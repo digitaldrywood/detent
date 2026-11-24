@@ -236,30 +236,36 @@ func (c *ConversationService) SettleLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-c.SettleTicks:
-			organization, err := c.LifecycleOrganization()
-			if err != nil {
-				c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
-				continue
-			}
-			now := c.Server.config().Now()
-			if err := c.WakePendingPG(ctx, organization); err != nil {
-				c.Logger.Warn("conversation.pending_wake_failed", "error", err)
-			}
-			settled, err := c.SettleIdleConversationsPG(ctx, organization, now)
-			if err != nil {
-				c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
-				continue
-			}
-			if settled > 0 {
-				c.Logger.Info("conversation.settle_sweep", "settled", settled)
-			}
-			if _, err := c.CompactEventsPG(ctx, organization, now); err != nil {
-				c.Logger.Warn("conversation.compaction_failed", "error", err)
-			}
-			if _, err := c.SweepAttachments(ctx); err != nil {
-				c.Logger.Warn("conversation.attachment_sweep_failed", "error", err)
-			}
+			c.settleTick(ctx)
 		}
+	}
+}
+
+func (c *ConversationService) settleTick(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, conversationSettleInterval)
+	defer cancel()
+	organization, err := c.LifecycleOrganization()
+	if err != nil {
+		c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
+		return
+	}
+	now := c.Server.config().Now()
+	if err := c.WakePendingPG(ctx, organization); err != nil {
+		c.Logger.Warn("conversation.pending_wake_failed", "error", err)
+	}
+	settled, err := c.SettleIdleConversationsPG(ctx, organization, now)
+	if err != nil {
+		c.Logger.Warn("conversation.settle_sweep_failed", "error", err)
+		return
+	}
+	if settled > 0 {
+		c.Logger.Info("conversation.settle_sweep", "settled", settled)
+	}
+	if _, err := c.CompactEventsPG(ctx, organization, now); err != nil {
+		c.Logger.Warn("conversation.compaction_failed", "error", err)
+	}
+	if _, err := c.SweepAttachments(ctx); err != nil {
+		c.Logger.Warn("conversation.attachment_sweep_failed", "error", err)
 	}
 }
 

@@ -3,7 +3,30 @@ package hubserver
 import (
 	"context"
 	"errors"
+
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func (s *Service) requestDeadline(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		request := c.Request()
+		parent := request.Context()
+		if _, ok := parent.Deadline(); ok {
+			return next(c)
+		}
+		budget := s.config.RequestBudget
+		if c.Path() == hubapi.NativeBase+"/claims/wait" {
+			budget = max(budget, tracker.NativeDispatchWaitRequestBudget)
+		}
+		ctx, cancel := s.requestTimeout(parent, budget)
+		defer cancel()
+		c.SetRequest(request.WithContext(hubapi.WithRequestParent(ctx, parent)))
+		return next(c)
+	}
+}
 
 func (d *database) readTimeoutAttributes(err error) []any {
 	if d == nil || d.postgres == nil || !errors.Is(err, context.DeadlineExceeded) {

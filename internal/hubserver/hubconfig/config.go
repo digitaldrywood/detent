@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
@@ -28,7 +29,6 @@ const (
 	DefaultListenAddress              = "127.0.0.1:7777"
 	DefaultWebhookPayloadRetention    = 7 * 24 * time.Hour
 	DefaultWebhookMaintenanceInterval = time.Minute
-	defaultBusyTimeout                = 5 * time.Second
 	defaultShutdownTime               = 5 * time.Second
 	defaultOutboxPoll                 = time.Second
 	defaultOutboxBase                 = 2 * time.Second
@@ -86,6 +86,7 @@ type Config struct {
 	TrustedProxy               bool
 	InitialAdminToken          []byte
 	BusyTimeout                time.Duration
+	RequestBudget              time.Duration
 	ShutdownTimeout            time.Duration
 	GitHubWebhookSecret        []byte
 	WebhookPayloadRetention    time.Duration
@@ -140,7 +141,10 @@ func (c Config) Normalized() Config {
 		c.ListenAddress = DefaultListenAddress
 	}
 	if c.BusyTimeout <= 0 {
-		c.BusyTimeout = defaultBusyTimeout
+		c.BusyTimeout = hubapi.DefaultCleanupBudget
+	}
+	if c.RequestBudget <= 0 {
+		c.RequestBudget = hubapi.DefaultRequestBudget
 	}
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = defaultShutdownTime

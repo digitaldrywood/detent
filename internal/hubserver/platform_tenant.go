@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"cmp"
-	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -93,8 +92,7 @@ func (s *Service) platformTenantMembers(c echo.Context) error {
 }
 
 func (s *Service) platformTenantRunners(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	type runner struct {
 		ID     string `json:"id"`
 		Name   string `json:"name"`
@@ -117,8 +115,7 @@ func (s *Service) platformTenantRunners(c echo.Context) error {
 }
 
 func (s *Service) platformTenantProjects(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	type project struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`

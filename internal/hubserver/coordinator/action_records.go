@@ -131,13 +131,11 @@ func (s ActionHTTPDeps) Post(c echo.Context) error {
 	}
 	scope := hubscope.NativeRequestScope(c)
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
-	record, err := s.ReadConversation(readCtx, scope, c.Param("conversation"))
+	record, err := s.ReadConversation(ctx, scope, c.Param("conversation"))
 	if err != nil {
 		return s.APIError(c, err)
 	}
-	if err := s.Authorize(readCtx, scope, true); err != nil {
+	if err := s.Authorize(ctx, scope, true); err != nil {
 		return s.APIError(c, err)
 	}
 	if (!SettingsTool(string(action.Kind)) && !WorkflowMutation(string(action.Kind)) && !s.CatalogWrite(string(action.Kind)) && !slices.Contains([]string{operatortool.StopRun, operatortool.FileIssue, operatortool.MoveItem, operatortool.EditItem, operatortool.AddComment, "update_project_integration", "set_runner_tier", "convert_runner_scope", "promote_sprites_token", "set_sprite_pool", "scale_up_sprite_pool", string(chat.ActionIssueSplit), string(chat.ActionArchiveItems)}, string(action.Kind))) || action.ProjectID != string(scope.Project) || action.RequestID == "" || len(action.RequestID) > 128 {

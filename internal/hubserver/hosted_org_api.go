@@ -719,8 +719,6 @@ func (s *Service) commandOrganization(ctx context.Context, command hostedCommand
 // readHostedOperation is the read-only application receipt lookup. It never
 // claims a missing command; action_result must remain a read operation.
 func (s *Service) readHostedOperation(ctx context.Context, command hostedCommand) (json.RawMessage, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.readHostedOperationRecord(ctx, command.forContext(ctx))
 }
 

@@ -530,8 +530,6 @@ func (s *Service) billingActionBinding(price string) string {
 }
 
 func (s *Service) billingRequestBinding(ctx context.Context, name string, request billingActionRequest) (string, string, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	if name != operatortool.CreditCheckout && name != operatortool.CreditAutoFund {
 		return s.billingActionBinding(request.Price), "", nil
 	}
@@ -558,8 +556,8 @@ func (s *Service) billingRequestBinding(ctx context.Context, name string, reques
 	}{Account: cfg.AccountID, Mode: cfg.CreditMode(), Return: s.hostedBillingReturn(true), Customer: cfg.CustomerID, Disabled: cfg.CheckoutDisabled, Pack: pack}
 	if name == operatortool.CreditAutoFund {
 		{
-			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
-				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
+			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
+				account, err := reader.BillingCreditAccount(ctx, s.database.aiCreditMode)
 				if err != nil {
 					return err
 				}
@@ -770,8 +768,6 @@ type operatorBillingUsageDrivers struct {
 }
 
 func (s *Service) operatorBillingUsage(ctx context.Context, now time.Time) (operatorBillingUsageReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	report, err := s.hostedBillingReport(ctx)
 	if err != nil {
 		return operatorBillingUsageReport{}, err

@@ -270,14 +270,9 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 	if err != nil {
 		return h.deps.Error(c, err)
 	}
+	ctx = hubapi.ConnectionContext(ctx)
 	stream := NewConversationStream(c)
 	stream.Now = h.server().config().Now
-	if scope.Credential.EntryKey != nil {
-		stream.Authorize = func() error {
-			_, err := h.ReauthorizeStream(c, &scope, record.ID)
-			return err
-		}
-	}
 	if after > record.EventSeq {
 		return stream.Closed(ConversationClosedCursorExpired)
 	}
@@ -289,17 +284,26 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 	defer authorize.Stop()
 	cursor := after
 	for {
+		poll, cancelPoll := context.WithTimeout(ctx, hubapi.DefaultRequestBudget)
+		if scope.Credential.EntryKey != nil {
+			stream.Authorize = func() error {
+				_, err := h.ReauthorizeStream(poll, c, &scope, record.ID)
+				return err
+			}
+		}
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
 		stream.NextAuthorization = stream.Now().Add(h.deps.StreamAuthorize())
-		authorized, err := h.ReauthorizeStream(c, &scope, record.ID)
+		authorized, err := h.ReauthorizeStream(poll, c, &scope, record.ID)
 		if err != nil {
+			cancelPoll()
 			reason := StreamCloseReason(err)
 			service.Logger.Warn("conversation.stream_reauthorize_failed", "conversation_id", record.ID, "reason", reason, "error", err)
 			return stream.Closed(reason)
 		}
 
-		cursor, err = h.server().ReplayPGConversationEvents(ctx, ScopeInput(scope), stream, record.ID, cursor, authorized.EventSeq)
+		cursor, err = h.server().ReplayPGConversationEvents(poll, ScopeInput(scope), stream, record.ID, cursor, authorized.EventSeq)
+		cancelPoll()
 
 		if err != nil {
 			if errors.Is(err, ErrConversationCursorExpired) {
@@ -332,14 +336,11 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 // revocation and grants for API tokens, then the conversation read rule.
 // It updates scope with the refreshed credential and returns the current
 // record.
-func (h *HTTP) ReauthorizeStream(c echo.Context, scope *hubscope.NativeScope, conversationID string) (ConversationRecord, error) {
-	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
-	if err := h.deps.RefreshStream(readCtx, c, scope); err != nil {
+func (h *HTTP) ReauthorizeStream(ctx context.Context, c echo.Context, scope *hubscope.NativeScope, conversationID string) (ConversationRecord, error) {
+	if err := h.deps.RefreshStream(ctx, c, scope); err != nil {
 		return ConversationRecord{}, err
 	}
-	return h.server().ReadPGConversation(readCtx, ScopeInput(*scope), conversationID)
+	return h.server().ReadPGConversation(ctx, ScopeInput(*scope), conversationID)
 }
 
 // StreamCloseReason tells a denial apart from a failure. A
@@ -490,8 +491,7 @@ func (h *HTTP) deleteConversationAttachment(c echo.Context) error {
 
 func (h *HTTP) Archive(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	id := c.Param("conversation")
 	original, err := h.deps.Service().ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
 	if err != nil {
@@ -555,8 +555,7 @@ func (h *HTTP) Archive(c echo.Context) error {
 
 func (h *HTTP) Delete(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	id := c.Param("conversation")
 	original, err := h.deps.Service().ReadPublicationConversationForOrganization(ctx, scope.Organization, id)
 	if err != nil {

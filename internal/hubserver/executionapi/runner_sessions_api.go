@@ -122,8 +122,7 @@ func (d SessionDeps) runnerSessionRead(ctx context.Context, scope hubscope.Nativ
 }
 
 func (d SessionDeps) GetRunnerSession(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	id, err := strconv.ParseInt(c.Param("session"), 10, 64)
 	if err != nil || id < 1 {
 		return d.HTTPError(c, hubapi.NativeNotFound())
@@ -144,8 +143,7 @@ func (d SessionDeps) FindRunnerSession(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &lookup); err != nil {
 		return d.InvalidRequest(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	record, err := d.runnerSessionRead(ctx, hubscope.NativeRequestScope(c), 0, &lookup)
 	if err != nil {
 		return d.HTTPError(c, err)
@@ -264,8 +262,7 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 	if count != 1 && !processStart && !processFinish && !finalize || request.Progress != nil && request.Progress.LastProgressAt.IsZero() {
 		return d.HTTPError(c, hubapi.NativePublicInvalid("one typed session mutation is required"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	var record runnersession.Record
 	var snapshot runnersession.Snapshot
@@ -484,8 +481,7 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 }
 
 func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	id, err := strconv.ParseInt(c.Param("session"), 10, 64)
 	if err != nil || id < 1 {
 		return d.HTTPError(c, hubapi.NativeNotFound())
@@ -525,8 +521,7 @@ func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {
 }
 
 func (d SessionDeps) GetRunnerSessionProcesses(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	if scope.Credential.Runner.RunnerID == "" {
 		return d.HTTPError(c, hubscope.RunnerUnauthorized())

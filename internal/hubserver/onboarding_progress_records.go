@@ -19,8 +19,6 @@ import (
 )
 
 func (s *Service) readOnboardingProgressRecord(ctx context.Context, scope hubscope.NativeScope) (onboarding.Progress, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var result onboarding.Progress
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {
@@ -52,8 +50,6 @@ func (s *Service) saveOnboardingProgressCommand(ctx context.Context, scope hubsc
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}

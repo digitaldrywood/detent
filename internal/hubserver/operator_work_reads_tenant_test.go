@@ -253,7 +253,7 @@ func TestPostgresOperatorItemReferencesUseCurrentAccessWithoutLegacyDatabase(t *
 				t.Cleanup(func() {
 					service.config.RunDetails = details
 					if removed {
-						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 						defer cancel()
 						if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.SetAccessTokenGrant(ctx, accessstore.TokenGrant{OrganizationID: org, TokenID: credential.ID, ProjectID: change.ProjectID})

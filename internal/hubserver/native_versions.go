@@ -37,8 +37,6 @@ func (s *Service) getNativeVersion(c echo.Context) error {
 }
 
 func (s *Service) readVersion(ctx context.Context, scope hubscope.NativeScope, item, comment string, revision int64) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}

@@ -18,8 +18,6 @@ import (
 )
 
 func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.NativeScope) (onboarding.Project, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	result := onboarding.Project{Runners: []runnerauth.Eligibility{}, Artifacts: []artifact.Binding{}}
 	var project projectstore.Metadata
 	var records []runnerstore.FleetRecord

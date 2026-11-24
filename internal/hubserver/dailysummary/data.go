@@ -44,8 +44,6 @@ type summaryEntry struct {
 }
 
 func (s *Service) buildDailySummary(ctx context.Context, recipient summaryRecipient) (emailtemplate.DailySummary, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	out := emailtemplate.DailySummary{Organization: "", Date: recipient.end.In(recipient.zone).Format("Mon Jan 2"), Cost: recipient.role != "reporter"}
 	start := summarySchedule(recipient.end, recipient.minute, recipient.zone, recipient.weekdays, -1)
 	out.Window = fmt.Sprintf("Last %g hours, %s to %s (%s).", recipient.end.Sub(start).Hours(), start.In(recipient.zone).Format("3:04 PM Mon Jan 2"), recipient.end.In(recipient.zone).Format("3:04 PM Mon Jan 2"), recipient.zone.String())

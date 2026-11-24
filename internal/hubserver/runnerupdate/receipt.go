@@ -16,8 +16,6 @@ type ReceiptWrite struct {
 }
 
 func (s *Service) Receipt(ctx context.Context, scope hubapi.Scope, runnerID string) (*runnerauth.UpdateReceipt, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var receipt *runnerauth.UpdateReceipt
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := scope.Authorize(ctx, r, false); err != nil {
@@ -39,8 +37,6 @@ func (s *Service) PutReceipt(ctx context.Context, scope hubapi.Scope, runnerID s
 	if request.Receipt.Validate() != nil || request.Running.Validate() != nil {
 		return hubapi.PublicInvalid("valid update receipt and running build are required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := scope.Authorize(ctx, w, true); err != nil {
 			return err

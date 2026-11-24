@@ -44,8 +44,6 @@ func ValidateArchiveIDs(ids []string) error {
 }
 
 func (d IssueProposalDeps) PreviewArchive(ctx context.Context, record conversations.ConversationRecord, call runner.AgentToolCall) (any, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	var args struct {
 		WorkItemIDs []string `json:"work_item_ids"`
 	}
@@ -83,11 +81,11 @@ func (d IssueProposalDeps) PreviewArchive(ctx context.Context, record conversati
 		return nil, hubapi.NativePublicInvalid("Archive and restore require an operator")
 	}
 	for _, id := range args.WorkItemIDs {
-		row, version, err := s.ReadWorkItem(readCtx, scope, id)
+		row, version, err := s.ReadWorkItem(ctx, scope, id)
 		if err != nil {
 			return nil, err
 		}
-		issue, err := s.HydrateIssue(readCtx, row, version)
+		issue, err := s.HydrateIssue(ctx, row, version)
 		if err != nil {
 			return nil, err
 		}
@@ -100,8 +98,8 @@ func (d IssueProposalDeps) PreviewArchive(ctx context.Context, record conversati
 		if issue.State == "Merging" {
 			return nil, hubapi.NativeInvalid("A Merging issue cannot be archived: " + id)
 		}
-		err = s.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			active, err := r.WorkItemHasActiveLease(readCtx, scope.Project, row.NativeID, s.Now())
+		err = s.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			active, err := r.WorkItemHasActiveLease(ctx, scope.Project, row.NativeID, s.Now())
 			if err != nil {
 				return err
 			}

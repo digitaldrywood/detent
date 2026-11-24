@@ -43,8 +43,6 @@ type nativeCapabilitiesResponse struct {
 }
 
 func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitiesResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var serverID string
 	organization := s.database.hostedOrganization
 	if organization == "" || s.config.AccessRepository == nil {
@@ -73,8 +71,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 }
 
 func (s *Service) nativeOrganizations(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	organization := s.database.hostedOrganization
 	if organization == "" || s.config.AccessRepository == nil {
 		return s.nativeAPIError(c, ErrHostedDatabaseBinding)

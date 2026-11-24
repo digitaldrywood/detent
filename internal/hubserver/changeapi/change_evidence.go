@@ -160,8 +160,7 @@ func (s *HTTP) getValidatorPublicationReceipt(c echo.Context) error {
 	if !hubapi.ValidID(version, "version") || key == "" || len(key) > 128 {
 		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("Invalid validator receipt identity"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	operation := http.MethodPost + " " + c.Request().URL.EscapedPath() + "/versions/" + version + "/reviews"
 	var hash string
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {

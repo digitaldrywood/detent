@@ -13,8 +13,7 @@ import (
 )
 
 func (s *Service) Source(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := s.deps.Scope(c)
 	item := c.Param("item")
 	change, err := s.deps.ReadChange(ctx, scope, item, c.Param("change"))
@@ -44,8 +43,6 @@ func (s *Service) Source(c echo.Context) error {
 }
 
 func VerifySource(ctx context.Context, slot chan struct{}, source tracker.ChangeSource, bundle []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	select {
 	case slot <- struct{}{}:
 		defer func() { <-slot }()

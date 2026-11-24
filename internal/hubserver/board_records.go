@@ -139,8 +139,6 @@ func (s *Service) readBoardProjection(ctx context.Context, scope hubscope.Native
 	if value, present := params["archive_url"]; present && (len(value) != 1 || value[0] != "true" && value[0] != "false") {
 		return tracker.NativeIssuePage{}, hubapi.NativePublicInvalid("archive_url supports true or false")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return tracker.NativeIssuePage{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -616,8 +614,6 @@ func (s *Service) readQueueWorkItems(ctx context.Context, scope hubscope.NativeS
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}, Total: -1}
 	ctx = s.runDetailContext(ctx)
 	ctx = context.WithValue(ctx, runtimeAdmissionPageKey{}, &runtimeAdmissionPage{})
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	allowed := map[string]bool{"limit": true, "cursor": true, "queue_scope": true, "readiness": true, "sort": true, "state": true, "label": true, "assignee": true, "priority": true, "repository": true}
 	for name, values := range params {
 		multi := name == "state" || name == "label" || name == "assignee" || name == "priority" || name == "repository"

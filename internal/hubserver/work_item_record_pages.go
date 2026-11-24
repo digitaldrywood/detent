@@ -40,8 +40,6 @@ func (s *Service) readCommentRecords(ctx context.Context, scope hubscope.NativeS
 }
 
 func (s *Service) readWorkItemPageSnapshot(ctx context.Context, scope hubscope.NativeScope, run func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if repository, ok := s.config.TenantRepository.(tenantstore.RequestReader); ok {
 		return repository.ReadRequest(ctx, scope.Organization, run)
 	}
@@ -137,8 +135,6 @@ func (s *Service) authorizeCommentWorkItem(ctx context.Context, scope hubscope.N
 }
 
 func (s *Service) workItemResource(ctx context.Context, scope hubscope.NativeScope, id string, params url.Values) (tracker.NativeIssue, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil || s.config.AccessRepository == nil {
 		return tracker.NativeIssue{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -392,8 +388,6 @@ func (s *Service) readWorkItemSourcePage(ctx context.Context, scope hubscope.Nat
 	if !ok {
 		return tracker.NativeIssue{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var row corestore.WorkItem
 	var version eventstore.CollaborationVersion
 	var source eventstore.LinkedSource

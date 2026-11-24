@@ -410,7 +410,7 @@ func TestHostedProjectTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 					defer cancel()
 					if err := f.service.config.TenantRepository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 						return w.ReplaceBillingPlan(cleanup, original)
@@ -548,7 +548,7 @@ func TestHostedProjectTools(t *testing.T) {
 										t.Fatal(err)
 									}
 									t.Cleanup(func() {
-										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 										defer cancel()
 										if err := f.service.config.TenantRepository.WriteTenant(cleanup, "org_security", corestore.Serving, func(w tenantstore.Writer) error {
 											_, err := w.AdjustCollaborationBytes(cleanup, -delta, consumption)
@@ -569,7 +569,7 @@ func TestHostedProjectTools(t *testing.T) {
 									}
 									delta := consumption - before
 									t.Cleanup(func() {
-										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+										cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 										defer cancel()
 										result, err := admin.ExecContext(cleanup, "UPDATE hosted_usage_windows SET amount=amount-$4 WHERE organization_id=$1 AND window_start=$2 AND metric=$3 AND amount>=$4", "org_security", window, test.resource, delta)
 										if err != nil {
@@ -674,7 +674,7 @@ func TestHostedProjectTools(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 					defer cancel()
 					if _, err := admin.ExecContext(cleanup, "UPDATE projects SET workflow_source=$3 WHERE organization_id=$1 AND id=$2", "org_security", f.project, candidate.Workflow.Source); err != nil {
 						t.Error(err)

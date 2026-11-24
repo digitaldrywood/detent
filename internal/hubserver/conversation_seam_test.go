@@ -89,7 +89,7 @@ func (s *Service) streamConversationEvents(c echo.Context) error {
 }
 
 func (s *Service) reauthorizeConversationStream(c echo.Context, scope *hubscope.NativeScope, conversationID string) (conversationRecord, error) {
-	record, err := s.conversationHTTP().ReauthorizeStream(c, scope, conversationID)
+	record, err := s.conversationHTTP().ReauthorizeStream(c.Request().Context(), c, scope, conversationID)
 	return record, hubapi.FromFeatureError(err)
 }
 

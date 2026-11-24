@@ -241,8 +241,7 @@ func (d RuntimeDeps) GetNativeRuntime(c echo.Context) error {
 		if after != "" && after != "start" && !hubapi.ValidID(after, "att") || !hubapi.ValidID(selector, "attempt") || c.QueryParams().Has("admission") {
 			return d.HTTPError(c, hubapi.NativePublicInvalid("Invalid attempt evidence cursor"))
 		}
-		ctx, cancel := context.WithTimeout(d.RequestDetails(d.DetailContext(c.Request().Context())), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := d.RequestDetails(d.DetailContext(c.Request().Context()))
 		evidence, _, _, err := d.ReadSelectedNativeRuntimeTenant(ctx, hubscope.NativeRequestScope(c), c.Param("item"), RuntimeAttemptSelector{AttemptID: selector, EvidenceAfter: after, FirstEvidencePage: after == ""})
 		if err != nil {
 			return d.HTTPError(c, err)
@@ -280,8 +279,6 @@ func (d RuntimeDeps) GetNativeRuntime(c echo.Context) error {
 
 func (d RuntimeDeps) ReadNativeRuntime(ctx context.Context, scope hubscope.NativeScope, item, attemptID string, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
 	ctx = d.RequestDetails(d.DetailContext(ctx))
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return d.ReadNativeRuntimeTenant(ctx, scope, item, attemptID, admission...)
 }
 

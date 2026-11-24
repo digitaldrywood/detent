@@ -38,8 +38,6 @@ func (s *Service) exportNativeWorkItems(c echo.Context) error {
 }
 
 func (s *Service) readBulkExport(ctx context.Context, scope hubscope.NativeScope, params url.Values) (operatortool.WorkBulkExportPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	page := operatortool.WorkBulkExportPage{ProjectID: string(scope.Project), GeneratedAt: s.config.Clock(), Freshness: explain.SourceAvailable, Items: []operatortool.WorkBulkExportItem{}}
 	single := url.Values{}
 	for name, values := range params {

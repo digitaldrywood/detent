@@ -80,8 +80,6 @@ func (s *Service) getSpritePool(c echo.Context) error {
 }
 
 func (s *Service) spritePoolResponse(ctx context.Context, scope hubscope.NativeScope) (spritePoolView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	view, err := s.readSpritePool(ctx, scope)
 	if err != nil {
 		return view, err
@@ -364,9 +362,7 @@ func (s *Service) updateSpritePool(ctx context.Context, scope hubscope.NativeSco
 }
 
 func (s *Service) spritePoolSnapshot(ctx context.Context, scope hubscope.NativeScope, view spritePoolView) (spriteScaleInput, []spritePoolMember, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
-	allocation, err := s.readSpriteAllocationController(readCtx, scope)
+	allocation, err := s.readSpriteAllocationController(ctx, scope)
 	if err != nil {
 		return spriteScaleInput{}, nil, err
 	}
@@ -375,18 +371,17 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope hubscope.NativeS
 	}
 	input := spriteScaleInput{Floor: view.MinRunners, Ceiling: view.MaxRunners}
 	now := s.config.Clock()
-	placement, err := s.readOrganizationPlacementSnapshot(readCtx, scope, now)
+	placement, err := s.readOrganizationPlacementSnapshot(ctx, scope, now)
 	if err != nil {
 		return input, nil, err
 	}
 	input.Depth, input.Free, input.Pending = placement.SpriteTarget, placement.SpriteFree, placement.Pending
 	input.CreateLimit = placement.ProviderFree
-	allowed, err := monthlySpriteAllowed(readCtx, nil, scope, now, s.database.billingRepository)
+	allowed, err := monthlySpriteAllowed(ctx, nil, scope, now, s.database.billingRepository)
 	if err != nil {
 		return input, nil, err
 	}
-	decision, err := checkMonthlyBudget(readCtx, nil, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
-	cancelRead()
+	decision, err := checkMonthlyBudget(ctx, nil, scope, budget.CostExposure{SpriteInfrastructure: true}, false, now, s.database.billingRepository)
 	if err != nil {
 		return input, nil, err
 	}
@@ -479,8 +474,6 @@ func (s *Service) spritePoolSnapshot(ctx context.Context, scope hubscope.NativeS
 }
 
 func (s *Service) spritePoolMemberRetention(ctx context.Context, scope hubscope.NativeScope, runnerID string) (runnerauth.Runner, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	runner, err := s.spritePoolControllerRunner(ctx, scope, runnerID)
 	if err != nil {
 		return runner, false, err
@@ -498,9 +491,7 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope hubscope.NativeScop
 	if err != nil || view.Revision == 0 {
 		return err
 	}
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	_, err = s.spritePoolControllerAuthority(readCtx, scope)
-	cancelRead()
+	_, err = s.spritePoolControllerAuthority(ctx, scope)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return nil
 	} else if err != nil {
@@ -578,8 +569,6 @@ func (s *Service) scaleSpritePool(ctx context.Context, scope hubscope.NativeScop
 }
 
 func (s *Service) spriteEnrollmentExpiry(ctx context.Context, scope hubscope.NativeScope, enrollmentID string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var expires time.Time
 	err := s.accessRead(ctx, scope.Organization, func(r tenantstore.Reader) error {
 		enrollment, err := r.RunnerEnrollment(ctx, enrollmentID)
@@ -594,8 +583,6 @@ func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope hubscope
 }
 
 func (s *Service) describeSpritePoolMembers(ctx context.Context, scope hubscope.NativeScope, members []spritePoolMember) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	now := s.config.Clock()
 	for i := range members {
 		member := &members[i]
@@ -723,8 +710,6 @@ func (s *Service) readSpritePoolController(ctx context.Context, scope hubscope.N
 }
 
 func (s *Service) readSpritePoolSnapshot(ctx context.Context, scope hubscope.NativeScope, members bool, authorize func(tenantstore.Reader) error) (spritePoolView, postgres.SpritePool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	view := spritePoolView{Members: []spritePoolMember{}}
 	row := postgres.SpritePool{OrganizationID: scope.Organization, IdleSeconds: 300, IsolationTier: isolation.NativeTrusted, PlacementMode: "blended"}
 	repository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)

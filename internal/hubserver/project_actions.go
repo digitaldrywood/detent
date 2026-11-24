@@ -368,8 +368,6 @@ func (s *Service) readActions(ctx context.Context, scope hubscope.NativeScope) (
 }
 
 func (s *Service) readActionRuns(ctx context.Context, scope hubscope.NativeScope, actionID string, limit int) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var rows []postgres.ActionRun
 	var sequence int64
 	repository, ok := s.config.AccessRepository.(tenantstore.SnapshotRepository)
@@ -411,8 +409,6 @@ func (s *Service) readActionRuns(ctx context.Context, scope hubscope.NativeScope
 }
 
 func (s *Service) readActionRun(ctx context.Context, scope hubscope.NativeScope, actionID, runID string) (actionRunRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var row postgres.ActionRun
 	err := s.accessRead(ctx, scope.Organization, func(reader tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, reader, scope, false); err != nil {
@@ -478,8 +474,6 @@ func (s *Service) queueActionRunRecord(ctx context.Context, scope hubscope.Nativ
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if err := s.recheckProjectRecordMutation(ctx, scope); err != nil {
 		return nil, err
 	}

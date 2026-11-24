@@ -108,22 +108,20 @@ func RenderSlackFinding(publicURL string, basePath string, finding healthsignals
 }
 
 func (s SlackDeliveryDeps) ReadWebhook(ctx context.Context, organization tracker.OrganizationID, actor string) ([]byte, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	var secret accessstore.Secret
-	err := s.AccessRead(readCtx, organization, func(r tenantstore.Reader) error {
+	err := s.AccessRead(ctx, organization, func(r tenantstore.Reader) error {
 		owner, ok := r.(postgres.SlackReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		settings, err := owner.SlackIntegration(readCtx)
+		settings, err := owner.SlackIntegration(ctx)
 		if err != nil {
 			return err
 		}
 		if !settings.Enabled {
 			return corestore.ErrNotFound
 		}
-		secret, err = r.AccessSecret(readCtx, "", SlackWebhookSecret)
+		secret, err = r.AccessSecret(ctx, "", SlackWebhookSecret)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {

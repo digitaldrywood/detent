@@ -207,8 +207,7 @@ func (s *HTTPService) RefreshRuntime(next echo.HandlerFunc) echo.HandlerFunc {
 		if !s.entitlementAdministrator(c) || c.Param("organization") != s.deps.Hosted().OrganizationID {
 			return next(c)
 		}
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		if err := hubapi.FromFeatureError(s.deps.Plans().RefreshRuntime(ctx)); err != nil {
 			s.deps.Logger().WarnContext(ctx, "hosted runtime refresh failed; retaining last snapshot", "error", err)
 		}

@@ -493,7 +493,7 @@ func TestHostedFleetVisibility(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 			defer cancel()
 			if _, err := admin.ExecContext(ctx, "GRANT SELECT ON hosted_usage_counters TO "+postgres.RuntimeRoleName); err != nil {
 				t.Error(err)

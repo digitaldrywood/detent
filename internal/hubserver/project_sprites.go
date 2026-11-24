@@ -202,8 +202,6 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope hubscope.NativeSc
 }
 
 func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope hubscope.NativeScope, state string, last *string) (spriteWakeCandidate, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	dispatchable, err := s.spriteWakeDispatchable(ctx, scope, state)
 	if err != nil || !dispatchable {
 		return spriteWakeCandidate{}, false, err

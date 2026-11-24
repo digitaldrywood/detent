@@ -80,8 +80,6 @@ func (s *Service) hostedUsageReport(c echo.Context) error {
 }
 
 func (s *Service) usageRows(ctx context.Context, window usageWindow, projects []string) ([]usageRow, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if len(projects) == 0 {
 		return nil, nil
 	}
@@ -158,8 +156,6 @@ func (s *Service) usageLimits(ctx context.Context) (map[string]usageLimit, error
 }
 
 func (s *Service) usageRunnerCapacity(ctx context.Context) (map[string]runnerCapacity, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	capacity := map[string]runnerCapacity{}
 	for offset := 0; ; offset += 200 {
 		rows, err := s.listRunnerRoutingData(ctx, s.accessOrganization(), 200, offset)

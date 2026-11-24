@@ -236,7 +236,7 @@ func (s *Service) changeAccessRole(ctx context.Context, credential hubapi.APICre
 	if err := s.config.Hosted.Provider.SetMembershipRole(ctx, membership.ID, role); err != nil {
 		return hostedMemberView{}, errors.Join(mutation.ErrUncertain, err)
 	}
-	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
+	persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 	defer cancel()
 	if err := s.accessWrite(persist, scope.Organization, func(w tenantstore.Writer) error {
 		if err := w.LockAccessOrganization(persist); err != nil {

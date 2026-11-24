@@ -69,8 +69,6 @@ func (s *Service) artifactPublisherToken(ctx context.Context, scope hubscope.Nat
 }
 
 func (s *Service) readArtifactReferences(ctx context.Context, scope hubscope.NativeScope, item string) ([]artifact.Reference, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -100,18 +98,16 @@ func (s *Service) readArtifactReferences(ctx context.Context, scope hubscope.Nat
 
 func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash string) (hubapi.APICredential, error) {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	if sessionHash == "" {
 		scope := hubscope.NativeRequestScope(c)
 		var stored accessstore.Credential
-		err := s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			var err error
-			stored, err = r.AccessCredential(readCtx, principal)
+			stored, err = r.AccessCredential(ctx, principal)
 			if err != nil {
 				return err
 			}
-			member, err := r.AccessCredentialHasMember(readCtx, principal)
+			member, err := r.AccessCredentialHasMember(ctx, principal)
 			if err != nil {
 				return err
 			}
@@ -123,7 +119,7 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 		if err != nil {
 			return hubapi.APICredential{}, err
 		}
-		credential, _, err := s.authenticateTenantAPIHash(readCtx, scope.Organization, stored.Hash, "", "")
+		credential, _, err := s.authenticateTenantAPIHash(ctx, scope.Organization, stored.Hash, "", "")
 		if err != nil || credential.ID != principal {
 			return hubapi.APICredential{}, auth.ErrHostedIdentity
 		}
@@ -145,8 +141,8 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 	if s.config.TenantRepository == nil {
 		return hubapi.APICredential{}, hubapi.NativeWorkItemStorageUnavailable()
 	}
-	if err := s.config.TenantRepository.ReadTenant(readCtx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.authorizeAccessScope(readCtx, r, scope, false)
+	if err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+		return s.authorizeAccessScope(ctx, r, scope, false)
 	}); err != nil {
 		return hubapi.APICredential{}, err
 	}
@@ -154,8 +150,6 @@ func (s *Service) hostedArtifactReader(c echo.Context, principal, sessionHash st
 }
 
 func (s *Service) artifactServicesCommand(ctx context.Context, scope hubscope.NativeScope) (result []artifact.Binding, err error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return nil, hubapi.NativeWorkItemStorageUnavailable()
 	}

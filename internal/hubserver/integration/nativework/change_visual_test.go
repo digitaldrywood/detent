@@ -255,7 +255,7 @@ func TestChangeVisualReferenceWrites(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 					defer cancel()
 					if _, err := f.Hub.Admin.ExecContext(cleanup, "DROP TRIGGER refuse_visual_publication ON "+table+"; DROP FUNCTION refuse_visual_publication()"); err != nil {
 						t.Error(err)

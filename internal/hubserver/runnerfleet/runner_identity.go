@@ -48,8 +48,7 @@ func authenticatedRunner(c echo.Context) (hubapi.APICredential, error) {
 }
 
 func (d IdentityDeps) GetRunnerIdentity(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	credential, err := authenticatedRunner(c)
 	if err != nil {
 		return d.HTTPError(c, err)
@@ -173,8 +172,6 @@ func (d IdentityDeps) RevokeRunnerIdentity(c echo.Context) error {
 }
 
 func (d IdentityDeps) RevokeRunnerIdentityCommand(ctx context.Context, scope hubscope.NativeScope, resource string) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := d.RequireAdministration(ctx, w, scope); err != nil {
 			return err

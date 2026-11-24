@@ -240,8 +240,6 @@ func (s *Service) completeHostedLogin(c echo.Context) error {
 }
 
 func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Identity) error {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	if identity.Subject != s.config.Hosted.BootstrapSubject || identity.Hosted.SupportActor != "" {
 		return nil
 	}
@@ -250,9 +248,9 @@ func (s *Service) bootstrapHostedMember(ctx context.Context, identity auth.Ident
 		return err
 	}
 	var existing []accessstore.Member
-	if err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
+	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		var err error
-		existing, err = r.AccessMembers(readCtx, "", 1)
+		existing, err = r.AccessMembers(ctx, "", 1)
 		return err
 	}); err != nil {
 		return err
@@ -300,15 +298,13 @@ func (s *Service) startHostedSupport(c echo.Context) error {
 
 func (s *Service) logoutHosted(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	session, hash, sessionErr := s.hostedSession(ctx, c)
 	if cookie, err := c.Cookie(hostedCookie); err == nil && hash == "" {
 		hash = apikey.HashToken(cookie.Value)
 	}
 	if sessionErr != nil && hash != "" {
-		err := s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			row, err := r.AccessSession(readCtx, hash)
+		err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			row, err := r.AccessSession(ctx, hash)
 			if err != nil {
 				return err
 			}
@@ -437,8 +433,7 @@ func (s *Service) startHostedInvitation(c echo.Context) error {
 		return s.hostedInvitationDenied(c, problem, denial)
 	}
 	var accepted string
-	readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancelRead()
+	readCtx := c.Request().Context()
 
 	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		row, err := r.AccessInvitation(readCtx, invitation.ID)

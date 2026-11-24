@@ -29,8 +29,6 @@ func (s *Service) readCloudDiagnosticsTenant(ctx context.Context, credential hub
 }
 
 func (s *Service) readDiagnosticsTenant(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow, requested tracker.ProjectID) (diagnosticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.diagnosticsTenantReport(ctx, credential, w, requested)
 }
 

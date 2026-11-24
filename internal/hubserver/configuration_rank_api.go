@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -32,8 +31,7 @@ func configurationRankScope(c echo.Context) (hubscope.NativeScope, error) {
 }
 
 func (s *Service) getConfigurationRank(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope, err := configurationRankScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -51,8 +49,7 @@ func (s *Service) putConfigurationRank(c echo.Context) error {
 	if err := hubapi.DecodeAPIJSON(c, &change); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope, err := configurationRankScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)

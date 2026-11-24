@@ -80,8 +80,7 @@ func (s *Service) localAppBootstrap(c echo.Context) error {
 	if err != nil {
 		return s.localAppUnauthorized(c, status)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	payload := appBootstrap{
 		Organizations: []appBootstrapOrganization{}, Projects: []appBootstrapProject{},
 		Actor:     appBootstrapActor{PrincipalID: credential.ID, Subject: appSubject(credential), Email: credential.Name, Role: "admin", CanManage: true, CanManageRunners: true},

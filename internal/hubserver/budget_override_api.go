@@ -51,8 +51,7 @@ func budgetOverrideResponse(value postgres.BudgetOverride) budgetOverrideValue {
 }
 
 func (s *Service) getBudgetOverride(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	var value postgres.BudgetOverride
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
@@ -86,8 +85,7 @@ func (s *Service) writeBudgetOverride(c echo.Context, clear bool) error {
 	if err := hubapi.DecodeAPIJSON(c, &command); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result, err := s.executeBudgetOverride(ctx, hubscope.NativeRequestScope(c), command, clear)
 	if errors.Is(err, postgres.ErrBudgetOverride) {
 		err = hubapi.NativePublicInvalid("Budget override exceeds the current project policy")

@@ -156,8 +156,6 @@ func (c *ConversationService) normalizeRestartConversationBatchPG(ctx context.Co
 }
 
 func (c *ConversationService) WakePendingPG(ctx context.Context, organization tracker.OrganizationID) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	const cursor = "pending"
 	after := c.LifecycleCursor(cursor)
 	coordinator, controls := 0, 0
@@ -199,8 +197,6 @@ func (c *ConversationService) WakePendingPG(ctx context.Context, organization tr
 }
 
 func (c *ConversationService) ReconcileExecutionsPG(ctx context.Context, organization tracker.OrganizationID) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	const cursor = "execution"
 	after := c.LifecycleCursor(cursor)
 	var errs []error
@@ -410,8 +406,6 @@ func (s *Server) ConversationLeaseCurrentPG(ctx context.Context, reader tenantst
 }
 
 func (c *ConversationService) SettleIdleConversationsPG(ctx context.Context, organization tracker.OrganizationID, now time.Time) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	before := now.Add(-c.Config.SettleWindow)
 	const cursor = "settle"
 	after := c.LifecycleCursor(cursor)

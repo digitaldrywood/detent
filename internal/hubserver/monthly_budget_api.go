@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -19,8 +18,7 @@ type monthlyBudgetRequest struct {
 }
 
 func (s *Service) getMonthlyBudget(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	var result monthlyBudgetSettings
 	var err error

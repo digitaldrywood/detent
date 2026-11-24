@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -37,8 +36,6 @@ func (s *Authenticator) CurrentAuthority(ctx context.Context, credential Credent
 	result.Account, result.Identity = account, Identity(credential, organization)
 	result.Check = func(ctx context.Context, requirement operatortool.Requirement) (err error) {
 		defer func() { err = options.Classify(err) }()
-		ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-		defer cancel()
 		if credential.HostedRole == "reporter" && !RoleAllows(credential.HostedRole, requirement.Scope, requirement.Action) {
 			return operatortool.ErrAccessDenied
 		}

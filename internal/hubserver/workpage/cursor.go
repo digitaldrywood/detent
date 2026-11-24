@@ -66,8 +66,6 @@ type IssuePosition struct {
 }
 
 func (s *Service) ReadLimit(ctx context.Context, scope Caller, path string, params url.Values, maximum, defaultLimit int) (int, Cursor, []byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	limit := defaultLimit
 	var err error
 	if value := strings.TrimSpace(params.Get("limit")); value != "" {

@@ -69,8 +69,6 @@ func (s *Service) Read(ctx context.Context, scope hubapi.Scope) ([]Label, error)
 	if s.deps.Repository == nil {
 		return nil, hubapi.WorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var counts []corestore.LabelCount
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		project, err := r.Project(ctx, scope.Project)

@@ -29,8 +29,6 @@ func (s *Service) creditAvailable() bool {
 }
 
 func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthorization, priceID, requestID string) (billingDestination, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	if _, err := authorize(ctx); err != nil {
 		return billingDestination{}, err
@@ -62,9 +60,9 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 	}
 
 	var purchase billingstore.CreditPurchase
-	err = hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
+	err = hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
 		var err error
-		purchase, err = reader.BillingCreditPurchase(readCtx, key)
+		purchase, err = reader.BillingCreditPurchase(ctx, key)
 		return err
 	}))
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -115,8 +113,6 @@ func (s *Service) checkoutCredits(ctx context.Context, authorize billingAuthoriz
 }
 
 func (s *Service) configureCreditFunding(ctx context.Context, authorize billingAuthorization, request creditFundingInput, key string) (creditFundingInput, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	if _, err := authorize(ctx); err != nil {
 		return creditFundingInput{}, err
 	}
@@ -158,8 +154,8 @@ func (s *Service) configureCreditFunding(ctx context.Context, authorize billingA
 			return creditFundingInput{}, billingFailure(http.StatusBadRequest, "Choose a threshold greater than zero and smaller than the credit pack")
 		}
 		{
-			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
-				account, err := reader.BillingCreditAccount(readCtx, s.database.aiCreditMode)
+			err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
+				account, err := reader.BillingCreditAccount(ctx, s.database.aiCreditMode)
 				method = account.PaymentMethod
 				return err
 			}))

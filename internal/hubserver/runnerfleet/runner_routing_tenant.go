@@ -39,8 +39,6 @@ func (d RoutingDeps) ValidateRunnerLeaseTenant(ctx context.Context, scope hubsco
 	if d.Repository == nil || scope.Credential.Runner.RunnerID == "" || scope.Credential.EntryKey != nil {
 		return runnerauth.Runner{}, hubscope.RunnerUnauthorized()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	now := d.Now().UTC()
 	var runner runnerauth.Runner
 	var policyRevision policystore.Revision

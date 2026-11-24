@@ -182,9 +182,7 @@ func (s *Service) ChangeViewSource(ctx context.Context, scope hubapi.Scope, item
 }
 
 func (s *Service) Read(ctx context.Context, scope hubapi.Scope, item, refresh string) ([]View, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
-	if err := s.deps.ReadItem(readCtx, item); err != nil {
+	if err := s.deps.ReadItem(ctx, item); err != nil {
 		return nil, err
 	}
 	now := s.deps.Now()
@@ -192,10 +190,10 @@ func (s *Service) Read(ctx context.Context, scope hubapi.Scope, item, refresh st
 	cacheable := scope.HostedRole != "reporter"
 	if refresh == "" {
 		if cached, ok := s.deps.Cache.Get(key, now); cacheable && ok {
-			if err := s.authorizeView(readCtx, scope, item); err != nil {
+			if err := s.authorizeView(ctx, scope, item); err != nil {
 				return nil, err
 			}
-			current, err := s.sourcesCurrent(readCtx, scope, cached)
+			current, err := s.sourcesCurrent(ctx, scope, cached)
 			if err != nil {
 				return nil, err
 			}
@@ -207,21 +205,21 @@ func (s *Service) Read(ctx context.Context, scope hubapi.Scope, item, refresh st
 	} else if !s.deps.Cache.AllowRefresh(scope.Organization, now) {
 		return nil, RefreshLimited()
 	}
-	connector, repositoryID, enabled, err := s.RepositoryBinding(readCtx, scope)
+	connector, repositoryID, enabled, err := s.RepositoryBinding(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if !enabled {
 		connector = nil
 	}
-	changes, err := s.deps.Changes(readCtx, item)
+	changes, err := s.deps.Changes(ctx, item)
 	if err != nil {
 		return nil, err
 	}
 	views := []View{}
 	requests := make([]projectstore.GitHubPullRequestRefresh, 0, len(changes))
 	for _, change := range changes {
-		view, target, err := s.ChangeViewSource(readCtx, scope, item, change, connector, repositoryID, now)
+		view, target, err := s.ChangeViewSource(ctx, scope, item, change, connector, repositoryID, now)
 		if err != nil {
 			return nil, err
 		}
@@ -235,7 +233,7 @@ func (s *Service) Read(ctx context.Context, scope hubapi.Scope, item, refresh st
 			return nil, err
 		}
 	}
-	if err := s.authorizeView(readCtx, scope, item); err != nil {
+	if err := s.authorizeView(ctx, scope, item); err != nil {
 		return nil, err
 	}
 	if cacheable {

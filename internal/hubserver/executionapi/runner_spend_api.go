@@ -25,8 +25,7 @@ type SpendDeps struct {
 }
 
 func (d SpendDeps) GetRunnerSpend(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	var day *time.Time
 	if raw := c.QueryParam("day"); raw != "" {
@@ -66,8 +65,7 @@ func (d SpendDeps) GetRunnerSpend(c echo.Context) error {
 }
 
 func (d SpendDeps) GetRunnerModelQuantiles(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	limit, err := strconv.ParseInt(c.QueryParam("limit"), 10, 64)
 	if err != nil || limit < 1 || limit > 200 || c.QueryParam("model") == "" {

@@ -824,7 +824,7 @@ SELECT count(*),count(*) FILTER (WHERE EXISTS (
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 				defer cancel()
 				if _, err := admin.ExecContext(ctx, test.restore); err != nil {
 					t.Error(err)

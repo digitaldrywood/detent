@@ -17,8 +17,7 @@ type organizationProjectRank = projectsettings.Rank
 type projectRankChange = projectsettings.RankChange
 
 func (s *Service) hostedProjectRank(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)

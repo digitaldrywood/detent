@@ -679,7 +679,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 				defer cancel()
 				if err := f.service.config.TenantRepository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					change, err := w.LockChange(ctx, f.change.ID)

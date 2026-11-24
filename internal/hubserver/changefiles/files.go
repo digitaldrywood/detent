@@ -39,8 +39,7 @@ func (s *Service) ValidateBundle(ctx context.Context, scope hubapi.Scope, change
 }
 
 func (s *Service) ViewedFiles(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result, err := s.ReadViewedFiles(ctx, s.deps.Scope(c), c.Param("item"), c.Param("change"), c.Param("version"))
 	if err != nil {
 		return s.deps.Error(c, err)

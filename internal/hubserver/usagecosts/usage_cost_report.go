@@ -7,8 +7,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 type Total struct {
@@ -255,8 +253,6 @@ func BoundedDetails(report Report) Report {
 }
 
 func (s *Service) Monthly(ctx context.Context, organization, scope string, projects []string, window Window, now time.Time) (Report, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	observations, resources, snapshot, err := s.MonthlyRecords(ctx, organization, projects, window)
 	if err != nil {
 		return Report{}, err

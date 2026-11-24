@@ -49,7 +49,6 @@ type HeartbeatDeps struct {
 	NotifyDispatch              func(tracker.OrganizationID)
 	CheckAdmission              func(ctx context.Context, writer billingstore.Writer, now time.Time, counted int64, metrics ...string) error
 	ApplyUsage                  func(ctx context.Context, writer billingstore.Writer, now time.Time, receiptID string, completion, heartbeat bool) error
-	RequestTimeout              func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc)
 	ReadPage                    func(ctx context.Context, scope hubscope.NativeScope, path string, params url.Values) (int, workpage.Cursor, []byte, error)
 	ReadGitHubTask              func(ctx context.Context, scope hubscope.NativeScope) (*tracker.GitHubBatchTask, error)
 	ReleasePublished            func(ctx context.Context, version, platform, architecture string) bool
@@ -160,8 +159,7 @@ func (d HeartbeatDeps) HeartbeatNativeMachineTenant(c echo.Context, request Nati
 	}
 	hostSummaries := runneradvice.PrepareHostMetrics(request.HostMetrics)
 
-	ctx, cancel := d.RequestTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if request.SpriteName != "" {
 		if err := d.Repository.ReadTenant(ctx, credential.Runner.OrganizationID, corestore.Serving, func(r tenantstore.Reader) error {
 			machine, err := r.Machine(ctx, string(credential.Runner.MachineID))

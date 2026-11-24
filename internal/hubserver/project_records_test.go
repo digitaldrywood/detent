@@ -143,7 +143,7 @@ func openLocalPostgresHubTestService(t *testing.T, repository *postgres.Reposito
 		service.config.Logger = config.Logger
 	}
 	service.echo = echo.New()
-	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+	service.echo.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware, service.requestDeadline)
 	service.echo.POST("/api/v1/webhooks/github", service.githubWebhook)
 	service.registerNativeRoutes(service.echo)
 	service.registerRunnerRoutes(service.echo)

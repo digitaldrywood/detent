@@ -48,6 +48,7 @@ type Feature struct {
 
 type Scheduler struct {
 	tickContext func(context.Context) context.Context
+	tickBudget  time.Duration
 	registry    Registry
 	features    []Feature
 	leads       []Feature
@@ -60,10 +61,10 @@ type Scheduler struct {
 }
 
 func New(registry Registry, features []Feature) (*Scheduler, error) {
-	return NewScoped(registry, features, nil)
+	return NewScoped(registry, features, nil, 0)
 }
 
-func NewScoped(registry Registry, features []Feature, tickContext func(context.Context) context.Context) (*Scheduler, error) {
+func NewScoped(registry Registry, features []Feature, tickContext func(context.Context) context.Context, tickBudget time.Duration) (*Scheduler, error) {
 	if registry == nil || len(features) == 0 || len(features) > 16 {
 		return nil, errors.New("maintenance requires a registry and bounded feature families")
 	}
@@ -74,7 +75,7 @@ func NewScoped(registry Registry, features []Feature, tickContext func(context.C
 		}
 		names[feature.Name] = true
 	}
-	scheduler := &Scheduler{registry: registry, wait: waitForWake, tickContext: tickContext}
+	scheduler := &Scheduler{registry: registry, wait: waitForWake, tickContext: tickContext, tickBudget: tickBudget}
 	for _, feature := range features {
 		if feature.Lead {
 			scheduler.leads = append(scheduler.leads, feature)
@@ -128,6 +129,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return errors.New("maintenance tick already running")
 	}
 	defer s.active.Store(false)
+	if s.tickBudget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.tickBudget)
+		defer cancel()
+	}
 	if s.tickContext != nil {
 		ctx = s.tickContext(ctx)
 	}

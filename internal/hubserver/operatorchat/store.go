@@ -9,7 +9,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -25,8 +24,6 @@ type OrganizationKey struct{}
 type Store struct{ Repository tenantstore.Repository }
 
 func (store Store) Load(ctx context.Context, id string, now time.Time, ttl time.Duration) (chat.SessionState, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	organization := tracker.OrganizationID(operatortool.ConnectionIdentity(ctx).OrganizationID)
 	if organization == "" {
 		if scoped, ok := ctx.Value(OrganizationKey{}).(tracker.OrganizationID); ok {

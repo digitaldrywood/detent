@@ -112,8 +112,6 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 }
 
 func (s *Service) readAnalyticsReport(ctx context.Context, credential hubapi.APICredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	projects, err := s.analyticsReadableProjects(ctx, credential, r)
 	if err != nil {
 		return nativeAnalyticsReport{}, err

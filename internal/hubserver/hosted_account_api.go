@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -138,11 +137,9 @@ func (s *Service) hostedInvitationAcceptedBySession(c echo.Context, token string
 		return false
 	}
 	var accepted int
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 
-	err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-		row, err := r.AccessInvitation(readCtx, invitation.ID)
+	err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+		row, err := r.AccessInvitation(ctx, invitation.ID)
 		if err != nil {
 			return err
 		}

@@ -243,8 +243,6 @@ func (s *Service) appUpdates(c echo.Context) error {
 }
 
 func (s *Service) readAppUpdates(ctx context.Context, credential hubapi.APICredential) (appUpdates, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.Hosted != nil {
 		if credential.Hosted == nil || credential.HostedRole == "viewer" {
 			return appUpdates{}, hubapi.NativeNotFound()
@@ -553,8 +551,6 @@ func (s *Service) hostedReadableProjects(ctx context.Context, credential hubapi.
 }
 
 func (s *Service) hostedReadableProjectsPostgres(ctx context.Context, credential hubapi.APICredential) ([]appBootstrapProject, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	const pageSize = 200
 	projects := []appBootstrapProject{}
 	after := tracker.ProjectID("")

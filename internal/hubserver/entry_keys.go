@@ -301,8 +301,7 @@ func (s *Service) entryKeyCatalog(c echo.Context) error {
 }
 
 func (s *Service) entryKeyAdmin(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	claims, ok := hostedSharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService || claims.Subject == "" || claims.Role != "owner" && claims.Role != "admin" {
 		return s.hostedJSONError(c, http.StatusForbidden, "Organization administrator service access is required")

@@ -7,13 +7,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
 func (d *Service) PlanUsage(ctx context.Context, now time.Time, allowanceNames ...string) (HostedEntitlement, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return d.ReadPlanUsage(ctx, nil, now, allowanceNames...)
 }
 

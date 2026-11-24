@@ -73,8 +73,7 @@ func (s *Service) slackSettingsScope(c echo.Context) (hubscope.NativeScope, erro
 }
 
 func (s *Service) getSlackIntegration(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope, err := s.slackSettingsScope(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)

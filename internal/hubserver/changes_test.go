@@ -1307,7 +1307,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 						switch payloadCase {
 						case "missing attempt payload":
 							t.Cleanup(func() {
-								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 								defer cancel()
 								restored, err := details.StoreDetail(cleanup, string(localScope.Organization), payload)
 								if err != nil || restored != originalRef {
@@ -1338,7 +1338,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 								t.Fatal(err)
 							}
 							t.Cleanup(func() {
-								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+								cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 								defer cancel()
 								if _, err := admin.ExecContext(cleanup, "UPDATE native_attempts SET payload_object_key=$1 WHERE organization_id=$2 AND id=$3", originalRef.Key, localScope.Organization, localStart.Data.AttemptID); err != nil {
 									t.Errorf("restore attempt payload reference: %v", err)

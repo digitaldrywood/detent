@@ -100,7 +100,7 @@ func (s *ConversationStore) PublishPayload(ctx context.Context, organization str
 	}
 	ref, publishErr := s.Contents.PublishContent(ctx, organization, content)
 	if publishErr != nil {
-		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.DefaultCleanupBudget)
 		defer cancel()
 		stored, readErr := s.Contents.ReadContent(reconcileCtx, organization, expected)
 		if readErr != nil || !bytes.Equal(stored, content) {

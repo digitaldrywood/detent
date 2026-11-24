@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 type registryFunc func(context.Context, string, int) ([]Tenant, error)
@@ -150,8 +151,11 @@ func TestLeadFeatureServesEveryTenantEveryTickWhileRotationAdvances(t *testing.T
 			}
 			scheduler, err := NewScoped(registry(tenants), []Feature{step("billing", false), step("board", true), step("metrics", false)}, func(ctx context.Context) context.Context {
 				scopeCount++
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("maintenance tick has no deadline")
+				}
 				return context.WithValue(ctx, tickKey{}, scopeCount)
-			})
+			}, time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}

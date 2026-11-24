@@ -18,8 +18,6 @@ func (d EvidenceDeps) CheckAttachmentEvidenceTenant(ctx context.Context, scope h
 	if input.LeaseID == "" || input.FencingToken <= 0 {
 		return hubapi.NativeStaleExecution("Evidence producer lease is no longer current")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if _, err := d.ValidateLease(ctx, scope, input.LeaseID, input.FencingToken); err != nil {
 		return d.StaleLease(err, "Evidence producer lease is no longer current")
 	}

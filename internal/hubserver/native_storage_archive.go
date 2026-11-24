@@ -70,7 +70,7 @@ func (s *Service) archiveClosedNativeIssuesTenant(ctx context.Context, organizat
 	}
 	var failures error
 	advance := func(next attachmentstore.StorageArchiveCursor) error {
-		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
+		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.BusyTimeout)
 		defer cancel()
 		err := s.config.TenantRepository.WriteTenant(checkpoint, organization, corestore.Background, func(w tenantstore.Writer) error {
 			owner, ok := w.(attachmentstore.StorageArchiveWriter)

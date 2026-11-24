@@ -294,7 +294,7 @@ func TestPostgresSourceTransferSelectionWithoutLegacyDatabase(t *testing.T) {
 			} {
 				t.Run(unknown.name, func(t *testing.T) {
 					t.Cleanup(func() {
-						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+						ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 						defer cancel()
 						if err := service.config.TenantRepository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
 							owner, ok := w.(leasestore.CheckpointSourceWriter)

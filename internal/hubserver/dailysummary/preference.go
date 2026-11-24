@@ -102,9 +102,7 @@ func (s *Service) Preference(ctx context.Context, member Member, update *Prefere
 			return Preference{}, saveErr
 		}
 	}
-	readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
-	preference, err := repository.DailySummaryPreference(readCtx, s.deps.Organization(), user, member.Membership, member.Credential)
+	preference, err := repository.DailySummaryPreference(ctx, s.deps.Organization(), user, member.Membership, member.Credential)
 	if err != nil {
 		return Preference{}, err
 	}

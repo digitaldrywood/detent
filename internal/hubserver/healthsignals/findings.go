@@ -31,8 +31,6 @@ type FindingsPage struct {
 }
 
 func ReadFindings(ctx context.Context, deps FindingsDeps, scope hubscope.NativeScope, state, since, cursor string, limit int) (FindingsPage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	page := FindingsPage{Items: []Finding{}, BaselineUnavailable: []BaselineUnavailable{}}
 	if state == "" {
 		state = "open"

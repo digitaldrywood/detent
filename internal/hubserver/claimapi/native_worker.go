@@ -160,8 +160,7 @@ func (d HTTPDeps) RegisterNativeMachine(c echo.Context) error {
 			return d.HTTPError(c, err)
 		}
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	var snapshot runnerauth.RoutingSnapshot
 	err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		credential := scope.Credential

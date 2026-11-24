@@ -376,8 +376,6 @@ func (o *Operations) PresentRecord(ctx context.Context, r tenantstore.Reader, sc
 }
 
 func (o *Operations) ReadRecords(ctx context.Context, scope hubscope.NativeScope, item, state string, limit int) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := o.RequireWorkspaces()
 	if err != nil {
 		return nil, err
@@ -443,8 +441,6 @@ func (o *Operations) ReadRecords(ctx context.Context, scope hubscope.NativeScope
 }
 
 func (o *Operations) ReadRecord(ctx context.Context, scope hubscope.NativeScope, id string) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := o.RequireWorkspaces()
 	if err != nil {
 		return nil, err

@@ -575,7 +575,7 @@ SELECT entry FROM (
 			t.Fatal(err)
 		}
 		defer func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 			defer cancel()
 			if err := connection.Close(cleanup); err != nil {
 				t.Error(err)
@@ -586,7 +586,7 @@ SELECT entry FROM (
 			t.Fatal(err)
 		}
 		defer func() {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 			defer cancel()
 			if err := tx.Rollback(cleanup); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
 				t.Error(err)

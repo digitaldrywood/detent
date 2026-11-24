@@ -153,8 +153,7 @@ func parseWorkBoardRequest(params url.Values) (workBoardRequest, error) {
 }
 
 func (s *Service) workBoard(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	credential, ok := c.Get("hub_api_credential").(hubapi.APICredential)
 	if !ok {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())

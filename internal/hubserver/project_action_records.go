@@ -52,8 +52,6 @@ func (s *Service) hydrateActionRecord(ctx context.Context, scope hubscope.Native
 }
 
 func (s *Service) readActionRecords(ctx context.Context, scope hubscope.NativeScope) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	records, err := s.actionRecords(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -90,8 +88,6 @@ func normalizeActionRecord(a *workspacesession.Action) error {
 }
 
 func (s *Service) mutateActionRecord(ctx context.Context, scope hubscope.NativeScope, method, id string, mutation tracker.Mutation, input any) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if method != "DELETE" && (strings.TrimSpace(mutation.IdempotencyKey) == "" || len(mutation.IdempotencyKey) > 128) {
 		return nil, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}

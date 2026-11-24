@@ -11,7 +11,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 )
 
@@ -100,8 +99,6 @@ func ResolveBilling(config *HostedBillingConfig, previous BillingState, snapshot
 }
 
 func (d *Service) ReadBilling(ctx context.Context) (BillingState, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 
 	var result BillingState
 	err := d.ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {

@@ -380,8 +380,6 @@ func (d AttemptDeps) ReadNativeCleanupAttempt(ctx context.Context, scope hubscop
 		return tracker.NativeAttempt{}, hubapi.NativeNotFound()
 	}
 	ctx = d.DetailContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	repository, ok := d.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return tracker.NativeAttempt{}, hubapi.NativeRunEventStorageUnavailable()
@@ -460,8 +458,6 @@ func (d AttemptDeps) ReadNativeCleanupAttempt(ctx context.Context, scope hubscop
 
 func (d AttemptDeps) ReadNativeAttempt(ctx context.Context, scope hubscope.NativeScope, item, id string) (tracker.NativeAttempt, error) {
 	ctx = d.DetailContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return d.ReadNativeAttemptTenant(ctx, scope, item, id)
 }
 

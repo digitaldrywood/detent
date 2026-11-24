@@ -80,12 +80,10 @@ func (s *Service) hostedBillingCheckout(c echo.Context) error {
 }
 
 func (s *Service) prepareHostedCheckout(ctx context.Context, actor, price string) (hostedCheckout, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	var checkout hostedCheckout
 
-	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(readCtx, func(reader tenantstore.Reader) error {
-		account, err := reader.BillingAccount(readCtx)
+	err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
+		account, err := reader.BillingAccount(ctx)
 		if err != nil {
 			return err
 		}

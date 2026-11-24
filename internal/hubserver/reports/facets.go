@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -14,8 +13,6 @@ import (
 )
 
 func ReadFacets(ctx context.Context, repository tenantstore.Repository, organization tracker.OrganizationID, projects []tracker.ProjectID, w operatortool.AnalyticsWindow) (ReportsFacets, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	out := ReportsFacets{Labels: []string{}, FiledBy: []ReportsFacet{}, Runners: []ReportsFacet{}, Models: []string{}, Stages: []string{}}
 	if repository == nil {
 		return out, errors.New("PostgreSQL report reader is unavailable")

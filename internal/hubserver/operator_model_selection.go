@@ -15,8 +15,6 @@ import (
 )
 
 func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, project string, write bool) (hubscope.NativeScope, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	permission := apikey.ScopeRead
 	if write {
 		permission = apikey.ScopeWrite
@@ -51,8 +49,6 @@ func (e hubProjectExecutor) modelSelectionScope(ctx context.Context, name, proje
 }
 
 func (e hubProjectExecutor) readModelSelection(ctx context.Context, call operatortool.Call) (operatortool.Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var request operatortool.ModelSelectionReadRequest
 	if operatortool.DecodeModelSelectionArguments(call, &request) != nil {
 		return operatortool.Result{}, operatortool.ErrInvalidArguments

@@ -46,8 +46,6 @@ func FreshCapacityConfig(r runnerauth.Runner, now time.Time) bool {
 }
 
 func (d CapacityDeps) PersistRunnerCapacityCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request RunnerCapacityChange) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return nil, hubapi.NativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}

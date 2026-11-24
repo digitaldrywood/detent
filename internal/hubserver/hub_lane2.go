@@ -965,7 +965,6 @@ func (s *Service) runnerHeartbeatDeps() runnerfleet.HeartbeatDeps {
 		NotifyDispatch:              s.runnerNotifyDispatch(),
 		CheckAdmission:              s.checkRunnerAdmission,
 		ApplyUsage:                  s.applyRunnerTenantUsage,
-		RequestTimeout:              s.requestTimeout,
 		ReadPage:                    s.readNativePage,
 		ReadGitHubTask:              s.readGitHubBatchTaskRecord,
 		ReleasePublished:            s.runnerReleasePublished,

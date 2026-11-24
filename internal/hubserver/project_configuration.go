@@ -316,8 +316,6 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 }
 
 func (s *Service) readProjectConfigurationPlan(ctx context.Context, scope hubscope.NativeScope, args operatortool.LocalProjectArguments) (projectConfigurationPlan, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var plan projectConfigurationPlan
 	plan.View = project.MissingConfigurationOwner(args.ProjectID)
 	now := s.config.Clock()

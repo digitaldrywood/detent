@@ -312,7 +312,7 @@ func (d *explicitDeadline) fire() {
 // TestRunnerHeartbeatDeadlineReleasesItsTransaction fires the heartbeat's
 // request deadline through the injected factory while the heartbeat waits on
 // its runner identity row lock, so cancellation is exercised without waiting
-// out the 15-second production deadline.
+// out the server's request deadline.
 func TestRunnerHeartbeatDeadlineReleasesItsTransaction(t *testing.T) {
 	t.Parallel()
 	f := newWriteLoadFixture(t, 1, 0)

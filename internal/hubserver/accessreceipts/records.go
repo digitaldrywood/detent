@@ -146,7 +146,7 @@ func (s *Service) Complete(ctx context.Context, command Command, value any) (jso
 	if err != nil {
 		return nil, errors.Join(mutation.ErrUncertain, err)
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.DefaultCleanupBudget)
 	defer cancel()
 	organization := command.Organization
 	content := eventstore.NewContent(s.deps.Details)

@@ -154,8 +154,7 @@ func (s *HTTPService) hostedCreditTransactions(c echo.Context) error {
 	if err != nil {
 		return s.deps.Error(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if c.QueryParam("format") == "csv" {
 		return s.exportCreditTransactions(ctx, c, credential, p)
 	}
@@ -198,8 +197,7 @@ func (s *HTTPService) exportPostgresCreditTransactions(ctx context.Context, c ec
 	return err
 }
 func (s *HTTPService) PlatformBalance(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	claims, ok := s.deps.SharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.deps.JSONError(c, http.StatusForbidden, "Shared service access is required to read AI credits")

@@ -23,19 +23,17 @@ type operatorCatalogAuthority struct {
 }
 
 func (s *Service) withOperatorCatalog(ctx context.Context, credential hubapi.APICredential, organization string) context.Context {
-	readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	catalog := operatorCatalogAuthority{identity: hubscope.OperatorIdentity(credential, organization), credential: credential}
 	if _, board := entryBoardCredential(ctx); board {
 		catalog.runnerAccess = operatortool.ErrAccessDenied
 	} else if credential.Hosted != nil && credential.HostedRole != "account" {
-		catalog.runnerAccess = s.requireHostedRunnerAdministration(readCtx, credential)
+		catalog.runnerAccess = s.requireHostedRunnerAdministration(ctx, credential)
 	}
 	if s.config.Hosted != nil && !s.hostedShared() && credential.Hosted != nil && credential.SessionHash != "" && credential.Hosted.SupportActor == "" {
-		if session, err := s.storedWebSession(readCtx, credential.SessionHash, s.config.Clock()); err == nil {
+		if session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.Clock()); err == nil {
 			catalog.support = hostedplans.EmailListed(s.config.Hosted.SupportActors, session.Email)
 			if credential.Hosted.Subject == s.config.Hosted.BootstrapSubject && !hostedplans.EmailListed(s.config.Hosted.StaffEmails, session.Email) {
-				setup, err := s.hostedAccountSetupFor(readCtx, session)
+				setup, err := s.hostedAccountSetupFor(ctx, session)
 				catalog.createOrganization = err == nil && setup.CanCreate
 			}
 		}

@@ -396,7 +396,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				if cancelSecond != nil {
 					cancelSecond()
 				}
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 				defer cancel()
 				select {
 				case <-heldDone:

@@ -315,7 +315,7 @@ func TestPostgresReportRendersMissingImportsAcrossTenants(t *testing.T) {
 						if restored {
 							return
 						}
-						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 						defer cancel()
 						if err := repository.WriteTenant(cleanup, organization, corestore.Serving, func(w tenantstore.Writer) error {
 							return w.SetAccessProjectGrant(cleanup, accessstore.ProjectGrant{OrganizationID: organization, UserID: user, ProjectID: project})

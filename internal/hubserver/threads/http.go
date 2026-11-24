@@ -58,8 +58,6 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 }
 
 func (s *HTTPService) Operation(ctx context.Context, name string, in operatortool.ThreadArguments) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if err := CheckArguments(in); err != nil {
 		return nil, err
 	}
@@ -114,8 +112,7 @@ func (s *HTTPService) Authority(ctx context.Context, name string, required apike
 
 func (s *HTTPService) registerUnread(e *echo.Group) {
 	e.GET("/api/v2/organizations/:organization/threads/unread", func(c echo.Context) error {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		ctx, scope, err := s.Authority(ctx, "list_threads", apikey.ScopeRead)
 		if err != nil {
 			return s.deps.Error(c, err)

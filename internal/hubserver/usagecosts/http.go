@@ -54,8 +54,7 @@ func (h *HTTP) project(c echo.Context) error {
 }
 
 func (h *HTTP) organization(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	organization := c.Param("organization")
 	if h.deps.HostedOrganization != "" && organization != h.deps.HostedOrganization {
 		return h.deps.Error(c, hubapi.NotFound())

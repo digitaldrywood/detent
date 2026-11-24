@@ -77,8 +77,6 @@ func terminalRecordingFromPostgres(row postgres.TerminalRecording) RecordingReco
 }
 
 func (w *HTTP) ReadRecording(ctx context.Context, scope hubscope.NativeScope, workspaceID, id string) (RecordingRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := w.RequireWorkspaces()
 	if err != nil {
 		return RecordingRecord{}, err
@@ -126,8 +124,6 @@ func (w *HTTP) ReadRecording(ctx context.Context, scope hubscope.NativeScope, wo
 	return recording, nil
 }
 func (w *HTTP) ReadRecordings(ctx context.Context, scope hubscope.NativeScope, workspaceID, relaySessionID string, limit int) ([]TerminalRecording, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := w.RequireWorkspaces()
 	if err != nil {
 		return nil, err

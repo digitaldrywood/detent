@@ -93,8 +93,6 @@ func (d AttemptDeps) ReadNativeAttemptSnapshotTenant(ctx context.Context, scope 
 
 func (d AttemptDeps) ReadNativeAttemptPageTenant(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (NativeAttemptPage, error) {
 	ctx = d.DetailContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 	if err := hubapi.ValidateNativeQuery(params, "view", "direction"); err != nil {
 		return NativeAttemptPage{}, err

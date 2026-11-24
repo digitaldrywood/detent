@@ -50,8 +50,6 @@ func nativeBoardStatusLine(card tracker.NativeBoardCard) string {
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope hubscope.NativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
 	ctx = s.contentContext(s.runDetailContext(ctx))
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.readNativeRecoveryTenant(ctx, scope, item)
 }
 

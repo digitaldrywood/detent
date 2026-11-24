@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -38,8 +37,6 @@ const SweepBatch = 100
 var errWorkspaceUnchanged = errors.New("workspace changed under the sweep")
 
 func (w *Service) Page(ctx context.Context, after time.Time, id string) ([]Record, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var records []Record
 	err := w.deps.Repository.ReadTenant(ctx, w.deps.Organization(), corestore.Background, func(r tenantstore.Reader) error {
 		owner, err := w.deps.Reader(r)

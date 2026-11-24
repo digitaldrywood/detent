@@ -30,8 +30,6 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 }
 
 func (s *Service) readCloudDiagnostics(ctx context.Context, credential hubapi.APICredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.TenantRepository == nil {
 		return diagnosticsReport{}, hubapi.NativeWorkItemStorageUnavailable()
 	}

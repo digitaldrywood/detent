@@ -167,8 +167,6 @@ func (d DiffDeps) ReadAttemptDiff(ctx context.Context, scope hubscope.NativeScop
 	if d.Repository == nil {
 		return tracker.AttemptDiff{}, d.Unavailable("Attempt diff storage is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return d.ReadAttemptDiffTenant(ctx, scope, item, attemptID, source, seq)
 }
 
@@ -201,7 +199,5 @@ func (d DiffDeps) ReadWorkItemDiff(ctx context.Context, scope hubscope.NativeSco
 	if d.Repository == nil {
 		return tracker.WorkItemDiff{}, d.Unavailable("Attempt diff storage is unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return d.ReadWorkItemDiffTenant(ctx, scope, item, source)
 }

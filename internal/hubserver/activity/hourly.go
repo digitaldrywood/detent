@@ -16,8 +16,6 @@ import (
 )
 
 func (s *Service) readHourly(ctx context.Context, caller Caller, request operatortool.ActivityRequest, window operatortool.AnalyticsWindow) (operatortool.ActivityHourlyReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	organization := tracker.OrganizationID(s.deps.Organization())
 	project := tracker.ProjectID(request.ProjectID)
 	filter := activitystore.HourlyFilter{Project: project, From: window.From, To: window.To, Limit: request.Limit}

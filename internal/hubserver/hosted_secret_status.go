@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -35,8 +34,7 @@ func (s *Service) hostedSecretStatus(c echo.Context) error {
 			return s.nativeAPIError(c, hubapi.NativePublicInvalid("Invalid secret status page limit"))
 		}
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	status := HostedSecretStatus{OrganizationID: scope.Organization, Counts: []SecretVersionCount{}, Problems: []SecretRowProblem{}}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := s.authorizeAccessScope(ctx, r, scope, false); err != nil {

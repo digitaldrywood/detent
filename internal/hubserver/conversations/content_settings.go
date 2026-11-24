@@ -1,7 +1,6 @@
 package conversations
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -18,8 +17,7 @@ type ContentSettingsRequest struct {
 }
 
 func (s ContentSettingsHTTP) GetCloudContentSettings(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	if !s.deps.StorageAvailable {
 		return s.deps.APIError(c, hubapi.NativeWorkItemStorageUnavailable())

@@ -35,8 +35,6 @@ type hostedBillingReport struct {
 }
 
 func (s *Service) hostedBillingReport(ctx context.Context, pages ...creditPageRequest) (hostedBillingReport, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if s.config.Hosted == nil || s.config.TenantRepository == nil || s.database == nil || s.database.billingRepository == nil {
 		return hostedBillingReport{}, hostedplans.ErrBillingUsageUnavailable
 	}
@@ -392,8 +390,6 @@ func (s *Service) hostedPriceLabel(ctx context.Context, price hostedplans.Hosted
 }
 
 func (s *Service) readBillingView(ctx context.Context, pages ...creditPageRequest) (hostedBillingView, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	report, err := s.hostedBillingReport(ctx, pages...)
 	if err != nil {
 		return hostedBillingView{}, err

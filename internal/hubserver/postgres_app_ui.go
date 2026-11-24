@@ -70,8 +70,6 @@ func (s *Service) postgresAppBootstrapPayload(c echo.Context) error {
 }
 
 func (s *Service) readPostgresAppBootstrap(ctx context.Context, credential hubapi.APICredential, session auth.Session) (appBootstrap, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	organizationID := tracker.OrganizationID(s.config.Hosted.OrganizationID)
 	manage := credential.HostedRole == "owner" || credential.HostedRole == "admin"
 	payload := appBootstrap{

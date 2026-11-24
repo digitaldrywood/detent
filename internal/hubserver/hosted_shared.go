@@ -237,11 +237,9 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 		return s.nativeAPIError(c, hubapi.NativeNotFound())
 	}
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	cfg := s.hostedBillingConfig()
 	result := hostedSharedBilling{Status: "free"}
-	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(readCtx, nil, s.config.Clock()))
+	entitlement, err := hubapi.FeatureResult(s.database.plansService().Entitlement(ctx, nil, s.config.Clock()))
 	if err != nil {
 		return s.internalAPIError(c, "entitlements_unavailable", "Organization entitlements are unavailable", err)
 	}
@@ -271,10 +269,8 @@ func (s *Service) hostedSharedBillingBinding(c echo.Context) error {
 				return c.JSON(http.StatusServiceUnavailable, hubapi.APIErrorResponse{Code: "billing_unavailable", Message: "Billing could not be reconciled"})
 			}
 		}
-		checkoutCtx, cancelCheckout := context.WithTimeout(ctx, hubapi.ReadTimeout)
-		defer cancelCheckout()
-		if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(checkoutCtx, func(reader tenantstore.Reader) error {
-			account, err := reader.BillingAccount(checkoutCtx)
+		if err := hubapi.FromFeatureError(s.database.plansService().ReadBillingTenant(ctx, func(reader tenantstore.Reader) error {
+			account, err := reader.BillingAccount(ctx)
 			if errors.Is(err, corestore.ErrNotFound) {
 				return nil
 			}

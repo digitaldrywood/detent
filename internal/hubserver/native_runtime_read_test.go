@@ -713,7 +713,7 @@ func TestNativeRuntimeReadPreservesSharedCapacity(t *testing.T) {
 					var hiddenLease leasestore.Lease
 					t.Cleanup(func() {
 						now = originalNow
-						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+						cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 						defer cancel()
 						if hiddenLease.LeaseID != "" {
 							if err := repository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {

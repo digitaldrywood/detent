@@ -38,8 +38,7 @@ type projectSpriteAllocationRequest struct {
 }
 
 func (s *Service) getProjectSpriteAllocation(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result, err := s.readProjectSpriteAllocation(ctx, hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.nativeAPIError(c, err)

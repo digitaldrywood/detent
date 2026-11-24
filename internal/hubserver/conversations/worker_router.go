@@ -26,13 +26,14 @@ var conversationReconcileInterval = 30 * time.Second
 type WorkerRouter struct {
 	server  *Server
 	service *ConversationService
-	stop    chan struct{}
-	once    sync.Once
+	ctx     context.Context
+	stop    context.CancelFunc
 	wg      sync.WaitGroup
 }
 
 func NewWorkerRouter(service *ConversationService) *WorkerRouter {
-	return &WorkerRouter{server: service.Server, service: service, stop: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &WorkerRouter{server: service.Server, service: service, ctx: ctx, stop: cancel}
 }
 
 func NewControlRouter(service *ConversationService) ConversationControlRouter {
@@ -49,7 +50,7 @@ func (r *WorkerRouter) Wake(conversationID string) {
 
 // Stop ends the reconcile loop and every in-flight long poll.
 func (r *WorkerRouter) Stop() {
-	r.once.Do(func() { close(r.stop) })
+	r.stop()
 	r.wg.Wait()
 }
 
@@ -59,10 +60,13 @@ func (r *WorkerRouter) reconcileLoop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-r.stop:
+		case <-r.ctx.Done():
 			return
 		case <-ticker.C:
-			if err := r.service.ReconcileExecutions(context.Background()); err != nil {
+			ctx, cancel := context.WithTimeout(r.ctx, conversationReconcileInterval)
+			err := r.service.ReconcileExecutions(ctx)
+			cancel()
+			if err != nil && r.ctx.Err() == nil {
 				r.service.Logger.Warn("conversation execution reconcile failed", "error", err)
 			}
 		}

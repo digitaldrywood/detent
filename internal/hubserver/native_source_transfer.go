@@ -35,8 +35,7 @@ type sourceRecoveryView = tracker.NativeSourceRecovery
 type sourceRecoveryRunner = tracker.NativeSourceRecoveryRunner
 
 func (s *Service) getNativeSourceRecovery(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	view, err := s.readNativeSourceRecoveryTenant(ctx, scope, c.Param("item"))
 	if err != nil {

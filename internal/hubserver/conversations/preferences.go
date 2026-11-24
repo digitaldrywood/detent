@@ -258,8 +258,6 @@ type ConversationWorkItemReferencePage struct {
 var conversationSettleInterval = 5 * time.Minute
 
 func (s *Server) ReadWorkItemReferences(ctx context.Context, scope hubauth.Input, id string) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var stored []conversationstore.WorkItemReference
 	var audience string
 	err := s.config().TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {

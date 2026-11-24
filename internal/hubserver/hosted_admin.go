@@ -110,8 +110,6 @@ func (s *Service) requireHostedAdministration(next echo.HandlerFunc) echo.Handle
 }
 
 func (s *Service) requireHostedUsageGrants(ctx context.Context, credential hubapi.APICredential) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if credential.Hosted == nil {
 		return operatortool.ErrAccessDenied
 	}
@@ -134,8 +132,6 @@ func (s *Service) hostedAllRunnerGrants(ctx context.Context, credential hubapi.A
 	if s.config.Hosted == nil {
 		return credential.Scope == hubapi.APIScopeAdmin && !credential.NativeOnly
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.requireHostedRunnerAdministration(ctx, credential) == nil
 }
 
@@ -246,8 +242,6 @@ func (s *Service) requireHostedRunnerProjects(ctx context.Context, credential hu
 
 func (s *Service) inviteHostedMember(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	credential, err := s.hostedAdministrator(c)
 	if err != nil && !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 		return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
@@ -260,7 +254,7 @@ func (s *Service) inviteHostedMember(c echo.Context) error {
 	if email == "" || len(email) > 254 || !strings.Contains(email, "@") || s.config.Hosted.SharedEntry == nil && hostedplans.EmailListed(s.config.Hosted.StaffEmails, email) {
 		return s.hostedError(c, http.StatusUnprocessableEntity, "Enter the customer's email address")
 	}
-	if err := s.validateHostedInvitationGrants(readCtx, credential, email, nil); err != nil {
+	if err := s.validateHostedInvitationGrants(ctx, credential, email, nil); err != nil {
 		if !errors.Is(hubscope.OperatorAuthorizationError(err), operatortool.ErrAccessDenied) {
 			return s.hostedError(c, http.StatusServiceUnavailable, "Organization access is temporarily unavailable")
 		}

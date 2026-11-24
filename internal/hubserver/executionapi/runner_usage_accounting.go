@@ -29,8 +29,7 @@ type UsageDeps struct {
 }
 
 func (d UsageDeps) AccountRunnerUsage(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	var source leasestore.Attempt
 	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {

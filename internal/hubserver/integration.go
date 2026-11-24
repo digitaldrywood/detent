@@ -50,8 +50,6 @@ func (s *Service) projectIntegration(ctx context.Context, scope hubscope.NativeS
 }
 
 func (s *Service) authorizeProjectIntegrationLive(ctx context.Context, scope hubscope.NativeScope) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return hubapi.ProjectRecordError(s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return s.authorizeAccessScope(ctx, r, scope, false)
 	}))

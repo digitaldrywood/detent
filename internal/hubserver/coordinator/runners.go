@@ -59,8 +59,6 @@ func (s RunnerDeps) Runner(ctx context.Context, scope hubscope.NativeScope, id s
 }
 
 func (s RunnerDeps) Runners(ctx context.Context, scope hubscope.NativeScope, args RunnerArguments) ([]runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if !s.SnapshotAvailable {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
 	}

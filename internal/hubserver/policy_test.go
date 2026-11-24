@@ -1209,7 +1209,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				statement := fmt.Sprintf(`CREATE FUNCTION refuse_policy_transition() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture transition failure'; END $$; CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_name ON issues FOR EACH ROW WHEN (OLD.native_id='%s' AND OLD.workflow_state_name IS DISTINCT FROM NEW.workflow_state_name) EXECUTE FUNCTION refuse_policy_transition()`, changes[2].issue.WorkItemID)
 				admin := hostedPostgresAdmin(t, f.service)
 				t.Cleanup(func() {
-					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 					defer cancel()
 					if _, err := admin.ExecContext(cleanupCtx, `DROP TRIGGER IF EXISTS refuse_later_transition ON issues; DROP FUNCTION IF EXISTS refuse_policy_transition()`); err != nil {
 						t.Errorf("drop private policy transition fixture: %v", err)

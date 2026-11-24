@@ -111,8 +111,7 @@ func (h *httpRoutes) mutate(c echo.Context, scope hubauth.Input, command tracker
 		return h.deps.Error(c, hubapi.PublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}
 	s := h.deps.Service()
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	hash, err := hubapi.CommandHash(input)
 	if err != nil {
 		return h.deps.Error(c, err)

@@ -45,8 +45,7 @@ func (d WaitDeps) WaitNativeCandidates(c echo.Context) error {
 	key := d.NotificationKey(scope.Organization)
 	d.Cursor(key)
 	authorize := func() error {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		now := d.Now().UTC()
 		return d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {

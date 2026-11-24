@@ -35,8 +35,7 @@ func (s *Service) getNativeRecoveryTenant(c echo.Context, params url.Values) err
 	if params.Get("detail") != "" && params.Get("detail") != "full" && params.Get("detail") != "summary" {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("detail supports full or summary"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	ctx = s.runDetailContext(ctx)
 	ctx = s.contentContext(ctx)
 	if params.Get("detail") == "summary" || params.Get("detail") == "" && c.Request().Header.Get("X-Detent-Recovery-Detail") == "summary" {

@@ -8,8 +8,6 @@ import (
 )
 
 func (s *Authenticator) AuthorizeOrganization(ctx context.Context, scope Input) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if scope.Credential.Hosted != nil {
 		if string(scope.Organization) != s.deps.Hosted.OrganizationID {
 			return hubapi.NotFound()

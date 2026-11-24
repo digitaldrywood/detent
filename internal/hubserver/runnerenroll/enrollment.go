@@ -88,8 +88,6 @@ func (s *Service) Write(ctx context.Context, scope hubapi.Scope, write func(cont
 	if scope.Organization == "" {
 		return hubapi.NotFound()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.deps.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := scope.Authorize(ctx, w, true); err != nil {
 			return err

@@ -67,8 +67,6 @@ type runnerProposedRankReader interface {
 }
 
 func (d RoutingDeps) ReadRunnerRouting(ctx context.Context, scope hubscope.NativeScope, runnerID string) (runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	credential := scope.Credential
 	if credential.Hosted == nil && (credential.Runner.RunnerID != "" && (credential.Runner.RunnerID != runnerID || credential.Runner.OrganizationID != scope.Organization) || credential.Runner.RunnerID == "" && (credential.Scope != hubapi.APIScopeAdmin || credential.NativeOnly)) {
 		return runnerauth.Runner{}, hubapi.NativeNotFound()
@@ -239,8 +237,6 @@ func (d RoutingDeps) UpdateRunnerRouting(c echo.Context) error {
 }
 
 func (d RoutingDeps) UpdateRunnerRoutingCommand(ctx context.Context, scope hubscope.NativeScope, resource string, request RunnerRoutingRequest) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if len(request.IdempotencyKey) > 128 || scope.Credential.Runner.RunnerID != "" {
 		return nil, hubapi.NativeInvalid("Invalid runner routing command")
 	}
@@ -491,8 +487,6 @@ func (d RoutingDeps) UpdateRunnerHostCommand(ctx context.Context, scope hubscope
 	if change.DisplayName == "" || len(change.DisplayName) > 200 || strings.ContainsAny(change.DisplayName, "\r\n\x00") || change.Capacity < 0 || change.Capacity > 10000 {
 		return nil, hubapi.NativePublicInvalid("Host name and a capacity between 0 and 10000 are required")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := d.RequireRunnerAdministrationTenant(ctx, w, scope); err != nil {
 			return err
@@ -614,8 +608,6 @@ func (d RoutingDeps) ListRunnerRouting(c echo.Context) error {
 }
 
 func (d RoutingDeps) ListRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	repository, ok := d.Repository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeRunEventStorageUnavailable()

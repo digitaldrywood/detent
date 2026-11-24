@@ -1,7 +1,6 @@
 package conversations
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"slices"
@@ -19,8 +18,7 @@ func ArtifactReadGrantRequest(c echo.Context) bool {
 }
 
 func (s ArtifactHTTP) HostedArtifactPublisher(c echo.Context, credential hubapi.APICredential) bool {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if !credential.NativeOnly || credential.Scope != hubapi.APIScopeWorker || c.Request().Method != http.MethodPost {
 		return false
 	}
@@ -69,8 +67,7 @@ func (s ArtifactHTTP) ArtifactServices(c echo.Context) error {
 }
 
 func (s ArtifactHTTP) artifactPublisher(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	id, err := s.deps.PublisherToken(ctx, scope, c.Param("service"))
 	if err != nil || id != scope.Credential.ID {
@@ -146,8 +143,7 @@ func (s ArtifactHTTP) ArtifactReadGrant(c echo.Context) error {
 }
 
 func (s ArtifactHTTP) AuthorizeArtifactRead(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if err := s.artifactPublisher(c); err != nil {
 		return s.deps.APIError(c, err)
 	}
@@ -173,8 +169,7 @@ func (s ArtifactHTTP) AuthorizeArtifactRead(c echo.Context) error {
 }
 
 func (s ArtifactHTTP) GetArtifactReference(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	revision, err := artifact.Revision(c.Param("revision"))
 	if err != nil {
 		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid artifact revision"))

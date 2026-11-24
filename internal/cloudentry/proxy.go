@@ -41,7 +41,7 @@ func (s *Service) tenantTransport(organization Organization) (http.RoundTripper,
 		return nil, errors.New("tenant endpoint is invalid")
 	}
 	path := strings.TrimPrefix(organization.Endpoint, "unix:")
-	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: 30 * time.Second, DisableCompression: true,
+	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: hubapi.DefaultRequestBudget, DisableCompression: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			if err := socket.Verify(path); err != nil {
 				return nil, err

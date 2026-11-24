@@ -49,8 +49,7 @@ func (s *Authenticator) Native(options NativeMiddlewareOptions, roles ...TokenSc
 }
 
 func (s *Authenticator) AuthorizeRead(c echo.Context, authorize func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	repository, supported := s.deps.Repository.(tenantstore.RequestReader)
 	if c.Request().Method != http.MethodGet || !supported {
 		return authorize(ctx)

@@ -32,8 +32,6 @@ type Service struct{ deps Deps }
 
 func New(deps Deps) *Service { return &Service{deps: deps} }
 func (s *Service) snapshot(ctx context.Context, scope hubapi.Scope, run func(context.Context) error) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if repository, ok := s.deps.Repository.(tenantstore.RequestReader); ok {
 		return repository.ReadRequest(ctx, scope.Organization, run)
 	}
@@ -41,8 +39,6 @@ func (s *Service) snapshot(ctx context.Context, scope hubapi.Scope, run func(con
 }
 
 func (s *Service) authorizeLive(ctx context.Context, scope hubapi.Scope) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	return s.deps.RecordError(s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		return scope.Authorize(ctx, r, false)
 	}))

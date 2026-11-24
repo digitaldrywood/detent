@@ -7,8 +7,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 )
 
 type Transaction struct {
@@ -37,8 +35,6 @@ type View struct {
 }
 
 func (s *Service) Read(ctx context.Context, pages ...Page) (*View, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	view := &View{Packs: []Pack{}, History: []Transaction{}}
 	var method string
 	err := s.read(ctx, func(reader tenantstore.Reader) error {

@@ -134,8 +134,6 @@ func (w *HTTP) OpenWorkspaceRelay(c echo.Context) error {
 // commit to anybody, and a commit's author line is permanent in the
 // repository's history in a way a relay audit row is not.
 func (w *HTTP) RelayActor(ctx context.Context, organization tracker.OrganizationID, connection *Connection, principal Principal) workspacesession.Actor {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	actor := workspacesession.Actor{
 		PrincipalID: principal.PrincipalID, Subject: principal.Subject, ConnectionID: connection.ID,
 	}
@@ -210,6 +208,7 @@ func (w *HTTP) servePerson(c echo.Context, scope hubscope.NativeScope, record wo
 		return nil
 	}
 	w.CloseIfEndedSinceUpgrade(ctx, connection)
+	ctx = hubapi.ConnectionContext(ctx)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go connection.WriteLoop(socketCtx)
@@ -275,7 +274,10 @@ func (w *HTTP) watchPersonAuthority(ctx context.Context, c echo.Context, scope h
 		case <-connection.Done:
 			return
 		case <-ticker.C:
-			if err := w.RevalidatePerson(ctx, c, scope, record, connection); err != nil {
+			tick, cancel := context.WithTimeout(ctx, workspacesession.AuthorityRecheckInterval)
+			err := w.RevalidatePerson(tick, c, scope, record, connection)
+			cancel()
+			if err != nil {
 				connection.Revoke()
 				return
 			}
@@ -335,8 +337,6 @@ func (w *HTTP) RevalidatePerson(ctx context.Context, c echo.Context, scope hubsc
 // session was revoked, the membership row was deactivated, the grant was
 // withdrawn, the workspace ended, or the runner lost its lease.
 func (w *HTTP) RevalidatePersonLocally(ctx context.Context, record workspacehub.Record, connection *Connection) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if w.Repository() == nil {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
@@ -413,8 +413,6 @@ func (w *HTTP) RevalidatePersonLocally(ctx context.Context, record workspacehub.
 // It answers "" when the frame may be forwarded and a relay error code
 // otherwise.
 func (w *HTTP) RefuseTerminal(ctx context.Context, record workspacehub.Record, connection *Connection, frame workspacesession.Frame) string {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if frame.Channel != workspacesession.ChannelTerminal {
 		return ""
 	}
@@ -545,8 +543,6 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 // question asked per frame because a grant can be withdrawn under a live
 // socket.
 func (w *HTTP) RefuseRelayWrite(ctx context.Context, record workspacehub.Record, connection *Connection, frame workspacesession.Frame) string {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	gitWrite := frame.Channel == workspacesession.ChannelGit && workspacesession.GitWriteRequest(frame.Type)
 	execRun := frame.Channel == workspacesession.ChannelExec && frame.Type == workspacesession.TypeExecRun
 	if !gitWrite && !execRun {
@@ -939,8 +935,6 @@ func relayCodeMessage(code string) string {
 // shortens a workspace's life by nothing a person would notice, and failing a
 // frame over it would be worse.
 func (w *HTTP) TouchWorkspace(ctx context.Context, record workspacehub.Record) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	now := w.now()
 	err := w.AccessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.WorkspaceWriter)
@@ -1003,6 +997,7 @@ func (w *HTTP) OpenWorkspaceWorkerRelay(c echo.Context) error {
 		w.Relay.FailWorkspaceExecRuns(ctx, record.ID, workspacesession.RunReasonStreamClosed)
 	}
 	w.CloseIfEndedSinceUpgrade(ctx, connection)
+	ctx = hubapi.ConnectionContext(ctx)
 	socketCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go connection.WriteLoop(socketCtx)
@@ -1293,8 +1288,6 @@ func (w *HTTP) finishExecRun(ctx context.Context, state *ExecRun, status string,
 
 // openRelayAudit writes the connection's workspace_relay_sessions row.
 func (w *HTTP) OpenRelayAudit(ctx context.Context, record workspacehub.Record, connection *Connection, principal Principal) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	connection.AuditID = hubapi.NewID("relaysession")
 	err := w.AccessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {
 		owner, ok := writer.(postgres.RelayActionWriter)
@@ -1319,8 +1312,6 @@ func (w *HTTP) CloseRelayAudit(ctx context.Context, record workspacehub.Record, 
 	if connection.AuditID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	in, out := connection.Counters()
 	now := w.now()
 	err := w.AccessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {

@@ -1460,7 +1460,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() {
-					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+					cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 					defer cancel()
 					if err := repository.WriteTenant(cleanup, f.project.OrganizationID, corestore.Serving, func(w tenantstore.Writer) error {
 						current, err := w.BillingAssignment(cleanup)

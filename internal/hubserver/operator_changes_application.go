@@ -63,8 +63,6 @@ func (a hubChangeApplication) result(scope hubscope.NativeScope, args operatorto
 
 func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
 	ctx = a.service.contentContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	defer func() {
 		if resultErr != nil {
 			if archive := hubapi.NativeArchiveReadError(resultErr); archive != nil {

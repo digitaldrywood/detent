@@ -714,8 +714,6 @@ func boundOperatorHistory(raw json.RawMessage, snapshot bool, err error) (json.R
 }
 
 func (s *Operations) ReadOperatorWorkspace(ctx context.Context, scope hubscope.NativeScope, id string) (Record, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if workspacesession.ValidateID(id) != nil {
 		return Record{}, hubapi.NativeNotFound()
 	}

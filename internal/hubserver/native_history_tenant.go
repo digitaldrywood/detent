@@ -25,8 +25,6 @@ import (
 
 func (s *Service) readHistoryTenant(ctx context.Context, scope hubscope.NativeScope, item string, params url.Values) (tracker.Page[tracker.CollaborationEvent], error) {
 	ctx = s.runDetailContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if params.Get("archive_url") == "true" {
 		return tracker.Page[tracker.CollaborationEvent]{}, hubapi.NativePublicInvalid("archive_url is not supported for PostgreSQL-backed history")
 	}

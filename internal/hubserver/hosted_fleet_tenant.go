@@ -42,8 +42,6 @@ func (s *Service) readHostedRunnerNamesTenant(ctx context.Context, includeActive
 }
 
 func (s *Service) readHostedFleetTenant(ctx context.Context, credential hubapi.APICredential) (hostedFleetResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	projects, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return hostedFleetResponse{}, err

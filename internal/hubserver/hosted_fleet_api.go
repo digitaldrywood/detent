@@ -134,8 +134,6 @@ type hostedRunnerNamesResponse struct {
 // hostedFleet answers GET /fleet for any member of the organization.
 func (s *Service) hostedFleet(c echo.Context) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
@@ -146,7 +144,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 			return s.nativeAPIError(c, nativeUnavailable("Runner fleet storage is unavailable"))
 		}
 		var names map[string]hostedRunnerName
-		names, err = s.readHostedRunnerNamesTenant(readCtx, true)
+		names, err = s.readHostedRunnerNamesTenant(ctx, true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time

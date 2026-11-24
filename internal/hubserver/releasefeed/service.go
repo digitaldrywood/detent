@@ -68,8 +68,6 @@ func (s *Service) SeenTime(ctx context.Context, viewer Viewer) (time.Time, error
 	if repository == nil {
 		return time.Time{}, errors.New("account repository unavailable")
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var preference accountstore.ReleasePreference
 	var err error
 	if viewer.Hosted {

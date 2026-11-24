@@ -21,8 +21,7 @@ func (d DiffDeps) diffBodyService(c echo.Context) bool {
 }
 
 func (d DiffDeps) AttemptDiffBodyExists(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if !d.diffBodyService(c) {
 		return d.HTTPError(c, hubapi.NativeNotFound())
 	}

@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -170,8 +169,7 @@ func (s *Service) savedWorkViewsRecord(c echo.Context) error {
 }
 
 func (s *Service) readSavedWorkViewsRecord(c echo.Context, scope hubscope.NativeScope, selection viewstore.Selection, id string) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	params := c.QueryParams()
 	if id == "" {
 		for key, values := range params {

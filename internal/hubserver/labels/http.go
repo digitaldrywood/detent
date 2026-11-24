@@ -1,7 +1,6 @@
 package labels
 
 import (
-	"context"
 	"net/http"
 	"net/url"
 
@@ -28,8 +27,7 @@ func ListHandler(deps HTTPDeps) echo.HandlerFunc {
 		deps.Scope = hubauth.RequestScope
 	}
 	return func(c echo.Context) error {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		if err := deps.ValidateQuery(c.QueryParams()); err != nil {
 			return deps.Error(c, err)
 		}

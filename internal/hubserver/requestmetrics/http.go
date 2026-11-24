@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -33,7 +32,6 @@ type HTTPDeps struct {
 	ExplanationRead func(context.Context) bool
 	BillingOwner    func() *BillingOwner
 	BindingError    error
-	RequestTimeout  func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
 type HTTP struct{ deps HTTPDeps }
 
@@ -45,12 +43,7 @@ type apiErrorResponse struct {
 }
 
 func (s *HTTP) AdmitRunnerRequest(c echo.Context, credential hubauth.Credential) error {
-	requestTimeout := s.deps.RequestTimeout
-	if requestTimeout == nil {
-		requestTimeout = context.WithTimeout
-	}
-	ctx, cancel := requestTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	m := s.deps.Collector
 	if m == nil || credential.Runner.RunnerID == "" {
 		return nil

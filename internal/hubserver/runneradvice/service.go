@@ -47,8 +47,6 @@ func (s *Service) Authorize(ctx context.Context, reader tenantstore.Reader, scop
 }
 
 func (s *Service) Read(ctx context.Context, scope hubauth.Input, resource, backend string) (any, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if backend != "" && (runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("0", 64), Capacity: 1, Backend: backend}).Validate() != nil {
 		return nil, hubapi.PublicInvalid("Backend must be a bounded provider identifier")
 	}

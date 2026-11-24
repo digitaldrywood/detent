@@ -336,7 +336,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 			return nil, closeStartupDatabase(err)
 		}
 	}
-	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
+	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware, service.requestDeadline)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.Start(ctx); err != nil {
@@ -654,7 +654,7 @@ func (t hostedMaintenanceTenant) Page(ctx context.Context, after string, limit i
 }
 
 func (s *Service) newReadModelMaintenance() (*hubmaintenance.Scheduler, error) {
-	return hubmaintenance.NewScoped(hostedMaintenanceTenant{s.MaintenanceTenant()}, s.ReadModelMaintenanceFeatures(), s.database.postgres.WithProjectWorkflows)
+	return hubmaintenance.NewScoped(hostedMaintenanceTenant{s.MaintenanceTenant()}, s.ReadModelMaintenanceFeatures(), s.database.postgres.WithProjectWorkflows, s.config.WebhookMaintenanceInterval)
 }
 
 func (s *Service) MaintenanceTenant() hubmaintenance.Tenant {

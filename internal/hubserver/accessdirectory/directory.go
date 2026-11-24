@@ -29,8 +29,7 @@ func (s *Service) ServeHTTP(c echo.Context) error {
 		return s.deps.Invalid(c, err)
 	}
 	query := platformusers.Parse(input.Text)
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result := platformusers.TenantResult{Members: []platformusers.TenantMember{}, Invitations: []platformusers.TenantInvitation{}}
 
 	return s.Search(c, ctx, query, input, result)

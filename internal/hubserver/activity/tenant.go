@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"slices"
 
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/reportdata"
 
@@ -25,8 +24,6 @@ import (
 
 func (s *Service) Read(ctx context.Context, caller Caller, request operatortool.ActivityRequest, window operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
 	credential := caller.Credential
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	now := s.deps.Now().UTC()
 	out := operatortool.ActivityReport{OrganizationID: s.deps.Organization(), ObservedAt: now, Window: window, PopulationLimit: activitystore.PopulationLimit, Running: []operatortool.ActivityAttempt{}, Finished: []operatortool.ActivityAttempt{}, RunningIssues: []operatortool.ActivityIssue{}, FinishedIssues: []operatortool.ActivityIssue{}, TypicalDurations: []operatortool.ActivityTypicalDuration{}, IssueTypicalDurations: []operatortool.ActivityIssueTypical{}}
 	filter := activitystore.Filter{RunnerID: request.RunnerID, From: window.From, To: window.To, Now: now, Limit: activitystore.IssuePopulationLimit}

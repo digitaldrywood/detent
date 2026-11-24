@@ -924,7 +924,7 @@ func (r *WorkerRouter) controlsPostgres(e echo.Context, id string, identity Work
 		case <-subscription.Wake():
 		case <-subscription.Closed():
 			return e.JSON(http.StatusOK, page)
-		case <-r.stop:
+		case <-r.ctx.Done():
 			return e.JSON(http.StatusOK, page)
 		case <-deadline:
 			return e.JSON(http.StatusOK, page)

@@ -1,7 +1,6 @@
 package conversations
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,8 +29,7 @@ func (s AttachmentArchiveHTTP) CheckAttachmentArchive(c echo.Context) error {
 	if input.Reference != nil {
 		return s.writeAttachmentArchive(c, *input.Reference, false)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	row, _, err := s.deps.ReadWorkItem(ctx, scope, c.Param("item"))
 	if err != nil {
@@ -115,8 +113,7 @@ func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref attach
 }
 
 func (s AttachmentArchiveHTTP) ReadAttachmentArchive(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	if !artifact.ValidHash(c.Param("digest"), 64) {
 		return s.deps.APIError(c, hubapi.NativeNotFound())

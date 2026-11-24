@@ -34,8 +34,7 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 }
 
 func (s *Service) getGitHubImport(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result, err := s.readGitHubImportRecord(ctx, hubscope.NativeRequestScope(c), c.Param("import"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -56,9 +55,8 @@ func (s *Service) advanceGitHubImport(c echo.Context) error {
 	if key == "" {
 		// Legacy callers do not supply a retry key; preserve their revision
 		// conflict semantics. Explicit keys use the shared durable receipt.
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+		readCtx := c.Request().Context()
 		current, err := s.readGitHubImportRecord(readCtx, hubscope.NativeRequestScope(c), id)
-		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -87,8 +85,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope hubscope
 }
 
 func (s *Service) listGitHubImportRecords(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	id := c.Param("import")
 	if _, err := s.readGitHubImportRecord(ctx, scope, id); err != nil {

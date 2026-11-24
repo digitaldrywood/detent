@@ -101,8 +101,6 @@ func (e hostedContextExecutor) listTools(ctx context.Context) ([]operatortool.De
 }
 
 func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	defer func() {
 		if resultErr == nil {
 			return
@@ -138,7 +136,7 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 	var payload any
 	switch call.Name {
 	case operatortool.ReleaseNotes:
-		page, err := s.readReleaseNotes(readCtx, credential, releaseRequest)
+		page, err := s.readReleaseNotes(ctx, credential, releaseRequest)
 		if err != nil {
 			return result, err
 		}
@@ -151,14 +149,14 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 				return result, hubscope.OperatorAuthorizationError(err)
 			}
 		} else if credential.HostedKeyScope != "" {
-			member, err := s.activeAccessMember(readCtx, credential.Hosted.Subject)
+			member, err := s.activeAccessMember(ctx, credential.Hosted.Subject)
 			if err != nil {
 				return result, hubscope.OperatorAuthorizationError(err)
 			}
 			session.Email = member.Email
 		}
 		var bootstrap appBootstrap
-		bootstrap, err = s.readPostgresAppBootstrap(readCtx, credential, session)
+		bootstrap, err = s.readPostgresAppBootstrap(ctx, credential, session)
 		if err != nil {
 			return result, err
 		}
@@ -196,8 +194,6 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 }
 
 func (s *Service) appAllRunnerGrants(ctx context.Context, credential hubapi.APICredential, projects ...tracker.ProjectID) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if credential.Hosted == nil {
 		return false, nil
 	}

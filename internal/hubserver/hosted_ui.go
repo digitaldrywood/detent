@@ -166,19 +166,17 @@ func (s *Service) hostedHome(c echo.Context) error {
 
 func (s *Service) hostedPageData(c echo.Context, credential hubapi.APICredential, data *templates.HostedPageData) error {
 	ctx := c.Request().Context()
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	identity := credential.Hosted
 	if identity.SupportActor != "" {
 		data.SupportActor, data.SupportReason = identity.SupportActor, identity.SupportReason
 		data.SupportExpiry = identity.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	organization, err := s.readPostgresAccessOrganization(readCtx)
+	organization, err := s.readPostgresAccessOrganization(ctx)
 	if err != nil {
 		return err
 	}
 	data.OrganizationName = organization.Name
-	projects, err := s.postgresAppProjects(readCtx, credential)
+	projects, err := s.postgresAppProjects(ctx, credential)
 	if err != nil {
 		return err
 	}
@@ -222,11 +220,10 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+		readCtx := c.Request().Context()
 		err := s.config.TenantRepository.ReadTenant(readCtx, initialScope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 			return requireDashboardRecordItem(readCtx, r, initialScope, workItemID)
 		})
-		cancelRead()
 		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -313,8 +310,6 @@ type hostedAccountSetup struct {
 }
 
 func (s *Service) hostedAccountSetupFor(ctx context.Context, session auth.Session) (hostedAccountSetup, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var members int
 	if err := s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
 		rows, err := r.AccessMembers(ctx, "", 1)

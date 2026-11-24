@@ -49,8 +49,7 @@ func (s *Service) read(c echo.Context, read func(context.Context, releaseauditst
 	if s.deps.Repository == nil {
 		return s.deps.Error(c, hubapi.WorkItemStorageUnavailable())
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	var value any
 	err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := scope.Authorize(ctx, r, false); err != nil {

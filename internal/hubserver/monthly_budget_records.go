@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -23,8 +22,7 @@ import (
 )
 
 func (s *Service) updateMonthlyBudgetRecord(c echo.Context, scope hubscope.NativeScope, request monthlyBudgetRequest) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required"))
 	}

@@ -171,8 +171,6 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 		return nil, &hubapi.Error{Code: "confirmation_required", Message: "Confirm the selected runner update and coordinated restart", Status: http.StatusPreconditionRequired, Public: true}
 	}
 	ctx = s.contentContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	operation := "runner_update " + runnerID
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {
@@ -308,8 +306,6 @@ func (s *Service) Apply(ctx context.Context, scope hubapi.Scope, runnerID string
 
 func (s *Service) markUrgent(ctx context.Context, scope hubapi.Scope, request UrgentChange) (any, error) {
 	ctx = s.contentContext(ctx)
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	operation := "urgent_runner_update"
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {

@@ -55,10 +55,8 @@ func (s *Service) issueNotificationPreference(c echo.Context) error {
 			return w.UpdateAccessMember(ctx, member)
 		})
 	} else {
-		readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-		defer cancel()
-		err = s.accessRead(readCtx, s.accessOrganization(), func(r tenantstore.Reader) error {
-			member, err := authorizeIssueNotificationMember(readCtx, r, credential)
+		err = s.accessRead(ctx, s.accessOrganization(), func(r tenantstore.Reader) error {
+			member, err := authorizeIssueNotificationMember(ctx, r, credential)
 			value.Enabled = member.NotifyIssues
 			return err
 		})

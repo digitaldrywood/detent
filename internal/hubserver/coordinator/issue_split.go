@@ -109,8 +109,6 @@ func ValidateIssueSplit(split chat.IssueSplit) error {
 }
 
 func (d IssueProposalDeps) PreviewSplit(ctx context.Context, record conversations.ConversationRecord, call runner.AgentToolCall) (any, error) {
-	readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancelRead()
 	var split chat.IssueSplit
 	if err := DecodeArguments(call.Arguments, &split); err != nil {
 		return nil, err
@@ -139,11 +137,11 @@ func (d IssueProposalDeps) PreviewSplit(ctx context.Context, record conversation
 	}
 	scope.Project = record.ProjectID
 	s := d.Commands
-	row, version, err := s.ReadWorkItem(readCtx, scope, split.ParentID)
+	row, version, err := s.ReadWorkItem(ctx, scope, split.ParentID)
 	if err != nil {
 		return nil, err
 	}
-	parent, err := s.HydrateIssue(readCtx, row, version)
+	parent, err := s.HydrateIssue(ctx, row, version)
 	if err != nil {
 		return nil, err
 	}
@@ -151,12 +149,12 @@ func (d IssueProposalDeps) PreviewSplit(ctx context.Context, record conversation
 	if err := hubrecords.RequireNativeEdit(parent, parent.Revision); err != nil {
 		return nil, err
 	}
-	project, err := s.ReadProject(readCtx, scope)
+	project, err := s.ReadProject(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	for _, child := range split.Children {
-		if err := s.ValidateCreate(readCtx, scope, project, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority}); err != nil {
+		if err := s.ValidateCreate(ctx, scope, project, tracker.CreateIssue{Title: child.Title, Body: child.Description, Priority: child.Priority}); err != nil {
 			return nil, err
 		}
 		if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool { return state.Name == child.State }) {

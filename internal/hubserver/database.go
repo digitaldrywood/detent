@@ -12,7 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
-	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubrecords"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -60,8 +59,6 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 }
 
 func (d *database) health(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if d.postgres == nil {
 		return ErrDatabaseBackend
 	}

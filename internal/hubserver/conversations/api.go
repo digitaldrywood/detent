@@ -338,8 +338,6 @@ func (s *Server) ReadableConversationProjects(ctx context.Context, scope hubauth
 	if s.config().TenantRepository == nil {
 		return []tracker.ProjectID{}, false, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	const pageSize = 200
 	projects = []tracker.ProjectID{}
 	after := tracker.ProjectID("")
@@ -712,8 +710,6 @@ func (s *Server) ReadConversationMessages(ctx context.Context, scope hubauth.Inp
 }
 
 func (s *Server) ReadConversationsPage(ctx context.Context, scope hubauth.Input, filter ConversationListQuery) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	filter.Organization = scope.Organization
 	filter.Principal = scope.Credential.ID
 

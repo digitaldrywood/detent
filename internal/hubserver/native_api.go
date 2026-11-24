@@ -503,8 +503,6 @@ func (s *Service) requireCompatibilityResource(c echo.Context) error {
 // External-read commands consult the same receipt before fetching a provider.
 // Current application authority is rechecked even when returning a replay.
 func (s *Service) nativeCommandReplay(ctx context.Context, scope hubscope.NativeScope, operation, key string, input any) (json.RawMessage, bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, false, hubapi.NativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}

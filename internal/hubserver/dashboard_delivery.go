@@ -340,7 +340,9 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 			d.changed()
 		}
 
-		d.deliver(ctx)
+		tick, cancel := context.WithTimeout(ctx, d.service.config.RequestBudget)
+		d.deliver(tick)
+		cancel()
 		if d.remaining > 0 {
 			continuation.Reset(dashboardJitter(10 * time.Millisecond))
 			continuationTicks = continuation.C
@@ -377,21 +379,19 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 		if sub.terminal || !sub.more && sub.epoch == d.epoch {
 			continue
 		}
-		readCtx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 		now := d.service.config.Clock()
-		state := d.projectState(readCtx, sub.projectKey(), now)
+		state := d.projectState(ctx, sub.projectKey(), now)
 		access, observed := state.access[sub]
 		if state.err == nil && observed && !sub.more && !sub.initial && state.live &&
 			sub.sequence == state.head.Sequence && sub.sequence >= state.head.ReplayFloor &&
 			access.Live && access == sub.access && (access.ExpiresAt.IsZero() || now.Before(access.ExpiresAt)) &&
 			now.Before(sub.authAt) {
 			sub.epoch = d.epoch
-			cancel()
 			continue
 		}
 		more, err := false, state.err
 		if err == nil {
-			more, err = d.service.dashboardPage(readCtx, d, sub)
+			more, err = d.service.dashboardPage(ctx, d, sub)
 			if err == nil && observed {
 				if !now.Before(sub.authAt) || access != sub.access {
 					sub.authAt = now.Add(20 * time.Second)
@@ -399,7 +399,6 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 				sub.access = access
 			}
 		}
-		cancel()
 		if err != nil {
 			if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 				d.service.config.Logger.ErrorContext(ctx, "deliver dashboard page", "error", err)
@@ -446,7 +445,7 @@ func (s *Service) serveDashboardEvents(c echo.Context, scope hubscope.NativeScop
 	c.Response().Flush()
 	for {
 		select {
-		case <-c.Request().Context().Done():
+		case <-hubapi.ConnectionContext(c.Request().Context()).Done():
 			return nil
 		case <-sub.done:
 			return nil

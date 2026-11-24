@@ -37,8 +37,7 @@ func (s *Service) registerCredentialMaintenanceRoutes(e *echo.Echo) {
 
 func (s *Service) requireCredentialMaintenance(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancelRead()
+		readCtx := c.Request().Context()
 		c.Response().Header().Set("Cache-Control", "no-store")
 		if _, err := apiBearerToken(c); err != nil || c.Request().Header.Get("Origin") != "" {
 			return c.NoContent(http.StatusUnauthorized)

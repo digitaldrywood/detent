@@ -35,8 +35,7 @@ func CloudContentAttachmentReferences(body string, scope hubscope.NativeScope) (
 }
 
 func (s AttachmentHTTP) CheckCloudAttachment(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	var input struct {
 		Size     int64                       `json:"size"`
 		Upload   *attachment.UploadRequest   `json:"upload,omitempty"`
@@ -145,8 +144,7 @@ func (s AttachmentHTTP) FinishCloudAttachmentDeletion(c echo.Context) error {
 }
 
 func (s AttachmentHTTP) CloudAttachmentExists(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	claims, ok := s.deps.SharedClaims(c)
 	if !ok || claims.Kind != cloudassert.KindService {
 		return s.deps.APIError(c, hubapi.NativeNotFound())

@@ -242,7 +242,7 @@ func TestConversationAttachmentPostgresHTTP(t *testing.T) {
 			}
 			t.Cleanup(func() {
 				service.config.TenantRepository = repository
-				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.ReadTimeout)
+				cleanup, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), hubapi.DefaultCleanupBudget)
 				defer cancel()
 				if _, err := admin.ExecContext(cleanup, `UPDATE api_tokens SET operator_key_scope=$2 WHERE organization_id=$1 AND id='test_hub_admin'`, f.org, originalScope); err != nil {
 					t.Error(err)

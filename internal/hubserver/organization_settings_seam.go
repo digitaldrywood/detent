@@ -68,8 +68,7 @@ func (s *Service) hostedOrganizationName(c echo.Context) error {
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope.RequireHostedAdmin = false
 	name, err := s.organizationSettingsService(scope).Name(ctx, s.authorization().Scope(scope))
 	if err != nil {

@@ -28,8 +28,7 @@ func (s *ChangeEvidence) PostAuditDisposition(c echo.Context) error {
 	if request.RequestID == "" || len(request.RequestID) > 128 || !request.Confirm || strings.TrimSpace(request.FindingID) == "" || strings.TrimSpace(request.Evidence) == "" || len(request.Evidence) > securityaudit.MaxDispositionEvidenceBytes || request.Key.Repository == "" || request.Key.BaseSHA == "" || request.Key.HeadSHA == "" {
 		return s.deps.NativeAPIError(c, hubapi.NativePublicInvalid("confirmed disposition requires exact source, finding and bounded evidence"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeRequestScope(c)
 	hash, err := hubapi.CommandHash(request)
 	if err != nil {

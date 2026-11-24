@@ -35,8 +35,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 	if c.Param("organization") == "" || c.Param("project") == "" {
 		return "", hubapi.NativeNotFound()
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope := hubscope.NativeScope{Organization: tracker.OrganizationID(c.Param("organization")), Project: tracker.ProjectID(c.Param("project"))}
 	err := s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {
 		_, err := reader.ProjectVersion(ctx, scope.Project)
@@ -52,8 +51,7 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 }
 
 func (s *Service) getProjectPolicy(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	version := c.QueryParam("execution_configuration")
 	if version != "" && version != "1" {
 		return s.nativeAPIError(c, hubapi.NativeInvalid("unsupported execution configuration version"))
@@ -1296,8 +1294,6 @@ func (d *database) leasePolicyID(ctx context.Context, lease tracker.LeaseID) (st
 	if d.postgres == nil || d.hostedOrganization == "" {
 		return "", hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	var id string
 	err := d.postgres.ReadTenant(ctx, d.hostedOrganization, corestore.Serving, func(reader tenantstore.Reader) error {
 		record, err := reader.LeasePolicy(ctx, lease)

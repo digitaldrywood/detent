@@ -52,8 +52,6 @@ type operatorWorkReads struct {
 }
 
 func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request operatortool.WorkReadRequest) (result operatortool.Result, resultErr error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	defer func() {
 		if resultErr != nil {
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
@@ -306,8 +304,6 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
 	ctx = r.service.withRequestDetails(context.WithValue(ctx, hubcontent.ExplanationReadKey{}, true))
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
 	if err != nil {
 		return explain.IssueExplanation{}, err

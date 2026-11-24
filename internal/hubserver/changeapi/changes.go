@@ -21,8 +21,7 @@ import (
 )
 
 func (s *HTTP) HostedChangeCheckPrincipal(c echo.Context, credential hubapi.APICredential) bool {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	if !s.deps.ChangeCheckRequest(c) {
 		return false
 	}
@@ -125,8 +124,7 @@ func (s *HTTP) RequireChangeReviewPolicyAdmin() echo.MiddlewareFunc {
 }
 
 func (s *HTTP) GetChangeReviewPolicy(c echo.Context) error {
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	result, err := s.deps.ChangeReviewPolicyRecord(ctx, hubscope.NativeRequestScope(c))
 	if err != nil {
 		return s.deps.NativeAPIError(c, err)
@@ -167,8 +165,7 @@ func (s *HTTP) GetChange(c echo.Context) error {
 		return s.getValidatorPublicationReceipt(c)
 	}
 	if c.QueryParam("view") != "bounded" {
-		ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-		defer cancel()
+		ctx := c.Request().Context()
 		result, err := s.deps.SelectedChangeDetail(ctx, hubscope.NativeRequestScope(c), c.Param("item"), c.Param("change"), s.deps.Clock())
 		if errors.Is(err, corestore.ErrInvalidPage) {
 			err = &hubapi.NativeError{Code: "change_detail_too_large", Message: fmt.Sprintf("Change has more than %d versions or evidence records; read it with view=bounded", corestore.MaxPageSize), Status: http.StatusUnprocessableEntity, PublicMessage: true}
@@ -178,8 +175,7 @@ func (s *HTTP) GetChange(c echo.Context) error {
 		}
 		return s.deps.NativeArchiveJSON(c, http.StatusOK, ChangeDetailResponse(result))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
-	defer cancel()
+	ctx := c.Request().Context()
 	scope, ctx := hubscope.NativeRequestScope(c), ctx
 	var err error
 	args := operatortool.ChangeArguments{ProjectID: string(scope.Project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}

@@ -18,8 +18,6 @@ import (
 )
 
 func (s ArtifactRecords) ArtifactReadGrantTenant(ctx context.Context, scope hubscope.NativeScope, item, artifactID string, revision int64, now time.Time) (result artifact.Grant, err error) {
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	if scope.Credential.Hosted != nil {
 		session, err := s.deps.WebSession(ctx, scope.Credential.SessionHash, now)
 		if err != nil {
@@ -105,8 +103,6 @@ func (s ArtifactRecords) AuthorizeArtifactUploadTenant(ctx context.Context, scop
 	if !s.deps.StorageAvailable {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	command := tracker.Mutation{LeaseID: tracker.LeaseID(reservation.LeaseID), FencingToken: tracker.FencingToken(reservation.FencingToken)}
 	pinned, requirements, err := s.deps.LeasePolicy(ctx, scope, command.LeaseID)
 	if err != nil {
@@ -152,8 +148,6 @@ func (s ArtifactRecords) PublishArtifactReceiptTenant(ctx context.Context, scope
 	if !s.deps.StorageAvailable {
 		return hubapi.NativeWorkItemStorageUnavailable()
 	}
-	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
-	defer cancel()
 	err := s.deps.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.deps.Authorize(ctx, w, scope, true); err != nil {
 			return err
