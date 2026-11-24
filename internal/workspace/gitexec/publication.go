@@ -535,6 +535,93 @@ func VerifyPublicationAncestryComplete(ctx context.Context, path, ancestor, head
 	return isAncestor, err
 }
 
+func IsolatedReplayWritePaths(ctx context.Context, path, headSHA string, commits []string) ([]string, error) {
+	if !ValidHead(headSHA) {
+		return nil, errors.New("isolated replay inspection requires an exact head commit ID")
+	}
+	var writePaths []string
+	seen := make(map[string]struct{})
+	err := withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
+		read := func(args ...string) (string, error) {
+			return ReadPublicationSource(ctx, scratch, args...)
+		}
+		prevTreeRaw, tErr := read("rev-parse", "--verify", headSHA+"^{tree}")
+		if tErr != nil {
+			return tErr
+		}
+		prevTree := strings.TrimSpace(prevTreeRaw)
+		var emptyTree string
+		for _, commitSHA := range commits {
+			if !ValidHead(commitSHA) {
+				return errors.New("isolated replay inspection requires exact commit IDs")
+			}
+			var baseRef string
+			parentRaw, pErr := read("rev-parse", "--verify", "--quiet", commitSHA+"^")
+			if pErr == nil {
+				baseRef = strings.TrimSpace(parentRaw)
+			} else {
+				var commandErr *CommandError
+				if !errors.As(pErr, &commandErr) || commandErr.ExitCode != 1 {
+					return pErr
+				}
+				if emptyTree == "" {
+					etRaw, etErr := read("hash-object", "-t", "tree", os.DevNull)
+					if etErr != nil {
+						return etErr
+					}
+					emptyTree = strings.TrimSpace(etRaw)
+				}
+				baseRef = emptyTree
+			}
+			merged, mErr := read("merge-tree", "--write-tree", "--name-only", "-z", "--merge-base="+baseRef, prevTree, commitSHA)
+			var mergedTree string
+			if mErr == nil {
+				mt, _, _ := strings.Cut(merged, "\x00")
+				mergedTree = strings.TrimSpace(mt)
+			} else {
+				var commandErr *CommandError
+				if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
+					return mErr
+				}
+				mt, _, _ := strings.Cut(commandErr.Output, "\x00")
+				mergedTree = strings.TrimSpace(mt)
+			}
+			if !ValidHead(mergedTree) {
+				return errors.New("isolated replay merge tree is unavailable")
+			}
+			diffRaw, dErr := read("diff-tree", "--no-commit-id", "--no-renames", "--diff-filter=d", "-r", "-z", "--name-only", prevTree, mergedTree)
+			if dErr != nil {
+				return dErr
+			}
+			for _, name := range strings.Split(strings.TrimSuffix(diffRaw, "\x00"), "\x00") {
+				if name == "" {
+					continue
+				}
+				if _, ok := seen[name]; !ok {
+					seen[name] = struct{}{}
+					writePaths = append(writePaths, name)
+				}
+			}
+			srcDiffRaw, sdErr := read("diff-tree", "--root", "--no-commit-id", "--no-renames", "--diff-filter=d", "-r", "-z", "--name-only", commitSHA)
+			if sdErr != nil {
+				return sdErr
+			}
+			for _, name := range strings.Split(strings.TrimSuffix(srcDiffRaw, "\x00"), "\x00") {
+				if name == "" {
+					continue
+				}
+				if _, ok := seen[name]; !ok {
+					seen[name] = struct{}{}
+					writePaths = append(writePaths, name)
+				}
+			}
+			prevTree = mergedTree
+		}
+		return nil
+	})
+	return writePaths, err
+}
+
 func IsolatedMergeTree(ctx context.Context, path, base, branch1, branch2 string, verify func(read func(...string) (string, error), merged string, mergeErr error) error) error {
 	if !ValidHead(base) || !ValidHead(branch1) || !ValidHead(branch2) {
 		return errors.New("isolated merge-tree requires exact commit IDs")
