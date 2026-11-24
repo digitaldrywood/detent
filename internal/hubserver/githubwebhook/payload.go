@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 )
 
 type Payload struct {
+	Action      string       `json:"action"`
 	Sender      *Actor       `json:"sender"`
 	Comment     *Comment     `json:"comment"`
 	Repository  *Repository  `json:"repository"`
@@ -229,6 +231,18 @@ func newSourceStampWithVersion(updatedAt time.Time, version string, canonical an
 	}
 	digest := sha256.Sum256(value)
 	return sourceStamp{UpdatedAt: updatedAt.UTC(), Version: version + ":" + hex.EncodeToString(digest[:])}, nil
+}
+
+func ParsePayload(raw []byte, event string) (Payload, string, error) {
+	var payload Payload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return Payload{}, "", err
+	}
+	repository := strings.ToLower(webhookRepositoryFullName(payload.Repository))
+	if repository == "" && event != "ping" {
+		return Payload{}, "", errors.New("missing GitHub repository")
+	}
+	return payload, repository, nil
 }
 
 func webhookRepositoryFullName(repository *Repository) string {

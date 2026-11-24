@@ -247,6 +247,46 @@ func TestConversationPostgresLifecycleUsesTenantStateWithoutSQLite(t *testing.T)
 		}
 	})
 
+	t.Run("shared restart respects the host start time and item budget", func(t *testing.T) {
+		f := newPostgresConversationLifecycle(t, repository)
+		service := f.service(slog.New(slog.DiscardHandler), &pendingWaker{}, &pendingWaker{})
+		before := f.now.Add(time.Second)
+		row := f.conversation("Example", f.now)
+		row.Execution.Status = conversation.ExecutionRunning
+		f.write(t, func(w tenantstore.Writer) error {
+			if _, err := w.CreateConversation(t.Context(), row); err != nil {
+				return err
+			}
+			for i := range 6 {
+				m := f.message(row.ID, "Example", conversation.RoleAssistant, conversation.DeliverySending, "")
+				if i == 0 {
+					m.UpdatedAt = before
+				}
+				if _, err := w.CreateMessage(t.Context(), m); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		after := ""
+		for tick := 0; ; tick++ {
+			next, done, used, err := service.RecoverPage(t.Context(), f.project.OrganizationID, after, before, 2)
+			if err != nil || used > 2 || tick > 6 {
+				t.Fatalf("restart tick %d used %d: %v", tick, used, err)
+			}
+			if done {
+				break
+			}
+			after = next
+		}
+		f.read(t, func(r tenantstore.Reader) error {
+			page, err := r.FilteredMessages(t.Context(), conversationstore.MessageFilter{ConversationID: row.ID, Deliveries: []conversation.Delivery{conversation.DeliverySending}, Limit: 2})
+			if err == nil && (len(page.Items) != 1 || !page.Items[0].UpdatedAt.Equal(before)) {
+				t.Error("expected only the message at the host start boundary to remain sending")
+			}
+			return err
+		})
+	})
 	t.Run("settle wakes each pending conversation across pages", func(t *testing.T) {
 		f := newPostgresConversationLifecycle(t, repository)
 		wakes := make(lifecycleWakeRecorder, 2*ConversationLifecycleBatchSize+1)

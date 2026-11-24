@@ -119,3 +119,89 @@ func TestRuntimeAdoptionPublishesAndReplacesPlanCatalogs(t *testing.T) {
 		}
 	}
 }
+
+func TestBillingScheduleSelectsDueOrganizationsAndFencesClaims(t *testing.T) {
+	db := template.Database(t)
+	r := repository(t, db, testConfig(t))
+	seedOrganizations(t, r)
+	at := r.now()
+	a := hubmaintenance.Tenant{Organization: "org_first", Generation: 1}
+	b := hubmaintenance.Tenant{Organization: "org_second", Generation: 1}
+	before := at.Add(-2 * time.Hour)
+	for _, tenant := range []hubmaintenance.Tenant{a, b} {
+		if _, err := db.ExecContext(t.Context(), `INSERT INTO platform.billing_customers (organization_id,mode,account_id,customer_id,created_at) VALUES ($1,'test','acct_example',$2,$3)`, tenant.Organization, "cus_"+tenant.Organization, before); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var legacy BillingScheduleDiscovery
+	for _, tenant := range []hubmaintenance.Tenant{a, b} {
+		for range 2 {
+			page, err := legacy.Page(t.Context(), r, before, 1)
+			if err != nil || len(page) != 1 || page[0] != tenant {
+				t.Fatalf("legacy mapping %v discovered %v, err %v", tenant, page, err)
+			}
+		}
+		if ok, err := r.BeginBillingReconciliation(t.Context(), tenant, before); err != nil || !ok {
+			t.Fatalf("legacy claim %v: %v %v", tenant, ok, err)
+		}
+		if ok, err := r.BeginBillingReconciliation(t.Context(), tenant, before); err != nil || ok {
+			t.Fatalf("duplicate legacy claim %v: %v %v", tenant, ok, err)
+		}
+	}
+	if err := r.ConfigureBillingSchedule(t.Context(), a, 120, before); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfigureBillingSchedule(t.Context(), b, 0, before); err != nil {
+		t.Fatal(err)
+	}
+	if page, err := legacy.Page(t.Context(), r, before.Add(119*time.Second), 1); err != nil || len(page) != 0 {
+		t.Fatalf("legacy binding ran ahead of its interval: %v %v", page, err)
+	}
+	if page, err := legacy.Page(t.Context(), r, before.Add(120*time.Second), 1); err != nil || len(page) != 1 || page[0] != a {
+		t.Fatalf("reconciled legacy customer missing at deadline: %v %v", page, err)
+	}
+
+	for _, entry := range []struct {
+		tenant  hubmaintenance.Tenant
+		seconds int64
+	}{{a, 60}, {b, 180}} {
+		if err := r.ConfigureBillingSchedule(t.Context(), entry.tenant, entry.seconds, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := a
+	stale.Generation++
+	if ok, err := r.BeginBillingReconciliation(t.Context(), stale, at); err != nil || ok {
+		t.Fatalf("foreign generation claimed=%v err=%v", ok, err)
+	}
+	for _, step := range []struct {
+		after time.Duration
+		want  *hubmaintenance.Tenant
+	}{
+		{0, &a}, {0, &b}, {0, nil}, {59 * time.Second, nil}, {60 * time.Second, &a}, {179 * time.Second, &a}, {180 * time.Second, &b},
+	} {
+		now := at.Add(step.after)
+		page, err := r.DueBillingTenants(t.Context(), now, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if step.want == nil {
+			if len(page) != 0 {
+				t.Fatalf("due after %s: %v", step.after, page)
+			}
+			continue
+		}
+		if len(page) != 1 || page[0] != *step.want {
+			t.Fatalf("after %s got %v want %v", step.after, page, *step.want)
+		}
+		if ok, err := r.BeginBillingReconciliation(t.Context(), page[0], now); err != nil || !ok {
+			t.Fatalf("claim %v: %v %v", page[0], ok, err)
+		}
+		if ok, err := r.BeginBillingReconciliation(t.Context(), page[0], now); err != nil || ok {
+			t.Fatalf("duplicate claim %v: %v %v", page[0], ok, err)
+		}
+		if err := r.ConfigureBillingSchedule(t.Context(), a, 60, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

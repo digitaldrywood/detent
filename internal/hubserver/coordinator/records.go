@@ -405,13 +405,13 @@ func coordinatorPublicationPlan(ctx context.Context) (*conversations.Conversatio
 	return plan, nil
 }
 
-func (c RecordDeps) DeliverCommands(ctx context.Context, id string) error {
+func (c RecordDeps) DeliverCommands(ctx context.Context, id string, limit int) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	organization, err := c.Service.LifecycleOrganization()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var record conversationstore.Conversation
 	var page conversationstore.CommandPage
@@ -421,14 +421,14 @@ func (c RecordDeps) DeliverCommands(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
-		page, err = r.PendingCoordinatorCommands(ctx, id, "", conversations.ConversationLifecycleBatchSize)
+		page, err = r.PendingCoordinatorCommands(ctx, id, "", limit)
 		return err
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	for _, command := range page.Items {
 		if err := ctx.Err(); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		delivered := c.Cancel(id, command.TargetTurnID)
 		if !delivered && command.TargetTurnID != "" {
@@ -443,7 +443,7 @@ func (c RecordDeps) DeliverCommands(ctx context.Context, id string) error {
 				delivered = target.Role == conversation.RoleAssistant && target.Delivery == conversation.DeliveryInterrupted
 				return nil
 			}); err != nil {
-				return err
+				return len(page.Items), err
 			}
 		}
 		receipt := command.Receipt
@@ -457,7 +457,7 @@ func (c RecordDeps) DeliverCommands(ctx context.Context, id string) error {
 		receipt.UpdatedAt = now
 		plan := conversations.ConversationPublicationPlan{Service: c.Service, Record: conversations.ConversationRecordFromStore(record), Now: now, Coordinator: true}
 		if err := plan.RecordReceipt(ctx, receipt); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		prepared := plan.Context(ctx)
 		if err := c.WriteTenant(prepared, organization, func(w tenantstore.Writer) error {
@@ -486,9 +486,9 @@ func (c RecordDeps) DeliverCommands(ctx context.Context, id string) error {
 			}
 			return AppendEvent(prepared, w, organization, id, conversation.EventCommandReceipt, receipt, now)
 		}); err != nil {
-			return err
+			return len(page.Items), err
 		}
 		c.Service.Broker.Notify(id)
 	}
-	return nil
+	return len(page.Items), nil
 }

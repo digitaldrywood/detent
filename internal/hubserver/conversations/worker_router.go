@@ -37,6 +37,9 @@ func NewWorkerRouter(service *ConversationService) *WorkerRouter {
 
 func NewControlRouter(service *ConversationService) ConversationControlRouter {
 	router := NewWorkerRouter(service)
+	if service.Server.deps.SharedMaintenance {
+		return router
+	}
 	router.wg.Add(1)
 	go router.reconcileLoop()
 	return router

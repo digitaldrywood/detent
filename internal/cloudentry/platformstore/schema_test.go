@@ -32,6 +32,7 @@ func TestPlatformInventoryAndRoleSeparation(t *testing.T) {
 		"billing_events",
 		"entitlement_changes",
 		"github_user_connections",
+		"github_webhook_ingress",
 		"oauth_client_redirect_uris",
 		"oauth_clients",
 		"oauth_grants",

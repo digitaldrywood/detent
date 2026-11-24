@@ -18,25 +18,10 @@ import (
 var _ metricsstore.Repository = (*Repository)(nil)
 
 func (r *Repository) MergeRequestMetrics(ctx context.Context, organization tracker.OrganizationID, now time.Time, records []metricsstore.Metric) error {
-	if len(records) > metricsstore.MergeLimit {
-		return metricsstore.ErrInvalidMetric
+	pending, err := metricsstore.PrepareMerge(records)
+	if err != nil {
+		return err
 	}
-	pending := slices.Clone(records)
-	for i := range pending {
-		m := &pending[i]
-		if !m.Valid() || m.At.IsZero() || len(m.Route) == 0 || len(m.Route) > 1024 || len(m.CallerID) > 512 || m.StatusClass < 0 || m.StatusClass > 9 {
-			return metricsstore.ErrInvalidMetric
-		}
-		switch m.CallerKind {
-		case "runner", "browser", "mcp", "ci", "anonymous", "other":
-		default:
-			return metricsstore.ErrInvalidMetric
-		}
-		m.At = m.At.UTC().Truncate(time.Minute)
-	}
-	slices.SortFunc(pending, func(a, b metricsstore.Metric) int {
-		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.Route, b.Route), cmp.Compare(a.CallerKind, b.CallerKind), cmp.Compare(a.CallerID, b.CallerID), cmp.Compare(a.StatusClass, b.StatusClass))
-	})
 	return r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 		minuteCutoff := now.Add(-metricsstore.MinuteRetention).UTC().Truncate(time.Minute)
 		hourCutoff := now.Add(-metricsstore.HourRetention).UTC().Truncate(time.Hour)
@@ -217,9 +202,16 @@ func metricFromMinute(row pgquery.RequestMinute) metricsstore.Metric {
 }
 
 func (r *Repository) RetainRequestMetrics(ctx context.Context, organization tracker.OrganizationID, now time.Time) error {
+	return r.RetainRequestMetricPage(ctx, organization, now, metricsstore.RetentionLimit)
+}
+
+func (r *Repository) RetainRequestMetricPage(ctx context.Context, organization tracker.OrganizationID, now time.Time, perStage int) error {
+	if perStage < 1 || perStage > metricsstore.RetentionLimit {
+		return metricsstore.ErrInvalidMetric
+	}
 	minuteCutoff := now.Add(-metricsstore.MinuteRetention).UTC().Truncate(time.Minute)
 	dayCutoff := now.Add(-metricsstore.DayRetention).UTC().Truncate(24 * time.Hour)
-	for range metricsstore.RetentionLimit {
+	for range perStage {
 		more := false
 		err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 			row, err := s.queries.TakeExpiredRequestMinute(ctx, pgquery.TakeExpiredRequestMinuteParams{
@@ -258,6 +250,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 	for _, expire := range []func(*session) error{
 		func(s *session) error {
 			_, err := s.queries.ExpireRequestHours(ctx, pgquery.ExpireRequestHoursParams{
+				BatchLimit:     int32(perStage),
 				OrganizationID: organization,
 				Cutoff:         now.Add(-metricsstore.HourRetention).UTC().Truncate(time.Hour),
 			})
@@ -265,6 +258,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 		},
 		func(s *session) error {
 			_, err := s.queries.ExpireRequestDays(ctx, pgquery.ExpireRequestDaysParams{
+				BatchLimit:     int32(perStage),
 				OrganizationID: organization,
 				Cutoff:         dayCutoff,
 			})
@@ -275,7 +269,7 @@ func (r *Repository) RetainRequestMetrics(ctx context.Context, organization trac
 			return err
 		}
 	}
-	for range metricsstore.RetentionLimit {
+	for range perStage {
 		var expired int64
 		if err := r.transaction(ctx, organization, corestore.Background, false, func(s *session) error {
 			var err error

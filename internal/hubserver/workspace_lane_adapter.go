@@ -143,11 +143,11 @@ func (s *Service) relayHTTP(w *workspaceService) *workspacerelay.HTTP {
 			deps.TicketCursor = func() string {
 				w.relay.mu.Lock()
 				defer w.relay.mu.Unlock()
-				return w.relay.ticketSweepAfter
+				return w.relay.ticketSweep.Key
 			}
 			deps.SetTicketCursor = func(cursor string) {
 				w.relay.mu.Lock()
-				w.relay.ticketSweepAfter = cursor
+				w.relay.ticketSweep.Key = cursor
 				w.relay.mu.Unlock()
 			}
 		}
@@ -462,4 +462,8 @@ func (s *Service) readAttachment(ctx context.Context, scope hubscope.NativeScope
 
 func (s *Service) readWorkspaceFilesTool(ctx context.Context, scope hubscope.NativeScope, name string, request workspaceToolRequest) (json.RawMessage, error) {
 	return s.relayHTTP(s.workspaces).ReadOperatorFiles(ctx, scope, name, request)
+}
+
+func (w *workspaceService) sweepTicketPage(ctx context.Context, cursor *postgres.MaintenanceCursor, now time.Time, limit int) (int, error) {
+	return w.relayHTTP().SweepTicketPage(ctx, cursor, now, limit)
 }

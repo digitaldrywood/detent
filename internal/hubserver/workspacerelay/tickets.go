@@ -204,8 +204,14 @@ func (w *HTTP) MintWorkspaceRelayTicket(c echo.Context) error {
 // seconds, so the table is only ever a handful of rows; the sweep is here so
 // that stays true on a hub nobody restarts.
 func (w *HTTP) SweepRelayTickets(ctx context.Context, now time.Time) error {
+	cursor := postgres.MaintenanceCursor{Key: w.TicketCursor()}
+	_, err := w.SweepTicketPage(ctx, &cursor, now, hubmaintenance.ItemLimit)
+	w.SetTicketCursor(cursor.Key)
+	return err
+}
+
+func (w *HTTP) SweepTicketPage(ctx context.Context, cursor *postgres.MaintenanceCursor, now time.Time, limit int) (int, error) {
 	organization := tracker.OrganizationID(w.AppOrganizationID())
-	after := w.TicketCursor()
 	var page []postgres.RelayTicket
 	err := w.Repository().ReadTenant(ctx, organization, corestore.Background, func(reader tenantstore.Reader) error {
 		owner, ok := reader.(postgres.RelayActionReader)
@@ -213,15 +219,15 @@ func (w *HTTP) SweepRelayTickets(ctx context.Context, now time.Time) error {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		page, err = owner.RelayTicketPage(ctx, after, hubmaintenance.ItemLimit)
+		page, err = owner.RelayTicketPage(ctx, cursor.Key, limit)
 		return err
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(page) == 0 {
-		w.SetTicketCursor("")
-		return nil
+		cursor.Key = ""
+		return 0, nil
 	}
 	cutoff := now.Add(-workspacesession.TicketLifetime)
 	for _, ticket := range page {
@@ -233,10 +239,10 @@ func (w *HTTP) SweepRelayTickets(ctx context.Context, now time.Time) error {
 				}
 				return owner.DeleteExpiredRelayTicket(ctx, ticket.Digest, now, cutoff)
 			}); err != nil {
-				return err
+				return len(page), err
 			}
 		}
-		w.SetTicketCursor(ticket.Digest)
+		cursor.Key = ticket.Digest
 	}
-	return nil
+	return len(page), nil
 }

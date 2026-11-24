@@ -44,10 +44,20 @@ type database struct {
 }
 
 func openDatabase(ctx context.Context, cfg Config) (*database, error) {
-	if err := validateDatabaseBackend(cfg); err != nil {
+	return openRuntimeDatabase(ctx, cfg, nil, "")
+}
+
+func openRuntimeDatabase(ctx context.Context, cfg Config, host *HostedRuntime, org tracker.OrganizationID) (*database, error) {
+	if err := cfg.ValidateServingBackend(host != nil || cfg.Postgres != nil); err != nil {
 		return nil, err
 	}
-	store, err := openPostgresDatabase(ctx, *cfg.Postgres)
+	var store *database
+	var err error
+	if host != nil {
+		store, err = host.tenantDatabase(org, cfg.Hosted.SharedEntry.Generation)
+	} else {
+		store, err = openPostgresDatabase(ctx, *cfg.Postgres)
+	}
 	if err != nil {
 		return nil, err
 	}

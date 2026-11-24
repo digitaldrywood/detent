@@ -151,11 +151,10 @@ const (
 
 type workspaceRelay struct {
 	*workspacerelay.Relay
-	mu                  sync.Mutex
-	actionSweepProject  tracker.ProjectID
-	actionSweepID       string
-	actionDispatchAfter *postgres.ActionRunCursor
-	ticketSweepAfter    string
+	mu             sync.Mutex
+	actionSweep    postgres.MaintenanceCursor
+	actionDispatch postgres.MaintenanceCursor
+	ticketSweep    postgres.MaintenanceCursor
 }
 
 func newWorkspaceRelay(service *workspaceService) *workspaceRelay {

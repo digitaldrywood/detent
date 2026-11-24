@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatoradmin"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/releasenotes"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,6 +46,8 @@ const (
 )
 
 type Service struct {
+	runtimeHost             *HostedRuntime
+	runtimeTenant           tracker.OrganizationID
 	archiveEncoder          attachment.ArchiveEncoder
 	changeColumnAfter       any
 	dashboard               *dashboardDelivery
@@ -182,6 +185,10 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 }
 
 func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Service, error) {
+	return openRuntimeService(ctx, cfg, startup, nil, "")
+}
+
+func openRuntimeService(ctx context.Context, cfg Config, startup *startupHealth, host *HostedRuntime, org tracker.OrganizationID) (*Service, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -200,7 +207,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if cfg.Hosted != nil {
 		cfg.Logger = slog.New(hostedLogHandler{output: cfg.Logger.Handler()})
 	}
-	database, err := openDatabase(ctx, cfg)
+	database, err := openRuntimeDatabase(ctx, cfg, host, org)
 	if err != nil {
 		return nil, err
 	}
@@ -240,11 +247,11 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	}
 	ctx = database.policyContext(ctx)
 	if database.postgres != nil && cfg.Hosted != nil {
-		if err := (&Service{config: cfg}).validateAccessHostedBinding(ctx); err != nil {
+		if err := (&Service{runtimeHost: host, runtimeTenant: org, config: cfg}).validateAccessHostedBinding(ctx); err != nil {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	if err := (&Service{config: cfg, localOrganization: string(localOrganization)}).checkAccessSecretKeys(ctx); err != nil {
+	if err := (&Service{runtimeHost: host, runtimeTenant: org, config: cfg, localOrganization: string(localOrganization)}).checkAccessSecretKeys(ctx); err != nil {
 		return nil, errors.Join(err, database.Close())
 	}
 	if database.postgres != nil && cfg.Hosted != nil && !cfg.CredentialMaintenance {
@@ -263,7 +270,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	e.Server.ReadHeaderTimeout = defaultHTTPReadHeaderTimeout
 	e.Server.IdleTimeout = defaultHTTPIdleTimeout
 	workerContext, workerCancel := context.WithCancel(context.Background())
-	service := &Service{
+	service := &Service{runtimeHost: host, runtimeTenant: org,
 		releaseNotes:       notes,
 		echo:               e,
 		notifications:      newNotificationBroker(),
@@ -281,7 +288,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		clientBuild:        conversationClientIdentity(staticFiles(cfg.StaticFS), cfg.Version, cfg.Clock()),
 		pullRequests:       newPullRequestCache(),
 	}
-	if database.postgres != nil && !cfg.CredentialMaintenance {
+	if database.postgres != nil && !cfg.CredentialMaintenance && host == nil {
 		service.maintenance, err = service.newReadModelMaintenance()
 		if err != nil {
 			workerCancel()
@@ -336,6 +343,9 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 			return nil, closeStartupDatabase(err)
 		}
 	}
+	if host != nil {
+		e.Pre(hubapi.RecoverHostedRequest(cfg.Logger, org))
+	}
 	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
@@ -345,7 +355,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		}
 	}
 	if cfg.Hosted != nil && !cfg.CredentialMaintenance {
-		service.requestMetrics, err = database.openRequestMetrics(ctx, tracker.OrganizationID(cfg.Hosted.OrganizationID))
+		service.requestMetrics, err = service.openRequestMetrics()
 		if err != nil {
 			workerCancel()
 			if service.workspaces != nil {
@@ -358,7 +368,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 			return nil, closeStartupDatabase(errors.Join(err, mcpErr))
 		}
 	}
-	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance {
+	if cfg.SecretKeys != nil && !cfg.CredentialMaintenance && host == nil {
 		go service.runSecretRewrap(workerContext)
 	} else {
 		close(service.secretRewrapDone)
@@ -372,15 +382,21 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 		}
 		return service, nil
 	}
-	go service.runPostgresMaintenance(service.runDetailContext(workerContext))
+	if host == nil {
+		go service.runPostgresMaintenance(service.runDetailContext(workerContext))
+	} else {
+		close(service.workerDone)
+	}
 	service.ready.Store(true)
-	if service.outbox != nil {
+	if service.outbox != nil && host == nil {
 		service.outbox.start(ctx)
 	}
 	service.startHostedBilling()
 	service.startIssueMailer()
 	service.dashboard = newDashboardDelivery(service)
-	service.dashboard.start()
+	if host == nil {
+		service.dashboard.start()
+	}
 	if startup != nil {
 		startup.auth.Store(service)
 	}
@@ -568,6 +584,56 @@ func (s *Service) ServeTLS(listener net.Listener, certificateFile string, keyFil
 	return nil
 }
 
+func HostedMaintenanceSchedule(step func(context.Context, hubmaintenance.Tenant, hubmaintenance.Budget, string) (hubmaintenance.Outcome, error)) []hubmaintenance.Feature {
+	features := new(Service).SharedMaintenanceFeatures()
+	for i := range features {
+		name := features[i].Name
+		features[i].Step = func(ctx context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget) (hubmaintenance.Outcome, error) {
+			return step(ctx, t, b, name)
+		}
+	}
+	return features
+}
+
+func (s *Service) HostedActivity() bool {
+	s.spriteWakeMu.Lock()
+	active := len(s.spriteWakes) > 0
+	s.spriteWakeMu.Unlock()
+	return active || s.activeHostedSessions() || s.mcpHTTP != nil && s.mcpHTTP.HasLiveSessions()
+}
+
+func (s *Service) PendingRequestMetrics() bool {
+	return s.requestMetrics != nil && s.requestMetrics.HasPending()
+}
+
+func (s *Service) PrepareIdleClose(ctx context.Context) (bool, error) {
+	if s.requestMetrics == nil || !s.requestMetrics.HasPending() {
+		return true, nil
+	}
+	if err := s.requestMetrics.FlushPage(postgres.WithBackgroundWork(ctx), s.config.Clock(), hubmaintenance.ItemLimit); err != nil {
+		return false, err
+	}
+	return !s.requestMetrics.HasPending(), nil
+}
+
+func (s *Service) AdoptRuntime(ctx context.Context, expected string, update hostedplans.HostedRuntimeUpdate) error {
+	snapshots, err := NewHostedRuntimeSnapshots(s.database.postgres, s.runDetailStore())
+	if err != nil {
+		return err
+	}
+	if err := snapshots.Adopt(ctx, s.MaintenanceTenant(), expected, update); err != nil {
+		return err
+	}
+	if s.config.RecordBillingSchedule == nil {
+		return nil
+	}
+	seconds, err := s.BillingReconcileSeconds(ctx)
+	if err != nil {
+		return err
+	}
+	return s.config.RecordBillingSchedule(ctx, seconds)
+}
+
 func (s *Service) Shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -612,7 +678,13 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		}
 		var mcpErr error
 		if s.mcpHTTP != nil {
-			mcpErr = s.mcpHTTP.Shutdown(ctx)
+			shutdownCtx := ctx
+			if s.runtimeHost != nil {
+				var cancel context.CancelFunc
+				shutdownCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), s.config.ShutdownTimeout)
+				defer cancel()
+			}
+			mcpErr = s.mcpHTTP.Shutdown(shutdownCtx)
 		}
 		httpErr := s.echo.Close()
 		if errors.Is(httpErr, http.ErrServerClosed) {
@@ -634,7 +706,11 @@ func (s *Service) CloseContext(ctx context.Context) error {
 		s.tokenUseWork.Wait()
 		var metricsErr error
 		if s.requestMetrics != nil {
-			metricsErr = errors.Join(s.requestMetrics.Drain(ctx, s.config.Clock()), s.requestMetrics.Close())
+			metricsErr = s.requestMetrics.Drain(ctx, s.config.Clock())
+			if errors.Is(metricsErr, pgtransport.ErrStaleGeneration) {
+				metricsErr = nil
+			}
+			metricsErr = errors.Join(metricsErr, s.requestMetrics.Close())
 		}
 		s.closeErr = errors.Join(mcpErr, httpErr, webhookErr, metricsErr, s.database.Close())
 	})

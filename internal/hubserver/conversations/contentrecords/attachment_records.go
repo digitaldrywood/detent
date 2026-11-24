@@ -804,6 +804,16 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
 		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
+	var input struct {
+		Limit int `json:"limit"`
+	}
+	if err := c.Bind(&input); err != nil || input.Limit < 0 || input.Limit > 100 {
+		return s.deps.APIError(c, eventstore.ErrInvalidRecord)
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = 100
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	organization := tracker.OrganizationID(claims.Audience)
@@ -816,7 +826,7 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, 100)
+		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, limit)
 		return err
 	})
 	if err != nil {
@@ -846,6 +856,9 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 			metadata.DeletedAt = &now
 		}
 		items = append(items, metadata)
+	}
+	if input.Limit > 0 {
+		return c.JSON(http.StatusOK, attachment.ExpiryPage{Examined: len(candidates), Records: items})
 	}
 	return c.JSON(http.StatusOK, items)
 }

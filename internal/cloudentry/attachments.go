@@ -2,17 +2,11 @@ package cloudentry
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
-	"mime"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -21,60 +15,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/attachmententry"
 	"github.com/digitaldrywood/detent/internal/cloudentry/attachmentsweep"
-	"github.com/digitaldrywood/detent/internal/mutation"
-	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/cloudentry/webhooks"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 )
 
-var errAttachmentReadAudit = errors.New("attachment read audit unavailable")
-
-func attachmentEvidenceRequest(c echo.Context) (*attachment.EvidenceRequest, bool, error) {
-	encoded := c.Request().Header.Get("X-Detent-Evidence")
-	if c.Param("attempt") == "" {
-		if encoded != "" {
-			return nil, false, attachment.ErrInvalid
-		}
-		return nil, false, nil
+func (s *Service) attachmentHandlers() *attachmententry.Service {
+	return &attachmententry.Service{
+		Lookup:         s.registry.Organization,
+		ArchiveStorage: s.archiveStorageForReference,
+		Storage:        func() attachment.Storage { return s.attachments },
+		Ready:          s.readyOrganization,
+		Call:           s.attachmentCall,
+		ServiceCall:    s.serviceCall,
+		ServiceRequest: s.serviceRequest,
+		Audit:          s.auth.audit,
+		Lock:           s.attachmentLocks.lock,
+		Now:            s.config.Now,
+		Logger:         s.config.Logger,
+		StateDir:       s.config.StateDir,
+		Echo:           s.echo,
 	}
-	if len(encoded) > 4096 {
-		return nil, false, attachment.ErrInvalid
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, false, err
-	}
-	var evidence attachment.EvidenceRequest
-	if err := json.Unmarshal(raw, &evidence); err != nil {
-		return nil, false, err
-	}
-	if evidence.AttemptID != c.Param("attempt") || evidence.IdempotencyKey == "" || evidence.IdempotencyKey != c.Request().Header.Get("Idempotency-Key") {
-		return nil, false, attachment.ErrInvalid
-	}
-	return &evidence, true, nil
-}
-
-func (s *Service) registerAttachmentRoutes(e *echo.Echo) {
-	e.GET("/organizations/:organization/api/v2/logo-image", s.readOrganizationLogoImage)
-	for _, base := range []string{"/organizations/:organization/api/v2/attachments", "/api/v2/organizations/:organization/attachments"} {
-		e.GET(base+"/:attachment", s.readAttachment)
-	}
-	for _, base := range []string{"/organizations/:organization/api/v2/projects/:project/attachments", "/api/v2/organizations/:organization/projects/:project/attachments"} {
-		s.registerArchiveRoutes(e, base)
-		e.POST(base, s.uploadAttachment)
-		e.POST(strings.TrimSuffix(base, "/attachments")+"/attempts/:attempt/evidence", s.uploadAttachment)
-		e.GET(base+"/:attachment", s.readAttachment)
-		e.GET(base+"/:attachment/metadata", s.readAttachmentMetadata)
-		e.DELETE(base+"/:attachment", s.deleteAttachment)
-		e.POST(base+"/:attachment/reference", s.referenceAttachment)
-	}
-}
-
-func attachmentError(c echo.Context, status int, code, message string) error {
-	return c.JSON(status, map[string]string{"code": code, "message": message})
-}
-
-func attachmentNotFound(c echo.Context) error {
-	return attachmentError(c, http.StatusNotFound, "not_found", "Resource was not found")
 }
 
 func (s *Service) attachmentCall(c echo.Context, organization Organization, method, suffix string, payload any) (int, []byte, error) {
@@ -169,455 +131,114 @@ func (s *Service) attachmentCall(c echo.Context, organization Organization, meth
 	return s.signedCallCSRF(c.Request().Context(), organization, claims, body, bearer, csrf)
 }
 
-func attachmentCallError(c echo.Context, status int, body []byte, err error, hide bool) error {
-	if err != nil {
-		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "The organization is temporarily unavailable")
-	}
-	if hide || len(body) == 0 {
-		return attachmentNotFound(c)
-	}
-	return c.JSONBlob(status, body)
-}
-
-func (s *Service) uploadAttachment(c echo.Context) error {
-	evidence, _, err := attachmentEvidenceRequest(c)
-	if err != nil {
-		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
-	}
-	var resource *attachment.Upload
-	if audit, ok := mutation.FromContext(c.Request().Context()); ok && audit.Source == "mcp" {
-		defer func() {
-			audit.RetryIdentity, audit.InputHash = "", ""
-			if resource != nil {
-				audit.ResourceID = resource.ID
-			}
-			outcome := "failed"
-			if c.Response().Status == http.StatusCreated {
-				outcome = "succeeded"
-			}
-			encoded, err := json.Marshal(struct {
-				mutation.Metadata
-				Outcome string `json:"outcome"`
-			}{audit, outcome})
-			if err == nil {
-				s.config.Logger.InfoContext(c.Request().Context(), "operator mutation", "audit", string(encoded))
-			}
-		}()
-	}
+func (s *Service) sweepAttachments(ctx context.Context) {
 	if s.attachments == nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "attachments_not_configured", "Attachments not configured")
+		return
 	}
-	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
-	if err != nil {
-		return attachmentNotFound(c)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	now := s.config.Now()
+	s.sweepAttachmentMetadata(ctx, now)
+	if !s.sweepingWebhookPayloads && s.attachmentObjectCursor == "" && now.Before(s.attachmentObjectSweepAt) {
+		return
 	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"size": 0, "evidence": evidence})
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, false)
+	prefix := "orgs/"
+	if s.sweepingWebhookPayloads {
+		prefix = attachment.GitHubWebhookPrefix
 	}
-	var authorized struct {
-		Principal string `json:"principal_id"`
-	}
-	if err := json.Unmarshal(raw, &authorized); err != nil || authorized.Principal == "" {
-		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Attachment authorization failed")
-	}
-	request := c.Request()
-	request.Body = http.MaxBytesReader(c.Response(), request.Body, attachment.MaxBytes+(1<<20))
-	var reader io.Reader = request.Body
-	scratch := s.config.StateDir
-	for _, variable := range []string{"TMPDIR", "TMP", "TEMP"} {
-		if provided := os.Getenv(variable); provided != "" {
-			scratch = provided
+	type group struct{ id, namespace, endpoint string }
+	pages := make(map[group][]attachment.Object)
+	next, err := s.attachments.WalkPage(ctx, prefix, s.attachmentObjectCursor, 32, func(object attachment.Object) error {
+		if object.CreatedAt.After(now.Add(-attachment.OrphanTTL)) {
+			return nil
+		}
+		if s.sweepingWebhookPayloads {
+			if err := webhooks.SweepReleasedPayload(ctx, s.attachments, s.registry.store.db.postgres.GitHubIngressReleased, object.Key); err != nil {
+				s.config.Logger.Warn("webhook payload orphan check failed", "error", err)
+			}
+			return ctx.Err()
+		}
+		id, key, ok := strings.Cut(strings.TrimPrefix(object.Key, "orgs/"), "/")
+		if !ok || !ValidOrganizationID(id) {
+			return nil
+		}
+		for _, scope := range attachmentObjectScopes {
+			if !strings.HasPrefix(key, scope.prefix) {
+				continue
+			}
+			g := group{id, scope.prefix, scope.endpoint}
+			pages[g] = append(pages[g], object)
 			break
 		}
-	}
-	name, media := request.Header.Get("X-Attachment-Name"), request.Header.Get(echo.HeaderContentType)
-	if strings.HasPrefix(media, "multipart/form-data") {
-		parts, err := request.MultipartReader()
-		if err != nil {
-			return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "A file is required")
-		}
-		part, err := parts.NextPart()
-		if err != nil || part.FormName() != "file" {
-			return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "One file part is required")
-		}
-		reader, name, media = part, part.FileName(), part.Header.Get(echo.HeaderContentType)
-		upload, err := attachment.Prepare(reader, name, media, scratch)
-		if err != nil {
-			return attachmentUploadError(c, err)
-		}
-		resource = upload
-		defer s.closeAttachmentUpload(upload)
-		if _, err := parts.NextPart(); !errors.Is(err, io.EOF) {
-			return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "An upload carries one file part")
-		}
-		return s.storeAttachment(c, organization, authorized.Principal, upload)
-	}
-	upload, err := attachment.Prepare(reader, name, media, scratch)
+		return ctx.Err()
+	})
 	if err != nil {
-		return attachmentUploadError(c, err)
-	}
-	resource = upload
-	defer s.closeAttachmentUpload(upload)
-	return s.storeAttachment(c, organization, authorized.Principal, upload)
-}
-
-func attachmentUploadError(c echo.Context, err error) error {
-	var capError *http.MaxBytesError
-	if errors.Is(err, attachment.ErrTooLarge) || errors.As(err, &capError) {
-		return attachmentError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "A file must be at most 20 MiB")
-	}
-	if errors.Is(err, attachment.ErrInvalid) {
-		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "The attachment type, content, name or dimensions are invalid")
-	}
-	return attachmentError(c, http.StatusServiceUnavailable, "attachment_unavailable", "Attachment could not be prepared")
-}
-
-func (s *Service) closeAttachmentUpload(upload *attachment.Upload) {
-	if err := upload.Close(); err != nil {
-		s.config.Logger.Warn("attachment scratch cleanup failed", "attachment", upload.ID)
-	}
-}
-
-func (s *Service) storeAttachment(c echo.Context, organization Organization, principal string, upload *attachment.Upload) error {
-	evidence, _, err := attachmentEvidenceRequest(c)
-	if err != nil {
-		return attachmentError(c, http.StatusBadRequest, "invalid_attachment", "Invalid attempt evidence authority")
-	}
-	unlock := s.attachmentLocks.lock(organization.ID, false)
-	defer unlock()
-	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
-	if err != nil || current.Generation != organization.Generation {
-		return attachmentNotFound(c)
-	}
-	requestID := c.Request().Header.Get("Idempotency-Key")
-	if requestID != "" {
-		status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"upload": attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID, Evidence: evidence}})
-		if err != nil || status != http.StatusOK {
-			return attachmentCallError(c, status, raw, err, false)
-		}
-		if json.Unmarshal(raw, &upload.Metadata) != nil || upload.Validate() != nil {
-			return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Attachment receipt is invalid")
-		}
-		status, raw, err = s.attachmentCall(c, organization, http.MethodGet, "/"+upload.ID, nil)
-		if err == nil && status == http.StatusOK {
-			return attachmentUploadResponse(c, organization.ID, http.StatusCreated, raw)
-		}
-		if err != nil || status != http.StatusNotFound {
-			return attachmentCallError(c, status, raw, err, false)
-		}
-	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]any{"size": upload.Size, "evidence": evidence})
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, false)
-	}
-	key, err := attachment.Key(organization.ID, upload.ID)
-	if err != nil {
-		return attachmentNotFound(c)
-	}
-	ctx := c.Request().Context()
-	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_uploaded"); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
-	}
-	if err := s.attachments.Put(ctx, key, upload.File, upload.Size, upload.ContentType, upload.SHA256); err != nil && (requestID == "" || !s.attachmentUploadStored(ctx, key, upload.Metadata)) {
-		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment storage is unavailable")
-	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "", attachment.UploadRequest{Metadata: upload.Metadata, RequestID: requestID, Evidence: evidence})
-	if err == nil && status == http.StatusCreated {
-		return attachmentUploadResponse(c, organization.ID, status, raw)
-	}
-	if err != nil || status >= http.StatusInternalServerError {
-		readStatus, recorded, readErr := s.attachmentCall(c, organization, http.MethodGet, "/"+upload.ID, nil)
-		if readErr == nil && readStatus == http.StatusOK {
-			return attachmentUploadResponse(c, organization.ID, http.StatusCreated, recorded)
-		}
-		if readErr != nil || readStatus != http.StatusNotFound {
-			return attachmentCallError(c, status, raw, err, false)
-		}
-	}
-	if requestID != "" {
-		return attachmentCallError(c, status, raw, err, false)
-	}
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-	defer cancel()
-	if err := s.auth.audit(cleanup, principal, organization.ID, "attachment_deleted"); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
-	}
-	if err := s.attachments.Delete(cleanup, key); err != nil {
-		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment cleanup failed")
-	}
-	return attachmentCallError(c, status, raw, err, false)
-}
-
-func (s *Service) attachmentUploadStored(ctx context.Context, key string, record attachment.Metadata) bool {
-	body, err := s.attachments.Open(ctx, key)
-	if err != nil {
-		return false
-	}
-	defer s.closeAttachmentBody(body, record.ID)
-	hash := sha256.New()
-	size, err := io.Copy(hash, io.LimitReader(body, record.Size+1))
-	return err == nil && size == record.Size && hex.EncodeToString(hash.Sum(nil)) == record.SHA256
-}
-
-func (s *Service) attachmentMetadata(c echo.Context) (Organization, attachment.Metadata, int, []byte, error) {
-	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
-	if err != nil {
-		return Organization{}, attachment.Metadata{}, http.StatusNotFound, nil, nil
-	}
-	if _, err := attachment.Key(organization.ID, c.Param("attachment")); err != nil {
-		return Organization{}, attachment.Metadata{}, http.StatusNotFound, nil, nil
-	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/"+c.Param("attachment"), nil)
-	if err != nil || status != http.StatusOK {
-		return organization, attachment.Metadata{}, status, raw, err
-	}
-	var record attachment.Metadata
-	if err := json.Unmarshal(raw, &record); err != nil || record.ID != c.Param("attachment") || record.ProjectID != c.Param("project") || record.DeletedAt != nil || record.Validate() != nil || record.AuthorizedPrincipal == "" {
-		return organization, record, http.StatusNotFound, nil, nil
-	}
-	return organization, record, status, raw, nil
-}
-
-func (s *Service) readAttachmentMetadata(c echo.Context) error {
-	if s.attachments == nil {
-		return attachmentNotFound(c)
-	}
-	_, record, status, raw, err := s.attachmentMetadata(c)
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
-	}
-	if err := s.auth.audit(c.Request().Context(), record.AuthorizedPrincipal, c.Param("organization"), "attachment_read"); err != nil {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
-	}
-	record.AuthorizedPrincipal = ""
-	c.Response().Header().Set("Cache-Control", "private, no-store")
-	return c.JSON(http.StatusOK, record)
-}
-
-func (s *Service) readAttachment(c echo.Context) error {
-	if c.QueryParams().Has("offset") || c.QueryParams().Has("length") {
-		input := map[string]any{"project_id": c.Param("project"), "attachment_id": c.Param("attachment")}
-		for _, field := range []string{"offset", "length"} {
-			if values, present := c.QueryParams()[field]; present {
-				if len(values) != 1 {
-					return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
-				}
-				input[field] = json.Number(values[0])
-			}
-		}
-		raw, err := json.Marshal(input)
-		if err != nil {
-			return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
-		}
-		bounds, err := operatortool.DecodeAttachmentOperation(operatortool.ReadAttachment, raw)
-		if err != nil {
-			return attachmentError(c, http.StatusBadRequest, "invalid_request", "Invalid attachment read bounds")
-		}
-		return s.readAttachmentContent(c, bounds)
-	}
-	if s.attachments == nil {
-		return attachmentNotFound(c)
-	}
-	organization, record, status, raw, err := s.attachmentMetadata(c)
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
-	}
-	return s.streamAttachment(c, organization, record)
-}
-
-func (s *Service) readOrganizationLogoImage(c echo.Context) error {
-	if s.attachments == nil {
-		return attachmentNotFound(c)
-	}
-	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
-	if err != nil {
-		return attachmentNotFound(c)
-	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodGet, "/current-logo", nil)
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
-	}
-	var record attachment.Metadata
-	if json.Unmarshal(raw, &record) != nil || record.ProjectID != "" || record.DeletedAt != nil || record.Validate() != nil || record.AuthorizedPrincipal == "" {
-		return attachmentNotFound(c)
-	}
-	return s.streamAttachment(c, organization, record)
-}
-
-func (s *Service) streamAttachment(c echo.Context, organization Organization, record attachment.Metadata) error {
-	body, err := s.openAttachment(c.Request().Context(), organization, record)
-	if errors.Is(err, errAttachmentReadAudit) {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
-	}
-	if err != nil {
-		return attachmentNotFound(c)
-	}
-	defer s.closeAttachmentBody(body, record.ID)
-	header := c.Response().Header()
-	header.Set("X-Content-Type-Options", "nosniff")
-	header.Set("Content-Security-Policy", "default-src 'none'; sandbox")
-	header.Set("Cache-Control", "private, max-age=300")
-	if c.Path() == "/organizations/:organization/api/v2/logo-image" {
-		header.Set("Cache-Control", "private, no-store")
-	}
-	header.Set("Cross-Origin-Resource-Policy", "same-origin")
-	disposition := "attachment"
-	if strings.HasPrefix(record.ContentType, "image/") {
-		disposition = "inline"
-	}
-	header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": record.Name}))
-	return c.Stream(http.StatusOK, record.ContentType, io.LimitReader(body, record.Size))
-}
-
-func (s *Service) openAttachment(ctx context.Context, organization Organization, record attachment.Metadata) (io.ReadCloser, error) {
-	key, err := attachment.Key(organization.ID, record.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.auth.audit(ctx, record.AuthorizedPrincipal, organization.ID, "attachment_read"); err != nil {
-		return nil, errors.Join(errAttachmentReadAudit, err)
-	}
-	return s.attachments.Open(ctx, key)
-}
-
-func (s *Service) closeAttachmentBody(body io.ReadCloser, id string) {
-	if err := body.Close(); err != nil {
-		s.config.Logger.Warn("attachment read close failed", "attachment", id)
-	}
-}
-
-func (s *Service) deleteAttachment(c echo.Context) error {
-	unlock := s.attachmentLocks.lock(c.Param("organization"), false)
-	defer unlock()
-	if s.attachments == nil {
-		return attachmentNotFound(c)
-	}
-	organization, record, status, raw, err := s.attachmentMetadata(c)
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
-	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodDelete, "/"+record.ID, nil)
-	if err != nil || status != http.StatusNoContent {
-		return attachmentCallError(c, status, raw, err, false)
-	}
-	if err := s.removeAttachment(c.Request().Context(), organization, record, record.AuthorizedPrincipal); err != nil {
-		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment deletion is pending")
-	}
-	return c.NoContent(http.StatusNoContent)
-}
-
-func (s *Service) referenceAttachment(c echo.Context) error {
-	organization, _, status, raw, err := s.attachmentMetadata(c)
-	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
-	}
-	var input struct {
-		WorkItemID string `json:"work_item_id"`
-		CommentID  string `json:"comment_id"`
-	}
-	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 4096)
-	if err := c.Bind(&input); err != nil {
-		return attachmentError(c, http.StatusBadRequest, "invalid_request", "A work item reference is required")
-	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, "/"+c.Param("attachment")+"/reference", input)
-	if err != nil || status != http.StatusNoContent {
-		return attachmentCallError(c, status, raw, err, false)
-	}
-	return c.NoContent(status)
-}
-
-func (s *Service) removeAttachment(ctx context.Context, organization Organization, record attachment.Metadata, principal string) error {
-	key, err := attachment.Key(organization.ID, record.ID)
-	if err != nil {
-		return err
-	}
-	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_deleted"); err != nil {
-		return err
-	}
-	if err := s.attachments.Delete(ctx, key); err != nil {
-		return err
-	}
-	status, err := s.serviceRequest(ctx, organization, "/internal/v1/attachments/deleted", map[string]string{"id": record.ID}, nil)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusNoContent {
-		return errors.New("attachment deletion metadata was refused")
-	}
-	return nil
-}
-
-func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil || s.config.Now().Before(s.attachmentSweepAt) {
+		s.config.Logger.Warn("attachment orphan listing failed", "error", err)
 		return
 	}
-	s.attachmentSweepAt = s.config.Now().Add(time.Hour)
-	organizations, err := s.registry.List(ctx)
-	if err != nil {
-		s.config.Logger.Warn("attachment retention registry unavailable")
-		return
-	}
-	for _, organization := range organizations {
-		if organization.State != "ready" {
+	for g, objects := range pages {
+		org, err := s.readyOrganization(ctx, g.id)
+		if errors.Is(err, ErrOrganizationNotFound) {
 			continue
 		}
-		if err := s.sweepOrganizationAttachments(ctx, organization); err != nil {
-			s.config.Logger.Warn("attachment retention failed", "organization", organization.ID)
+		if err == nil {
+			err = s.attachmentSweep(ctx, org, g.endpoint).Page(ctx, g.id, g.namespace, objects)
 		}
-	}
-}
-
-func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
-	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
-	if err != nil {
-		return err
-	}
-	if status != http.StatusOK {
-		return errors.New("attachment retention metadata unavailable")
-	}
-	var records []attachment.Metadata
-	if err := json.Unmarshal(raw, &records); err != nil {
-		return err
-	}
-	for _, record := range records {
-		unlock := s.attachmentLocks.lock(organization.ID, true)
-		err := s.removeAttachment(ctx, organization, record, "entry")
-		unlock()
 		if err != nil {
-			return err
+			s.config.Logger.Warn("attachment orphan check failed", "organization", g.id, "error", err)
 		}
 	}
-	for _, objects := range []struct{ prefix, endpoint string }{
-		{"attachments/", "/internal/v1/attachments/exists"},
-		{"attempt-diffs/", "/internal/v1/diff-bodies/exists"},
-		{"blobs/sha256/", "/internal/v1/attachments/exists"},
-	} {
-		if err := s.sweepAttachmentOrphans(ctx, organization, objects.prefix, objects.endpoint); err != nil {
-			return err
+	if !s.sweepingWebhookPayloads && s.attachmentObjectCursor == "" {
+		s.attachmentObjectSweepAt = now.Add(time.Hour)
+	}
+	s.attachmentObjectCursor = next
+	if next == "" && s.sharedHub != nil {
+		s.sweepingWebhookPayloads = !s.sweepingWebhookPayloads
+	}
+}
+
+func (s *Service) sweepAttachmentMetadata(ctx context.Context, now time.Time) {
+	if s.attachmentAfter == "" && now.Before(s.attachmentSweepAt) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	rows, err := s.registry.listOrganizations(ctx, organizationSelect+" WHERE id>$1 ORDER BY id LIMIT $2", s.attachmentAfter, hubmaintenance.TenantLimit)
+	if err != nil {
+		s.config.Logger.Warn("attachment retention registry unavailable", "error", err)
+		return
+	}
+	if s.attachmentAfter == "" {
+		s.attachmentSweepAt = now.Add(time.Hour)
+	}
+	remaining := hubmaintenance.ItemLimit
+	for i, org := range rows {
+		if ctx.Err() != nil {
+			return
+		}
+		s.attachmentAfter = org.ID
+		if org.State == "ready" {
+			limit := remaining / (len(rows) - i)
+			used, err := s.attachmentHandlers().SweepExpired(ctx, org, limit)
+			remaining -= used
+			if err != nil {
+				s.config.Logger.Warn("attachment retention failed", "organization", org.ID, "error", err)
+			}
 		}
 	}
-	return nil
+	if len(rows) < hubmaintenance.TenantLimit {
+		s.attachmentAfter = ""
+	}
 }
 
-func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organization, namespace, endpoint string) error {
-	sweep := attachmentsweep.Sweep{
-		Storage: s.attachments, Now: s.config.Now,
-		Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
-			return s.serviceCall(ctx, organization, endpoint, input, nil)
-		},
-		Lock:  func() func() { return s.attachmentLocks.lock(organization.ID, true) },
-		Audit: func() error { return s.auth.audit(ctx, "entry", organization.ID, "attachment_deleted") },
-	}
-	return sweep.Run(ctx, organization.ID, namespace)
+var attachmentObjectScopes = [...]struct{ prefix, endpoint string }{
+	{"attachments/", "/internal/v1/attachments/exists"},
+	{"attempt-diffs/", "/internal/v1/diff-bodies/exists"},
+	{"blobs/sha256/", "/internal/v1/attachments/exists"},
 }
 
-func attachmentUploadResponse(c echo.Context, organization string, status int, raw []byte) error {
-	var record attachment.Metadata
-	if err := json.Unmarshal(raw, &record); err != nil || record.Validate() != nil {
-		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Attachment metadata is invalid")
-	}
-	record.Reference = record.Markdown(organization)
-	record.AuthorizedPrincipal = ""
-	return c.JSON(status, record)
+func (s *Service) attachmentSweep(ctx context.Context, org Organization, endpoint string) attachmentsweep.Sweep {
+	return attachmentsweep.Sweep{Storage: s.attachments, Now: s.config.Now, Lookup: func(input attachment.ObjectLookup) (int, []byte, error) {
+		return s.serviceCall(ctx, org, endpoint, input, nil)
+	}, Lock: func() func() { return s.attachmentLocks.lock(org.ID, true) }, Audit: func() error { return s.auth.audit(ctx, "entry", org.ID, "attachment_deleted") }}
 }

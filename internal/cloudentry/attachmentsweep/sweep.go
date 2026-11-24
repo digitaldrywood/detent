@@ -65,15 +65,35 @@ func (s Sweep) remove(ctx context.Context, key string, input attachment.ObjectLo
 }
 
 func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
+	return s.run(ctx, organization, namespace, s.Storage.Walk)
+}
+
+func (s Sweep) Page(ctx context.Context, organization, namespace string, objects []attachment.Object) error {
+	return s.run(ctx, organization, namespace, func(ctx context.Context, prefix string, visit func(attachment.Object) error) error {
+		for _, obj := range objects {
+			if !strings.HasPrefix(obj.Key, prefix) {
+				return attachment.ErrInvalid
+			}
+			if err := visit(obj); err != nil {
+				return err
+			}
+		}
+		return ctx.Err()
+	})
+}
+
+type walkObjects func(context.Context, string, func(attachment.Object) error) error
+
+func (s Sweep) run(ctx context.Context, organization, namespace string, walk walkObjects) error {
 	prefix, err := attachment.OrganizationPrefix(organization)
 	if err != nil {
 		return err
 	}
 	prefix += namespace
 	if namespace == "blobs/sha256/" {
-		return s.archives(ctx, prefix)
+		return s.archives(ctx, prefix, walk)
 	}
-	return s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+	return walk(ctx, prefix, func(object attachment.Object) error {
 		if !s.expired(object) {
 			return nil
 		}
@@ -94,7 +114,7 @@ func (s Sweep) Run(ctx context.Context, organization, namespace string) error {
 	})
 }
 
-func (s Sweep) archives(ctx context.Context, prefix string) error {
+func (s Sweep) archives(ctx context.Context, prefix string, walk walkObjects) error {
 	keys := make([]string, 0, attachment.ReferenceBatchSize)
 	flush := func() error {
 		if len(keys) == 0 {
@@ -120,7 +140,7 @@ func (s Sweep) archives(ctx context.Context, prefix string) error {
 		keys = keys[:0]
 		return nil
 	}
-	err := s.Storage.Walk(ctx, prefix, func(object attachment.Object) error {
+	err := walk(ctx, prefix, func(object attachment.Object) error {
 		if s.expired(object) {
 			keys = append(keys, object.Key)
 		}

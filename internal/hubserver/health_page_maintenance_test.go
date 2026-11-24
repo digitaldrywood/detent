@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthprojection"
+	"github.com/digitaldrywood/detent/internal/hubserver/healthsignals"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -64,7 +66,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				probe.forbidden = false
 				cold := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
 				requireNativeStatus(t, cold, http.StatusOK)
-				var fallback healthFindingsPage
+				var fallback healthprojection.Page
 				decodeHubResponse(t, cold, &fallback)
 				if len(fallback.Items) != size || fallback.Items[0].Evidence.Reason != string(org) {
 					t.Fatalf("cold fallback lost findings: %+v", fallback)
@@ -78,7 +80,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				probe.forbidden = true
 				response := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				var page healthFindingsPage
+				var page healthprojection.Page
 				decodeHubResponse(t, response, &page)
 				if len(page.Items) != size || page.Items[0].Evidence.Reason != string(org) || page.Items[0].Evidence.Counts["attempts"] != 3 || page.Items[0].Evidence.Values["rate"] != 2.5 || page.Items[0].Evidence.Queues[string(fixture.project.ID)].QueueDepth != 4 || page.Items[0].Evidence.Productivity == nil {
 					t.Fatalf("wrong projected page: %+v", page)
@@ -117,7 +119,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 							}
 							response := performHubAPIRequest(t, service, http.MethodGet, path, testHubAdminToken, nil)
 							requireNativeStatus(t, response, http.StatusOK)
-							var page healthFindingsPage
+							var page healthprojection.Page
 							decodeHubResponse(t, response, &page)
 							if len(page.Items) > 2 {
 								t.Fatalf("page exceeds requested limit: %d", len(page.Items))
@@ -192,11 +194,11 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			if err := scheduler.Tick(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			read := func() healthFindingsPage {
+			read := func() healthprojection.Page {
 				t.Helper()
 				response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/health/findings?state=all", testHubAdminToken, nil)
 				requireNativeStatus(t, response, http.StatusOK)
-				var page healthFindingsPage
+				var page healthprojection.Page
 				decodeHubResponse(t, response, &page)
 				return page
 			}
@@ -204,7 +206,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			if len(before.Items) != 1 || before.Items[0].Signal != "dead_man" || before.Items[0].ResolvedAt != nil || before.Items[0].Evidence.ScheduledValidation == nil || before.Items[0].Evidence.ScheduledValidation.LastRunURL != "https://github.com/example-org/example-project/actions/runs/1001/attempts/1" {
 				t.Fatalf("live health producer did not publish scoped scheduled evidence: %+v", before)
 			}
-			clock.Advance(healthInterval)
+			clock.Advance(healthsignals.Interval)
 			if err := service.config.TenantRepository.WriteTenant(t.Context(), organization, corestore.Serving, func(writer tenantstore.Writer) error {
 				_, err := writer.(healthstore.ScheduledWriter).RecordHealthScheduledReport(t.Context(), healthstore.ScheduledReport{OrganizationID: organization, ProjectID: fixture.project.ID, RecordedAt: clock.Now(), ScheduledValidationReport: gate.ScheduledValidationReport{Repository: "example-org/example-project", RunID: "1002", RunAttempt: "1", RunURL: "https://github.com/example-org/example-project/actions/runs/1002/attempts/1", HeadSHA: strings.Repeat("b", 40), Conclusion: "success"}})
 				return err
@@ -240,7 +242,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		for _, organization := range organizations {
 			response := performHubAPIRequest(t, service, http.MethodGet, fixtures[organization].base+"/health/findings?state=all", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			var page healthFindingsPage
+			var page healthprojection.Page
 			decodeHubResponse(t, response, &page)
 			if len(page.Items) != 1 || page.Items[0].ResolvedAt == nil {
 				t.Fatalf("concurrent shared feature changed tenant findings: organization=%s page=%+v", organization, page)
@@ -289,15 +291,15 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
 		ctx := budget.Context(t.Context(), tenant)
 		old := newHealthFinding("dependency_hold", "flow", "project", string(clipped.project.ID), "Example previous observed hold", "Inspect", []string{string(clipped.project.ID)}, healthEvidence{Reason: "previous_observation"})
-		if err := service.publishHealthEvaluationScope(ctx, organization, clock.Now(), []healthFinding{old}, healthEvaluationScope{projects: map[tracker.ProjectID]bool{clipped.project.ID: true}, fingerprints: map[string]bool{old.Fingerprint: true}}); err != nil {
+		if err := service.healthProjection().Publish(ctx, organization, clock.Now(), []healthFinding{old}, healthprojection.Scope{Projects: map[tracker.ProjectID]bool{clipped.project.ID: true}, Fingerprints: map[string]bool{old.Fingerprint: true}}); err != nil {
 			t.Fatal(err)
 		}
 		feature := service.HealthPageMaintenanceFeature()
-		read := func(fixture nativeFixture) healthFindingsPage {
+		read := func(fixture nativeFixture) healthprojection.Page {
 			t.Helper()
 			response := performHubAPIRequest(t, service, http.MethodGet, fixture.base+"/health/findings?state=all", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			var page healthFindingsPage
+			var page healthprojection.Page
 			decodeHubResponse(t, response, &page)
 			return page
 		}
@@ -353,7 +355,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 		retained := newHealthFinding("retry_storm", "flow", "work_item", string(issue.WorkItemID), "Example previously observed retry condition", "Inspect", []string{string(healthy.project.ID)}, healthEvidence{Reason: "previous_observation"})
-		if err := service.publishHealthEvaluationScope(budget.Context(t.Context(), tenant), organization, clock.Now(), []healthFinding{retained}, healthEvaluationScope{projects: map[tracker.ProjectID]bool{healthy.project.ID: true}, fingerprints: map[string]bool{retained.Fingerprint: true}}); err != nil {
+		if err := service.healthProjection().Publish(budget.Context(t.Context(), tenant), organization, clock.Now(), []healthFinding{retained}, healthprojection.Scope{Projects: map[tracker.ProjectID]bool{healthy.project.ID: true}, Fingerprints: map[string]bool{retained.Fingerprint: true}}); err != nil {
 			t.Fatal(err)
 		}
 		for _, kind := range []string{"attempt before first event", "missing immutable object"} {
@@ -366,7 +368,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				details.keyReads = map[string]int{}
 				details.mu.Unlock()
 			}
-			clock.Advance(healthInterval)
+			clock.Advance(healthsignals.Interval)
 			source, err := service.readHealthProjectSource(budget.Context(t.Context(), tenant), organization, healthy.project.ID, "", clock.Now())
 			if err != nil {
 				t.Fatalf("%s failed an otherwise healthy project: %v", kind, err)
@@ -396,7 +398,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 		}
 		clippedPage = read(clipped)
 		completed := *clippedPage.LastTickAt
-		clock.Advance(healthInterval)
+		clock.Advance(healthsignals.Interval)
 		details.mu.Lock()
 		details.fail = true
 		details.mu.Unlock()
@@ -439,11 +441,11 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 			}
 		}
 		budget := hubmaintenance.Budget{Items: hubmaintenance.ItemLimit, Bytes: hubmaintenance.ByteLimit}
-		read := func(organization tracker.OrganizationID) healthFindingsPage {
+		read := func(organization tracker.OrganizationID) healthprojection.Page {
 			t.Helper()
 			response := performHubAPIRequest(t, service, http.MethodGet, fixtures[organization].base+"/health/findings?state=all", testHubAdminToken, nil)
 			requireNativeStatus(t, response, http.StatusOK)
-			var page healthFindingsPage
+			var page healthprojection.Page
 			decodeHubResponse(t, response, &page)
 			return page
 		}
@@ -464,7 +466,7 @@ func TestHealthPageSchedulerAndLiveRoute(t *testing.T) {
 				ctx := budget.Context(t.Context(), tenant)
 				var afterConversation, afterQuestion string
 				for range 5 {
-					if err := service.maintainHealthQuestions(ctx, organization, &afterConversation, &afterQuestion, hubmaintenance.ItemLimit); err != nil {
+					if err := service.healthProjection().MaintainQuestions(ctx, organization, &afterConversation, &afterQuestion, hubmaintenance.ItemLimit); err != nil {
 						t.Fatal(err)
 					}
 				}

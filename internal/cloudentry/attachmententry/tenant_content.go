@@ -1,23 +1,26 @@
-package cloudentry
+package attachmententry
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
-func (s *Service) tenantContent(ctx context.Context, organization Organization, request entryauthority.ContentRequest) ([]byte, error) {
-	if request.Organization != organization.ID || request.Reference.Validate(organization.ID) != nil {
+func (s *Service) Content(ctx context.Context, organization Organization, request entryauthority.ContentRequest) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if len(request.Data) > attachment.MaxArchiveBytes || request.Organization != organization.ID || request.Reference.Validate(organization.ID) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	unlock := s.attachmentLocks.lock(organization.ID, false)
-	current, err := s.readyOrganization(ctx, organization.ID)
+	unlock := s.Lock(organization.ID, false)
+	current, err := s.Ready(ctx, organization.ID)
 	if err != nil || current.Generation != organization.Generation {
 		unlock()
 		return nil, attachment.ErrInvalid
 	}
-	storage, err := s.archiveStorageForReference(ctx, organization.ID, request.Reference)
+	storage, err := s.ArchiveStorage(ctx, organization.ID, request.Reference)
 	if err != nil {
 		unlock()
 		return nil, err

@@ -38,6 +38,10 @@ const SweepBatch = 100
 var errWorkspaceUnchanged = errors.New("workspace changed under the sweep")
 
 func (w *Service) Page(ctx context.Context, after time.Time, id string) ([]Record, error) {
+	return w.LimitedPage(ctx, after, id, SweepBatch)
+}
+
+func (w *Service) LimitedPage(ctx context.Context, after time.Time, id string, limit int) ([]Record, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubapi.ReadTimeout)
 	defer cancel()
 	var records []Record
@@ -46,7 +50,7 @@ func (w *Service) Page(ctx context.Context, after time.Time, id string) ([]Recor
 		if err != nil {
 			return err
 		}
-		rows, err := owner.WorkspaceOpenSessions(ctx, after, id, SweepBatch)
+		rows, err := owner.WorkspaceOpenSessions(ctx, after, id, limit)
 		if err != nil {
 			return err
 		}

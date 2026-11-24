@@ -47,11 +47,11 @@ type ScheduledValidation struct {
 }
 
 type ScanInterval struct {
-	next time.Time
+	Next time.Time
 }
 
 func (s ScanInterval) Due(now time.Time, underway bool) bool {
-	return underway || !now.Before(s.next)
+	return underway || !now.Before(s.Next)
 }
 
 func (s *ScanInterval) Step(now time.Time, underway bool, visit func() error) (bool, error) {
@@ -60,7 +60,7 @@ func (s *ScanInterval) Step(now time.Time, underway bool, visit func() error) (b
 	}
 	err := visit()
 	if !underway && err == nil {
-		s.next = now.Add(Interval)
+		s.Next = now.Add(Interval)
 	}
 	return true, err
 }

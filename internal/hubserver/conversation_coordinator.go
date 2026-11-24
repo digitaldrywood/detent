@@ -196,6 +196,14 @@ func (c *conversationTurnCoordinator) Stop() {
 		delete(c.passes, id)
 	}
 	c.queue = nil
+	if c.server != nil && c.server.runtimeHost != nil {
+		for _, turn := range c.turns {
+			turn.cancel()
+		}
+		c.mu.Unlock()
+		c.wg.Wait()
+		return
+	}
 	c.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -326,7 +334,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 		c.mu.Unlock()
 		return false, nil
 	}
-	turnCtx, cancelTurn := context.WithCancel(context.Background())
+	turnCtx, cancelTurn := context.WithTimeout(context.Background(), coordinatorTurnTimeout)
 	turn := &coordinatorTurn{cancel: cancelTurn, done: make(chan struct{})}
 	c.turns[conversationID] = turn
 	c.mu.Unlock()

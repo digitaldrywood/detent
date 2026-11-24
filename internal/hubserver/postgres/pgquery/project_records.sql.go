@@ -38,7 +38,7 @@ func (q *Queries) ActiveProjectAddressBySlug(ctx context.Context, arg ActiveProj
 }
 
 const boundProjectMetadata = `-- name: BoundProjectMetadata :one
-SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized
+SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence, p.github_binding_xid,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized, s.github_repository_xid, s.github_checkout_xid
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
 WHERE p.organization_id=$1 AND p.id=$2 AND p.deleted_at IS NULL
 `
@@ -73,6 +73,7 @@ func (q *Queries) BoundProjectMetadata(ctx context.Context, arg BoundProjectMeta
 		&i.Project.CreatedAt,
 		&i.Project.DeletedAt,
 		&i.Project.DuplicateSourceSequence,
+		&i.Project.GithubBindingXid,
 		&i.ProjectSetting.OrganizationID,
 		&i.ProjectSetting.ProjectID,
 		&i.ProjectSetting.Revision,
@@ -103,12 +104,14 @@ func (q *Queries) BoundProjectMetadata(ctx context.Context, arg BoundProjectMeta
 		&i.ProjectSetting.IconImageSha256,
 		&i.ProjectSetting.PageSourceAt,
 		&i.ProjectSetting.GithubReconciliationInitialized,
+		&i.ProjectSetting.GithubRepositoryXid,
+		&i.ProjectSetting.GithubCheckoutXid,
 	)
 	return i, err
 }
 
 const boundProjectRecord = `-- name: BoundProjectRecord :many
-SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized,w.name AS state_name,COALESCE(w.terminal,false)::boolean AS state_terminal,COALESCE(w.dispatchable,false)::boolean AS state_dispatchable,COALESCE(w.operator_only,false)::boolean AS state_operator_only,t.target_name
+SELECT p.organization_id, p.id, p.name, p.slug, p.profile, p.require_dependencies, p.scheduling_rank, p.content_settings_revision, p.workflow_source, p.workflow_source_revision, p.workflow_object_key, p.states_object_key, p.model_selection_object_key, p.created_at, p.deleted_at, p.duplicate_source_sequence, p.github_binding_xid,s.organization_id, s.project_id, s.revision, s.require_visual_attachments, s.model_revision, s.model_key, s.model_sha256, s.model_bytes, s.model_content_bytes, s.intake, s.projection, s.repository_enabled, s.repository, s.checkout_repository, s.aging_enabled, s.duplicate_challenge, s.archive_completed_after_days, s.archive_cancelled_after_days, s.workflow_key, s.workflow_sha256, s.workflow_bytes, s.workflow_content_bytes, s.icon_kind, s.icon_name, s.icon_color, s.icon_emoji, s.icon_image_key, s.icon_image_sha256, s.page_source_at, s.github_reconciliation_initialized, s.github_repository_xid, s.github_checkout_xid,w.name AS state_name,COALESCE(w.terminal,false)::boolean AS state_terminal,COALESCE(w.dispatchable,false)::boolean AS state_dispatchable,COALESCE(w.operator_only,false)::boolean AS state_operator_only,t.target_name
 FROM projects p JOIN project_settings s ON s.organization_id=p.organization_id AND s.project_id=p.id
 LEFT JOIN project_workflow_states w ON w.organization_id=p.organization_id AND w.project_id=p.id
 LEFT JOIN project_workflow_transitions t ON t.organization_id=w.organization_id AND t.project_id=w.project_id AND t.source_name=w.name
@@ -157,6 +160,7 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 			&i.Project.CreatedAt,
 			&i.Project.DeletedAt,
 			&i.Project.DuplicateSourceSequence,
+			&i.Project.GithubBindingXid,
 			&i.ProjectSetting.OrganizationID,
 			&i.ProjectSetting.ProjectID,
 			&i.ProjectSetting.Revision,
@@ -187,6 +191,8 @@ func (q *Queries) BoundProjectRecord(ctx context.Context, arg BoundProjectRecord
 			&i.ProjectSetting.IconImageSha256,
 			&i.ProjectSetting.PageSourceAt,
 			&i.ProjectSetting.GithubReconciliationInitialized,
+			&i.ProjectSetting.GithubRepositoryXid,
+			&i.ProjectSetting.GithubCheckoutXid,
 			&i.StateName,
 			&i.StateTerminal,
 			&i.StateDispatchable,
@@ -614,7 +620,7 @@ func (q *Queries) UpdateProjectModel(ctx context.Context, arg UpdateProjectModel
 
 const updateProjectSettings = `-- name: UpdateProjectSettings :one
 UPDATE project_settings SET revision=revision+1,intake=$1,projection=$2,repository_enabled=$3,repository=$4,checkout_repository=$5,aging_enabled=$6,duplicate_challenge=$7,archive_completed_after_days=$8,archive_cancelled_after_days=$9,workflow_key=$10,workflow_sha256=$11,workflow_bytes=$12,workflow_content_bytes=$13
-WHERE organization_id=$14 AND project_id=$15 AND revision=$16 RETURNING organization_id, project_id, revision, require_visual_attachments, model_revision, model_key, model_sha256, model_bytes, model_content_bytes, intake, projection, repository_enabled, repository, checkout_repository, aging_enabled, duplicate_challenge, archive_completed_after_days, archive_cancelled_after_days, workflow_key, workflow_sha256, workflow_bytes, workflow_content_bytes, icon_kind, icon_name, icon_color, icon_emoji, icon_image_key, icon_image_sha256, page_source_at, github_reconciliation_initialized
+WHERE organization_id=$14 AND project_id=$15 AND revision=$16 RETURNING organization_id, project_id, revision, require_visual_attachments, model_revision, model_key, model_sha256, model_bytes, model_content_bytes, intake, projection, repository_enabled, repository, checkout_repository, aging_enabled, duplicate_challenge, archive_completed_after_days, archive_cancelled_after_days, workflow_key, workflow_sha256, workflow_bytes, workflow_content_bytes, icon_kind, icon_name, icon_color, icon_emoji, icon_image_key, icon_image_sha256, page_source_at, github_reconciliation_initialized, github_repository_xid, github_checkout_xid
 `
 
 type UpdateProjectSettingsParams struct {
@@ -687,6 +693,8 @@ func (q *Queries) UpdateProjectSettings(ctx context.Context, arg UpdateProjectSe
 		&i.IconImageSha256,
 		&i.PageSourceAt,
 		&i.GithubReconciliationInitialized,
+		&i.GithubRepositoryXid,
+		&i.GithubCheckoutXid,
 	)
 	return i, err
 }

@@ -54,6 +54,11 @@ func (s *Service) requestUnread(ctx context.Context, scope access, projects []st
 	return UnreadSummary{Count: result.Count, Pending: result.Pending}, s.recordError(err)
 }
 func (s *Service) AdvanceUnreadRecord(ctx context.Context) (bool, int, error) {
+	return s.AdvanceUnreadPage(ctx, unreadPageSize)
+}
+
+func (s *Service) AdvanceUnreadPage(ctx context.Context, limit int) (bool, int, error) {
+	limit = min(limit, unreadPageSize)
 	organization := s.deps.Organization()
 	if organization == "" {
 		return false, 0, corestore.ErrTenantMismatch
@@ -66,7 +71,7 @@ func (s *Service) AdvanceUnreadRecord(ctx context.Context) (bool, int, error) {
 		if err != nil {
 			return err
 		}
-		page, err = r.ThreadUnreadPage(ctx, job, unreadPageSize+1)
+		page, err = r.ThreadUnreadPage(ctx, job, limit+1)
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -75,9 +80,9 @@ func (s *Service) AdvanceUnreadRecord(ctx context.Context) (bool, int, error) {
 	if err != nil {
 		return false, 0, err
 	}
-	complete := len(page) <= unreadPageSize
+	complete := len(page) <= limit
 	if !complete {
-		page = page[:unreadPageSize]
+		page = page[:limit]
 	}
 	job.OriginalAfter = job.After
 	for _, row := range page {

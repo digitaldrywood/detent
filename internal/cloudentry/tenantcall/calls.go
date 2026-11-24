@@ -25,6 +25,7 @@ type Deps struct {
 	SigningKey ed25519.PrivateKey
 	Now        func() time.Time
 	Transport  func(tenant.Organization) (http.RoundTripper, error)
+	Background func(context.Context) bool
 }
 
 type Client struct{ deps Deps }
@@ -78,6 +79,7 @@ func (s *Client) SignedCall(ctx context.Context, organization tenant.Organizatio
 }
 
 func (s *Client) SignedCallCSRF(ctx context.Context, organization tenant.Organization, claims cloudassert.Claims, body []byte, bearer, csrf string) (int, []byte, error) {
+	claims.Background = claims.Kind == cloudassert.KindService && s.deps.Background != nil && s.deps.Background(ctx)
 	assertion, err := cloudassert.Sign(s.deps.SigningKey, claims)
 	if err != nil {
 		return 0, nil, err

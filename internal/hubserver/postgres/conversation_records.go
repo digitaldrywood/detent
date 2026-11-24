@@ -220,6 +220,10 @@ func (s *session) LifecycleConversations(ctx context.Context, filter conversatio
 	switch filter.Kind {
 	case conversationstore.LifecycleRestart:
 		where += ` AND c.work_item_id IS NULL`
+		if !filter.Before.IsZero() {
+			args = append(args, filter.Before)
+			where += fmt.Sprintf(" AND c.created_at<$%d", len(args))
+		}
 	case conversationstore.LifecycleExecution:
 		where += ` AND (c.execution_status IN ('starting','running','waiting_input','interrupting') OR (c.execution_status IN ('completed','interrupted','failed','unknown') AND c.execution_settled=false AND c.execution_lease_id IS NOT NULL))`
 	case conversationstore.LifecycleSettle:
@@ -299,6 +303,7 @@ ORDER BY c.id`, s.organization, afterID, limit+1)
 			break
 		}
 		examined++
+		page.Examined = examined
 		boundary = item.ID
 		if pending {
 			page.Items = append(page.Items, item)
@@ -384,6 +389,9 @@ func (s *session) FilteredMessages(ctx context.Context, filter conversationstore
 	add := func(condition string, value any) {
 		args = append(args, value)
 		conditions = append(conditions, fmt.Sprintf(condition, len(args)))
+	}
+	if !filter.UpdatedBefore.IsZero() {
+		add("updated_at<$%d", filter.UpdatedBefore)
 	}
 	if filter.OperatorActionID != "" {
 		add("operator_action_id=$%d", filter.OperatorActionID)
@@ -578,11 +586,11 @@ func (s *session) OutstandingQuestions(ctx context.Context, conversationID, atte
 	return page, nil
 }
 
-func (s *session) RestartQuestions(ctx context.Context, conversationID, afterID string, limit int) (conversationstore.QuestionPage, error) {
+func (s *session) RestartQuestions(ctx context.Context, conversationID, afterID string, before time.Time, limit int) (conversationstore.QuestionPage, error) {
 	if err := checkPage(limit); err != nil {
 		return conversationstore.QuestionPage{}, err
 	}
-	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id>$3 AND status IN ('pending','sending') ORDER BY id LIMIT $4`, s.organization, conversationID, afterID, limit+1)
+	rows, err := s.db.Query(ctx, `SELECT organization_id,conversation_id,id,message_id,request_id,attempt_id,thread_id,turn_id,status,prompts_json,answers_json,answered_by,expires_at,created_at,updated_at,content_attachment_id FROM conversation_questions WHERE organization_id=$1 AND conversation_id=$2 AND id>$3 AND status IN ('pending','sending') AND ($5::timestamptz IS NULL OR updated_at<$5) ORDER BY id LIMIT $4`, s.organization, conversationID, afterID, limit+1, pgtype.Timestamptz{Time: before, Valid: !before.IsZero()})
 	if err != nil {
 		return conversationstore.QuestionPage{}, mapError(ctx, err)
 	}
@@ -656,20 +664,20 @@ func scanPGConversationCommand(ctx context.Context, row interface{ Scan(...any) 
 	return c, nil
 }
 
-func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
-	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, false)
+func (s *session) PendingCommands(ctx context.Context, conversationID, afterKey string, before time.Time, limit int) (conversationstore.CommandPage, error) {
+	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, false, before)
 }
 
 func (s *session) PendingCoordinatorCommands(ctx context.Context, conversationID, afterKey string, limit int) (conversationstore.CommandPage, error) {
-	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, true)
+	return s.pendingConversationCommands(ctx, conversationID, afterKey, limit, true, time.Time{})
 }
 
-func (s *session) pendingConversationCommands(ctx context.Context, conversationID, afterKey string, limit int, coordinator bool) (conversationstore.CommandPage, error) {
+func (s *session) pendingConversationCommands(ctx context.Context, conversationID, afterKey string, limit int, coordinator bool, before time.Time) (conversationstore.CommandPage, error) {
 	if err := checkPage(limit); err != nil {
 		return conversationstore.CommandPage{}, err
 	}
-	predicate := "receipt_status=ANY($4) ORDER BY key LIMIT $5"
-	args := []any{s.organization, conversationID, afterKey, []string{"sending", "sent", "responding"}, limit + 1}
+	predicate := "receipt_status=ANY($4) AND ($6::timestamptz IS NULL OR updated_at<$6) ORDER BY key LIMIT $5"
+	args := []any{s.organization, conversationID, afterKey, []string{"sending", "sent", "responding"}, limit + 1, pgtype.Timestamptz{Time: before, Valid: !before.IsZero()}}
 	if coordinator {
 		predicate = "kind='cancel' AND receipt_status='saved' ORDER BY key LIMIT $4"
 		args = []any{s.organization, conversationID, afterKey, limit + 1}

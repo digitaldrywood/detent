@@ -54,9 +54,18 @@ func (m *Service) WriteUsage(ctx context.Context, owner *BillingOwner, now time.
 	}); err != nil {
 		return err
 	}
+	return m.writeUsageWindows(ctx, owner, now, pending, 4)
+}
+
+func (m *Service) writeUsageWindows(ctx context.Context, owner *BillingOwner, now time.Time, pending map[Key]Latency, limit int) error {
+	plans := owner.Plans()
+	if plans == nil {
+		clear(pending)
+		return nil
+	}
 	windows := UsageWindows(plans, now, pending)
 	ordered := slices.Sorted(maps.Keys(windows))
-	for _, window := range ordered[:min(4, len(ordered))] {
+	for _, window := range ordered[:min(limit, len(ordered))] {
 		usage := windows[window]
 		id := hubapi.NewID("http_usage")
 		batch := &hostedRequestBillingBatch{owner: owner}
@@ -96,4 +105,20 @@ type BillingOwner struct {
 	Repository   tenantstore.Repository
 	Organization tracker.OrganizationID
 	Plans        func() *BillingPlan
+}
+
+func (m *Service) RetainUsage(ctx context.Context, now time.Time, limit int) error {
+	m.mu.Lock()
+	owner := m.usage
+	m.mu.Unlock()
+	if owner == nil {
+		return nil
+	}
+	plans := owner.Plans()
+	if plans == nil {
+		return nil
+	}
+	return owner.Repository.WriteTenant(ctx, owner.Organization, corestore.Background, func(w tenantstore.Writer) error {
+		return w.PruneRequestBillingUsage(ctx, requestUsageCutoff(plans, now), limit)
+	})
 }

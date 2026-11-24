@@ -53,6 +53,7 @@ type HostedSharedEntry struct {
 	Icons           attachment.IconStore
 	ReadArchive     entryauthority.ArchiveReader
 
+	Replays  *cloudassert.ReplayCache
 	verifier *cloudassert.Verifier
 }
 
@@ -68,7 +69,7 @@ func (e *HostedSharedEntry) Validate(organization string) error {
 			return errors.New("shared entry public key is invalid")
 		}
 	}
-	e.verifier = &cloudassert.Verifier{PublicKeys: e.PublicKeys, Issuer: e.Issuer, Audience: organization, Generation: e.Generation}
+	e.verifier = &cloudassert.Verifier{Replays: e.Replays, PublicKeys: e.PublicKeys, Issuer: e.Issuer, Audience: organization, Generation: e.Generation}
 	return nil
 }
 
@@ -134,6 +135,10 @@ func (c *HostedConfig) validate() error {
 		plans = &defaults
 	}
 	return c.Billing.Validate(plans)
+}
+
+func (c *HostedConfig) BindsSharedOrganization(id string) bool {
+	return c != nil && c.SharedEntry != nil && id != "" && c.OrganizationID == id
 }
 
 func (c *HostedConfig) Deployment() (string, int64) {

@@ -29,7 +29,7 @@ var ErrLinked = errors.New("coordinator: conversation is linked")
 
 // callBackend runs the turn with coordination tools when the backend
 // supports them and with a plain turn otherwise.
-func CallBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, stop <-chan struct{}, handle func(context.Context, runner.AgentUpdate), tools func() ([]runner.AgentTool, runner.AgentToolHandler)) (runner.AgentTurnResult, error) {
+func CallBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, stop <-chan struct{}, join bool, handle func(context.Context, runner.AgentUpdate), tools func() ([]runner.AgentTool, runner.AgentToolHandler)) (runner.AgentTurnResult, error) {
 	var updateMu sync.Mutex
 	finished := false
 	onUpdate := func(update runner.AgentUpdate) error {
@@ -54,15 +54,25 @@ func CallBackend(ctx context.Context, backend runner.AgentBackend, request runne
 		err    error
 	}
 	done := make(chan completion, 1)
-	go func() {
-		var result runner.AgentTurnResult
-		var err error
+	run := func() (result runner.AgentTurnResult, err error) {
+		defer func() {
+			if recover() != nil {
+				err = errors.New("coordinator backend panicked")
+			}
+		}()
 		if toolBackend, ok := backend.(runner.AgentToolBackend); ok {
 			toolList, handleTool := tools()
 			result, err = toolBackend.RunTurnWithTools(ctx, request, toolList, handleTool, onUpdate)
 		} else {
 			result, err = backend.RunTurn(ctx, request, onUpdate)
 		}
+		return result, err
+	}
+	if join {
+		return run()
+	}
+	go func() {
+		result, err := run()
 		done <- completion{result: result, err: err}
 	}()
 	select {

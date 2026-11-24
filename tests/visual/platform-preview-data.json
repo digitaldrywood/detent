@@ -19,10 +19,10 @@
   "health": {
     "registry": { "ok": true }, "tenants": { "expected": 1, "running": 1 },
     "tenant_hubs": [
-      { "id": "org_preview", "name": "Model Choice Labs", "running": true, "uptime_seconds": 172800, "restarts_24h": 0, "database_bytes": 8388608 }
+      { "id": "shared", "name": "Shared Hub", "running": true, "uptime_seconds": null, "restarts_24h": null, "database_bytes": null }
     ],
     "admission": {
-      "tenants": 1, "max_tenants": 20, "allocating": 0, "max_concurrent": 2,
+      "max_tenants": 0, "allocating": 0, "max_concurrent": 2,
       "disk_measured": true, "free_disk_bytes": 10737418240, "min_free_disk_bytes": 2147483648,
       "memory_measured": true, "available_memory_bytes": 4294967296, "min_available_memory_bytes": 1073741824
     }

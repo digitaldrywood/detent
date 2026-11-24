@@ -2,12 +2,14 @@ package maintenance_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 )
@@ -169,6 +171,57 @@ func TestIdleTicksReachEveryFeature(t *testing.T) {
 	for _, feature := range features {
 		if !visited[feature.Name] {
 			t.Errorf("idle maintenance skipped %s", feature.Name)
+		}
+	}
+}
+
+func TestSharedTenThousandTenantFamiliesInterleavePages(t *testing.T) {
+	var mu sync.Mutex
+	firstVisits := map[string]int{}
+	secondPages := map[string]bool{}
+	pageSize := map[string]int{}
+	failure := errors.New("unavailable work item")
+	features := hubserver.HostedMaintenanceSchedule(func(_ context.Context, t hubmaintenance.Tenant, b hubmaintenance.Budget, name string) (hubmaintenance.Outcome, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if t.Organization == "org_00000" {
+			firstVisits[name]++
+			if name == "work-item-pages" {
+				return hubmaintenance.Outcome{Items: 1}, failure
+			}
+		}
+		if t.Organization == fmt.Sprintf("org_%05d", pageSize[name]) {
+			secondPages[name] = true
+		}
+		return hubmaintenance.Outcome{Progress: true, Items: b.Items}, nil
+	})
+	rotating := 0
+	for _, f := range features {
+		if f.Lead {
+			continue
+		}
+		rotating++
+		pageSize[f.Name] = min(hubmaintenance.TenantLimit, int(hubmaintenance.ByteLimit/f.Bytes))
+	}
+	scheduler, err := hubmaintenance.NewShared(pagedRegistry(10000), features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedTicks := 0
+	for range 2 * rotating {
+		err := scheduler.Tick(t.Context())
+		if errors.Is(err, failure) {
+			failedTicks++
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if failedTicks != 1 {
+		t.Fatalf("failing first row ran %d times", failedTicks)
+	}
+	for name := range pageSize {
+		if firstVisits[name] != 1 || !secondPages[name] {
+			t.Fatalf("family %s first tenant visits=%d resumed next page=%v", name, firstVisits[name], secondPages[name])
 		}
 	}
 }

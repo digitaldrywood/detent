@@ -1,6 +1,7 @@
 package cloudassert
 
 import (
+	"container/heap"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -39,6 +40,7 @@ type Claims struct {
 	OrganizationSlug     string               `json:"organization_slug,omitempty"`
 	Generation           int64                `json:"gen"`
 	Kind                 string               `json:"kind"`
+	Background           bool                 `json:"background,omitempty"`
 	Subject              string               `json:"sub,omitempty"`
 	Email                string               `json:"email,omitempty"`
 	ProviderOrganization string               `json:"provider_org,omitempty"`
@@ -92,8 +94,15 @@ type Verifier struct {
 	Generation int64
 	Now        func() time.Time
 
-	mu   sync.Mutex
-	seen map[string]time.Time
+	Replays *ReplayCache
+	local   ReplayCache
+}
+
+type ReplayCache struct {
+	mu      sync.Mutex
+	seen    map[replayID]struct{}
+	count   map[string]int
+	expires replayExpirations
 }
 
 func (v *Verifier) Verify(value, method, path string, body []byte) (Claims, error) {
@@ -144,13 +153,22 @@ func (v *Verifier) Verify(value, method, path string, body []byte) (Claims, erro
 	if !validKind(claims) {
 		return Claims{}, ErrInvalid
 	}
-	if !v.remember(claims.ID, claims.ExpiresAt, now) {
+	cache := v.Replays
+	audienceLimit := maxReplayCache / 2
+	if cache == nil {
+		cache = &v.local
+		audienceLimit = maxReplayCache
+	}
+	if !cache.remember(claims.Audience, claims.ID, claims.ExpiresAt, now, audienceLimit) {
 		return Claims{}, ErrInvalid
 	}
 	return claims, nil
 }
 
 func validKind(claims Claims) bool {
+	if claims.Background && claims.Kind != KindService {
+		return false
+	}
 	if claims.Key != nil {
 		return claims.Kind == KindKey && claims.Key.Valid() && claims.Subject != "" && claims.ProviderOrganization != "" && validRole(claims.Role) && claims.SupportActor == "" && claims.PlatformRole == "" && claims.Binding == "" && claims.CSRF == "" && claims.ProviderSession == "" && claims.SupportReason == "" && claims.SessionCreatedAt.IsZero() && claims.SessionExpiresAt.IsZero() && claims.AccessExpiresAt.IsZero()
 	}
@@ -179,26 +197,47 @@ func validRole(role string) bool {
 	}
 }
 
-func (v *Verifier) remember(id string, expires, now time.Time) bool {
+type replayID struct{ audience, id string }
+type replayExpiration struct {
+	key replayID
+	at  time.Time
+}
+type replayExpirations []replayExpiration
+
+func (h replayExpirations) Len() int           { return len(h) }
+func (h replayExpirations) Less(i, j int) bool { return h[i].at.Before(h[j].at) }
+func (h replayExpirations) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *replayExpirations) Push(x any)        { *h = append(*h, x.(replayExpiration)) }
+func (h *replayExpirations) Pop() any {
+	last := len(*h) - 1
+	v := (*h)[last]
+	(*h)[last] = replayExpiration{}
+	*h = (*h)[:last]
+	return v
+}
+
+func (v *ReplayCache) remember(audience, id string, expires, now time.Time, audienceLimit int) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.seen == nil {
-		v.seen = make(map[string]time.Time)
+		v.seen = make(map[replayID]struct{})
+		v.count = make(map[string]int)
 	}
-	if _, ok := v.seen[id]; ok {
+	for len(v.expires) > 0 && !v.expires[0].at.After(now) {
+		key := heap.Pop(&v.expires).(replayExpiration).key
+		delete(v.seen, key)
+		v.count[key.audience]--
+		if v.count[key.audience] == 0 {
+			delete(v.count, key.audience)
+		}
+	}
+	key := replayID{audience, id}
+	if _, seen := v.seen[key]; seen || len(v.seen) >= maxReplayCache || v.count[audience] >= audienceLimit {
 		return false
 	}
-	if len(v.seen) >= maxReplayCache {
-		for key, expiry := range v.seen {
-			if !expiry.After(now) {
-				delete(v.seen, key)
-			}
-		}
-		if len(v.seen) >= maxReplayCache {
-			return false
-		}
-	}
-	v.seen[id] = expires.Add(clockSkew)
+	v.seen[key] = struct{}{}
+	v.count[audience]++
+	heap.Push(&v.expires, replayExpiration{key, expires.Add(clockSkew)})
 	return true
 }
 

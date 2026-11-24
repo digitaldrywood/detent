@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -77,15 +78,21 @@ func NewSpaces(t *testing.T, public bool) *Spaces {
 			result := struct {
 				XMLName   xml.Name `xml:"ListBucketResult"`
 				Truncated bool     `xml:"IsTruncated"`
+				Next      string   `xml:"NextContinuationToken,omitempty"`
 				Items     []item   `xml:"Contents"`
 			}{}
 			var keys []string
 			for key := range f.Objects {
-				if strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
+				if key > r.URL.Query().Get("continuation-token") && strings.HasPrefix(key, r.URL.Query().Get("prefix")) {
 					keys = append(keys, key)
 				}
 			}
 			sort.Strings(keys)
+			if limit, err := strconv.Atoi(r.URL.Query().Get("max-keys")); err == nil && limit > 0 && len(keys) > limit {
+				keys = keys[:limit]
+				result.Truncated = true
+				result.Next = keys[len(keys)-1]
+			}
 			for _, key := range keys {
 				object := f.Objects[key]
 				result.Items = append(result.Items, item{Key: key, LastModified: object.Created.UTC().Format(time.RFC3339), Size: len(object.Content)})

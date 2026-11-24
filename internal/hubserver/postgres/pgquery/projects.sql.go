@@ -42,7 +42,7 @@ VALUES (
     $11,
     $12,
     $13
-) RETURNING organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence
+) RETURNING organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence, github_binding_xid
 `
 
 type CreateProjectParams struct {
@@ -95,6 +95,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.CreatedAt,
 		&i.DeletedAt,
 		&i.DuplicateSourceSequence,
+		&i.GithubBindingXid,
 	)
 	return i, err
 }
@@ -119,7 +120,7 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) (i
 }
 
 const getProject = `-- name: GetProject :one
-SELECT organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence FROM projects
+SELECT organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence, github_binding_xid FROM projects
 WHERE organization_id=$1
   AND id=$2
 `
@@ -149,12 +150,13 @@ func (q *Queries) GetProject(ctx context.Context, arg GetProjectParams) (Project
 		&i.CreatedAt,
 		&i.DeletedAt,
 		&i.DuplicateSourceSequence,
+		&i.GithubBindingXid,
 	)
 	return i, err
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence FROM projects
+SELECT organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence, github_binding_xid FROM projects
 WHERE organization_id=$1
   AND id>$2
 ORDER BY id LIMIT $3
@@ -192,6 +194,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.CreatedAt,
 			&i.DeletedAt,
 			&i.DuplicateSourceSequence,
+			&i.GithubBindingXid,
 		); err != nil {
 			return nil, err
 		}
@@ -217,7 +220,7 @@ UPDATE projects SET
     model_selection_object_key=$10,
     deleted_at=$11,
     content_settings_revision=content_settings_revision+1
-WHERE organization_id=$12 AND id=$13 AND content_settings_revision=$14 RETURNING organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence
+WHERE organization_id=$12 AND id=$13 AND content_settings_revision=$14 RETURNING organization_id, id, name, slug, profile, require_dependencies, scheduling_rank, content_settings_revision, workflow_source, workflow_source_revision, workflow_object_key, states_object_key, model_selection_object_key, created_at, deleted_at, duplicate_source_sequence, github_binding_xid
 `
 
 type UpdateProjectParams struct {
@@ -272,6 +275,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.CreatedAt,
 		&i.DeletedAt,
 		&i.DuplicateSourceSequence,
+		&i.GithubBindingXid,
 	)
 	return i, err
 }

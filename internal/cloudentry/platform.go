@@ -214,7 +214,7 @@ func (s *Service) platformAllowlistJSON(c echo.Context) error {
 }
 
 type platformAdmission struct {
-	Tenants                 int    `json:"tenants"`
+	Tenants                 *int   `json:"tenants,omitempty"`
 	MaxTenants              int    `json:"max_tenants"`
 	Allocating              int    `json:"allocating"`
 	MaxConcurrent           int    `json:"max_concurrent"`
@@ -231,13 +231,26 @@ func (s *Service) platformHealthJSON(c echo.Context) error {
 		return err
 	}
 	ctx := c.Request().Context()
-	organizations, err := s.registry.List(ctx)
+	var hubs []platformTenantHealth
+	var err error
+	if host := s.sharedHub; host != nil {
+		err = s.registry.store.db.PingContext(ctx)
+		if err == nil {
+			_, healthErr := host.runtime.Health(ctx)
+			hubs = []platformTenantHealth{{ID: "shared", Name: "Shared Hub", Running: healthErr == nil}}
+		}
+	} else {
+		var organizations []Organization
+		organizations, err = s.registry.List(ctx)
+		if err == nil {
+			hubs = s.tenantHealth(ctx, organizations)
+		}
+	}
 	registry := map[string]any{"ok": err == nil}
 	result := map[string]any{"registry": registry}
 	if err != nil {
 		return c.JSON(http.StatusOK, result)
 	}
-	hubs := s.tenantHealth(ctx, organizations)
 	running := 0
 	for _, hub := range hubs {
 		if hub.Running {
@@ -247,12 +260,20 @@ func (s *Service) platformHealthJSON(c echo.Context) error {
 	result["tenants"] = map[string]int{"expected": len(hubs), "running": running}
 	result["tenant_hubs"] = hubs
 	if allocation := s.config.Allocation; allocation != nil {
-		holding, allocating, err := s.admissionLoad(ctx, "")
+		var holding *int
+		var allocating int
+		if s.sharedHub == nil {
+			var count int
+			count, allocating, err = s.admissionLoad(ctx, "")
+			holding = &count
+		} else {
+			allocating, err = s.activeProvisions(ctx, "", allocation.MaxConcurrent)
+		}
 		if err != nil {
 			registry["ok"] = false
 			return c.JSON(http.StatusOK, result)
 		}
-		admission := platformAdmission{Tenants: holding, MaxTenants: allocation.MaxTenants, Allocating: allocating, MaxConcurrent: allocation.MaxConcurrent,
+		admission := platformAdmission{Tenants: holding, Allocating: allocating, MaxConcurrent: allocation.MaxConcurrent,
 			MinFreeDiskBytes: allocation.MinFreeDiskBytes, MinAvailableMemoryBytes: allocation.MinAvailableMemoryBytes}
 		admission.FreeDiskBytes, admission.DiskMeasured = freeDiskBytes(allocation.TenantRoot)
 		admission.AvailableMemoryBytes, admission.MemoryMeasured = availableMemoryBytes()

@@ -78,9 +78,10 @@ func TestWorkspaceRelayResumeReleasesAcknowledgedFrames(t *testing.T) {
 			relay.memory = 3 * frameBytes
 			relay.rooms["ws_1"] = &Room{
 				WorkspaceID: "ws_1", people: map[string]*Connection{},
-				Streams: map[string]*Stream{}, detached: map[string]*Stream{stream.ID: stream},
+				Streams: map[string]*Stream{stream.ID: stream}, detached: map[string]*Stream{},
 				terminals: map[string]*TerminalStream{},
 			}
+			relay.DetachPerson(t.Context(), &Connection{ID: stream.ConnectionID, WorkspaceID: "ws_1"}, time.Now())
 			connection := &Connection{ID: "relayconn_new", WorkspaceID: "ws_1", PrincipalID: "principal", SessionID: "session"}
 			resumed, replay, code := relay.ResumeStream(connection, stream.ID, test.lastSeq, time.Now())
 			if code != "" || resumed != stream {
@@ -165,16 +166,18 @@ func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T)
 	person := &Connection{ID: "relayconn_person", WorkspaceID: "ws_1"}
 	exec := &Stream{ID: "relayconn_person:1", Channel: workspacesession.ChannelExec, ConnectionID: person.ID}
 	files := &Stream{ID: "relayconn_person:2", Channel: workspacesession.ChannelFiles, ConnectionID: person.ID}
+	preview := &Stream{ID: "relayconn_person:3", Channel: workspacesession.ChannelPreview, ConnectionID: person.ID}
 	relay := New(Deps{})
 	relay.rooms["ws_1"] = &Room{
 		WorkspaceID: "ws_1", Runner: runner,
 		people:   map[string]*Connection{person.ID: person},
-		Streams:  map[string]*Stream{exec.ID: exec, files.ID: files},
+		Streams:  map[string]*Stream{exec.ID: exec, files.ID: files, preview.ID: preview},
 		detached: map[string]*Stream{},
 		execRuns: map[string]*ExecRun{},
 	}
 
-	relay.DetachPerson(t.Context(), person, time.Now())
+	now := time.Now()
+	relay.DetachPerson(t.Context(), person, now)
 
 	room := relay.rooms["ws_1"]
 	if _, parked := room.detached[exec.ID]; parked {
@@ -195,5 +198,15 @@ func TestWorkspaceRelayDetachPersonClosesItsExecStreamsOnTheRunner(t *testing.T)
 	case sent := <-runner.Out:
 		t.Fatalf("runner received an extra frame %+v", sent.Frame)
 	default:
+	}
+	relay.DetachRunner(t.Context(), runner)
+	if count := relay.SweepPage(t.Context(), now, 1); count != 0 || !relay.Active() {
+		t.Fatalf("resumable streams lost before expiry: count=%d", count)
+	}
+	for _, left := range []int{1, 0} {
+		count := relay.SweepPage(t.Context(), now.Add(workspacesession.ResumeWindow), 1)
+		if count != 1 || relay.DetachedCount(person.WorkspaceID) != left || relay.Active() != (left > 0) {
+			t.Fatalf("after sweeping one detached stream: count=%d remaining=%d active=%v", count, relay.DetachedCount(person.WorkspaceID), relay.Active())
+		}
 	}
 }

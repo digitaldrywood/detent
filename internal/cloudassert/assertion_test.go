@@ -58,6 +58,7 @@ func TestVerify(t *testing.T) {
 		{name: "browser with key authority", key: key, mutate: func(c *cloudassert.Claims) {
 			c.Key = &apikey.KeyAuthority{ID: "key_a", Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
 		}},
+		{name: "browser requesting background admission", key: key, mutate: func(c *cloudassert.Claims) { c.Background = true }},
 		{name: "key with browser authority", key: key, mutate: func(c *cloudassert.Claims) {
 			c.Kind = cloudassert.KindKey
 			c.Key = &apikey.KeyAuthority{ID: "key_a", Kind: "personal", Permission: apikey.ScopeAdmin, ProjectContext: apikey.ProjectContext{Access: "all"}}
@@ -147,7 +148,11 @@ func signUnchecked(key ed25519.PrivateKey, claims cloudassert.Claims) (string, e
 func TestVerifyRejectsReplayAndAcceptsRotatedKeys(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	oldKey, newKey := testKey(t, 3), testKey(t, 4)
-	verifier := &cloudassert.Verifier{PublicKeys: []ed25519.PublicKey{oldKey.Public().(ed25519.PublicKey), newKey.Public().(ed25519.PublicKey)}, Issuer: "entry", Audience: "org_a", Generation: 2, Now: func() time.Time { return now }}
+	cache := new(cloudassert.ReplayCache)
+	newVerifier := func() *cloudassert.Verifier {
+		return &cloudassert.Verifier{Replays: cache, PublicKeys: []ed25519.PublicKey{oldKey.Public().(ed25519.PublicKey), newKey.Public().(ed25519.PublicKey)}, Issuer: "entry", Audience: "org_a", Generation: 2, Now: func() time.Time { return now }}
+	}
+	verifier := newVerifier()
 	for _, key := range []ed25519.PrivateKey{oldKey, newKey} {
 		id, err := cloudassert.NewID()
 		if err != nil {
@@ -160,6 +165,7 @@ func TestVerifyRejectsReplayAndAcceptsRotatedKeys(t *testing.T) {
 		if _, err := verifier.Verify(value, "POST", "/organizations/org_a/projects", []byte("name=x")); err != nil {
 			t.Fatalf("first use rejected: %v", err)
 		}
+		verifier = newVerifier()
 		if _, err := verifier.Verify(value, "POST", "/organizations/org_a/projects", []byte("name=x")); err == nil {
 			t.Fatal("replayed assertion accepted")
 		}

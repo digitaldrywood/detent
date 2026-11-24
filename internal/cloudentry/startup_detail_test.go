@@ -30,11 +30,16 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 	})
 	raw := []byte(`{"action":"create_plan","reason":"startup seed"}`)
 	for _, organization := range []string{"org_alpha", "org_beta"} {
-		allocation, err := f.service.readyOrganization(t.Context(), organization)
+		if organization == "org_beta" {
+			if _, err := f.service.registry.store.db.ExecContext(t.Context(), "UPDATE platform.organizations SET managed=true,state='allocating',step='tenant_files' WHERE id=$1", organization); err != nil {
+				t.Fatal(err)
+			}
+		}
+		allocation, err := f.service.registry.Organization(t.Context(), organization)
 		if err != nil {
 			t.Fatal(err)
 		}
-		owner := tenantDetailStore{service: f.service, allocation: allocation}
+		owner := f.service.attachmentHandlers().Details(allocation)
 		first, err := owner.StoreDetail(t.Context(), organization, raw)
 		if err != nil {
 			t.Fatalf("store startup audit: %v", err)
@@ -82,13 +87,17 @@ func TestTenantDetailStoreWritesBeforeTenantHTTPStarts(t *testing.T) {
 		if _, err := owner.ReadDetails(t.Context(), "org_foreign", []attachment.ArchiveReference{first}); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("foreign batch accepted")
 		}
-		stale := owner
-		stale.allocation.Generation++
+		staleAllocation := allocation
+		staleAllocation.Generation++
+		stale := f.service.attachmentHandlers().Details(staleAllocation)
 		if _, err := stale.ReadCanonicalDetail(t.Context(), organization, "prj_example", first.Key); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("stale canonical read accepted")
 		}
 		if _, err := stale.ReadDetails(t.Context(), organization, []attachment.ArchiveReference{first}); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("stale batch accepted")
+		}
+		if _, err := stale.PublishContent(t.Context(), organization, raw); !errors.Is(err, attachment.ErrInvalid) {
+			t.Fatal("stale archive publication accepted")
 		}
 		if _, err := stale.StoreDetail(t.Context(), organization, raw); !errors.Is(err, attachment.ErrInvalid) {
 			t.Fatal("stale allocation accepted")

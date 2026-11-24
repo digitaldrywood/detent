@@ -41,7 +41,7 @@ export function platformHealthState(value: PlatformHealth): "success" | "warning
   const floors = [
     a.disk_measured ? floorState(a.free_disk_bytes, a.min_free_disk_bytes) : "warning",
     a.memory_measured ? floorState(a.available_memory_bytes, a.min_available_memory_bytes) : "warning",
-    a.max_tenants > 0 ? a.tenants >= a.max_tenants ? "error" : a.tenants >= a.max_tenants * 0.8 ? "warning" : "normal" : "normal",
+    a.tenants !== undefined && a.max_tenants > 0 ? a.tenants >= a.max_tenants ? "error" : a.tenants >= a.max_tenants * 0.8 ? "warning" : "normal" : "normal",
   ];
   return floors.includes("error") ? "error" : floors.includes("warning") ? "warning" : "success";
 }
@@ -63,18 +63,19 @@ function FloorRow({ label, measured, current, floor }: {
 export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth }): React.ReactElement {
   const a = value.admission;
   const state = platformHealthState(value);
+  const shared = value.tenant_hubs?.find((hub) => hub.id === "shared");
   return <div className="space-y-6">
     <Alert variant={state} aria-label="Service health">
       <Badge variant={state}>{state === "error" ? "Down" : state === "warning" ? "Degraded" : "OK"}</Badge>
-      <AlertTitle>{value.registry.ok ? "Registry reachable." : "Registry unreachable."} {value.tenants === undefined ? "Tenant Hub status unavailable." : `${value.tenants.running} of ${value.tenants.expected} tenant Hubs running.`}</AlertTitle>
+      <AlertTitle>{value.registry.ok ? "Registry reachable." : "Registry unreachable."} {shared ? `Shared Hub ${shared.running ? "running" : "down"}.` : value.tenants === undefined ? "Tenant Hub status unavailable." : `${value.tenants.running} of ${value.tenants.expected} tenant Hubs running.`}</AlertTitle>
     </Alert>
     <SettingsSection title="Capacity" aria-label="Capacity" headerAction={<span className="text-right text-xs text-muted-foreground">New tenants are refused below a floor</span>}>
       {a === undefined ? <p className="p-4 text-sm text-muted-foreground">Self-service allocation is not configured, so there are no admission limits.</p> : <>
         <FloorRow label="Free disk" measured={a.disk_measured} current={a.free_disk_bytes} floor={a.min_free_disk_bytes} />
         <FloorRow label="Available memory" measured={a.memory_measured} current={a.available_memory_bytes} floor={a.min_available_memory_bytes} />
-        <SettingsRow title="Tenant slots" control={<div className="w-full sm:w-64"><UsageMeter label="Tenant slots" used={a.tenants} limit={a.max_tenants}
+        {a.tenants !== undefined && <SettingsRow title="Tenant slots" control={<div className="w-full sm:w-64"><UsageMeter label="Tenant slots" used={a.tenants} limit={a.max_tenants}
           unlimited={a.max_tenants <= 0} valueText={`${a.tenants} / ${a.max_tenants > 0 ? a.max_tenants : "Unlimited"}`}
-          statusText={a.max_tenants > 0 && a.tenants >= a.max_tenants ? "At limit" : a.max_tenants > 0 && a.tenants >= a.max_tenants * 0.8 ? "Near limit" : "Within limit"} /></div>} />
+          statusText={a.max_tenants > 0 && a.tenants >= a.max_tenants ? "At limit" : a.max_tenants > 0 && a.tenants >= a.max_tenants * 0.8 ? "Near limit" : "Within limit"} /></div>} />}
         <SettingsRow title="Provisioning now" control={<Badge variant="outline">{a.allocating}</Badge>} />
       </>}
     </SettingsSection>
@@ -83,7 +84,7 @@ export function PlatformHealthPanel({ value }: { readonly value: PlatformHealth 
         <Table aria-label="Tenant Hubs">
           <TableHeader><TableRow><TableHead>Tenant</TableHead><TableHead>Hub</TableHead><TableHead>Up for</TableHead><TableHead className="text-right">Restarts (24h)</TableHead><TableHead className="text-right">Database size</TableHead></TableRow></TableHeader>
           <TableBody>{value.tenant_hubs.map((hub) => <TableRow key={hub.id}>
-            <TableCell><Link to="/platform/tenants" search={{ tenant: hub.id }} className="text-primary underline underline-offset-4">{hub.name}</Link></TableCell>
+            <TableCell>{hub.id === "shared" ? hub.name : <Link to="/platform/tenants" search={{ tenant: hub.id }} className="text-primary underline underline-offset-4">{hub.name}</Link>}</TableCell>
             <TableCell><Badge variant={hub.running ? "success" : "error"}>{hub.running ? "Running" : "Down"}</Badge></TableCell>
             <TableCell>{!hub.running ? "—" : hub.uptime_seconds === null ? "Unavailable" : formatUsageValue(hub.uptime_seconds, "seconds")}</TableCell>
             <TableCell className="text-right tabular-nums">{hub.restarts_24h ?? "Unavailable"}</TableCell>

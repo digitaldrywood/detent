@@ -515,6 +515,10 @@ func (d AttemptDeps) ReadAttemptCheckpointDetail(ctx context.Context, snapshot h
 }
 
 func (d AttemptDeps) PopulateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
+	return d.PopulateCheckpointSourcePage(ctx, organization, after, corestore.MaxPageSize)
+}
+
+func (d AttemptDeps) PopulateCheckpointSourcePage(ctx context.Context, organization tracker.OrganizationID, after string, limit int) (string, error) {
 	var page leasestore.CheckpointSourcePage
 	var snapshot hubrecords.TenantAttemptSnapshot
 	var cleanupErr, checkpointErr, failureErr error
@@ -527,7 +531,7 @@ func (d AttemptDeps) PopulateCheckpointSource(ctx context.Context, organization 
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		page, err = reader.UnclassifiedCheckpointSource(ctx, after, corestore.MaxPageSize)
+		page, err = reader.UnclassifiedCheckpointSource(ctx, after, limit)
 		if err != nil || page.Candidate == nil {
 			return err
 		}

@@ -34,8 +34,11 @@ type Storage interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 	Delete(context.Context, string) error
 	Walk(context.Context, string, func(Object) error) error
+	WalkPage(context.Context, string, string, int32, func(Object) error) (string, error)
 	Stat(context.Context, string) (Object, bool, error)
 }
+
+const GitHubWebhookPrefix = "platform/github-webhooks/"
 
 type Object struct {
 	Key       string
@@ -148,33 +151,45 @@ func (s *spaces) Stat(ctx context.Context, key string) (Object, bool, error) {
 }
 
 func (s *spaces) Walk(ctx context.Context, prefix string, visit func(Object) error) error {
-	if !strings.HasPrefix(prefix, "orgs/") || !strings.HasSuffix(prefix, "/") {
-		return ErrInvalid
-	}
-	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(s.prefix + prefix)})
-	for pages.HasMorePages() {
-		page, err := pages.NextPage(ctx)
-		if err != nil {
+	var cursor string
+	for {
+		next, err := s.WalkPage(ctx, prefix, cursor, 1000, visit)
+		if err != nil || next == "" {
 			return err
 		}
-		for _, object := range page.Contents {
-			physical := aws.ToString(object.Key)
-			if !strings.HasPrefix(physical, s.prefix+prefix) {
-				return ErrInvalid
-			}
-			key := strings.TrimPrefix(physical, s.prefix)
-			if !strings.HasPrefix(key, prefix) {
-				return ErrInvalid
-			}
-			if object.LastModified == nil {
-				return ErrInvalid
-			}
-			if err := visit(Object{Key: key, CreatedAt: *object.LastModified}); err != nil {
-				return err
-			}
+		cursor = next
+	}
+}
+
+func (s *spaces) WalkPage(ctx context.Context, prefix, cursor string, limit int32, visit func(Object) error) (string, error) {
+	if !(strings.HasPrefix(prefix, "orgs/") || s.prefix == "" && prefix == GitHubWebhookPrefix) || !strings.HasSuffix(prefix, "/") || limit < 1 || limit > 1000 {
+		return "", ErrInvalid
+	}
+	input := &s3.ListObjectsV2Input{Bucket: aws.String(s.config.Bucket), Prefix: aws.String(s.prefix + prefix), MaxKeys: aws.Int32(limit)}
+	if cursor != "" {
+		input.ContinuationToken = aws.String(cursor)
+	}
+	page, err := s.client.ListObjectsV2(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	next := aws.ToString(page.NextContinuationToken)
+	if len(page.Contents) > int(limit) || aws.ToBool(page.IsTruncated) && (next == "" || next == cursor) {
+		return "", ErrInvalid
+	}
+	for _, object := range page.Contents {
+		physical := aws.ToString(object.Key)
+		if !strings.HasPrefix(physical, s.prefix+prefix) || object.LastModified == nil {
+			return "", ErrInvalid
+		}
+		if err := visit(Object{Key: strings.TrimPrefix(physical, s.prefix), CreatedAt: *object.LastModified}); err != nil {
+			return "", err
 		}
 	}
-	return nil
+	if !aws.ToBool(page.IsTruncated) {
+		return "", nil
+	}
+	return next, nil
 }
 
 func (s *spaces) verify(ctx context.Context) (resultErr error) {

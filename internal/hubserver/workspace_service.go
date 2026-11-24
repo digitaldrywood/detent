@@ -63,6 +63,10 @@ func newWorkspaceService(server *Service, cfg WorkspaceConfig) *workspaceService
 // context of its own rather than inheriting one that is about to be cancelled
 // or Background, which nothing can interrupt.
 func (w *workspaceService) start(ctx context.Context) error {
+	if w.server.runtimeHost != nil {
+		close(w.stopped)
+		return nil
+	}
 	if err := w.recoverOpenWorkspaces(ctx); err != nil {
 		return err
 	}

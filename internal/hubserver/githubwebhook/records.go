@@ -52,30 +52,52 @@ func (s *Service) Receive(c echo.Context, verifiedByEntry bool) error {
 	if strings.TrimSpace(id) == "" || len(id) > 256 || strings.TrimSpace(event) == "" || len(event) > 100 {
 		return c.NoContent(http.StatusBadRequest)
 	}
-	var payload Payload
-	var envelope struct {
-		Action string `json:"action"`
-	}
-	if json.Unmarshal(raw, &payload) != nil || json.Unmarshal(raw, &envelope) != nil {
-		return c.NoContent(http.StatusBadRequest)
-	}
-	repository := webhookRepositoryFullName(payload.Repository)
-	if repository == "" && event != "ping" {
+	payload, repository, err := ParsePayload(raw, event)
+	if err != nil {
 		return c.NoContent(http.StatusBadRequest)
 	}
 	organization := s.deps.Organization
 	digest := sha256.Sum256(raw)
-	ref, err := eventstore.NewContent(s.deps.Details).PrepareReceipt(ctx, eventstore.Receipt{OrganizationID: organization}, raw)
+	now := s.deps.Now().UTC().Truncate(time.Microsecond)
+	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: repository, EventType: event, Action: payload.Action, Digest: hex.EncodeToString(digest[:]), Payload: eventstore.Receipt{OrganizationID: organization}, ReceivedAt: now, ExpiresAt: now.Add(s.deps.Retention), NextAttemptAt: now, Status: "pending"}
+	deferred := verifiedByEntry && c.QueryParam("defer_processing") == "1"
+	authorized := true
+	checkBinding := func(r tenantstore.Reader) error {
+		reader, ok := r.(projectstore.GitHubIntakeReader)
+		if !ok {
+			return s.deps.Unavailable
+		}
+		var err error
+		authorized, err = reader.GitHubWebhookAuthorized(ctx, row)
+		return err
+	}
+	if deferred {
+		row.BindingProject = tracker.ProjectID(c.QueryParam("binding_project"))
+		if row.BindingProject == "" {
+			return c.NoContent(http.StatusBadRequest)
+		}
+		if err := s.deps.Repository.ReadTenant(ctx, organization, corestore.Serving, checkBinding); err != nil {
+			return s.deps.Error(c, err)
+		}
+		if !authorized {
+			return c.NoContent(http.StatusNoContent)
+		}
+	}
+	ref, err := eventstore.NewContent(s.deps.Details).PrepareReceipt(ctx, row.Payload, raw)
 	if err != nil {
 		return s.deps.Error(c, err)
 	}
-	now := s.deps.Now().UTC().Truncate(time.Microsecond)
-	row := projectstore.GitHubWebhook{DeliveryID: id, Repository: strings.ToLower(repository), EventType: event, Action: envelope.Action, Digest: hex.EncodeToString(digest[:]), Payload: ref, ReceivedAt: now, ExpiresAt: now.Add(s.deps.Retention), NextAttemptAt: now, Status: "pending"}
+	row.Payload = ref
 	created := false
 	err = s.deps.Repository.WriteTenant(ctx, organization, corestore.Serving, func(w tenantstore.Writer) error {
 		owner, ok := w.(projectstore.GitHubIntakeWriter)
 		if !ok {
 			return s.deps.Unavailable
+		}
+		if deferred {
+			if err := checkBinding(w); err != nil || !authorized {
+				return err
+			}
 		}
 		var err error
 		created, err = owner.CreateGitHubWebhook(ctx, row)
@@ -85,7 +107,7 @@ func (s *Service) Receive(c echo.Context, verifiedByEntry bool) error {
 		if created {
 			return nil
 		}
-		prior, err := owner.GitHubWebhook(ctx, id)
+		prior, err := owner.GitHubWebhook(ctx, id, row.BindingProject)
 		if err != nil {
 			return err
 		}
@@ -104,7 +126,10 @@ func (s *Service) Receive(c echo.Context, verifiedByEntry bool) error {
 	if err != nil {
 		return s.deps.Error(c, err)
 	}
-	if row.Status == "pending" && !row.NextAttemptAt.After(now) {
+	if !authorized {
+		return c.NoContent(http.StatusNoContent)
+	}
+	if !deferred && row.Status == "pending" && !row.NextAttemptAt.After(now) {
 		if err := s.Process(ctx, row); err != nil {
 			s.deps.Logger.WarnContext(ctx, "process GitHub webhook", "error", err)
 		}
@@ -160,7 +185,7 @@ func (s *Service) Process(ctx context.Context, row projectstore.GitHubWebhook) e
 		if !ok {
 			return s.deps.Unavailable
 		}
-		projects, err = gitHubIntakeReader.GitHubWebhookProjects(ctx, row.Repository, row.AfterProject, 2)
+		projects, err = gitHubIntakeReader.GitHubWebhookProjects(ctx, row, 2)
 		return err
 	})
 	if err != nil {

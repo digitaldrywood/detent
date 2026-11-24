@@ -1,6 +1,8 @@
 package webhooks
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
@@ -20,9 +22,62 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
 	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 )
+
+func TestSharedRepositoryRoutingStartsWithoutTenantCalls(t *testing.T) {
+	const payload = `{"repository":{"full_name":"Example/Project"}}`
+	secret := []byte("example webhook secret")
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(payload))
+	for _, tc := range []struct {
+		name      string
+		err       error
+		status    int
+		duplicate bool
+	}{
+		{"unbound repository", nil, http.StatusAccepted, false},
+		{"accepted redelivery", nil, http.StatusAccepted, true},
+		{"delivery ID reused", corestore.ErrRevisionConflict, http.StatusConflict, false},
+		{"database unavailable", errors.New("unavailable"), http.StatusServiceUnavailable, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			s := New(Deps{Secret: secret, Logger: slog.New(slog.DiscardHandler), Accept: func(_ context.Context, delivery Delivery, raw []byte) (bool, error) {
+				calls++
+				if delivery.Repository != "example/project" || string(raw) != payload {
+					t.Fatalf("delivery=%#v", delivery)
+				}
+				return tc.duplicate, tc.err
+			}})
+			if err := s.Initialize(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Refresh(t.Context(), tenant.Organization{ID: "org_first"}); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 0 {
+				t.Fatal("startup enumerated repository bindings")
+			}
+			e := echo.New()
+			e.POST("/webhook", s.Webhook)
+			r := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(payload))
+			r.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+			r.Header.Set("X-GitHub-Delivery", "example")
+			r.Header.Set("X-GitHub-Event", "issues")
+			w := httptest.NewRecorder()
+			e.ServeHTTP(w, r)
+			if w.Code != tc.status || calls != 1 || strings.Contains(w.Body.String(), `"duplicate":true`) != tc.duplicate {
+				t.Fatalf("status=%d lookups=%d", w.Code, calls)
+			}
+		})
+	}
+}
 
 func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 	t.Parallel()
@@ -228,3 +283,126 @@ func TestSharedEntryGitHubWebhookUnavailable(t *testing.T) {
 type roundTripper func(*http.Request) (*http.Response, error)
 
 func (f roundTripper) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type payloadStorage struct {
+	attachment.Storage
+	data   string
+	key    string
+	putErr error
+}
+
+func (s payloadStorage) Open(_ context.Context, key string) (io.ReadCloser, error) {
+	if key != s.key {
+		return nil, artifact.ErrMissing
+	}
+	return io.NopCloser(strings.NewReader(s.data)), nil
+}
+
+func (s *payloadStorage) Put(_ context.Context, key string, body io.ReadSeeker, size int64, media, digest string) error {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if media != "application/gzip" || int64(len(data)) != size || artifact.Digest(data) != digest {
+		return errors.New("invalid compressed upload")
+	}
+	if s.data == "" {
+		s.key, s.data = key, string(data)
+	}
+	return s.putErr
+}
+
+func (s *payloadStorage) Delete(_ context.Context, key string) error {
+	if key != s.key {
+		return artifact.ErrIntegrity
+	}
+	s.data = ""
+	return nil
+}
+
+func TestFanoutSweepsLatePublicationOnlyAfterRelease(t *testing.T) {
+	digest := artifact.Digest([]byte("original"))
+	key := PayloadKey("example/delivery", digest)
+	refused := errors.New("receipt store unavailable")
+	for _, tc := range []struct {
+		name, key         string
+		checked, released bool
+		err               error
+	}{
+		{"uploader crashed after cleanup", key, true, true, nil},
+		{"active original", key, true, false, nil},
+		{"released replacement", key + "/b3562391-6175-48c4-9dbb-23766a7b78bb", true, true, nil},
+		{"invalid replacement", key + "/../12", false, false, nil},
+		{"receipt unavailable", key, true, false, refused},
+		{"unrecognized address", attachment.GitHubWebhookPrefix + "bad", false, false, nil},
+		{"tenant content", "orgs/example/archive", false, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &payloadStorage{key: tc.key, data: "stored"}
+			checked := false
+			released := func(_ context.Context, id, sha, objectKey string) (bool, error) {
+				checked = true
+				if id != "example/delivery" || sha != digest || objectKey != tc.key {
+					t.Fatalf("wrong receipt %q %q", id, sha)
+				}
+				return tc.released, tc.err
+			}
+			err := SweepReleasedPayload(t.Context(), store, released, tc.key)
+			if !errors.Is(err, tc.err) || checked != tc.checked || (store.data == "") != tc.released {
+				t.Fatalf("checked=%v removed=%v error=%v", checked, store.data == "", err)
+			}
+		})
+	}
+}
+
+func TestFanoutReconcilesUncertainObjectWrite(t *testing.T) {
+	payload := []byte(`{"action":"opened"}`)
+	digest := artifact.Digest(payload)
+	key := PayloadKey("example", digest)
+	failure := errors.New("write response lost")
+	for _, tc := range []struct {
+		name, previous string
+		want           error
+	}{
+		{"stored before response loss", "", nil},
+		{"preexisting corrupt object", "unreadable", artifact.ErrIntegrity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &payloadStorage{key: key, data: tc.previous, putErr: failure}
+			err := StorePayload(t.Context(), store, "example", digest, key, payload)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("upload reconciliation = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFanoutVerifiesPayloadOwnershipAndSize(t *testing.T) {
+	limit := strings.Repeat("a", cloudassert.MaxBodyBytes)
+	for _, tc := range []struct {
+		name, delivery, stored, original string
+		want                             error
+	}{
+		{"at limit", "example", limit, limit, nil},
+		{"oversized", "example", limit + "x", limit + "x", artifact.ErrIntegrity},
+		{"corrupt", "example", "changed", "original", artifact.ErrIntegrity},
+		{"foreign receipt", "other-delivery", "original", "original", artifact.ErrIntegrity},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			digest := artifact.Digest([]byte(tc.original))
+			key := PayloadKey("example", digest)
+			var compressed bytes.Buffer
+			writer := gzip.NewWriter(&compressed)
+			if _, err := io.WriteString(writer, tc.stored); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadPayload(t.Context(), &payloadStorage{data: compressed.String(), key: key}, tc.delivery, digest, key)
+			if !errors.Is(err, tc.want) || err == nil && string(got) != tc.original || err != nil && len(got) != 0 {
+				t.Fatalf("read %d bytes, error %v", len(got), err)
+			}
+		})
+	}
+}

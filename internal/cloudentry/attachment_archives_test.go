@@ -272,12 +272,11 @@ func TestArchiveDeletionIsolation(t *testing.T) {
 
 func TestArchiveUploadIsolation(t *testing.T) {
 	t.Parallel()
-	for _, stage := range []string{"initial read", "upload", "verification"} {
+	for _, stage := range []string{"initial read", "upload", "verification", "shared publisher"} {
 		t.Run(stage, func(t *testing.T) {
 			t.Parallel()
-			f := newEntryFixture(t)
+			f, _ := newSharedEntryFixture(t)
 			store := newSpacesFixture(t, false)
-			f.service.config.Allocation = &AllocationConfig{Launcher: &silentLauncher{running: map[string]bool{}}}
 			f.service.config.ArchiveCredentials = func(context.Context, string, string) (attachment.Credentials, error) {
 				return attachment.Credentials{AccessKeyID: store.Config().AccessKeyID, SecretAccessKey: store.Config().SecretAccessKey}, nil
 			}
@@ -309,7 +308,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 				if r.Method == http.MethodGet {
 					reads++
 				}
-				stall := stage == "initial read" && r.Method == http.MethodGet && reads == 1 || stage == "upload" && r.Method == http.MethodPut || stage == "verification" && r.Method == http.MethodGet && reads == 2
+				stall := stage == "initial read" && r.Method == http.MethodGet && reads == 1 || (stage == "upload" || stage == "shared publisher") && r.Method == http.MethodPut || stage == "verification" && r.Method == http.MethodGet && reads == 2
 				if stall {
 					close(entered)
 					select {
@@ -323,8 +322,30 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			uploadFinished := make(chan struct{})
 			var uploadStatus int
 			target := base + "/work-items/" + string(item.WorkItemID) + "/archives"
+			var publish func() error
+			if stage == "shared publisher" {
+				org, err := f.service.registry.Organization(t.Context(), "org_alpha")
+				if err != nil {
+					t.Fatal(err)
+				}
+				storage, err := attachment.NewStorage(t.Context(), store.Config(), f.service.config.AttachmentTransport)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.service.attachments = storage
+				owner := f.service.attachmentHandlers().Details(org)
+				publish = func() error {
+					_, err := owner.PublishContent(t.Context(), org.ID, []byte("shared archive"))
+					return err
+				}
+			}
+			var publishErr error
 			go func() {
 				defer close(uploadFinished)
+				if publish != nil {
+					publishErr = publish()
+					return
+				}
 				uploadStatus = attachmentRequest(t, alice, http.MethodPost, target, strings.NewReader("archive content"), headers).Code
 			}()
 			defer func() { releaseUpload(); <-uploadFinished }()
@@ -335,7 +356,7 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("upload did not reach storage")
 			}
-			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
+			if _, err := f.service.registry.store.db.ExecContext(ctx, "UPDATE platform.organizations SET managed=true,state='deleting' WHERE id IN ('org_alpha','org_beta')"); err != nil {
 				t.Fatal(err)
 			}
 			alphaFinished, betaFinished := make(chan struct{}), make(chan struct{})
@@ -362,8 +383,20 @@ func TestArchiveUploadIsolation(t *testing.T) {
 			releaseUpload()
 			<-uploadFinished
 			<-alphaFinished
-			if uploadStatus != http.StatusCreated || alphaError != nil {
+			if publish != nil && !errors.Is(publishErr, attachment.ErrInvalid) {
+				t.Fatalf("publisher returned a reference after deletion started: %v", publishErr)
+			}
+			if publish == nil && uploadStatus != http.StatusNotFound || alphaError != nil {
 				t.Fatalf("upload=%d deletion error=%v", uploadStatus, alphaError)
+			}
+			if publish != nil && !errors.Is(publish(), attachment.ErrInvalid) {
+				t.Fatal("deleted allocation accepted archive publication")
+			}
+			for _, id := range []string{"org_alpha", "org_beta"} {
+				org, err := f.service.registry.Organization(t.Context(), id)
+				if err != nil || org.State != "deleted" {
+					t.Fatalf("%s deletion state=%q err=%v", id, org.State, err)
+				}
 			}
 			store.Mu.Lock()
 			defer store.Mu.Unlock()
@@ -565,7 +598,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			owner := tenantDetailStore{service: f.service, allocation: allocation}
+			owner := f.service.attachmentHandlers().Details(allocation)
 			stored, err := owner.StoreDetail(t.Context(), org, []byte(content))
 			puts++
 			if err != nil || stored != ref {
@@ -578,8 +611,9 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 			if _, err := owner.ReadDetail(t.Context(), "org_foreign", stored); err == nil {
 				t.Fatal("tenant owner accepted foreign detail")
 			}
-			stale := owner
-			stale.allocation.Generation++
+			staleAllocation := allocation
+			staleAllocation.Generation++
+			stale := f.service.attachmentHandlers().Details(staleAllocation)
 			if _, err := stale.StoreDetail(t.Context(), org, []byte(content)); err == nil {
 				t.Fatal("stale allocation uploaded detail")
 			}
@@ -680,7 +714,7 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		owner := tenantDetailStore{service: f.service, allocation: organization}
+		owner := f.service.attachmentHandlers().Details(organization)
 		orphan, err := owner.StoreDetail(t.Context(), org, []byte("uncommitted detail"))
 		if err != nil {
 			t.Fatal(err)
@@ -885,7 +919,7 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 	if err := attachment.StoreArchive(t.Context(), storage.(attachment.ArchiveStorage), organization.ID, ref, data); err != nil {
 		t.Fatal(err)
 	}
-	reader := f.service.tenantArchiveReader(organization)
+	reader := f.service.attachmentHandlers().ArchiveReader(organization)
 	references := []attachment.ArchiveReference{ref}
 	for revision := range 3 {
 		if revision > 0 {
@@ -932,7 +966,7 @@ func TestTenantArchiveSectionReader(t *testing.T) {
 		t.Fatal("tenant read a foreign archive")
 	}
 	organization.Generation++
-	if _, err := f.service.tenantArchiveReader(organization)(t.Context(), ref, false); err == nil {
+	if _, err := f.service.attachmentHandlers().ArchiveReader(organization)(t.Context(), ref, false); err == nil {
 		t.Fatal("stale tenant generation read archive bytes")
 	}
 }
@@ -981,13 +1015,13 @@ func TestTenantContentStorage(t *testing.T) {
 			}
 			request := entryauthority.ContentRequest{Organization: org, Reference: ref, Write: true, Data: data}
 			for range 2 {
-				if _, err := f.service.tenantContent(t.Context(), organization, request); err != nil {
+				if _, err := f.service.attachmentHandlers().Content(t.Context(), organization, request); err != nil {
 					t.Fatal(err)
 				}
 			}
 			request.Write = false
 			request.Data = nil
-			restored, err := f.service.tenantContent(t.Context(), organization, request)
+			restored, err := f.service.attachmentHandlers().Content(t.Context(), organization, request)
 			if err != nil || !bytes.Equal(restored, data) {
 				t.Fatalf("immutable tenant content changed: %v", err)
 			}
@@ -1003,12 +1037,12 @@ func TestTenantContentStorage(t *testing.T) {
 			}
 			foreign := organization
 			foreign.ID = "org_other"
-			if _, err := f.service.tenantContent(t.Context(), foreign, request); err == nil {
+			if _, err := f.service.attachmentHandlers().Content(t.Context(), foreign, request); err == nil {
 				t.Fatal("cross-org content access accepted")
 			}
 			stale := organization
 			stale.Generation++
-			if _, err := f.service.tenantContent(t.Context(), stale, request); err == nil {
+			if _, err := f.service.attachmentHandlers().Content(t.Context(), stale, request); err == nil {
 				t.Fatal("stale allocation read accepted")
 			}
 		}
@@ -1041,17 +1075,21 @@ func TestTenantContentReadsReleaseAttachmentLock(t *testing.T) {
 				release: make(chan struct{}),
 				data:    compressed,
 			}
-			f.service.attachments = storage
+			handlers := f.service.attachmentHandlers()
+			handlers.Storage = func() attachment.Storage { return storage }
+			handlers.ArchiveStorage = func(context.Context, string, attachment.ArchiveReference) (attachment.ArchiveStorage, error) {
+				return storage, nil
+			}
 			done := make(chan error, 1)
 			go func() {
 				var got, want []byte
 				var err error
 				if path == "archive content" {
 					want = compressed
-					got, err = f.service.tenantContent(ctx, organization, entryauthority.ContentRequest{Organization: organization.ID, Reference: ref})
+					got, err = handlers.Content(ctx, organization, entryauthority.ContentRequest{Organization: organization.ID, Reference: ref})
 				} else {
 					want = content
-					store := tenantDetailStore{service: f.service, allocation: organization}
+					store := handlers.Details(organization)
 					got, err = store.ReadDetail(ctx, organization.ID, ref)
 				}
 				if err == nil && !bytes.Equal(got, want) {

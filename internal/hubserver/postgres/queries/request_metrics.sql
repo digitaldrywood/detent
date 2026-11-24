@@ -46,7 +46,7 @@ ORDER BY hour,route,status_class LIMIT sqlc.arg(page_limit);
 -- name: ExpireRequestHours :execrows
 WITH expired AS (SELECT x.organization_id,x.hour,x.route,x.status_class FROM request_hours x
 WHERE x.organization_id=sqlc.arg(organization_id) AND x.hour<sqlc.arg(cutoff)
-ORDER BY hour,route,status_class LIMIT 200 FOR UPDATE SKIP LOCKED)
+ORDER BY hour,route,status_class LIMIT sqlc.arg(batch_limit)::int FOR UPDATE SKIP LOCKED)
 DELETE FROM request_hours t USING expired e WHERE t.organization_id=e.organization_id AND t.hour=e.hour AND t.route=e.route AND t.status_class=e.status_class;
 
 -- name: MergeRequestDay :exec
@@ -66,7 +66,7 @@ ORDER BY day,route,caller_kind,status_class LIMIT sqlc.arg(page_limit);
 -- name: ExpireRequestDays :execrows
 WITH expired AS (SELECT x.organization_id,x.day,x.route,x.caller_kind,x.status_class FROM request_days x
 WHERE x.organization_id=sqlc.arg(organization_id) AND x.day<sqlc.arg(cutoff)
-ORDER BY day,route,caller_kind,status_class LIMIT 200 FOR UPDATE SKIP LOCKED)
+ORDER BY day,route,caller_kind,status_class LIMIT sqlc.arg(batch_limit)::int FOR UPDATE SKIP LOCKED)
 DELETE FROM request_days t USING expired e WHERE t.organization_id=e.organization_id AND t.day=e.day AND t.route=e.route AND t.caller_kind=e.caller_kind AND t.status_class=e.status_class;
 
 -- name: TakeExpiredRequestMinute :one

@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	ErrServingCapacity      = errors.New("organization serving capacity is occupied")
 	ErrUniqueViolation      = fmt.Errorf("resource already exists: %w", mutation.ErrConflict)
 	ErrSerializationFailure = errors.New("transaction must be retried")
 	ErrRevisionConflict     = fmt.Errorf("resource has changed: %w", mutation.ErrConflict)
@@ -32,6 +33,17 @@ const (
 	Serving Workload = iota
 	Background
 )
+
+type workloadKey struct{}
+
+func WithBackgroundWork(ctx context.Context) context.Context {
+	return context.WithValue(ctx, workloadKey{}, Background)
+}
+
+func ContextWorkload(ctx context.Context) Workload {
+	workload, _ := ctx.Value(workloadKey{}).(Workload)
+	return workload
+}
 
 type Repository interface {
 	Read(context.Context, tracker.OrganizationID, Workload, func(Reader) error) error

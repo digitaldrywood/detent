@@ -10,15 +10,17 @@ import (
 )
 
 type Deps struct {
-	Repository   metricsstore.Repository
-	Organization tracker.OrganizationID
+	Repository    metricsstore.Repository
+	Organization  tracker.OrganizationID
+	Generation    int64
+	RunnerWindows *RunnerWindows
 }
 
 func New(deps Deps) (*Service, error) {
 	if deps.Repository == nil || deps.Organization == "" {
 		return nil, errors.New("hosted database binding is required")
 	}
-	return &Service{Repository: deps.Repository, Organization: deps.Organization, pending: make(map[Key]Latency), runners: make(map[string]*RunnerWindow)}, nil
+	return &Service{Repository: deps.Repository, Organization: deps.Organization, pending: make(map[Key]Latency), sharedWindows: deps.RunnerWindows, generation: deps.Generation}, nil
 }
 func (m *Service) RecordUsage(owner *BillingOwner, key Key, usage Usage) {
 	m.mu.Lock()

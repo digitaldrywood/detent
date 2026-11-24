@@ -124,7 +124,7 @@ type dashboardDelivery struct {
 	closed    bool
 	wake      chan struct{}
 	cancel    context.CancelFunc
-	done      chan struct{}
+	workers   sync.WaitGroup
 	epoch     uint64
 	remaining int
 	states    map[dashboardProjectKey]dashboardProjectState
@@ -152,14 +152,14 @@ func newDashboardDelivery(s *Service) *dashboardDelivery {
 	return &dashboardDelivery{
 		service: s, config: cfg, tenants: make(map[tracker.OrganizationID]int),
 		projects: make(map[dashboardProjectKey]map[*dashboardSubscription]struct{}),
-		states:   make(map[dashboardProjectKey]dashboardProjectState), wake: make(chan struct{}, 1), done: make(chan struct{}),
+		states:   make(map[dashboardProjectKey]dashboardProjectState), wake: make(chan struct{}, 1),
 	}
 }
 
 func (d *dashboardDelivery) start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	d.cancel = cancel
-	go d.run(ctx)
+	d.workers.Go(func() { d.run(ctx) })
 }
 
 func (d *dashboardDelivery) stop() {
@@ -168,11 +168,11 @@ func (d *dashboardDelivery) stop() {
 	}
 	d.mu.Lock()
 	d.closed = true
-	d.mu.Unlock()
 	if d.cancel != nil {
 		d.cancel()
-		<-d.done
 	}
+	d.mu.Unlock()
+	d.workers.Wait()
 }
 
 func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
@@ -180,6 +180,9 @@ func (d *dashboardDelivery) add(sub *dashboardSubscription) bool {
 	defer d.mu.Unlock()
 	if d.closed || d.tenants[sub.scope.Organization] >= d.config.TenantLimit {
 		return false
+	}
+	if d.service.runtimeHost != nil && d.cancel == nil {
+		d.start()
 	}
 	sub.frames = make(chan dashboardFrame, d.config.QueueSize)
 	sub.done = make(chan struct{})
@@ -203,6 +206,12 @@ func (d *dashboardDelivery) remove(sub *dashboardSubscription) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if sub.element != nil {
+		defer func() {
+			select {
+			case d.wake <- struct{}{}:
+			default:
+			}
+		}()
 		d.subs.Remove(sub.element)
 		sub.element = nil
 		key := sub.projectKey()
@@ -275,8 +284,11 @@ func (d *dashboardDelivery) projectState(ctx context.Context, key dashboardProje
 }
 
 func (d *dashboardDelivery) run(ctx context.Context) {
-	defer close(d.done)
+	idle := false
 	defer func() {
+		if idle {
+			return
+		}
 		d.mu.Lock()
 		d.closed = true
 		d.mu.Unlock()
@@ -324,6 +336,13 @@ func (d *dashboardDelivery) run(ctx context.Context) {
 		}
 		d.mu.Lock()
 		active := d.subs.Len() > 0
+		if !active && !d.closed && d.service.runtimeHost != nil {
+			d.cancel()
+			d.cancel = nil
+			idle = true
+			d.mu.Unlock()
+			return
+		}
 		d.mu.Unlock()
 		if !active {
 			timer.Stop()

@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/cloudentry/attachmententry"
+
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
@@ -305,36 +307,36 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		var response *attachmentResponse
+		var response *attachmententry.Response
 		if call.Name == operatortool.UploadAttachment {
 			if !authorized.EntryUpload {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
-			response, err = e.service.uploadAttachmentMCP(ctx, request, org.ID, arguments, authorized.Mutation)
+			response, err = e.service.attachmentHandlers().UploadMCP(ctx, request, org.ID, arguments, authorized.Mutation)
 		} else {
 			if authorized.EntryAttachment != call.Name {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
-			response, err = e.service.readAttachmentMCP(ctx, request, org.ID, call.Name, arguments)
+			response, err = e.service.attachmentHandlers().ReadMCP(ctx, request, org.ID, call.Name, arguments)
 		}
 		if err != nil {
 			return operatortool.Result{}, err
 		}
-		if response.status >= http.StatusInternalServerError {
+		if response.Status >= http.StatusInternalServerError {
 			var refusal apikey.Refusal
-			if response.status == http.StatusBadGateway && json.Unmarshal(response.body.Bytes(), &refusal) == nil && refusal.Code == "attachment_unavailable" {
+			if response.Status == http.StatusBadGateway && json.Unmarshal(response.Body.Bytes(), &refusal) == nil && refusal.Code == "attachment_unavailable" {
 				return operatortool.Result{}, &refusal
 			}
 			return operatortool.Result{}, tenantauth.ErrUnavailable
 		}
-		if response.status != http.StatusCreated && response.status != http.StatusOK {
+		if response.Status != http.StatusCreated && response.Status != http.StatusOK {
 			var refusal apikey.Refusal
-			if json.Unmarshal(response.body.Bytes(), &refusal) != nil || refusal.Code == "" {
+			if json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code == "" {
 				return operatortool.Result{}, operatortool.ErrAccessDenied
 			}
 			return operatortool.Result{}, &refusal
 		}
-		raw = response.body.Bytes()
+		raw = response.Body.Bytes()
 	}
 	return operatortool.Result{Content: raw}, nil
 }

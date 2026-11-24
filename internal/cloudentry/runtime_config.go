@@ -11,14 +11,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/digitaldrywood/detent/internal/hubmaintenance"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/tracker"
-
-	"github.com/google/uuid"
-
-	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 type entryRuntime struct {
@@ -41,6 +40,9 @@ type entryRuntimeObject struct {
 }
 
 func (s *Service) runtimeAdopter() (RuntimeAdopter, bool) {
+	if s.sharedHub != nil {
+		return s.sharedHub, true
+	}
 	if s.config.Allocation == nil {
 		return nil, false
 	}
@@ -67,18 +69,8 @@ func (s *Service) AdoptPublishedRuntime(ctx context.Context, tenant hubmaintenan
 	if !target.Managed || target.State != "ready" && target.State != "allocating" || target.PreparedRevision == target.Publication.Revision {
 		return nil
 	}
-	raw, err := s.readEntryObject(ctx, target.Publication.ObjectKey)
+	payload, err := s.readRuntimeObject(ctx, target.Publication.ObjectKey, target.Publication.Revision, true)
 	if err != nil {
-		return err
-	}
-	var payload entryRuntimeObject
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return err
-	}
-	if payload.StageID != target.Publication.Revision {
-		return corestore.ErrRevisionConflict
-	}
-	if err := hubserver.ValidateHostedRuntimeUpdate(payload.HostedRuntimeUpdate); err != nil {
 		return err
 	}
 	organization := Organization{ID: tenant.Organization, Generation: tenant.Generation, Managed: target.Managed, State: target.State}
@@ -93,29 +85,6 @@ func (s *Service) allocationPrices(ctx context.Context) []hostedplans.HostedBill
 		return nil
 	}
 	return s.config.Allocation.Prices
-}
-
-func (s *Service) configureRuntimeLauncher(ctx context.Context) {
-	if s.config.Allocation == nil {
-		return
-	}
-	launcher, ok := s.config.Allocation.Launcher.(*ExecLauncher)
-	if !ok {
-		return
-	}
-	initial := launcher.Configure
-	launcher.Configure = func(spec TenantSpec) ([]byte, error) {
-		lookup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		state, err := s.loadRuntime(lookup)
-		cancel()
-		if err != nil {
-			return nil, err
-		}
-		if state != nil {
-			return state.Configure(spec)
-		}
-		return initial(spec)
-	}
 }
 
 func (s *Service) reloadConfiguration(ctx context.Context) error {
@@ -229,6 +198,10 @@ func (s *Service) publishSharedRuntimeConfiguration(ctx context.Context, next Co
 
 func (s *Service) publishTenantRuntime(ctx context.Context, organization Organization) error {
 	if _, shared := s.runtimeAdopter(); shared {
+		state, err := s.loadRuntime(ctx)
+		if err != nil || state == nil {
+			return err
+		}
 		return s.AdoptPublishedRuntime(ctx, hubmaintenance.Tenant{Organization: organization.ID, Generation: organization.Generation})
 	}
 	state, err := s.loadRuntime(ctx)
@@ -255,10 +228,10 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	}
 	publication, err := s.registry.store.db.postgres.RuntimePublication(ctx, s.config.Issuer)
 	if errors.Is(err, corestore.ErrNotFound) {
-		if _, shared := s.runtimeAdopter(); shared {
+		if current != nil {
 			return nil, err
 		}
-		return current, nil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
@@ -266,24 +239,12 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 	if current != nil && current.Revision == publication.Revision {
 		return current, nil
 	}
-	raw, err := s.readEntryObject(ctx, publication.ObjectKey)
+	_, shared := s.runtimeAdopter()
+	payload, err := s.readRuntimeObject(ctx, publication.ObjectKey, publication.Revision, shared)
 	if err != nil {
 		return nil, err
 	}
-	var payload entryRuntimeObject
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, err
-	}
 	update := payload.HostedRuntimeUpdate
-	_, shared := s.runtimeAdopter()
-	if shared {
-		if update.StageID != publication.Revision {
-			return nil, corestore.ErrRevisionConflict
-		}
-		if err := hubserver.ValidateHostedRuntimeUpdate(update); err != nil {
-			return nil, err
-		}
-	}
 	if s.config.ConfigureRuntime == nil && !shared {
 		return nil, errors.New("runtime reload requires the configured tenant launcher")
 	}
@@ -302,6 +263,39 @@ func (s *Service) loadRuntime(ctx context.Context) (*entryRuntime, error) {
 		return state, nil
 	}
 	return s.runtime.Load(), nil
+}
+
+func (s *Service) readRuntimeObject(ctx context.Context, key, revision string, shared bool) (entryRuntimeObject, error) {
+	var payload entryRuntimeObject
+	if allocation := s.config.Allocation; allocation != nil {
+		payload.AllowedEmails = slices.Clone(allocation.AllowedEmails)
+		payload.AllowedDomains = slices.Clone(allocation.AllowedDomains)
+	}
+	raw, err := s.readEntryObject(ctx, key)
+	if err != nil {
+		return entryRuntimeObject{}, err
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return entryRuntimeObject{}, err
+	}
+	if shared {
+		if payload.StageID != revision {
+			return entryRuntimeObject{}, corestore.ErrRevisionConflict
+		}
+		if payload.Plans == nil {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return entryRuntimeObject{}, err
+			}
+			if _, ok := fields["allowed_emails"]; !ok {
+				payload.Plans = &hostedplans.HostedPlansConfig{}
+			}
+		}
+		if err := hubserver.ValidateHostedRuntimeUpdate(payload.HostedRuntimeUpdate); err != nil {
+			return entryRuntimeObject{}, err
+		}
+	}
+	return payload, nil
 }
 
 func (s *Service) currentRuntime(ctx context.Context) *entryRuntime {

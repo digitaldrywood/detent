@@ -1,4 +1,4 @@
-package cloudentry
+package attachmententry
 
 import (
 	"bytes"
@@ -20,17 +20,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
-type attachmentResponse struct {
+type Response struct {
 	header http.Header
-	body   bytes.Buffer
-	status int
+	Body   bytes.Buffer
+	Status int
 }
 
-func (r *attachmentResponse) Header() http.Header            { return r.header }
-func (r *attachmentResponse) WriteHeader(status int)         { r.status = status }
-func (r *attachmentResponse) Write(data []byte) (int, error) { return r.body.Write(data) }
+func (r *Response) Header() http.Header            { return r.header }
+func (r *Response) WriteHeader(status int)         { r.Status = status }
+func (r *Response) Write(data []byte) (int, error) { return r.Body.Write(data) }
 
-func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, response *http.Response) error {
+func (s *Service) HandleMCPResponse(c echo.Context, requestBody []byte, response *http.Response) error {
 	if c.Request().Method != http.MethodPost || !strings.HasSuffix(c.Request().URL.Path, "/mcp") || response.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -74,9 +74,9 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	if json.Unmarshal([]byte(result.Content[0].Text), &authorized) != nil {
 		return nil
 	}
-	buffer := &attachmentResponse{header: make(http.Header)}
+	buffer := &Response{header: make(http.Header)}
 	if call.Params.Name == operatortool.UploadAttachment && authorized.EntryUpload {
-		buffer, err = s.uploadAttachmentMCP(c.Request().Context(), c.Request(), c.Param("organization"), call.Params.Arguments, authorized.Mutation)
+		buffer, err = s.UploadMCP(c.Request().Context(), c.Request(), c.Param("organization"), call.Params.Arguments, authorized.Mutation)
 		if err != nil {
 			return err
 		}
@@ -115,19 +115,19 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 		if err != nil {
 			return err
 		}
-		if _, err := buffer.body.Write(payload); err != nil {
+		if _, err := buffer.Body.Write(payload); err != nil {
 			return err
 		}
-		buffer.status = http.StatusOK
+		buffer.Status = http.StatusOK
 	} else {
 		return nil
 	}
-	payload := buffer.body.Bytes()
+	payload := buffer.Body.Bytes()
 	if len(payload) > operatortool.MaxResultBytes {
 		payload = []byte(`{"code":"attachment_unavailable","message":"Attachment result exceeds the supported MCP size limit"}`)
-		buffer.status = http.StatusRequestEntityTooLarge
+		buffer.Status = http.StatusRequestEntityTooLarge
 	}
-	replacement := mcp.NewToolCallResult(c.Request().Header.Get("Mcp-Protocol-Version"), payload, buffer.status != http.StatusCreated && buffer.status != http.StatusOK)
+	replacement := mcp.NewToolCallResult(c.Request().Header.Get("Mcp-Protocol-Version"), payload, buffer.Status != http.StatusCreated && buffer.Status != http.StatusOK)
 	replacement.Meta = result.Meta
 	frame["result"], err = json.Marshal(replacement)
 	if err != nil {
@@ -143,7 +143,7 @@ func (s *Service) attachmentMCPResponse(c echo.Context, requestBody []byte, resp
 	return nil
 }
 
-func (s *Service) uploadAttachmentMCP(ctx context.Context, request *http.Request, organization string, arguments json.RawMessage, audit mutation.Metadata) (*attachmentResponse, error) {
+func (s *Service) UploadMCP(ctx context.Context, request *http.Request, organization string, arguments json.RawMessage, audit mutation.Metadata) (*Response, error) {
 	input, content, err := operatortool.DecodeAttachmentArguments(arguments)
 	if err != nil {
 		return nil, err
@@ -160,12 +160,12 @@ func (s *Service) uploadAttachmentMCP(ctx context.Context, request *http.Request
 	request.Header.Set("Content-Type", media)
 	request.Header.Set("X-Attachment-Name", input.Name)
 	request.Header.Set("Idempotency-Key", input.RequestID)
-	buffer := &attachmentResponse{header: make(http.Header)}
-	s.echo.ServeHTTP(buffer, request)
+	buffer := &Response{header: make(http.Header)}
+	s.Echo.ServeHTTP(buffer, request)
 	return buffer, nil
 }
 
-func (s *Service) readAttachmentMCP(ctx context.Context, request *http.Request, organization, name string, arguments json.RawMessage) (*attachmentResponse, error) {
+func (s *Service) ReadMCP(ctx context.Context, request *http.Request, organization, name string, arguments json.RawMessage) (*Response, error) {
 	input, err := operatortool.DecodeAttachmentOperation(name, arguments)
 	if err != nil {
 		return nil, err
@@ -180,49 +180,49 @@ func (s *Service) readAttachmentMCP(ctx context.Context, request *http.Request, 
 	} else {
 		request.URL.RawQuery = "offset=" + strconv.FormatInt(input.Offset, 10) + "&length=" + strconv.Itoa(input.Length)
 	}
-	buffer := &attachmentResponse{header: make(http.Header)}
-	s.echo.ServeHTTP(buffer, request)
+	buffer := &Response{header: make(http.Header)}
+	s.Echo.ServeHTTP(buffer, request)
 	return buffer, nil
 }
 
-func (s *Service) attachmentMCPContext(c echo.Context, buffer *attachmentResponse, input operatortool.AttachmentOperationArguments) echo.Context {
+func (s *Service) attachmentMCPContext(c echo.Context, buffer *Response, input operatortool.AttachmentOperationArguments) echo.Context {
 	request := c.Request().Clone(c.Request().Context())
 	request.Method = http.MethodGet
 	request.URL.Path = "/organizations/" + c.Param("organization") + "/api/v2/projects/" + input.ProjectID + "/attachments/" + input.AttachmentID
 	request.URL.RawPath, request.URL.RawQuery = "", ""
 	request.Body, request.ContentLength = nil, 0
-	read := s.echo.NewContext(request, buffer)
+	read := s.Echo.NewContext(request, buffer)
 	read.SetParamNames("organization", "project", "attachment")
 	read.SetParamValues(c.Param("organization"), input.ProjectID, input.AttachmentID)
 	return read
 }
 
 func (s *Service) readAttachmentContent(c echo.Context, input operatortool.AttachmentOperationArguments) error {
-	if s.attachments == nil {
-		return attachmentNotFound(c)
+	if s.Storage() == nil {
+		return NotFound(c)
 	}
 	organization, record, status, raw, err := s.attachmentMetadata(c)
 	if err != nil || status != http.StatusOK {
-		return attachmentCallError(c, status, raw, err, true)
+		return CallError(c, status, raw, err, true)
 	}
 	if input.Offset > record.Size {
-		return attachmentError(c, http.StatusBadRequest, "invalid_request", "Offset exceeds the recorded attachment size")
+		return Error(c, http.StatusBadRequest, "invalid_request", "Offset exceeds the recorded attachment size")
 	}
 	body, err := s.openAttachment(c.Request().Context(), organization, record)
 	if errors.Is(err, errAttachmentReadAudit) {
-		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
+		return Error(c, http.StatusServiceUnavailable, "audit_unavailable", "Attachment audit is unavailable")
 	}
 	if err != nil {
-		return attachmentNotFound(c)
+		return NotFound(c)
 	}
 	defer s.closeAttachmentBody(body, record.ID)
 	if _, err := io.CopyN(io.Discard, body, input.Offset); err != nil {
-		return attachmentError(c, http.StatusBadGateway, "attachment_unavailable", "Attachment content is incomplete")
+		return Error(c, http.StatusBadGateway, "attachment_unavailable", "Attachment content is incomplete")
 	}
 	length := min(int64(input.Length), record.Size-input.Offset)
 	content := make([]byte, int(length))
 	if _, err := io.ReadFull(body, content); err != nil {
-		return attachmentError(c, http.StatusBadGateway, "attachment_unavailable", "Attachment content is incomplete")
+		return Error(c, http.StatusBadGateway, "attachment_unavailable", "Attachment content is incomplete")
 	}
 	record.AuthorizedPrincipal = ""
 	c.Response().Header().Set("Cache-Control", "private, no-store")
@@ -230,16 +230,16 @@ func (s *Service) readAttachmentContent(c echo.Context, input operatortool.Attac
 }
 
 func (s *Service) finishAttachmentMCPDeletion(c echo.Context, input operatortool.AttachmentOperationArguments) bool {
-	unlock := s.attachmentLocks.lock(c.Param("organization"), false)
+	unlock := s.Lock(c.Param("organization"), false)
 	defer unlock()
-	if s.attachments == nil {
+	if s.Storage() == nil {
 		return false
 	}
-	organization, err := s.readyOrganization(c.Request().Context(), c.Param("organization"))
+	organization, err := s.Ready(c.Request().Context(), c.Param("organization"))
 	if err != nil {
 		return false
 	}
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, "/check", map[string]int64{"size": 0})
+	status, raw, err := s.Call(c, organization, http.MethodPost, "/check", map[string]int64{"size": 0})
 	if err != nil || status != http.StatusOK {
 		return false
 	}

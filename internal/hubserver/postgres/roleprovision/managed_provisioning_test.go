@@ -219,15 +219,21 @@ func provisionUpgrade(t *testing.T, fixture *pgtest.Template, tc provisioningCas
 			t.Fatalf("%s: %v", forbidden.revoke, err)
 		}
 	}
-	const delegableExecute = `public.board_search_candidates(text,text[],boolean,text,boolean)`
-	if _, err := db.ExecContext(t.Context(), `GRANT EXECUTE ON FUNCTION `+delegableExecute+` TO detent_runtime_v2 WITH GRANT OPTION`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(t.Context(), postgres.RolesSQL()); err == nil || !strings.Contains(err.Error(), "Detent security definer functions must have their provisioned owners and grants") {
-		t.Errorf("roles.sql with a delegable runtime grant: %v, want the function grant refusal", err)
-	}
-	if _, err := db.ExecContext(t.Context(), `REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION `+delegableExecute+` FROM detent_runtime_v2`); err != nil {
-		t.Fatal(err)
+	for _, delegableExecute := range []string{`public.board_search_candidates(text,text[],boolean,text,boolean)`, `public.hosted_write_authorized(bigint)`, `public.hosted_github_webhook_authorized(text,text,text,text,text,boolean)`} {
+		if _, err := db.ExecContext(t.Context(), `GRANT EXECUTE ON FUNCTION `+delegableExecute+` TO detent_runtime_v2 WITH GRANT OPTION`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(t.Context(), postgres.RolesSQL()); err == nil || !strings.Contains(err.Error(), "Detent security definer functions must have their provisioned owners and grants") {
+			t.Errorf("roles.sql with a delegable runtime grant: %v, want the function grant refusal", err)
+		}
+		if strings.Contains(delegableExecute, "hosted_") {
+			if _, err := postgres.NewRuntime(t.Context(), reader, writer); !errors.Is(err, postgres.ErrRuntimeRole) {
+				t.Errorf("runtime accepted delegable %s: %v", delegableExecute, err)
+			}
+		}
+		if _, err := db.ExecContext(t.Context(), `REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION `+delegableExecute+` FROM detent_runtime_v2`); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if diff := profileDifference(settled, provisioningProfile(t, db)); diff != "" {
 		t.Errorf("forbidden membership checks left state behind:\n%s", diff)

@@ -878,8 +878,8 @@ func (c *conversationTurnCoordinator) attachmentContent(ctx context.Context, id 
 	return c.recordDeps().AttachmentContent(ctx, id)
 }
 
-func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string) error {
-	return c.recordDeps().DeliverCommands(ctx, id)
+func (c *conversationTurnCoordinator) DeliverCoordinatorCommands(ctx context.Context, id string, limit int) (int, error) {
+	return c.recordDeps().DeliverCommands(ctx, id, limit)
 }
 
 var appendCoordinatorEvent = coordinator.AppendEvent
@@ -964,7 +964,7 @@ var coordinatorHandles = coordinator.Handles
 var errCoordinatorLinked = coordinator.ErrLinked
 
 func (c *conversationTurnCoordinator) callBackend(ctx context.Context, backend runner.AgentBackend, request runner.AgentTurnRequest, state *coordinatorTurnState) (runner.AgentTurnResult, error) {
-	return coordinator.CallBackend(ctx, backend, request, c.stop, state.output.HandleUpdate, func() ([]runner.AgentTool, runner.AgentToolHandler) {
+	return coordinator.CallBackend(ctx, backend, request, c.stop, c.server != nil && c.server.runtimeHost != nil, func(ctx context.Context, update runner.AgentUpdate) { state.output.HandleUpdate(ctx, update) }, func() ([]runner.AgentTool, runner.AgentToolHandler) {
 		toolset := newCoordinatorToolset(c, state)
 		return toolset.tools(), toolset.handle
 	})

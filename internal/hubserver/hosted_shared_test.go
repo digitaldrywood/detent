@@ -1,10 +1,12 @@
 package hubserver
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,10 +20,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenant"
+	"github.com/digitaldrywood/detent/internal/cloudentry/tenantcall"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres/poolbudget"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -29,6 +34,82 @@ import (
 type hostedSharedFixture struct {
 	hostedSecurityFixture
 	key ed25519.PrivateKey
+}
+
+type workloadSlugRepository struct {
+	tenantstore.Repository
+	tenantstore.Reader
+	budget *poolbudget.Budget
+}
+
+func (r workloadSlugRepository) ReadTenant(ctx context.Context, org tracker.OrganizationID, lane corestore.Workload, read func(tenantstore.Reader) error) error {
+	release, err := r.budget.Acquire(ctx, org, lane)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return read(r)
+}
+
+func (workloadSlugRepository) AccessOrganization(context.Context) (accessstore.Organization, error) {
+	return accessstore.Organization{Slug: "example"}, nil
+}
+
+type workloadTransport struct{ handler http.Handler }
+
+func (t workloadTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	t.handler.ServeHTTP(rec, req.Clone(context.Background()))
+	return rec.Result(), nil
+}
+
+func TestSharedServiceCallPreservesAdmissionAcrossHTTP(t *testing.T) {
+	key := hostedSharedKey(7)
+	cfg := hostedSharedTestConfig(nil, key, 1)
+	cfg.Logger = slog.New(slog.DiscardHandler)
+	org := tenant.Organization{ID: cfg.Hosted.OrganizationID, Slug: "example", Generation: 1}
+	if err := cfg.Hosted.SharedEntry.Validate(org.ID); err != nil {
+		t.Fatal(err)
+	}
+	budget := poolbudget.New(2, 1)
+	cfg.AccessRepository = workloadSlugRepository{budget: budget}
+	cfg.TenantRepository = cfg.AccessRepository
+	service := &Service{config: cfg}
+	e := echo.New()
+	e.Pre(service.hostedSharedEntry)
+	const path = "/internal/v1/attachments/expired"
+	e.POST(path, func(c echo.Context) error {
+		release, err := budget.Acquire(c.Request().Context(), tracker.OrganizationID(org.ID), corestore.Serving)
+		if err != nil {
+			return service.nativeAPIError(c, err)
+		}
+		defer release()
+		return c.NoContent(http.StatusNoContent)
+	})
+	client := tenantcall.New(tenantcall.Deps{Issuer: "entry", SigningKey: key, Now: time.Now,
+		Transport:  func(tenant.Organization) (http.RoundTripper, error) { return workloadTransport{e}, nil },
+		Background: func(ctx context.Context) bool { return corestore.ContextWorkload(ctx) == corestore.Background },
+	})
+	release, err := budget.Acquire(t.Context(), tracker.OrganizationID(org.ID), corestore.Serving)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		want int
+	}{{"background", corestore.WithBackgroundWork(t.Context()), http.StatusNoContent}, {"foreground", t.Context(), http.StatusServiceUnavailable}} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body, err := client.ServiceCall(tc.ctx, org, path, struct{}{}, nil)
+			if err != nil || status != tc.want {
+				t.Fatalf("signed service call returned HTTP %d, want %d, error %v, response %s", status, tc.want, err, body)
+			}
+			if status == http.StatusServiceUnavailable && !strings.Contains(string(body), "Organization serving capacity is occupied") {
+				t.Fatalf("unexpected refusal: %s", body)
+			}
+		})
+	}
 }
 
 func hostedSharedKey(seed byte) ed25519.PrivateKey {

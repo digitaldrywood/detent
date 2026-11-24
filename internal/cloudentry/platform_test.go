@@ -217,7 +217,7 @@ func TestPlatformOrganizationsAndHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := f.service.config.Now()
-	f.service.config.Allocation = &AllocationConfig{TenantRoot: root, MaxTenants: 20, MaxConcurrent: 2,
+	f.service.config.Allocation = &AllocationConfig{TenantRoot: root, MaxConcurrent: 2,
 		MinFreeDiskBytes: 4096, MinAvailableMemoryBytes: 8192,
 		Launcher: &platformHealthLauncher{Launcher: &silentLauncher{}, started: now.Add(-time.Hour), restarts: 1},
 	}
@@ -291,7 +291,7 @@ func TestPlatformAllowlistAndAdmission(t *testing.T) {
 		Admission platformAdmission `json:"admission"`
 	}
 	decodeJSON(t, body, &health)
-	if health.Admission.MaxTenants != 3 || health.Admission.MaxConcurrent != 2 || !health.Admission.DiskMeasured || health.Admission.FreeDiskBytes == 0 {
+	if health.Admission.MaxTenants != 0 || health.Admission.MaxConcurrent != 2 || !health.Admission.DiskMeasured || health.Admission.FreeDiskBytes == 0 {
 		t.Fatalf("admission = %s", body)
 	}
 }

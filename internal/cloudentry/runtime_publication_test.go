@@ -48,7 +48,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 	}
 	plans := *f.fixtures["org_alpha"].Config.Hosted.Plans
 	f.service.config.Allocation = &AllocationConfig{
-		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
+		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxConcurrent: 1, RetryLimit: 5,
 		Launcher: &sharedRuntimeLauncher{silentLauncher: &silentLauncher{}, adopt: func(context.Context, Organization, string, hostedplans.HostedRuntimeUpdate) error {
 			t.Error("publication adopted a tenant synchronously")
 			return nil
@@ -71,7 +71,7 @@ func TestSharedRuntimePublicationDoesNotVisitTenants(t *testing.T) {
 		t.Fatal("desired runtime was not durable")
 	}
 	repo := tenantPostgresRepository(t, f.fixtures["org_alpha"])
-	snapshots, err := hubserver.NewHostedRuntimeSnapshots(repo, tenantDetailFixture{ConversationArchive: &conversationArchiveFixture{}})
+	snapshots, err := hubserver.NewHostedRuntimeSnapshots(repo, tenantDetailFixture{ArchiveContentStore: &conversationArchiveFixture{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestRuntimePublicationRefreshesAllowanceConsumers(t *testing.T) {
 				}
 			}
 			entitlementFixture(t, f, token)
-			f.service.config.Allocation = &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5, Launcher: &ExecLauncher{}, EntitlementAdminToken: []byte(token)}
+			f.service.config.Allocation = &AllocationConfig{TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxConcurrent: 1, RetryLimit: 5, Launcher: &processLauncher{}, EntitlementAdminToken: []byte(token)}
 			f.service.config.ConfigureRuntime = func(update hostedplans.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
 				return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
 			}

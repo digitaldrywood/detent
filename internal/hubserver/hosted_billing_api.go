@@ -198,6 +198,9 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	}
 	binding, err := hubapi.FeatureResult(s.database.plansService().BillingBinding(ctx, cfg))
 	if !errors.Is(err, hostedplans.ErrBillingUnbound) {
+		if err == nil && s.config.RecordBillingSchedule != nil {
+			err = s.config.RecordBillingSchedule(ctx, cfg.ReconcileSeconds)
+		}
 		return binding, err
 	}
 	provider, ok := cfg.Provider.(billing.CustomerProvider)
@@ -206,7 +209,11 @@ func (s *Service) ensureHostedCustomer(ctx context.Context, actor string) (billi
 	}
 	organization := s.config.Hosted.OrganizationID
 
-	return s.ensureHostedCustomerRecord(ctx, actor, cfg, provider, organization)
+	binding, err = s.ensureHostedCustomerRecord(ctx, actor, cfg, provider, organization)
+	if err == nil && s.config.RecordBillingSchedule != nil {
+		err = s.config.RecordBillingSchedule(ctx, cfg.ReconcileSeconds)
+	}
+	return binding, err
 }
 
 func (s *Service) ensureHostedCustomerRecord(ctx context.Context, actor string, cfg *hostedplans.HostedBillingConfig, provider billing.CustomerProvider, organization string) (billing.Binding, error) {

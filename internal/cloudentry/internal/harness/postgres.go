@@ -181,12 +181,14 @@ func ConfigurePostgresTenant(t *testing.T, cfg *hubserver.Config, databases ...*
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 4, ServingConnections: 3, BackgroundConnections: 1}}
-	cfg.RunDetails = TenantDetails{&ConversationArchive{}}
+	if cfg.RunDetails == nil {
+		cfg.RunDetails = TenantDetails{&ConversationArchive{}}
+	}
 	return admin
 }
 
 type TenantDetails struct {
-	*ConversationArchive
+	attachment.ArchiveContentStore
 }
 
 func (f TenantDetails) StoreDetail(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {

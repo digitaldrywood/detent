@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/workspacehub"
 
 	"github.com/coder/websocket"
@@ -211,13 +213,18 @@ func (w *HTTP) servePerson(c echo.Context, scope hubscope.NativeScope, record wo
 	}
 	w.CloseIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
+	var helpers sync.WaitGroup
+	defer helpers.Wait()
 	defer cancel()
-	go connection.WriteLoop(socketCtx)
-	go w.watchPersonAuthority(socketCtx, c, scope, record, connection)
-	go func() {
-		<-connection.Done
-		cancel()
-	}()
+	helpers.Go(func() { connection.WriteLoop(socketCtx) })
+	helpers.Go(func() { w.watchPersonAuthority(socketCtx, c, scope, record, connection) })
+	helpers.Go(func() {
+		select {
+		case <-connection.Done:
+			cancel()
+		case <-socketCtx.Done():
+		}
+	})
 	w.readPerson(socketCtx, connection, record)
 	connection.Close("client_closed")
 	w.Relay.DetachPerson(ctx, connection, w.now())
@@ -1004,12 +1011,17 @@ func (w *HTTP) OpenWorkspaceWorkerRelay(c echo.Context) error {
 	}
 	w.CloseIfEndedSinceUpgrade(ctx, connection)
 	socketCtx, cancel := context.WithCancel(ctx)
+	var helpers sync.WaitGroup
+	defer helpers.Wait()
 	defer cancel()
-	go connection.WriteLoop(socketCtx)
-	go func() {
-		<-connection.Done
-		cancel()
-	}()
+	helpers.Go(func() { connection.WriteLoop(socketCtx) })
+	helpers.Go(func() {
+		select {
+		case <-connection.Done:
+			cancel()
+		case <-socketCtx.Done():
+		}
+	})
 	w.readRunner(socketCtx, connection)
 	connection.Close("runner_closed")
 	// detachRunner fails whatever runs this connection was still serving, so a
@@ -1532,6 +1544,11 @@ func (w *HTTP) PrepareRelayOutput(ctx context.Context, organization tracker.Orga
 		content.Mu.Lock()
 		content.Completion = true
 		content.Mu.Unlock()
+		if content.Call != nil {
+			if err := hubmaintenance.ReserveArchiveWrite(ctx, string(organization), int64(len(data))); err != nil {
+				return attachment.ArchiveReference{}, err
+			}
+		}
 	}
 	return w.PrepareMeteredContent(outputCtx, string(organization), data, false)
 }

@@ -51,6 +51,8 @@ var ErrNetworkFilesystem = errors.New("hub database requires a local filesystem"
 type Config struct {
 	TenantRepository            tenantstore.Repository
 	ChangeVersionAuthority      hubrecords.ChangeVersionAuthority
+	ClaimBillingReconciliation  func(context.Context) (bool, error)
+	RecordBillingSchedule       func(context.Context, int64) error
 	BillingRepository           tenantstore.Repository
 	AccessRepository            tenantstore.Repository
 	ProjectParticipants         tenantstore.ProjectParticipants
@@ -193,7 +195,11 @@ func (c Config) Normalized() Config {
 }
 
 func (cfg Config) ValidateDatabaseBackend() error {
-	if cfg.DatabaseBackend != DatabasePostgres || cfg.Postgres == nil || cfg.hostedBindingMigration {
+	return cfg.ValidateServingBackend(cfg.Postgres != nil)
+}
+
+func (cfg Config) ValidateServingBackend(hasRepository bool) error {
+	if cfg.DatabaseBackend != DatabasePostgres || !hasRepository || cfg.hostedBindingMigration {
 		return ErrDatabaseBackend
 	}
 	return nil

@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/hubmaintenance"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
@@ -27,15 +28,67 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type coldSecretReader struct {
+	tenantstore.Reader
+	tenantstore.Repository
+	secret accessstore.Secret
+	legacy bool
+}
+
+func (r *coldSecretReader) ReadTenant(_ context.Context, _ tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
+	return read(r)
+}
+func (r *coldSecretReader) AccessSecrets(_ context.Context, project tracker.ProjectID, kind string, limit int) ([]accessstore.Secret, error) {
+	if r.legacy && project == "" && kind == "" && limit == 1 {
+		return []accessstore.Secret{r.secret}, nil
+	}
+	return nil, errors.New("cold view enumerated tenant secrets")
+}
+func (r *coldSecretReader) AccessSecret(_ context.Context, project tracker.ProjectID, kind string) (accessstore.Secret, error) {
+	if r.legacy || project != "" || kind != accessstore.NativeCursorKeyKind {
+		return accessstore.Secret{}, corestore.ErrNotFound
+	}
+	return r.secret, nil
+}
+
+func TestColdHostedViewValidatesOrganizationKey(t *testing.T) {
+	keys := secretTestKeys(t, "1", "1")
+	org := tracker.OrganizationID("org_example")
+	r := &coldSecretReader{}
+	s := &Service{runtimeHost: new(HostedRuntime), runtimeTenant: org, config: Config{Hosted: &hostedplans.HostedConfig{OrganizationID: string(org)}, SecretKeys: keys, AccessRepository: r}}
+	for _, kind := range []string{accessstore.NativeCursorKeyKind, "legacy-key"} {
+		r.legacy = kind != accessstore.NativeCursorKeyKind
+		r.secret = accessstore.Secret{OrganizationID: org, Kind: kind}
+		envelope, err := keys.Seal([]byte("example"), accessstore.SecretAAD(org, "", kind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.secret.Envelope = envelope
+		if err := s.checkAccessSecretKeys(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		r.secret.Envelope.Version++
+		if err := s.checkAccessSecretKeys(t.Context()); err == nil {
+			t.Fatalf("unreadable %s accepted", kind)
+		}
+	}
+}
+
 func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 	t.Parallel()
-	repository := projectRecordPostgres(t)
+	repository, admin := projectRecordPostgresWithAdmin(t, 3)
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	prior := secretTestKeys(t, "1", "1")
 	service := &Service{config: Config{AccessRepository: repository, SecretKeys: secretTestKeys(t, "2", "1", "2"), Clock: func() time.Time { return now }}}
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if _, err := admin.ExecContext(t.Context(), `INSERT INTO platform.organizations(id,provider_id,name,state,endpoint,generation,created_at,updated_at) VALUES ($1,'provider_'||$1,$1,'ready',$1,1,$2,$2)`, org, now); err != nil {
+			t.Fatal(err)
+		}
 		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: org, Name: "Example", CreatedAt: now}); err != nil {
+				return err
+			}
+			if err := w.CreateAccessTenant(t.Context(), accessstore.Tenant{OrganizationID: org, ProviderID: "provider_" + string(org), Deployment: "shared", PublicURL: "https://example.com", AllocationGeneration: 1}); err != nil {
 				return err
 			}
 			for _, kind := range []string{"first", "second"} {
@@ -76,6 +129,36 @@ func TestSecretRewrapStepIsBoundedAndTenantScoped(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
+		if err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			envelope, err := prior.Seal([]byte("example"), accessstore.SecretAAD(org, "", "different"))
+			if err != nil {
+				return err
+			}
+			return w.StoreAccessSecret(t.Context(), accessstore.Secret{OrganizationID: org, Kind: "a_bad", Envelope: envelope, UpdatedAt: now}, accessstore.SecretAudit{OrganizationID: org, Kind: "a_bad", Actor: "example", Event: "set", KeyVersion: 1, RecordedAt: now})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cfg := service.config
+		cfg.Hosted = &hostedplans.HostedConfig{OrganizationID: string(org), PublicURL: "https://example.com", WorkOSOrganizationID: "provider_" + string(org), SharedEntry: &hostedplans.HostedSharedEntry{Generation: 1}}
+		host := &HostedRuntime{database: &database{postgres: repository}}
+		tenant := hubmaintenance.Tenant{Organization: string(org), Generation: 1}
+		budget := hubmaintenance.Budget{Items: 1, Bytes: 1024}
+		for i, kind := range []string{"a_bad", "first", "second"} {
+			outcome, err := host.MaintainSecret(budget.Context(t.Context(), tenant), org, 1, cfg)
+			if outcome.Items != 1 {
+				t.Fatalf("org %s step %d used %d items: %v", org, i, outcome.Items, err)
+			}
+			if (err != nil) != (i == 0) {
+				t.Fatalf("org %s item %d error = %v", org, i, err)
+			}
+			cursor, err := repository.MaintenanceCursor(t.Context(), org, 1, "secret-rewrap")
+			if err != nil || cursor.Kind != kind {
+				t.Fatalf("org %s cursor = %v, want %q, err %v", org, cursor, kind, err)
+			}
+		}
+	}
+
 }
 
 func secretRewrapFixture(t *testing.T) (nativeFixture, []accessstore.Secret, []*Service) {
@@ -690,4 +773,22 @@ func TestSecretRewrapPopulation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runSharedMaintenanceTestStep(t *testing.T, s *Service, name string) error {
+	t.Helper()
+	tenant := s.MaintenanceTenant()
+	for _, feature := range s.SharedMaintenanceFeatures() {
+		if feature.Name != name {
+			continue
+		}
+		budget := hubmaintenance.Budget{Items: hubmaintenance.MinItems, Bytes: feature.Bytes}
+		outcome, err := feature.Step(budget.Context(t.Context(), tenant), tenant, budget)
+		if outcome.Items < 0 || outcome.Items > budget.Items {
+			t.Fatalf("feature %s charged %d of %d items", name, outcome.Items, budget.Items)
+		}
+		return err
+	}
+	t.Fatalf("missing shared maintenance feature %s", name)
+	return nil
 }

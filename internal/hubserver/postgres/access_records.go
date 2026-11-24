@@ -60,6 +60,9 @@ func (s *session) CreateHubIdentity(ctx context.Context, row accessstore.HubIden
 }
 
 func (r *Repository) DesignatedLocalOrganization(ctx context.Context) (tracker.OrganizationID, error) {
+	if r.bound {
+		return "", corestore.ErrTenantMismatch
+	}
 	return scanDesignatedLocalOrganization(ctx, r.pool.QueryRow(ctx, designatedLocalOrganizationQuery))
 }
 
@@ -82,6 +85,9 @@ func scanDesignatedLocalOrganization(ctx context.Context, row pgx.Row) (tracker.
 }
 
 func (r *Repository) BootstrapLocalOrganization(ctx context.Context, organization accessstore.Organization, credential accessstore.Credential, identity accessstore.HubIdentity, secret accessstore.Secret, audit accessstore.SecretAudit) (tracker.OrganizationID, error) {
+	if r.bound {
+		return "", corestore.ErrTenantMismatch
+	}
 	if !organization.Local || credential.OrganizationID != organization.OrganizationID || identity.OrganizationID != organization.OrganizationID || secret.OrganizationID != organization.OrganizationID || secret.Kind != accessstore.NativeCursorKeyKind {
 		return "", corestore.ErrTenantMismatch
 	}

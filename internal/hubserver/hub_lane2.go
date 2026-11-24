@@ -861,6 +861,9 @@ func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubr
 func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
 	return s.runnerAttemptDeps().PopulateCheckpointSource(ctx, organization, after)
 }
+func (s *Service) populateCheckpointSourcePage(ctx context.Context, organization tracker.OrganizationID, after string, limit int) (string, error) {
+	return s.runnerAttemptDeps().PopulateCheckpointSourcePage(ctx, organization, after, limit)
+}
 
 type attemptSummaryContextKey = executionapi.AttemptSummaryContextKey
 

@@ -252,7 +252,7 @@ func TestHostedGitHubRepositoriesPostgres(t *testing.T) {
 					id   string
 					want time.Time
 				}{{id: "example-first", want: firstReceipt}, {id: "example-second", want: firstReceipt.Add(2 * time.Second)}} {
-					row, err := owner.GitHubWebhook(t.Context(), delivery.id)
+					row, err := owner.GitHubWebhook(t.Context(), delivery.id, "")
 					if err != nil {
 						return err
 					}

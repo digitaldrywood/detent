@@ -54,6 +54,8 @@ type HTTPHandler struct {
 	mu       sync.Mutex
 	sessions map[string]*httpProtocolSession
 	stopped  bool
+	admitted int
+	drained  chan struct{}
 }
 
 func NewHTTPHandler(executor Executor, version string, cfg HTTPConfig) *HTTPHandler {
@@ -87,6 +89,7 @@ func NewHTTPHandler(executor Executor, version string, cfg HTTPConfig) *HTTPHand
 		now:                now,
 		generateSessionID:  generateSessionID,
 		sessions:           make(map[string]*httpProtocolSession),
+		drained:            make(chan struct{}),
 	}
 }
 
@@ -195,7 +198,7 @@ func (h *HTTPHandler) initializeSession(writer http.ResponseWriter, req *http.Re
 		writeHTTPResponse(writer, http.StatusOK, frame)
 		return
 	}
-	if !h.addSession(session) {
+	if !h.addSession(req.Context(), session) {
 		session.stop()
 		session.wait()
 		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP session capacity is unavailable")
@@ -235,13 +238,8 @@ func (h *HTTPHandler) serveDelete(writer http.ResponseWriter, req *http.Request)
 		return
 	}
 	session.stop()
-	done := make(chan struct{})
-	go func() {
-		session.wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-session.finished:
 		writer.WriteHeader(http.StatusNoContent)
 	case <-req.Context().Done():
 		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP session shutdown did not complete")
@@ -253,37 +251,43 @@ func (h *HTTPHandler) Shutdown(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	h.mu.Lock()
-	if h.stopped {
-		h.mu.Unlock()
-		return nil
-	}
-	h.stopped = true
-	sessions := make([]*httpProtocolSession, 0, len(h.sessions))
-	for _, session := range h.sessions {
-		sessions = append(sessions, session)
-	}
-	clear(h.sessions)
-	h.mu.Unlock()
-
-	for _, session := range sessions {
-		session.stop()
-	}
-	done := make(chan struct{})
-	go func() {
-		for _, session := range sessions {
-			session.wait()
+	var sessions []*httpProtocolSession
+	if !h.stopped {
+		h.stopped = true
+		for _, session := range h.sessions {
+			sessions = append(sessions, session)
 		}
-		close(done)
-	}()
+		clear(h.sessions)
+		if h.admitted == 0 {
+			close(h.drained)
+		}
+	}
+	h.mu.Unlock()
+	stopHTTPSessions(sessions)
 	select {
-	case <-done:
+	case <-h.drained:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (h *HTTPHandler) addSession(session *httpProtocolSession) bool {
+func (h *HTTPHandler) HasLiveSessions() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.admitted > len(h.sessions) {
+		return true
+	}
+	now := h.now()
+	for _, session := range h.sessions {
+		if now.Sub(session.lastSeen()) < h.sessionIdleTimeout {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *HTTPHandler) addSession(ctx context.Context, session *httpProtocolSession) bool {
 	now := h.now()
 	var expired []*httpProtocolSession
 	h.mu.Lock()
@@ -297,15 +301,36 @@ func (h *HTTPHandler) addSession(session *httpProtocolSession) bool {
 			expired = append(expired, candidate)
 		}
 	}
-	if len(h.sessions) >= h.maxSessions || h.sessions[session.id] != nil {
+	if len(expired) > 0 {
+		atCapacity := h.admitted >= h.maxSessions
 		h.mu.Unlock()
 		stopHTTPSessions(expired)
+		if atCapacity {
+			select {
+			case <-expired[0].finished:
+			case <-ctx.Done():
+				return false
+			}
+		}
+		h.mu.Lock()
+	}
+	defer h.mu.Unlock()
+	if h.stopped || h.admitted >= h.maxSessions || h.sessions[session.id] != nil {
 		return false
 	}
+	h.admitted++
+	session.release = h.sessionFinished
 	h.sessions[session.id] = session
-	h.mu.Unlock()
-	stopHTTPSessions(expired)
 	return true
+}
+
+func (h *HTTPHandler) sessionFinished() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.admitted--
+	if h.admitted == 0 && h.stopped {
+		close(h.drained)
+	}
 }
 
 func (h *HTTPHandler) session(id string, principal operatortool.Identity) *httpProtocolSession {
@@ -324,7 +349,6 @@ func (h *HTTPHandler) session(id string, principal operatortool.Identity) *httpP
 		delete(h.sessions, id)
 		h.mu.Unlock()
 		session.stop()
-		go session.wait()
 		return nil
 	}
 	session.touch(now)
@@ -361,7 +385,6 @@ func (h *HTTPHandler) requestPrincipal(req *http.Request) operatortool.Identity 
 func stopHTTPSessions(sessions []*httpProtocolSession) {
 	for _, session := range sessions {
 		session.stop()
-		go session.wait()
 	}
 }
 
@@ -381,6 +404,8 @@ type httpProtocolSession struct {
 	mu       sync.Mutex
 	closing  bool
 	inflight sync.WaitGroup
+	finished chan struct{}
+	release  func()
 	seenAt   atomic.Int64
 	now      func() time.Time
 	idle     time.Duration
@@ -402,7 +427,7 @@ func newHTTPProtocolSession(id string, principal operatortool.Identity, executor
 	if protocol.version == "" {
 		protocol.version = "dev"
 	}
-	result := &httpProtocolSession{id: id, principal: principal, lifetime: ctx, done: ctx.Done(), cancel: cancel, protocol: protocol, router: router}
+	result := &httpProtocolSession{id: id, principal: principal, lifetime: ctx, done: ctx.Done(), cancel: cancel, protocol: protocol, router: router, finished: make(chan struct{})}
 	result.touch(now)
 	return result
 }
@@ -507,12 +532,19 @@ func (s *httpProtocolSession) stop() {
 	s.cancel()
 	s.protocol.cancelActive()
 	s.mu.Unlock()
+	go func() {
+		s.inflight.Wait()
+		s.protocol.calls.Wait()
+		s.router.stop()
+		if s.release != nil {
+			s.release()
+		}
+		close(s.finished)
+	}()
 }
 
 func (s *httpProtocolSession) wait() {
-	s.inflight.Wait()
-	s.protocol.calls.Wait()
-	s.router.stop()
+	<-s.finished
 }
 
 func (s *httpProtocolSession) protocolVersion() string {
@@ -758,7 +790,7 @@ func (h *HTTPHandler) serveModern(writer http.ResponseWriter, req *http.Request,
 	requestSession := newHTTPProtocolSession(id, principal, h.executor, h.version, h.now(), h.logger)
 	requestSession.modern = true
 	requestSession.connectionID = applicationID
-	if !h.addSession(requestSession) {
+	if !h.addSession(req.Context(), requestSession) {
 		requestSession.stop()
 		requestSession.wait()
 		writeHTTPTransportError(writer, http.StatusServiceUnavailable, "MCP request capacity is unavailable")

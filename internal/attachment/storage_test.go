@@ -188,6 +188,9 @@ func TestStorageWalkIsolation(t *testing.T) {
 		wantError                   bool
 	}{
 		{name: "scoped", prefix: "orgs/org_alpha/", key: "orgs/org_alpha/attachments/att_1", modified: "2026-01-01T00:00:00Z"},
+		{name: "platform webhooks", prefix: GitHubWebhookPrefix, key: GitHubWebhookPrefix + "example", modified: "2026-01-01T00:00:00Z"},
+		{name: "platform root refused", prefix: "platform/", wantError: true},
+		{name: "tenant returned for platform prefix", prefix: GitHubWebhookPrefix, key: "orgs/org_alpha/example", modified: "2026-01-01T00:00:00Z", wantError: true},
 		{name: "invalid prefix", prefix: "org_alpha", wantError: true},
 		{name: "foreign object refused", prefix: "orgs/org_alpha/", key: "orgs/org_beta/attachments/att_1", modified: "2026-01-01T00:00:00Z", wantError: true},
 		{name: "missing timestamp refused", prefix: "orgs/org_alpha/", key: "orgs/org_alpha/attachments/att_1", wantError: true},

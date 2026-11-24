@@ -1134,7 +1134,7 @@ func TestReview1973NativeRunRefusesUnownedRoute(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{Workspace: backend, AgentBackend: stubConversationBackend{}})
+			run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{Workspace: backend, AgentBackend: localWorkerBackend{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1168,4 +1168,10 @@ type review1973UnownedExecution struct {
 func (e *review1973UnownedExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	e.guarded = true
 	return ctx, func() {}, runnerpkg.ErrExecutionAuthorityUnavailable
+}
+
+type localWorkerBackend struct{}
+
+func (localWorkerBackend) RunTurn(context.Context, runnerpkg.AgentTurnRequest, runnerpkg.AgentUpdateHandler) (runnerpkg.AgentTurnResult, error) {
+	return runnerpkg.AgentTurnResult{}, nil
 }

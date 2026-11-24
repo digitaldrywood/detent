@@ -832,7 +832,7 @@ func (s *Server) commandPostConversationPG(ctx context.Context, scope hubauth.In
 			return nil, &hubapi.Error{Code: "idempotency_conflict", Message: "Idempotency key has different content", Status: 409, Public: true}
 		}
 		if command.Kind == conversation.CommandCancel && prior.Receipt.Status == conversation.DeliverySaved {
-			if err := service.wakeCoordinator(ctx, id); err != nil {
+			if _, err := service.wakeCoordinator(ctx, id, ConversationLifecycleBatchSize); err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
@@ -1347,7 +1347,7 @@ func (s *Server) commandPostConversationPG(ctx context.Context, scope hubauth.In
 	service.logReceipt(id, stored.Execution.Owner.AttemptID, result)
 	if command.Kind == conversation.CommandCancel {
 		service.Broker.Notify(stored.ID)
-		if err := service.wakeCoordinator(ctx, id); err != nil {
+		if _, err := service.wakeCoordinator(ctx, id, ConversationLifecycleBatchSize); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}

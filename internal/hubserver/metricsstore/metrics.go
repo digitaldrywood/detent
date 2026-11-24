@@ -1,9 +1,11 @@
 package metricsstore
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -93,4 +95,27 @@ type Repository interface {
 	RetainRequestMetrics(context.Context, tracker.OrganizationID, time.Time) error
 	RequestMetricTotals(context.Context, tracker.OrganizationID, time.Time, time.Time) ([]Metric, []Metric, error)
 	RequestMetricHistory(context.Context, tracker.OrganizationID, time.Time, time.Time, time.Duration) ([]Metric, error)
+}
+
+func PrepareMerge(records []Metric) ([]Metric, error) {
+	if len(records) > MergeLimit {
+		return nil, ErrInvalidMetric
+	}
+	pending := slices.Clone(records)
+	for i := range pending {
+		m := &pending[i]
+		if !m.Valid() || m.At.IsZero() || len(m.Route) == 0 || len(m.Route) > 1024 || len(m.CallerID) > 512 || m.StatusClass < 0 || m.StatusClass > 9 {
+			return nil, ErrInvalidMetric
+		}
+		switch m.CallerKind {
+		case "runner", "browser", "mcp", "ci", "anonymous", "other":
+		default:
+			return nil, ErrInvalidMetric
+		}
+		m.At = m.At.UTC().Truncate(time.Minute)
+	}
+	slices.SortFunc(pending, func(a, b Metric) int {
+		return cmp.Or(a.At.Compare(b.At), cmp.Compare(a.Route, b.Route), cmp.Compare(a.CallerKind, b.CallerKind), cmp.Compare(a.CallerID, b.CallerID), cmp.Compare(a.StatusClass, b.StatusClass))
+	})
+	return pending, nil
 }

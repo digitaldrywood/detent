@@ -511,7 +511,9 @@ BEGIN
             ('public.search_index_candidates(tsquery,text,text[],boolean,text,text,text,text,text,boolean,text,timestamptz,text,bigint,text[],boolean,text[],text[],double precision[],text[],bigint[],boolean[])'::regprocedure, 'detent_platform_v2'::regrole),
             ('public.board_search_candidates(text,text[],boolean,text,boolean)'::regprocedure, 'detent_search_reader_v2'::regrole),
             ('public.operator_organization_metadata_page(text,text,integer,integer)'::regprocedure, 'detent_local_bootstrap_reader_v2'::regrole),
-            ('public.lookup_designated_local_organization()'::regprocedure, 'detent_local_bootstrap_reader_v2'::regrole)
+            ('public.lookup_designated_local_organization()'::regprocedure, 'detent_local_bootstrap_reader_v2'::regrole),
+            (to_regprocedure('public.hosted_write_authorized(bigint)'), 'detent_migration_v2'::regrole),
+            (to_regprocedure('public.hosted_github_webhook_authorized(text,text,text,text,text,boolean)'), 'detent_migration_v2'::regrole)
         ) f(function_oid, owner_oid)
         JOIN pg_proc p ON p.oid = f.function_oid
         WHERE p.proowner <> f.owner_oid OR p.proacl IS NULL

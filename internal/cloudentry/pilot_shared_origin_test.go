@@ -219,7 +219,7 @@ func (l *pilotTenantLauncher) WaitReady(ctx context.Context, id string) error {
 		if err := spec.Check(ctx); err == nil {
 			return nil
 		}
-		timer := time.NewTimer(tenantProbeInterval)
+		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -513,7 +513,7 @@ func newSharedOriginPilotWith(t *testing.T, maxTenants, retryLimit int, client f
 
 func (p *sharedOriginPilot) open(t *testing.T, maxTenants, retryLimit int) {
 	t.Helper()
-	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
+	allocation := &AllocationConfig{TenantRoot: p.roots[0], SocketRoot: p.roots[1], MaxConcurrent: 2, RetryLimit: retryLimit, Launcher: p.launcher, EntitlementAdminToken: []byte(pilotOperatorToken)}
 	config := Config{Platform: PlatformConfig{BootstrapAdminEmail: "bootstrap@example.test"}, PublicURL: p.base, ListenAddress: "127.0.0.1:0", Issuer: "entry", SigningKey: p.key, Provider: p.provider,
 		StaffEmails: []string{"staff@example.test", "ops@example.test"}, EntitlementAdministrators: []string{"staff@example.test"}, StateDir: p.state, Logger: slog.New(slog.DiscardHandler), ClientFS: p.client, Allocation: allocation}
 	if !p.launcher.useUnix || len(filepath.Join(p.roots[1], "org_"+strings.Repeat("f", 20)+".sock")) >= len(syscall.RawSockaddrUnix{}.Path) {
@@ -923,21 +923,6 @@ func TestSharedOriginPilotAcceptance(t *testing.T) {
 				t.Fatalf("foreign identity: %d %s", response.status, response.body)
 			}
 		}
-	})
-
-	pilotStage(t, "capacity refusal keeps ready organizations", func() {
-		gus := p.browser(t)
-		gus.login("/auth/oidc/start", "user_gus:")
-		created := gus.createOrganization("Gamma")
-		pilotStatus(t, "gus create", created, http.StatusSeeOther)
-		gamma := p.waitState(t, organizationFromLocation(t, created.location), "failed")
-		if gamma.ErrorCode != "capacity" || gamma.ProviderID != "" || p.provider.Creates != 2 {
-			t.Fatalf("capacity refusal = %+v creates=%d", gamma, p.provider.Creates)
-		}
-		for _, o := range []pilotOrganization{alpha, beta} {
-			pilotStatus(t, "ready organization after refusal", o.owner.get(o.page()), http.StatusOK)
-		}
-		pilotRecord(t, "capacity", map[string]any{"max_tenants": 2, "refused_state": gamma.State, "error_code": gamma.ErrorCode, "provider_calls_for_refused": 0})
 	})
 
 	pilotStage(t, "owners create projects and entitlements stay separate", func() {

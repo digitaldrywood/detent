@@ -5,20 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
-	"strconv"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/cloudentry/webhooks"
 )
-
-type githubDelivery struct {
-	ID          int64     `json:"id"`
-	GUID        string    `json:"guid"`
-	DeliveredAt time.Time `json:"delivered_at"`
-	StatusCode  int       `json:"status_code"`
-	Event       string    `json:"event"`
-}
 
 func (s *Service) githubReplayWindow(ctx context.Context) (time.Time, time.Time) {
 	before := s.config.Now()
@@ -27,6 +17,28 @@ func (s *Service) githubReplayWindow(ctx context.Context) (time.Time, time.Time)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if s.sharedHub != nil {
+		latest, err := s.registry.store.db.postgres.LatestGitHubIngress(ctx)
+		if err != nil {
+			s.config.Logger.Warn("read GitHub ingress replay window", "error", err)
+			return time.Time{}, before
+		}
+		if !latest.IsZero() {
+			return latest, before
+		}
+		var since *time.Time
+		err = s.registry.store.db.QueryRowContext(ctx, `SELECT (
+SELECT COALESCE(r.last_received_at,r.received_at)
+FROM public.github_webhook_receipts r JOIN platform.organizations o ON o.id=r.organization_id
+WHERE o.state='ready' ORDER BY COALESCE(r.last_received_at,r.received_at) DESC LIMIT 1)`).Scan(&since)
+		if err != nil {
+			s.config.Logger.Warn("read GitHub replay window", "error", err)
+		}
+		if since == nil {
+			return time.Time{}, before
+		}
+		return *since, before
+	}
 	organizations, err := s.registry.List(ctx)
 	if err != nil {
 		s.config.Logger.Warn("read GitHub replay window", "error", err)
@@ -65,62 +77,11 @@ func (s *Service) replayGitHubDeliveries(ctx context.Context, since, before time
 	var count int
 	var err error
 	if !since.IsZero() && since.Before(before) {
-		count, err = s.requestGitHubRedeliveries(ctx, since, before)
+		count, err = webhooks.RequestRedeliveries(ctx, *s.config.GitHubApp, s.config.Logger, since, before)
 	}
 	if err != nil {
 		s.config.Logger.Warn("replay GitHub App deliveries", "requested", count, "since", since, "before", before, "error", err)
 		return
 	}
 	s.config.Logger.Info("replay GitHub App deliveries", "requested", count, "since", since, "before", before)
-}
-
-func (s *Service) requestGitHubRedeliveries(ctx context.Context, since, before time.Time) (int, error) {
-	token, err := github.NewAppTokenSource(*s.config.GitHubApp)
-	if err != nil {
-		return 0, err
-	}
-	client, err := github.NewClient(github.ClientConfig{Endpoint: s.config.GitHubApp.Endpoint, TokenSource: token, HTTPClient: s.config.GitHubApp.HTTPClient, DisableConditionalRequests: true, Logger: s.config.Logger})
-	if err != nil {
-		return 0, err
-	}
-	latest := make(map[string]githubDelivery)
-	for path := "/app/hook/deliveries?per_page=100"; path != ""; {
-		var page []githubDelivery
-		path, err = client.RESTPage(ctx, path, &page)
-		if err != nil {
-			return 0, err
-		}
-		pastWindow := false
-		for _, delivery := range page {
-			if delivery.DeliveredAt.Before(since) {
-				pastWindow = true
-				continue
-			}
-			if !delivery.DeliveredAt.Before(before) || delivery.GUID == "" || delivery.ID <= 0 {
-				continue
-			}
-			previous, ok := latest[delivery.GUID]
-			if !ok || delivery.DeliveredAt.After(previous.DeliveredAt) || delivery.DeliveredAt.Equal(previous.DeliveredAt) && delivery.ID > previous.ID {
-				latest[delivery.GUID] = delivery
-			}
-		}
-		if pastWindow {
-			break
-		}
-	}
-	deliveries := make([]int64, 0, len(latest))
-	for _, delivery := range latest {
-		if (delivery.Event == "issues" || delivery.Event == "issue_comment") && (delivery.StatusCode < 200 || delivery.StatusCode >= 300) {
-			deliveries = append(deliveries, delivery.ID)
-		}
-	}
-	slices.Sort(deliveries)
-	count := 0
-	for _, id := range deliveries {
-		if err := client.REST(ctx, http.MethodPost, "/app/hook/deliveries/"+strconv.FormatInt(id, 10)+"/attempts", nil, nil); err != nil {
-			return count, err
-		}
-		count++
-	}
-	return count, nil
 }

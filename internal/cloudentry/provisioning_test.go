@@ -149,7 +149,7 @@ func (l *processLauncher) WaitReady(ctx context.Context, id string) error {
 		if err := check(ctx); err == nil {
 			return nil
 		}
-		timer := time.NewTimer(tenantProbeInterval)
+		timer := time.NewTimer(5 * time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -246,7 +246,7 @@ func newProvisioningFixtureWith(t *testing.T, maxTenants int, mutate func(*Alloc
 
 func (f *provisioningFixture) open(t *testing.T, maxTenants int, mutate func(*AllocationConfig)) {
 	t.Helper()
-	allocation := &AllocationConfig{TenantRoot: f.roots[0], SocketRoot: f.roots[1], MaxTenants: maxTenants, MaxConcurrent: 2, RetryLimit: 3, Launcher: f.launcher}
+	allocation := &AllocationConfig{TenantRoot: f.roots[0], SocketRoot: f.roots[1], MaxConcurrent: 2, RetryLimit: 3, Launcher: f.launcher}
 	if mutate != nil {
 		mutate(allocation)
 	}
@@ -415,13 +415,11 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	f.waitState(t, id, "ready")
 	eve := newBrowser(t, f.service.Handler())
 	eve.Login("/auth/oidc/start", "user_eve:")
-	blocked := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
-	capacity := f.waitState(t, blocked, "failed")
-	if capacity.ErrorCode != "capacity" || capacity.ProviderID != "" {
-		t.Fatalf("capacity failure = %+v", capacity)
-	}
-	if response, _ := member.Get("/organizations/" + id + "/app/bootstrap"); response.StatusCode == http.StatusNotFound {
-		t.Fatal("capacity refusal disturbed a ready organization")
+	second := organizationFromLocation(t, f.create(t, eve, "Echo").Header.Get("Location"))
+	f.waitState(t, second, "ready")
+	member.Login("/organizations/"+id+"/organization", "user_member:porg_"+id)
+	if response, _ := member.Get("/delta/app/bootstrap"); response.StatusCode != http.StatusOK {
+		t.Fatalf("first organization bootstrap after second became ready: HTTP %d", response.StatusCode)
 	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
@@ -430,11 +428,7 @@ func TestProvisioningCapacityAndRecovery(t *testing.T) {
 	if f.launcher.starts < 2 {
 		t.Fatalf("restart did not relaunch ready tenants: %d starts", f.launcher.starts)
 	}
-	eveAgain := newBrowser(t, f.service.Handler())
-	eveAgain.Login("/auth/oidc/start", "user_eve:")
-	_, status = eveAgain.Get("/organizations/" + blocked + "/provisioning")
-	eveAgain.Do(http.MethodPost, "/organizations/"+blocked+"/provisioning/resume", url.Values{"csrf": {csrfFrom(t, status)}}, nil)
-	f.waitState(t, blocked, "ready")
+	f.waitState(t, second, "ready")
 }
 
 func TestProvisioningTenantStartKeepsSlowChild(t *testing.T) {
@@ -489,7 +483,7 @@ func TestProvisioningTenantStartFailure(t *testing.T) {
 	}{
 		{name: "hub never becomes healthy", retryLimit: 1, wantLaunches: 1, wantDetail: "the tenant Hub did not become healthy within 100ms"},
 		{name: "launcher refuses", err: errors.New("launch refused at /private/tenant"), retryLimit: 1, wantLaunches: 0},
-		{name: "supervisor gave up before the retry limit", failure: &TenantExitError{Exits: 5}, retryLimit: 5, wantLaunches: 1, wantDetail: "the tenant Hub exited 5 times in a row without staying up (last: exited cleanly)"},
+		{name: "supervisor gave up before the retry limit", failure: errors.New("fixture startup failure"), retryLimit: 5, wantLaunches: 1, wantDetail: "fixture startup failure"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -559,35 +553,6 @@ func TestTenantStartKeepsSlowReadyTenantSupervised(t *testing.T) {
 				t.Fatalf("running = %d, want %d; a ready tenant still migrating must not be abandoned", running, tc.wantRunning)
 			}
 		})
-	}
-}
-
-func TestProvisioningFailsWhenTenantExitsEveryStart(t *testing.T) {
-	t.Parallel()
-	launcher := &ExecLauncher{Binary: "/usr/bin/false", RestartLimit: 2, Logger: slog.New(slog.DiscardHandler), Configure: func(TenantSpec) ([]byte, error) { return []byte("{}\n"), nil }}
-	f := newProvisioningFixtureWith(t, 3, func(a *AllocationConfig) { a.RetryLimit = 2; a.Launcher = launcher }, func(f *provisioningFixture) {
-		f.timeout = 20 * time.Second
-	})
-	member := newBrowser(t, f.service.Handler())
-	member.Login("/auth/oidc/start", "user_member:")
-	id := organizationFromLocation(t, f.create(t, member, "Delta").Header.Get("Location"))
-	failed := f.waitState(t, id, "failed")
-	want := "the tenant Hub exited 2 times in a row without staying up (last: exit status 1)"
-	if failed.ErrorCode != "tenant_start_failed" || failed.ErrorDetail != want || failed.Attempts > 2 {
-		t.Fatalf("failure = %+v", failed)
-	}
-	status := member.Do(http.MethodGet, "/api/cloud/organizations/"+id+"/provisioning", nil, map[string]string{"Accept": "application/json"})
-	var body struct {
-		State     string `json:"state"`
-		Error     string `json:"error"`
-		CanResume bool   `json:"can_resume"`
-	}
-	if err := json.Unmarshal([]byte(status.Body), &body); err != nil || body.State != "failed" || !body.CanResume || !strings.Contains(body.Error, want) {
-		t.Fatalf("failed provisioning JSON = %s %v", status.Body, err)
-	}
-	running := launcher.Supervised()
-	if running != 0 {
-		t.Fatal("a tenant that never stays up is still supervised after provisioning failed")
 	}
 }
 
@@ -693,11 +658,11 @@ func TestProvisioningRejectsIneligibleCreators(t *testing.T) {
 		t.Fatalf("ineligible create = %d", response.StatusCode)
 	}
 	for _, config := range []*AllocationConfig{
-		{TenantRoot: "relative", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, RetryLimit: 1, Launcher: f.launcher},
-		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 0, MaxConcurrent: 1, RetryLimit: 1, Launcher: f.launcher},
-		{TenantRoot: "/t", SocketRoot: "/s", MaxTenants: 1, MaxConcurrent: 1, RetryLimit: 1},
+		{TenantRoot: "relative", SocketRoot: "/s", MaxConcurrent: 1, RetryLimit: 1, Launcher: f.launcher},
+		{TenantRoot: "/t", SocketRoot: "/s", MaxConcurrent: 0, RetryLimit: 1, Launcher: f.launcher},
+		{TenantRoot: "/t", SocketRoot: "/s", MaxConcurrent: 1, RetryLimit: 1},
 	} {
-		if err := config.validate(); err == nil {
+		if err := config.validate(false); err == nil {
 			t.Fatalf("invalid allocation accepted: %+v", config)
 		}
 	}
