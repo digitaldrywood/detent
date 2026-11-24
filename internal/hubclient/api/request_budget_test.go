@@ -22,6 +22,68 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativeHeartbeatRequestBudget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		budget time.Duration
+		cancel bool
+		want   error
+	}{
+		{name: "slow response within lease", budget: 2 * time.Minute},
+		{name: "lease expires first", budget: 35 * time.Second, want: context.DeadlineExceeded},
+		{name: "owner cancels", budget: 2 * time.Minute, cancel: true, want: context.Canceled},
+		{name: "no lease deadline uses client timeout", want: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if test.budget > 0 {
+					bounded, stop := context.WithTimeout(ctx, test.budget)
+					defer stop()
+					ctx = bounded
+				}
+				calls := 0
+				client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{
+					Timeout: 30 * time.Second,
+					Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+						calls++
+						if test.cancel {
+							cancel()
+						}
+						select {
+						case <-r.Context().Done():
+							return nil, r.Context().Err()
+						case <-time.After(40 * time.Second):
+							response := httptest.NewRecorder()
+							_, _ = response.WriteString(`{"lease_id":"lease_test","fencing_token":"3"}`)
+							return response.Result(), nil
+						}
+					}),
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_test", "prj_test")
+				if err != nil {
+					t.Fatal(err)
+				}
+				started := time.Now()
+				lease, err := native.RenewHeartbeat(ctx, tracker.NativeLease{ID: "lease_test", FencingToken: 3}, 120)
+				if !errors.Is(err, test.want) || calls != 1 {
+					t.Fatalf("renewal calls = %d, error = %v, want one call and %v", calls, err, test.want)
+				}
+				if test.want == nil && (lease.ID != "lease_test" || lease.FencingToken != 3) {
+					t.Fatalf("unexpected renewed lease: %+v", lease)
+				}
+				if test.want == context.DeadlineExceeded && test.budget > 0 && time.Since(started) != test.budget {
+					t.Fatalf("renewal ran for %s, want %s", time.Since(started), test.budget)
+				}
+			})
+		})
+	}
+}
+
 func budgetClient(t *testing.T, respond func(call int, response *httptest.ResponseRecorder)) (*Client, *int) {
 	t.Helper()
 	calls := 0
