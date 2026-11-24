@@ -53,19 +53,18 @@ func TestWorkspaceLaneEnabled(t *testing.T) {
 func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		generations []int64
+		name   string
+		starts int
 	}{
-		{name: "one generation", generations: []int64{1}},
-		{name: "overlapping generations", generations: []int64{1, 2}},
-		{name: "restarted generation counters", generations: []int64{7, 8, 9}},
+		{name: "one start", starts: 1},
+		{name: "restarted generation counters", starts: 3},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			seen := map[string]bool{}
-			for _, generation := range test.generations {
-				next := workspaceSessionIDs("machine_1", generation)
+			for range test.starts {
+				next := workspaceSessionIDs("machine_1")
 				for range 3 {
 					id, err := next()
 					if err != nil {
@@ -170,7 +169,7 @@ func TestNewWorkspaceLanes(t *testing.T) {
 			if test.scheduling != nil {
 				scheduling = test.scheduling(t)
 			}
-			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, 1, slog.New(slog.DiscardHandler), testWorkspaceSupport())
+			lanes := newWorkspaceLanes(t.Context(), cfg, scheduling, slog.New(slog.DiscardHandler), testWorkspaceSupport())
 			if len(lanes) != test.want {
 				t.Fatalf("newWorkspaceLanes() returned %d lanes, want %d", len(lanes), test.want)
 			}

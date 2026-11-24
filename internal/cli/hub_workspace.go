@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"os"
@@ -33,20 +34,15 @@ import (
 // capability in requires with a fresh heartbeat", and a request that names no
 // capability still gets `files` and `diff`. A runner that cannot serve files
 // would therefore be refused every claim it made, so it starts no lane and
-// never asks: the gate here is the same condition the heartbeat reports, so
-// the two can never disagree.
+// never asks.
 func workspaceLaneEnabled(capabilities workspacesession.Capabilities) bool {
 	return capabilities.Files
 }
 
-// workspaceLaneCapabilities is what this runner reports for workspace sessions
-// on its machine heartbeat, and the zero value when it runs no workspace lane.
-// The hub's claim gate reads the report from the enrolled runner's identity, so
-// a runner without an enrolled identity or without native projects could never
-// pass it: it reports nothing and starts no lane. The heartbeat report and the
-// lane start both read this, so the two can never disagree. Git is reported
-// only when every native project's worktree backend produces git worktrees,
-// because the report is one answer for the whole runner.
+// workspaceLaneCapabilities is what this runner can report once a workspace
+// lane is running. Git is reported only when every native project's worktree
+// backend produces git worktrees, because the report is one answer for the
+// whole runner.
 func workspaceLaneCapabilities(ctx context.Context, cfg globalconfig.Config, support workspacerunner.Support) workspacesession.Capabilities {
 	client := cfg.Client
 	capabilities := workspacerunner.Capabilities(support)
@@ -91,10 +87,11 @@ type workspaceLaneScheduler interface {
 // holds a lease with that lease rather than a new one. Sharing the issue
 // lane's sessions would therefore hand the workspace lane a run's lease, so
 // the ids are both unique and visibly distinct.
-func workspaceSessionIDs(machineID tracker.MachineID, generation int64) func() (string, error) {
+func workspaceSessionIDs(machineID tracker.MachineID) func() (string, error) {
+	generation := rand.Text()
 	var counter atomic.Uint64
 	return func() (string, error) {
-		return fmt.Sprintf("%s-workspace-g%d-%d", machineID, generation, counter.Add(1)), nil
+		return fmt.Sprintf("%s-workspace-g%s-%d", machineID, generation, counter.Add(1)), nil
 	}
 }
 
@@ -104,11 +101,12 @@ func workspaceSessionIDs(machineID tracker.MachineID, generation int64) func() (
 // with a warning rather than failing the daemon: the workspace surfaces are an
 // addition to a runner whose real job is dispatch, and a misconfigured one
 // must not stop it from running.
-func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, generation int64, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
+func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling orchestrator.SchedulingSource, logger *slog.Logger, support workspacerunner.Support) []*workspacerunner.Lane {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if !workspaceLaneEnabled(workspaceLaneCapabilities(ctx, cfg, support)) {
+	if strings.TrimSpace(cfg.Client.IdentityFile) == "" || len(cfg.Client.NativeProjects) == 0 ||
+		!workspaceLaneEnabled(workspacerunner.Capabilities(support)) {
 		return nil
 	}
 	scheduler, ok := scheduling.(workspaceLaneScheduler)
@@ -119,7 +117,7 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 	if machineID == "" {
 		return nil
 	}
-	sessionIDs := workspaceSessionIDs(machineID, generation)
+	sessionIDs := workspaceSessionIDs(machineID)
 	projects := project.ManagerConfigFromGlobal(cfg).Projects
 	lanes := make([]*workspacerunner.Lane, 0, len(cfg.Client.NativeProjects))
 	for name := range cfg.Client.NativeProjects {
@@ -136,6 +134,12 @@ func newWorkspaceLanes(ctx context.Context, cfg globalconfig.Config, scheduling 
 		lanes = append(lanes, lane)
 	}
 	return lanes
+}
+
+func runWorkspaceLane(ctx context.Context, lane *workspacerunner.Lane, logger *slog.Logger) {
+	if err := lane.Run(ctx); err != nil && ctx.Err() == nil {
+		logger.Warn("workspace.lane_stopped", "error", err)
+	}
 }
 
 // newWorkspaceLane resolves one project's policy and worktree backend and

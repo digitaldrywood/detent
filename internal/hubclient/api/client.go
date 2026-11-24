@@ -110,16 +110,17 @@ type Machine struct {
 	// machine endpoints accept them, and the v1 register/heartbeat pair
 	// rejects unknown fields. The native requests pick them up explicitly
 	// through workspaceReport instead.
-	WorkspaceCapabilities workspacesession.Capabilities `json:"-"`
-	WorkspaceIsolation    string                        `json:"-"`
-	CheckoutRepository    *string                       `json:"-"`
+	CurrentWorkspaceCapabilities func() workspacesession.Capabilities `json:"-"`
+	WorkspaceCapabilities        workspacesession.Capabilities        `json:"-"`
+	WorkspaceIsolation           string                               `json:"-"`
+	CheckoutRepository           *string                              `json:"-"`
 }
 
-// workspaceReport is what the native machine endpoints send for the workspace
-// claim gate, or nil when this runner serves no surface. The hub leaves a
-// stored report alone when a request omits it, so a runner without the
-// workspace lane behaves exactly as before.
 func (m Machine) workspaceReport() (*workspacesession.Capabilities, string) {
+	if m.CurrentWorkspaceCapabilities != nil {
+		capabilities := m.CurrentWorkspaceCapabilities()
+		return &capabilities, m.WorkspaceIsolation
+	}
 	if m.WorkspaceCapabilities == (workspacesession.Capabilities{}) {
 		return nil, ""
 	}
