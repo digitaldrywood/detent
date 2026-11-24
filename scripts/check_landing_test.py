@@ -432,11 +432,11 @@ func TestGateLifetime(t *testing.T) {
         for name, cancel in (("failure", None), ("SIGTERM", signal.SIGTERM), ("SIGINT", signal.SIGINT)):
             with self.subTest(name=name), tempfile.TemporaryDirectory(dir=ROOT / "tmp", prefix="gate-lifetime-") as directory:
                 base = Path(directory)
-                long = base
+                long = base / "postgres"
                 while len(str(long)) < 300:
-                    long /= "x" * min(80, 299 - len(str(long)))
+                    long /= "x" * min(80, 300 - len(str(long)))
                 long.mkdir(parents=True)
-                self.assertEqual(len(str(long)), 300)
+                self.assertGreaterEqual(len(str(long)), 300)
                 control = base / "control"
                 os.mkfifo(control)
                 descriptor = os.open(control, os.O_RDWR)
