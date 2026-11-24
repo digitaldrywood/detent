@@ -66,10 +66,8 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 		{name: "another runner can admit after first runner selector refusal", heartbeat: true, another: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat selector refusal", heartbeat: true, label: "excluded", outcome: "skipped", code: "no_claimable_work"},
 		{name: "hosted heartbeat admissible", heartbeat: true, outcome: "ready"},
-		{name: "missing issue contract refuses", heartbeat: true, contract: "missing", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked"},
-		{name: "missing issue contract remains actionable without runner", noRunner: true, contract: "missing", contractReason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked", outcome: "skipped"},
-		{name: "missing issue contract remains actionable with excluded runner", stale: true, contract: "missing", contractReason: "Add or complete these required issue sections: Acceptance criteria, Must not break, How we know it worked", outcome: "skipped", code: "runner_offline"},
-		{name: "unconfirmed issue contract refuses", heartbeat: true, contract: "unconfirmed", outcome: "skipped", code: "issue_contract_unsatisfied", reason: "A human must confirm the success criteria by editing or saving the issue body"},
+		{name: "missing issue contract remains claimable", heartbeat: true, contract: "missing", outcome: "ready"},
+		{name: "unconfirmed issue contract remains claimable", heartbeat: true, contract: "unconfirmed", outcome: "ready"},
 		{name: "no dispatch marker refuses", heartbeat: true, body: "<!-- detent:no-dispatch -->", outcome: "skipped", code: "no_claimable_work", reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"},
 		{name: "exempt issue contract stays eligible", heartbeat: true, contract: "exempt", outcome: "ready"},
 		{name: "unrelated heartbeat cannot freshen selectors", heartbeat: true, observation: "stale", outcome: "unknown", unavailable: "runner_specific_candidate_selection"},
@@ -208,7 +206,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantAllowed := test.contract != "missing" && test.contract != "unconfirmed" && !strings.Contains(strings.ToLower(test.body), "detent:no-dispatch")
+			wantAllowed := !strings.Contains(strings.ToLower(test.body), "detent:no-dispatch")
 			if evaluation.Allowed != wantAllowed || nativeClaimIssueContractAllowed(plan) != wantAllowed {
 				t.Fatalf("claim and explanation contract disagree: evaluation=%+v allowed=%t", evaluation, wantAllowed)
 			}
