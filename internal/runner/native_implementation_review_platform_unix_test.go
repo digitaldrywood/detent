@@ -102,7 +102,10 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 				t.Setenv("MAKEFLAGS", "")
 				t.Setenv("MFLAGS", "")
 				source := initRunnerSourceRepo(t)
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py", "scripts/runner-setup.sh"} {
+				for _, name := range []string{
+					"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py",
+					"scripts/check-landing-lint.mk", "scripts/build-custom-linter.sh", "scripts/runner-setup.sh",
+				} {
 					content, err := os.ReadFile(filepath.Join("..", "..", name))
 					if err != nil {
 						t.Fatal(err)
