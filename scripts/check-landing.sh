@@ -133,6 +133,7 @@ while raw.strip():
     packages[package["ImportPath"]] = package
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
+embedded_landing_scripts = {"scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"}
 direct = set()
 propagated = set()
 lint = set()
@@ -151,7 +152,11 @@ for name, package in packages.items():
                     propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-                propagated.add(name)
+                evidence_consumer = name + "/internal/workspace/validationcmd"
+                if not prefix and relative in embedded_landing_scripts and evidence_consumer in packages:
+                    direct.add(evidence_consumer)
+                else:
+                    propagated.add(name)
 for path in changed:
     if path and not path.endswith(".go"):
         owner = max((name for name, prefix in prefixes.items() if path.startswith(prefix)), key=lambda name: len(prefixes[name]), default=None)
@@ -191,7 +196,7 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=30m
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
-    make -j1 "$linter" TEST_PROCS="$procs"
+    GIT_ALLOW_PROTOCOL="${GIT_ALLOW_PROTOCOL:-https}" make -j1 "$linter" TEST_PROCS="$procs"
     check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
