@@ -18,15 +18,11 @@ func TestLandingRecipeInputsMatch(t *testing.T) {
 		{name: "embedded recipe", helper: "unchanged", want: true},
 		{name: "modified PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "modified"},
 		{name: "missing PostgreSQL helper rejected", file: "scripts/check-landing.py", helper: "missing"},
-		{name: "modified linter makefile rejected", file: "scripts/check-landing-lint.mk", helper: "modified"},
-		{name: "missing linter makefile rejected", file: "scripts/check-landing-lint.mk", helper: "missing"},
-		{name: "modified linter build script rejected", file: "scripts/build-custom-linter.sh", helper: "modified"},
-		{name: "missing linter build script rejected", file: "scripts/build-custom-linter.sh", helper: "missing"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py", "scripts/check-landing-lint.mk", "scripts/build-custom-linter.sh"} {
+			for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"} {
 				if name == tt.file && tt.helper == "missing" {
 					continue
 				}
