@@ -29,6 +29,7 @@ with Path(".git/trace").open("a") as stream:
         "tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"),
         "token": "DETENT_API_TOKEN" in os.environ, "postgres": os.environ.get("DETENT_TEST_POSTGRES"),
         "tmpdir": os.environ.get("TMPDIR"), "git_protocols": os.environ.get("GIT_ALLOW_PROTOCOL"),
+        "inline_makefile": sys.stdin.read() if name == "make" and "-" in args else None,
     }) + "\n")
 if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "golangci-lint" and os.environ.get("FAIL_STAGE") == "lint"):
     sys.exit(17)
@@ -89,7 +90,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh", "check-landing.py", "check-landing-lint.mk", "build-custom-linter.sh"):
+        for name in ("check-landing.sh", "check-evidence.sh", "check-landing.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
@@ -190,6 +191,7 @@ class ShortLandingGateTest(unittest.TestCase):
                 trace = self.trace()
                 build = next(call for call in trace if call["tool"] == "make" and "landing-linter" in call["args"])
                 self.assertIn("LANDING_LINTER=" + self.linter, build["args"])
+                self.assertIn("bash scripts/check-landing.sh --build-custom-linter", build["inline_makefile"])
                 for call in trace:
                     self.assertEqual(call["git_protocols"], policy, call)
 
@@ -206,8 +208,7 @@ class ShortLandingGateTest(unittest.TestCase):
             ("scripts/check-landing.sh", [".", "./internal/workspace/validationcmd"], True),
             ("scripts/check-evidence.sh", [".", "./internal/workspace/validationcmd"], True),
             ("scripts/check-landing.py", [".", "./internal/workspace/validationcmd"], True),
-            ("scripts/check-landing-lint.mk", [".", "./internal/workspace/validationcmd"], True),
-            ("scripts/build-custom-linter.sh", [".", "./internal/workspace/validationcmd"], True),
+            ("embed.go", [".", "./app", "./integration", "./internal/runner", "./internal/workspace/validationcmd"], False),
             ("Makefile", [".", "./app", "./integration", "./internal/runner", "./internal/workspace/validationcmd"], False),
             ("internal/runner/source.go", ["./internal/runner"], False),
         ):

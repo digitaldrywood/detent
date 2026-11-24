@@ -1,5 +1,54 @@
 set -euo pipefail
 
+if [ "${1:-}" = --build-custom-linter ]; then
+    shift
+    linter_version=${1:?linter version required}
+    heft_version=${2:?Heft version required}
+    output=${3:?output path required}
+    procs=${4:?process budget required}
+    [[ $output == /* ]]
+
+    output_dir=$(dirname "$output")
+    mkdir -p "$output_dir"
+    build_dir=$(mktemp -d "${TMPDIR:?job scratch required}/detent-linter.XXXXXX")
+    staged_binary=
+    trap 'rm -rf -- "$build_dir"; rm -f -- "$staged_binary"' EXIT
+    staged_binary=$(mktemp "$output_dir/.golangci-lint.XXXXXX")
+    cd "$build_dir"
+    export GOWORK=off
+
+    go mod init example.test/detent-linter
+    go mod edit -require="github.com/golangci/golangci-lint/v2@$linter_version" \
+        -require="github.com/digitaldrywood/heft@$heft_version"
+    cat > main.go <<'EOF'
+package main
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+
+	_ "github.com/digitaldrywood/heft/plugin"
+	"github.com/golangci/golangci-lint/v2/pkg/commands"
+	"github.com/golangci/golangci-lint/v2/pkg/exitcodes"
+)
+
+var version string
+
+func main() {
+	if err := commands.Execute(commands.BuildInfo{Version: version, GoVersion: runtime.Version()}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(exitcodes.Failure)
+	}
+}
+EOF
+    go build -mod=mod -buildvcs=false -p "$procs" -ldflags "-X main.version=${linter_version#v}" -o "$staged_binary" .
+    [[ $(go list -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2) == "$linter_version" ]]
+    [[ $(go list -m -f '{{.Version}}' github.com/digitaldrywood/heft) == "$heft_version" ]]
+    mv -f -- "$staged_binary" "$output"
+    exit
+fi
+
 if [ "${1:-}" != --supervised ]; then
     exec python3 scripts/check-landing.py supervise "$0" "$@"
 fi
@@ -73,7 +122,6 @@ root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
 landing_recipe_scripts = {
     "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py",
-    "scripts/check-landing-lint.mk", "scripts/build-custom-linter.sh",
 }
 landing_recipe_changed = bool(landing_recipe_scripts.intersection(changed))
 direct = set()
@@ -159,7 +207,13 @@ if [ -n "$recipe_test_package" ]; then
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     if [ -f .custom-gcl.yml ]; then
-        make -j1 -f Makefile -f scripts/check-landing-lint.mk landing-linter LANDING_LINTER="$linter" TEST_PROCS="$procs"
+        make -j1 -f Makefile -f - landing-linter LANDING_LINTER="$linter" TEST_PROCS="$procs" <<'MAKE'
+.PHONY: landing-linter
+landing-linter:
+	@test "$(LANDING_LINTER)" = "$(GOLANGCI_LINT_RUN)"
+	@grep -Fqx 'version: $(GOLANGCI_LINT_VERSION)' .custom-gcl.yml
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" bash scripts/check-landing.sh --build-custom-linter "$(GOLANGCI_LINT_VERSION)" "$(HEFT_VERSION)" "$(LANDING_LINTER)" "$(TEST_PROCS)"
+MAKE
     else
         make -j1 "$linter" TEST_PROCS="$procs"
     fi
