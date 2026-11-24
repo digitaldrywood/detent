@@ -377,12 +377,18 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	mode := runworkspace.NormalizeRunMode(req.Mode)
 	legacyPublishedSource := false
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
-		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
+		command := gate.Effective(workflow.Config.Gate).Run
+		req.phaseContinuation, err = phase.PhaseReceipts(guarded, command)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
-		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
-			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
+		if mode == RunModeImplement && req.NativeLandingRework == nil && req.phaseContinuation != nil {
+			recovery := req.Execution.Recovery()
+			legacyPublishedSource = requiresPublishedChangeRecovery(recovery, req.phaseContinuation)
+			if plan := req.phaseContinuation.Plan; !legacyPublishedSource && (plan == nil || plan.Accepted) {
+				legacyPublishedSource = nativeReviewResumeAttempt(recovery, command) != nil
+			}
+		}
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
 		if req.phaseReceipts || legacyPublishedSource {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
