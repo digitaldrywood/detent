@@ -711,7 +711,7 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	checkpoint.HeadSHA = state.HeadSHA
 	checkpoint.WorkspaceDigest = state.WorkspaceFingerprint
 	checkpoint.WorktreeState = "clean"
-	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.RebaseInProgress {
 		checkpoint.WorktreeState = "dirty"
 	} else if state.UnpushedCommits > 0 {
 		checkpoint.WorktreeState = "unpushed"
