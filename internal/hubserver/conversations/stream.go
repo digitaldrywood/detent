@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -28,12 +27,7 @@ const (
 
 // conversationStream writes server-sent event frames for one subscriber.
 type ConversationStream struct {
-	Response          *echo.Response
-	Authorize         func() error
-	Now               func() time.Time
-	NextAuthorization time.Time
-	AuthorizeInterval time.Duration
-	authorizationErr  error
+	Response *echo.Response
 }
 
 func NewConversationStream(c echo.Context) *ConversationStream {
@@ -44,24 +38,11 @@ func NewConversationStream(c echo.Context) *ConversationStream {
 	header.Set("X-Accel-Buffering", "no")
 	response.WriteHeader(http.StatusOK)
 	response.Flush()
-	return &ConversationStream{Response: response, Now: time.Now, AuthorizeInterval: ConversationAuthorizeInterval}
+	return &ConversationStream{Response: response}
 }
 
 // event writes a committed event with its sequence as the frame id.
 func (s *ConversationStream) Event(event conversation.Event) error {
-	if s.Authorize != nil {
-		if s.authorizationErr != nil {
-			return s.authorizationErr
-		}
-		now := s.Now()
-		if !now.Before(s.NextAuthorization) {
-			s.NextAuthorization = now.Add(s.AuthorizeInterval)
-			if err := s.Authorize(); err != nil {
-				s.authorizationErr = err
-				return err
-			}
-		}
-	}
 	if _, err := fmt.Fprintf(s.Response, "id: %d\nevent: %s\ndata: %s\n\n", event.Seq, event.Type, event.Data); err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package conversation_test
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -14,18 +15,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/cloudentry/platformstore"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
+	"github.com/digitaldrywood/detent/internal/tenantauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -78,10 +87,13 @@ func TestConversationPostgresStreamReauthorizesAgainstTenantProject(t *testing.T
 
 func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 	t.Parallel()
+	const replayPageSize = 200
 	clock := hubtest.NewClock(time.Now())
-	authority := &streamKeyAuthority{}
+	platform := openStreamPlatform(t, clock.Now)
+	authority := &streamKeyAuthority{platform: platform}
 	hub := hubfixture.OpenConversationKeyStreamEntry(t, clock.Now, authority.resolve)
 	authority.hub = hub
+	registerStreamOrganization(t, platform, hub)
 	removed, retained := tracker.ProjectID("project_removed"), tracker.ProjectID("project_retained")
 	hub.SeedProject(t, removed, "Revocable project")
 	hub.SeedProject(t, retained, "Retained project")
@@ -96,21 +108,25 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 		{name: "narrowed", change: "narrow", want: conversations.ConversationClosedAccessRevoked},
 		{name: "unavailable", change: "unavailable", want: conversations.ConversationClosedServerError},
 		{name: "replay_revoked", change: "revoke", replay: true, want: conversations.ConversationClosedAccessRevoked},
+		{name: "replay_blocked", change: "block", replay: true, want: conversations.ConversationClosedAccessRevoked},
 		{name: "replay_narrowed", change: "narrow", replay: true, want: conversations.ConversationClosedAccessRevoked},
+		{name: "replay_unavailable", change: "unavailable", replay: true, want: conversations.ConversationClosedServerError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			owner, key, principal := seedStreamKey(t, hub, test.name, removed, retained)
+			owner, key, principal := seedStreamKey(t, platform, hub, test.name, removed, retained)
 			target := seedStreamConversation(t, hub.Hub, hub.Primary, removed, principal, conversation.VisibilityPrivate)
 			keep := seedStreamConversation(t, hub.Hub, hub.Primary, retained, principal, conversation.VisibilityPrivate)
 			release := func() {}
 			handler := hub.Handler()
+			var boundary int64
 			if test.replay {
+				boundary = target.append(t, "Last update of page one", replayPageSize-2)
 				target.append(t, "Protected backlog from before the authority changed", 0)
-				handler, release = pauseConversationReplay(handler, target.path+"/events", target.ready)
-				t.Cleanup(release)
+				handler, release = pauseConversationReplay(handler, target.path+"/events", boundary)
 			}
 			server := httptest.NewServer(handler)
 			t.Cleanup(server.Close)
+			t.Cleanup(release)
 			stream := openKeyEventStream(t, server, hub, target, owner, key)
 			stream.requireUpdate(t, "ready", target.ready)
 			kept := openKeyEventStream(t, server, hub, keep, owner, key)
@@ -118,11 +134,12 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 
 			checkPeer := func() {}
 			if test.name == "narrowed" {
-				otherAuthority := &streamKeyAuthority{}
+				otherAuthority := &streamKeyAuthority{platform: platform}
 				peer := hub.OpenConversationKeyStreamPeer(t, "org_stream_peer", otherAuthority.resolve)
 				otherAuthority.hub = peer
+				registerStreamOrganization(t, platform, peer)
 				peer.SeedProject(t, removed, "Independent project")
-				otherOwner, otherKey, otherPrincipal := seedStreamKey(t, peer, "peer", removed)
+				otherOwner, otherKey, otherPrincipal := seedStreamKey(t, platform, peer, "peer", removed)
 				otherTarget := seedStreamConversation(t, peer.Hub, peer.Primary, removed, otherPrincipal, conversation.VisibilityPrivate)
 				otherServer := httptest.NewServer(peer.Handler())
 				t.Cleanup(otherServer.Close)
@@ -134,21 +151,28 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 				}
 			}
 
+			if test.replay {
+				for seq := target.ready + 1; seq < boundary; seq++ {
+					stream.requireUpdate(t, "Earlier retained update", seq)
+				}
+				stream.requireUpdate(t, "Last update of page one", boundary)
+			}
+			var err error
 			switch test.change {
 			case "revoke":
-				target.write(t, func(writer tenantstore.Writer) error {
-					return writer.RevokeAccessCredential(t.Context(), key.ID, hub.Now())
-				})
+				err = platform.RevokeKey(t.Context(), owner.Identity.Subject, key.ID)
+			case "block":
+				err = platform.BlockKey(t.Context(), hub.Primary, key.ID, "")
 			case "narrow":
-				target.write(t, func(writer tenantstore.Writer) error {
-					return writer.DeleteAccessTokenGrant(t.Context(), key.ID, target.project)
-				})
+				err = platform.BlockKey(t.Context(), hub.Primary, key.ID, target.project)
 			case "unavailable":
 				authority.unavailable.Store(true)
 				t.Cleanup(func() { authority.unavailable.Store(false) })
 			}
+			if err != nil {
+				t.Fatal(err)
+			}
 			if test.replay {
-				clock.Advance(conversations.ConversationAuthorizeInterval)
 				release()
 			} else {
 				patchStreamTitle(t, hub, owner, target, "Protected live update")
@@ -166,11 +190,14 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 	}
 
 	t.Run("replay_across_pages_then_follow", func(t *testing.T) {
-		owner, key, principal := seedStreamKey(t, hub, "resume", retained)
+		owner, key, principal := seedStreamKey(t, platform, hub, "resume", retained)
 		target := seedStreamConversation(t, hub.Hub, hub.Primary, retained, principal, conversation.VisibilityPrivate)
-		last := target.append(t, "Retained event beyond the replay page", 500)
-		server := httptest.NewServer(hub.Handler())
+		last := target.append(t, "Retained event beyond the replay page", 2*replayPageSize)
+		handler, release := pauseConversationReplay(hub.Handler(), target.path+"/events", last)
+		server := httptest.NewServer(handler)
 		t.Cleanup(server.Close)
+		t.Cleanup(release)
+		before := authority.reads.Load()
 		stream := openKeyEventStream(t, server, hub, target, owner, key)
 		stream.requireUpdate(t, "ready", target.ready)
 		for {
@@ -183,6 +210,10 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 				break
 			}
 		}
+		if got := authority.reads.Load() - before; got != 3 {
+			t.Fatalf("platform key reads for three replay pages = %d, want 3", got)
+		}
+		release()
 		patchStreamTitle(t, hub, owner, target, "Live event after replay")
 		stream.requireUpdate(t, "Live event after replay", 0)
 	})
@@ -190,6 +221,8 @@ func TestConversationStreamRefreshesEntryKeyAuthorityPostgres(t *testing.T) {
 
 type streamKeyAuthority struct {
 	hub         *hubfixture.ConversationHostedEntry
+	platform    *platformstore.Repository
+	reads       atomic.Int64
 	unavailable atomic.Bool
 }
 
@@ -197,35 +230,66 @@ func (a *streamKeyAuthority) resolve(ctx context.Context, origin entryauthority.
 	if a.unavailable.Load() {
 		return cloudassert.Claims{}, operatortool.ErrServiceUnavailable
 	}
-	key := apikey.KeyAuthority{
-		ID: origin.KeyID, CredentialBinding: origin.CredentialBinding, Kind: "personal", Permission: apikey.ScopeRead,
-		ProjectContext: apikey.ProjectContext{Access: "selected"},
-	}
-	if err := a.hub.Repository.ReadTenant(ctx, a.hub.Primary, corestore.Serving, func(reader tenantstore.Reader) error {
-		stored, err := reader.AccessCredential(ctx, origin.KeyID)
-		if err != nil {
-			return err
-		}
-		if stored.RevokedAt != nil || stored.UserID != origin.Subject {
-			return operatortool.ErrAccessDenied
-		}
-		grants, err := reader.AccessTokenGrants(ctx, origin.KeyID, "", 10)
-		for _, grant := range grants {
-			key.Projects = append(key.Projects, string(grant.ProjectID))
-		}
-		return err
-	}); err != nil {
+	a.reads.Add(1)
+	key, err := a.platform.PlatformKey(ctx, tenantauth.PlatformKeyRequest{Organization: a.hub.Primary, KeyID: origin.KeyID})
+	if err != nil {
 		return cloudassert.Claims{}, err
 	}
 	now := a.hub.Now()
 	return cloudassert.Claims{
 		Issuer: origin.Issuer, Audience: string(a.hub.Primary), Generation: origin.Generation, Kind: cloudassert.KindKey,
-		ProviderOrganization: a.hub.Config.Hosted.WorkOSOrganizationID, Subject: origin.Subject, Role: "owner", Key: &key,
+		ProviderOrganization: key.ProviderID, Subject: key.OwnerSubject, Role: "owner", Key: &key.Authority,
 		IssuedAt: now, ExpiresAt: now.Add(time.Minute),
 	}, nil
 }
 
-func seedStreamKey(t *testing.T, hub *hubfixture.ConversationHostedEntry, label string, projects ...tracker.ProjectID) (hubfixture.HostedUser, apikey.KeyAuthority, string) {
+func openStreamPlatform(t *testing.T, now func() time.Time) *platformstore.Repository {
+	t.Helper()
+	admin := hubtest.Database(t)
+	name, password := hubapi.NewID("example"), hubapi.NewID("password")
+	role := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+role+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)+" IN ROLE "+postgres.PlatformRoleName); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Minute)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP ROLE "+role); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := hubtest.NativeConfig(t, admin, name, password)
+	cfg.MaxConns = 3
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	_, signer, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform, err := platformstore.New(t.Context(), pool, platformstore.Config{
+		Pool:       platformstore.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1},
+		SigningKey: signer, Now: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return platform
+}
+
+func registerStreamOrganization(t *testing.T, platform *platformstore.Repository, hub *hubfixture.ConversationHostedEntry) {
+	t.Helper()
+	if _, err := platform.Register(t.Context(), platformstore.Organization{
+		ID: hub.Primary, ProviderID: hub.Config.Hosted.WorkOSOrganizationID, Name: "Stream organization",
+		Endpoint: "unix:/example/entry.sock", Generation: hub.Config.Hosted.SharedEntry.Generation,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedStreamKey(t *testing.T, platform *platformstore.Repository, hub *hubfixture.ConversationHostedEntry, label string, projects ...tracker.ProjectID) (hubfixture.HostedUser, apikey.KeyAuthority, string) {
 	t.Helper()
 	user := hub.User(t, "stream-"+label, "owner", label+"@example.test", "", "")
 	var member accessstore.Member
@@ -239,17 +303,19 @@ func seedStreamKey(t *testing.T, hub *hubfixture.ConversationHostedEntry, label 
 	for _, project := range projects {
 		hub.Grant(t, user, project, true, false)
 	}
-	stored := hubtest.Credential(t, hub.Repository, hub.Primary, hubtest.CredentialOptions{
-		Projects: projects, Now: hub.Now(), KeyScope: "read", Member: &hubtest.SeededMember{Member: member},
-	})
-	key := apikey.KeyAuthority{
-		ID: stored.ID, CredentialBinding: stored.Hash, Kind: "personal", Permission: apikey.ScopeRead,
-		ProjectContext: apikey.ProjectContext{Access: "selected"},
+	id := hubapi.NewID("key")
+	if err := platform.CreateKey(t.Context(), platformstore.Key{
+		ID: id, Hash: apikey.HashToken(hubapi.NewID("example")), Name: label, Kind: "personal",
+		Permission: string(apikey.ScopeRead), OwnerSubject: user.Identity.Subject, AccessContext: "selected",
+		Organizations: []platformstore.KeyOrganization{{OrganizationID: hub.Primary, ProjectAccess: "selected", Projects: projects}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	for _, project := range projects {
-		key.Projects = append(key.Projects, string(project))
+	key, err := platform.PlatformKey(t.Context(), tenantauth.PlatformKeyRequest{Organization: hub.Primary, KeyID: id})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return user, key, member.PrincipalID
+	return user, key.Authority, member.PrincipalID
 }
 
 type streamTarget struct {

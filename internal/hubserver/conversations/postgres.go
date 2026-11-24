@@ -664,11 +664,24 @@ func (s *Server) ReadPGConversationPage(ctx context.Context, scope hubauth.Input
 }
 
 func (s *Server) ReplayPGConversationEvents(ctx context.Context, scope hubauth.Input, stream *ConversationStream, id string, cursor, through int64) (int64, error) {
+	return s.replayPGConversationEvents(ctx, scope, stream, id, cursor, through, nil)
+}
+
+func (s *Server) replayPGConversationEvents(ctx context.Context, scope hubauth.Input, stream *ConversationStream, id string, cursor, through int64, refreshNextPage func(context.Context) (hubauth.Input, error)) (int64, error) {
 	repository, ok := s.config().TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return cursor, conversationSnapshotUnavailable()
 	}
-	for cursor < through {
+	for firstPage := true; cursor < through; firstPage = false {
+		if !firstPage && refreshNextPage != nil {
+			readCtx, cancelRead := context.WithTimeout(ctx, hubapi.ReadTimeout)
+			refreshed, err := refreshNextPage(readCtx)
+			cancelRead()
+			if err != nil {
+				return cursor, err
+			}
+			scope = refreshed
+		}
 		var page conversationstore.EventPage
 		refs := map[string]attachment.ArchiveReference{}
 		err := repository.ReadTenantSnapshot(ctx, scope.Organization, corestore.Serving, func(reader tenantstore.Reader) error {

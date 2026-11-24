@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -271,11 +272,13 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 		return h.deps.Error(c, err)
 	}
 	stream := NewConversationStream(c)
-	stream.Now = h.server().config().Now
+	var refreshReplay func(context.Context) (hubauth.Input, error)
 	if scope.Credential.EntryKey != nil {
-		stream.Authorize = func() error {
-			_, err := h.ReauthorizeStream(c, &scope, record.ID)
-			return err
+		refreshReplay = func(ctx context.Context) (hubauth.Input, error) {
+			if err := h.deps.RefreshStream(ctx, c, &scope); err != nil {
+				return hubauth.Input{}, err
+			}
+			return ScopeInput(scope), nil
 		}
 	}
 	if after > record.EventSeq {
@@ -291,7 +294,6 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 	for {
 		// The re-read proves the stream may continue: a settled conversation
 		// keeps streaming, only a revoked audience closes it.
-		stream.NextAuthorization = stream.Now().Add(h.deps.StreamAuthorize())
 		authorized, err := h.ReauthorizeStream(c, &scope, record.ID)
 		if err != nil {
 			reason := StreamCloseReason(err)
@@ -299,7 +301,7 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 			return stream.Closed(reason)
 		}
 
-		cursor, err = h.server().ReplayPGConversationEvents(ctx, ScopeInput(scope), stream, record.ID, cursor, authorized.EventSeq)
+		cursor, err = h.server().replayPGConversationEvents(ctx, ScopeInput(scope), stream, record.ID, cursor, authorized.EventSeq, refreshReplay)
 
 		if err != nil {
 			if errors.Is(err, ErrConversationCursorExpired) {
