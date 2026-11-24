@@ -36,7 +36,7 @@ func TestChangeCreationSettlement(t *testing.T) {
 		{Name: "final checkpoint advances past the stored diff before cleanup", Role: runner.RoleCode, Outcome: "succeeded", Worktree: "clean", Source: scenariotest.FixtureDiff(scenariotest.FixtureHead("b"), "README.md"), RefreshFinal: true, UnreadFinal: true, CheckpointHead: scenariotest.FixtureHead("b"),
 			WantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, WantChanges: 1, WantVersions: 1},
 		{Name: "an unavailable final diff cannot reuse an older checkpoint head", Role: runner.RoleRework, Outcome: "succeeded", Worktree: "clean", Source: scenariotest.FixtureDiff(head, "README.md"), Existing: true, Published: head, UnreadFinal: true, CheckpointHead: scenariotest.FixtureHead("b"),
-			WantDiagnostic: "checkpoint head", WantChanges: 1, WantVersions: 1},
+			WantDiagnostic: "final attempt diff source is unavailable", WantChanges: 1, WantVersions: 1},
 		{Name: "rework preserves the same head after configuration changes", Role: runner.RoleRework, Outcome: "succeeded", Worktree: "clean", Source: scenariotest.FixtureDiff(head, "README.md"), Existing: true, Published: head, Repolicy: true,
 			WantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, WantChanges: 1, WantVersions: 1},
 		{Name: "changed review requirements republish the same source", Role: runner.RoleRework, Outcome: "succeeded", Worktree: "clean", Source: scenariotest.FixtureDiff(head, "README.md"), Existing: true, Published: head, Repolicy: true, Reviewer: true,

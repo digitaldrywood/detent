@@ -696,6 +696,7 @@ func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 	installDir := filepath.Join(tmp, "bin")
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
+		"DETENT_INSTALL_MODE=local",
 		"DETENT_INSTALL_DIR="+installDir,
 		"DETENT_STATE_DIR="+stateDir,
 		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
@@ -725,6 +726,7 @@ func isolatedInstallCheckout(t *testing.T, source string, checkout string) strin
 	t.Helper()
 
 	clone := exec.CommandContext(t.Context(), "git", "clone", "--shared", "--no-checkout", "--", source, checkout)
+	clone.Env = append(os.Environ(), "GIT_ALLOW_PROTOCOL=file")
 	if output, err := clone.CombinedOutput(); err != nil {
 		t.Fatalf("clone install checkout: %v\n%s", err, output)
 	}

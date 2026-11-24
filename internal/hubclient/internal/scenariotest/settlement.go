@@ -847,11 +847,10 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "lost"); err != nil {
 					t.Fatal(err)
 				}
+				guarded = t.Context()
 			}
 			if test.UnreadFinal {
-				execution.(runner.DiffExecution).SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
-					return tracker.AttemptDiffRequest{}, false
-				})
+				execution.(runner.DiffExecution).SetDiffSource(nil)
 			}
 			if test.SourceRefusal {
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
