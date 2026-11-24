@@ -3,7 +3,6 @@ package runnerboot_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -21,14 +20,17 @@ import (
 )
 
 func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	root := t.TempDir()
+	home := testenv.TempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	root := testenv.TempDir(t)
 	identityPath := filepath.Join(root, "private", "identity.json")
 	desired := runnerauth.ProjectConfiguration{ProjectID: "prj_example", Authority: "hub_configuration", ConfigRevision: strings.Repeat("d", 64), Source: "cloud_workflow", EffectivePolicy: &policy.Descriptor{ID: "policy_example"}, ObservedAt: time.Now().UTC()}
 	request := runnerauth.ProjectConfigurationRequest{RequestID: "detach-example", Operation: "detach_local_project", ProjectID: "prj_example", Desired: &desired}
 	var mu sync.Mutex
 	var snapshot runnerauth.RoutingSnapshot
-	var reports []*runnerauth.ProjectConfiguration
+	var delivered, acknowledged bool
+	acknowledgment := make(chan runnerauth.ProjectConfiguration, 1)
 	var identity runnerauth.Identity
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -45,14 +47,21 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			reports = append(reports, body.ProjectConfiguration)
 			response := snapshot
-			if len(reports) == 1 && body.ProjectConfiguration != nil {
-				response.ProjectConfiguration = &desired
-				response.ProjectConfigurationRequest = &request
+			if report := body.ProjectConfiguration; report != nil && !acknowledged {
+				if delivered && report.RequestID == request.RequestID {
+					acknowledged = true
+					acknowledgment <- *report
+				} else {
+					response.ProjectConfiguration = &desired
+					response.ProjectConfigurationRequest = &request
+					delivered = true
+				}
 			}
 			_ = json.NewEncoder(w).Encode(response)
 		case strings.HasSuffix(r.URL.Path, "/update/receipt"):
@@ -102,32 +111,18 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 		done <- command.ExecuteContext(ctx)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	var stopped error
-	var exited bool
-	testenv.WaitUntil(t, ctx, func() error {
+	wait := testenv.WaitContext(t, ctx)
+	var report runnerauth.ProjectConfiguration
+	select {
+	case report = <-acknowledgment:
+	case err := <-done:
+		t.Fatalf("runner stopped before acknowledging the Hub configuration command: %v", err)
+	case <-wait.Done():
 		mu.Lock()
 		defer mu.Unlock()
-		if len(reports) >= 2 || exited {
-			return nil
-		}
-		select {
-		case stopped, exited = <-done:
-			exited = true
-			return nil
-		default:
-			return errors.New("runner has not reported after the Hub configuration command")
-		}
-	})
-	mu.Lock()
-	defer mu.Unlock()
-	if len(reports) < 2 {
-		t.Fatalf("runner stopped before acknowledging the Hub configuration command: %v", stopped)
+		t.Fatalf("runner did not acknowledge the Hub configuration command: delivered=%t: %v", delivered, context.Cause(wait))
 	}
-	if reports[0] == nil {
-		t.Fatal("headless runner heartbeat carried no project configuration report; the configuration owner is not installed")
-	}
-	report := reports[1]
-	if report == nil || report.RequestID != request.RequestID || report.ProjectID != desired.ProjectID || report.Authority != "hub_configuration" || report.ConfigRevision != desired.ConfigRevision || report.Source != desired.Source || !report.Applied || !report.Saved || report.RuntimeRegistered || report.Constraint != "" {
+	if report.RequestID != request.RequestID || report.ProjectID != desired.ProjectID || report.Authority != "hub_configuration" || report.ConfigRevision != desired.ConfigRevision || report.Source != desired.Source || !report.Applied || !report.Saved || report.RuntimeRegistered || report.Constraint != "" {
 		t.Fatalf("headless runner acknowledgment = %+v, want the runtime project manager to apply the delivered detach", report)
 	}
 }
