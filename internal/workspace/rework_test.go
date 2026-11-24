@@ -3108,3 +3108,631 @@ func TestGitIndexChecksumDetectsChangeUnderSkipHash(t *testing.T) {
 		t.Fatalf("gitIndexChecksum() identical (%q) across different staged contents with index.skipHash=true", sumA)
 	}
 }
+
+func TestFinalizeNativeWorkPausedRebaseMergeDoneAccounting(t *testing.T) {
+	t.Parallel()
+	t.Run("fast-forwarded commit in done without rewritten-list succeeds", func(t *testing.T) {
+		t.Parallel()
+		f := newLandingFixture(t)
+		f.issue.NativeRework = true
+		f.issue.ProgressBaseRef = "main"
+
+		baseMain := strings.TrimSpace(runGit(t, f.source, "rev-parse", "main"))
+		runGit(t, f.info.Path, "reset", "--hard", baseMain)
+		writeCheckpointFile(t, f.info.Path, "ff.txt", "fast-forwarded commit\n")
+		runGit(t, f.info.Path, "add", "ff.txt")
+		runGit(t, f.info.Path, "commit", "-m", "fast-forwarded commit")
+		ffCommit := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+
+		writeCheckpointFile(t, f.info.Path, "conflict.txt", "branch change\n")
+		runGit(t, f.info.Path, "add", "conflict.txt")
+		runGit(t, f.info.Path, "commit", "-m", "conflicting commit")
+		conflictCommit := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+
+		runGit(t, f.info.Path, "checkout", "--detach", ffCommit)
+		gitDir := linkedWorktreeGitDir(t, f.info.Path)
+		rebaseDir := filepath.Join(gitDir, "rebase-merge")
+		if err := os.MkdirAll(rebaseDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{
+			"onto":            baseMain + "\n",
+			"orig-head":       conflictCommit + "\n",
+			"head-name":       "refs/heads/" + f.info.Branch + "\n",
+			"stopped-sha":     conflictCommit + "\n",
+			"done":            "pick " + ffCommit + " fast-forwarded commit\npick " + conflictCommit + " conflicting commit\n",
+			"git-rebase-todo": "",
+			"message":         "conflicting commit\n",
+			"author-script":   "GIT_AUTHOR_NAME='Test'\nGIT_AUTHOR_EMAIL='test@example.com'\nGIT_AUTHOR_DATE='@1700000000 +0000'\n",
+		} {
+			if err := os.WriteFile(filepath.Join(rebaseDir, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		writeCheckpointFile(t, f.info.Path, "conflict.txt", "branch change\n")
+		runGit(t, f.info.Path, "add", "conflict.txt")
+
+		if _, err := f.backend.FinalizeNativeWork(t.Context(), f.info, f.issue, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("FinalizeNativeWork() with fast-forwarded done commit error = %v", err)
+		}
+		gotFF, err := os.ReadFile(filepath.Join(f.info.Path, "ff.txt"))
+		if err != nil || string(gotFF) != "fast-forwarded commit\n" {
+			t.Fatalf("ff.txt = (%q, %v), want preserved", string(gotFF), err)
+		}
+	})
+
+	t.Run("non-redundant commit dropped from done without rewritten-list is rejected", func(t *testing.T) {
+		t.Parallel()
+		f := newLandingFixture(t)
+		f.issue.NativeRework = true
+		f.issue.ProgressBaseRef = "main"
+
+		baseMain := strings.TrimSpace(runGit(t, f.source, "rev-parse", "main"))
+		writeCheckpointFile(t, f.info.Path, "dropped.txt", "non-redundant work\n")
+		runGit(t, f.info.Path, "add", "dropped.txt")
+		runGit(t, f.info.Path, "commit", "-m", "non-redundant commit")
+		droppedCommit := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+
+		writeCheckpointFile(t, f.info.Path, "second.txt", "second work\n")
+		runGit(t, f.info.Path, "add", "second.txt")
+		runGit(t, f.info.Path, "commit", "-m", "second commit")
+		secondCommit := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+
+		runGit(t, f.info.Path, "checkout", "--detach", baseMain)
+		gitDir := linkedWorktreeGitDir(t, f.info.Path)
+		rebaseDir := filepath.Join(gitDir, "rebase-merge")
+		if err := os.MkdirAll(rebaseDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string]string{
+			"onto":            baseMain + "\n",
+			"orig-head":       secondCommit + "\n",
+			"head-name":       "refs/heads/" + f.info.Branch + "\n",
+			"stopped-sha":     secondCommit + "\n",
+			"done":            "pick " + droppedCommit + " non-redundant commit\npick " + secondCommit + " second commit\n",
+			"git-rebase-todo": "",
+			"message":         "second commit\n",
+			"author-script":   "GIT_AUTHOR_NAME='Test'\nGIT_AUTHOR_EMAIL='test@example.com'\nGIT_AUTHOR_DATE='@1700000000 +0000'\n",
+		} {
+			if err := os.WriteFile(filepath.Join(rebaseDir, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		writeCheckpointFile(t, f.info.Path, "second.txt", "second work\n")
+		runGit(t, f.info.Path, "add", "second.txt")
+
+		_, err := f.backend.FinalizeNativeWork(t.Context(), f.info, f.issue, func(context.Context) error { return nil })
+		if !errors.Is(err, ErrMergeResolutionInvalid) {
+			t.Fatalf("FinalizeNativeWork() with dropped non-redundant commit err = %v, want ErrMergeResolutionInvalid", err)
+		}
+	})
+
+	t.Run("rescheduled signing failure recovers through FinalizeNativeWork", func(t *testing.T) {
+		t.Parallel()
+		sshKeygen, err := exec.LookPath("ssh-keygen")
+		if err != nil {
+			t.Skip("ssh-keygen unavailable")
+		}
+		source := initSourceRepo(t)
+		remote := initBareRemote(t)
+		runGit(t, source, "remote", "add", "origin", remote)
+		runGit(t, source, "push", "-u", "origin", "main")
+		root := filepath.Join(t.TempDir(), "workspaces")
+		owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{Identifier: "example#rescheduled", NativeRework: true, ProgressBaseRef: "main"}
+		info, err := owner.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeCheckpointFile(t, info.Path, "topic.txt", "signed work\n")
+		runGit(t, info.Path, "add", "topic.txt")
+		runGit(t, info.Path, "commit", "-m", "topic commit")
+
+		writeCheckpointFile(t, source, "upstream.txt", "upstream change\n")
+		runGit(t, source, "add", "upstream.txt")
+		runGit(t, source, "commit", "-m", "upstream commit")
+		runGit(t, source, "push", "origin", "main")
+		targetHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+		key := filepath.Join(t.TempDir(), "signing-key")
+		if out, err := exec.CommandContext(t.Context(), sshKeygen, "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen failed: %v: %s", err, out)
+		}
+		failingSigner := filepath.Join(t.TempDir(), "failing-signer")
+		script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *\"topic commit\"*) exit 1;; esac\nfi\nexec " + shellQuote(sshKeygen) + " \"$@\"\n"
+		if err := os.WriteFile(failingSigner, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "config", "commit.gpgsign", "true")
+		runGit(t, source, "config", "gpg.format", "ssh")
+		runGit(t, source, "config", "user.signingkey", key)
+		runGit(t, source, "config", "gpg.ssh.program", failingSigner)
+
+		if _, rebaseErr := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", targetHead); rebaseErr == nil {
+			t.Fatal("expected rebase with failing signer to pause")
+		}
+		gitDir := linkedWorktreeGitDir(t, info.Path)
+		if _, statErr := os.Stat(filepath.Join(gitDir, "rebase-merge", "stopped-sha")); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("expected rescheduled signing failure without stopped-sha, stat err = %v", statErr)
+		}
+
+		failingOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := failingOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); err == nil {
+			t.Fatal("expected second FinalizeNativeWork with failing signer to fail")
+		}
+
+		runGit(t, source, "config", "gpg.ssh.program", sshKeygen)
+		recoveredOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeCheckpointFile(t, info.Path, "extra.txt", "extra staged work\n")
+		runGit(t, info.Path, "add", "extra.txt")
+		if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); !errors.Is(err, ErrMergeResolutionInvalid) {
+			t.Fatalf("FinalizeNativeWork() with extra staged file on rescheduled pick err = %v, want ErrMergeResolutionInvalid", err)
+		}
+		if extra, err := os.ReadFile(filepath.Join(info.Path, "extra.txt")); err != nil || string(extra) != "extra staged work\n" {
+			t.Fatalf("extra.txt after rejection = (%q, %v), want preserved", string(extra), err)
+		}
+		runGit(t, info.Path, "rm", "-f", "extra.txt")
+
+		if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("FinalizeNativeWork() after two consecutive rescheduled signing failures error = %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(info.Path, "topic.txt"))
+		if err != nil || string(got) != "signed work\n" {
+			t.Fatalf("topic.txt = (%q, %v), want preserved", string(got), err)
+		}
+	})
+
+	t.Run("rescheduled signing failure recovers when pick replaces tracked directory with tracked symlink", func(t *testing.T) {
+		t.Parallel()
+		sshKeygen, err := exec.LookPath("ssh-keygen")
+		if err != nil {
+			t.Skip("ssh-keygen unavailable")
+		}
+		source := initSourceRepo(t)
+		if err := os.MkdirAll(filepath.Join(source, "config"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeCheckpointFile(t, source, "config/app.env", "tracked-env\n")
+		runGit(t, source, "add", "config/app.env")
+		runGit(t, source, "commit", "-m", "track config dir")
+		remote := initBareRemote(t)
+		runGit(t, source, "remote", "add", "origin", remote)
+		runGit(t, source, "push", "-u", "origin", "main")
+		root := filepath.Join(t.TempDir(), "workspaces")
+		owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issue := Issue{Identifier: "example#rescheduled-tracked-symlink", NativeRework: true, ProgressBaseRef: "main"}
+		info, err := owner.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "rm", "config/app.env")
+		if err := os.Symlink("alt-config", filepath.Join(info.Path, "config")); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, info.Path, "add", "config")
+		runGit(t, info.Path, "commit", "-m", "replace config dir with symlink")
+
+		writeCheckpointFile(t, source, "upstream.txt", "upstream change\n")
+		runGit(t, source, "add", "upstream.txt")
+		runGit(t, source, "commit", "-m", "upstream commit")
+		runGit(t, source, "push", "origin", "main")
+		targetHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+		key := filepath.Join(t.TempDir(), "signing-key")
+		if out, err := exec.CommandContext(t.Context(), sshKeygen, "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen failed: %v: %s", err, out)
+		}
+		failingSigner := filepath.Join(t.TempDir(), "failing-signer")
+		script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *\"replace config dir with symlink\"*) exit 1;; esac\nfi\nexec " + shellQuote(sshKeygen) + " \"$@\"\n"
+		if err := os.WriteFile(failingSigner, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, source, "config", "commit.gpgsign", "true")
+		runGit(t, source, "config", "gpg.format", "ssh")
+		runGit(t, source, "config", "user.signingkey", key)
+		runGit(t, source, "config", "gpg.ssh.program", failingSigner)
+
+		if _, rebaseErr := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", targetHead); rebaseErr == nil {
+			t.Fatal("expected rebase with failing signer to pause")
+		}
+		runGit(t, source, "config", "gpg.ssh.program", sshKeygen)
+		recoveredOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("FinalizeNativeWork() with tracked symlink replacement error = %v", err)
+		}
+		gotTarget, err := os.Readlink(filepath.Join(info.Path, "config"))
+		if err != nil || gotTarget != "alt-config" {
+			t.Fatalf("config symlink after recovery = (%q, %v), want alt-config", gotTarget, err)
+		}
+	})
+
+	t.Run("rescheduled signing failure recovers when pick replaces tracked file with tracked directory", func(t *testing.T) {
+		t.Parallel()
+		sshKeygen, err := exec.LookPath("ssh-keygen")
+		if err != nil {
+			t.Skip("ssh-keygen unavailable")
+		}
+		for _, tc := range []struct {
+			name       string
+			cleanIndex bool
+		}{
+			{name: "staged index"},
+			{name: "clean index", cleanIndex: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				source := initSourceRepo(t)
+				writeCheckpointFile(t, source, "config", "tracked-file\n")
+				runGit(t, source, "add", "config")
+				runGit(t, source, "commit", "-m", "track config file")
+				remote := initBareRemote(t)
+				runGit(t, source, "remote", "add", "origin", remote)
+				runGit(t, source, "push", "-u", "origin", "main")
+				root := filepath.Join(t.TempDir(), "workspaces")
+				owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := Issue{Identifier: "example#rescheduled-tracked-dir", NativeRework: true, ProgressBaseRef: "main"}
+				info, err := owner.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, info.Path, "rm", "config")
+				if err := os.MkdirAll(filepath.Join(info.Path, "config"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeCheckpointFile(t, info.Path, "config/app.env", "dir-env\n")
+				runGit(t, info.Path, "add", "config/app.env")
+				runGit(t, info.Path, "commit", "-m", "replace config file with dir")
+
+				writeCheckpointFile(t, source, "upstream.txt", "upstream change\n")
+				runGit(t, source, "add", "upstream.txt")
+				runGit(t, source, "commit", "-m", "upstream commit")
+				runGit(t, source, "push", "origin", "main")
+				targetHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+				key := filepath.Join(t.TempDir(), "signing-key")
+				if out, err := exec.CommandContext(t.Context(), sshKeygen, "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+					t.Fatalf("ssh-keygen failed: %v: %s", err, out)
+				}
+				failingSigner := filepath.Join(t.TempDir(), "failing-signer")
+				script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *\"replace config file with dir\"*) exit 1;; esac\nfi\nexec " + shellQuote(sshKeygen) + " \"$@\"\n"
+				if err := os.WriteFile(failingSigner, []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "config", "commit.gpgsign", "true")
+				runGit(t, source, "config", "gpg.format", "ssh")
+				runGit(t, source, "config", "user.signingkey", key)
+				runGit(t, source, "config", "gpg.ssh.program", failingSigner)
+
+				if _, rebaseErr := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", targetHead); rebaseErr == nil {
+					t.Fatal("expected rebase with failing signer to pause")
+				}
+				if tc.cleanIndex {
+					runGit(t, info.Path, "reset", "--hard", "HEAD")
+				}
+				runGit(t, source, "config", "gpg.ssh.program", sshKeygen)
+				recoveredOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); err != nil {
+					t.Fatalf("FinalizeNativeWork() with tracked dir replacement error = %v", err)
+				}
+				got, err := os.ReadFile(filepath.Join(info.Path, "config", "app.env"))
+				if err != nil || string(got) != "dir-env\n" {
+					t.Fatalf("config/app.env after recovery = (%q, %v), want dir-env", string(got), err)
+				}
+			})
+		}
+	})
+
+	t.Run("rescheduled signing failure with clean index refuses overwriting ignored destination file", func(t *testing.T) {
+		t.Parallel()
+		sshKeygen, err := exec.LookPath("ssh-keygen")
+		if err != nil {
+			t.Skip("ssh-keygen unavailable")
+		}
+		for _, tc := range []struct {
+			name            string
+			secondPick      bool
+			modifyDelete    bool
+			dirRename       bool
+			disableDirRenam bool
+			unionConflict   bool
+		}{
+			{name: "active pick adds ignored file"},
+			{name: "later pick adds ignored file", secondPick: true},
+			{name: "later pick modifies upstream-deleted file", secondPick: true, modifyDelete: true},
+			{name: "later pick adds file into upstream-renamed directory", secondPick: true, dirRename: true},
+			{name: "later pick with merge.directoryRenames=false protects old path", secondPick: true, dirRename: true, disableDirRenam: true},
+			{name: "later pick after merge=union conflict protects ignored file", secondPick: true, unionConflict: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				source := initSourceRepo(t)
+				ignorePattern := "report\n"
+				if tc.dirRename {
+					ignorePattern = "new/report\n"
+					if tc.disableDirRenam {
+						ignorePattern = "old/report\n"
+					}
+					if err := os.MkdirAll(filepath.Join(source, "old"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					writeCheckpointFile(t, source, "old/a.txt", "a\n")
+					writeCheckpointFile(t, source, "old/b.txt", "b\n")
+					runGit(t, source, "add", "old")
+				}
+				if tc.unionConflict {
+					writeCheckpointFile(t, source, "shared.txt", "base\n")
+					runGit(t, source, "add", "shared.txt")
+				}
+				writeCheckpointFile(t, source, ".gitignore", ignorePattern)
+				runGit(t, source, "add", ".gitignore")
+				if tc.modifyDelete {
+					writeCheckpointFile(t, source, "report", "base-report\n")
+					runGit(t, source, "add", "-f", "report")
+				}
+				runGit(t, source, "commit", "-m", "ignore report")
+				remote := initBareRemote(t)
+				runGit(t, source, "remote", "add", "origin", remote)
+				runGit(t, source, "push", "-u", "origin", "main")
+				root := filepath.Join(t.TempDir(), "workspaces")
+				owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := Issue{Identifier: "example#rescheduled-clean-index", NativeRework: true, ProgressBaseRef: "main"}
+				info, err := owner.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				failSubject := "add report"
+				if tc.secondPick {
+					writeCheckpointFile(t, info.Path, "first.txt", "first-body\n")
+					runGit(t, info.Path, "add", "first.txt")
+					runGit(t, info.Path, "commit", "-m", "first pick")
+					failSubject = "first pick"
+				}
+				if tc.unionConflict {
+					writeCheckpointFile(t, info.Path, "shared.txt", "branch-line\n")
+					runGit(t, info.Path, "add", "shared.txt")
+					runGit(t, info.Path, "commit", "-m", "union conflict pick")
+				}
+				commitReportPath := "report"
+				localReportPath := "report"
+				if tc.dirRename {
+					commitReportPath = "old/report"
+					localReportPath = "new/report"
+					if tc.disableDirRenam {
+						localReportPath = "old/report"
+					}
+				}
+				writeCheckpointFile(t, info.Path, commitReportPath, "report-body\n")
+				runGit(t, info.Path, "add", "-f", commitReportPath)
+				runGit(t, info.Path, "commit", "-m", "add report")
+
+				if tc.modifyDelete {
+					runGit(t, source, "rm", "report")
+				}
+				if tc.dirRename {
+					runGit(t, source, "mv", "old", "new")
+				}
+				if tc.unionConflict {
+					writeCheckpointFile(t, source, "shared.txt", "upstream-line\n")
+					runGit(t, source, "add", "shared.txt")
+				}
+				if tc.disableDirRenam {
+					runGit(t, source, "config", "merge.directoryRenames", "false")
+				}
+				writeCheckpointFile(t, source, "upstream.txt", "upstream change\n")
+				runGit(t, source, "add", "upstream.txt")
+				runGit(t, source, "commit", "-m", "upstream commit")
+				runGit(t, source, "push", "origin", "main")
+				targetHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+				if tc.unionConflict {
+					if err := os.WriteFile(filepath.Join(source, ".git", "info", "attributes"), []byte("shared.txt merge=union\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				key := filepath.Join(t.TempDir(), "signing-key")
+				if out, err := exec.CommandContext(t.Context(), sshKeygen, "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+					t.Fatalf("ssh-keygen failed: %v: %s", err, out)
+				}
+				failingSigner := filepath.Join(t.TempDir(), "failing-signer")
+				script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *\"" + failSubject + "\"*) exit 1;; esac\nfi\nexec " + shellQuote(sshKeygen) + " \"$@\"\n"
+				if err := os.WriteFile(failingSigner, []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "config", "commit.gpgsign", "true")
+				runGit(t, source, "config", "gpg.format", "ssh")
+				runGit(t, source, "config", "user.signingkey", key)
+				runGit(t, source, "config", "gpg.ssh.program", failingSigner)
+
+				if _, rebaseErr := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", targetHead); rebaseErr == nil {
+					t.Fatal("expected rebase with failing signer to pause")
+				}
+				runGit(t, info.Path, "reset", "--hard", "HEAD")
+				if tc.disableDirRenam {
+					if err := os.MkdirAll(filepath.Join(info.Path, "old"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeCheckpointFile(t, info.Path, localReportPath, "private local edit\n")
+				runGit(t, source, "config", "gpg.ssh.program", sshKeygen)
+				recoveredOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("FinalizeNativeWork() with clean index and ignored %s err = %v, want ErrMergeResolutionInvalid", localReportPath, err)
+				}
+				got, err := os.ReadFile(filepath.Join(info.Path, localReportPath))
+				if err != nil || string(got) != "private local edit\n" {
+					t.Fatalf("%s after refusal = (%q, %v), want private local edit preserved", localReportPath, string(got), err)
+				}
+			})
+		}
+	})
+
+	t.Run("rescheduled signing failure refuses reset that would overwrite ignored untracked file", func(t *testing.T) {
+		t.Parallel()
+		sshKeygen, err := exec.LookPath("ssh-keygen")
+		if err != nil {
+			t.Skip("ssh-keygen unavailable")
+		}
+		for _, tc := range []struct {
+			name        string
+			rename      bool
+			symlink     bool
+			literal     bool
+			caseVariant bool
+			hardLink    bool
+		}{
+			{name: "deleted tracked file"},
+			{name: "renamed tracked file", rename: true},
+			{name: "deleted file behind ignored symlink directory", symlink: true},
+			{name: "deleted file with pathspec magic prefix", literal: true},
+			{name: "deleted file recreated with different case", caseVariant: true},
+			{name: "deleted file recreated as hard link to added file", hardLink: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				source := initSourceRepo(t)
+				trackedPath := ".env"
+				recreatedPath := ".env"
+				ignoreEntry := ".env\n"
+				if tc.symlink {
+					trackedPath = "config/app.env"
+					ignoreEntry = "config\n"
+					if err := os.MkdirAll(filepath.Join(source, "config"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				} else if tc.literal {
+					trackedPath = ":notes"
+					recreatedPath = ":notes"
+					ignoreEntry = ":notes\n"
+				} else if tc.caseVariant {
+					probeDir := t.TempDir()
+					if err := os.WriteFile(filepath.Join(probeDir, "caseprobe"), []byte("x"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := os.Lstat(filepath.Join(probeDir, "CASEPROBE")); err != nil {
+						t.Skip("filesystem is case-sensitive")
+					}
+					trackedPath = "notes"
+					recreatedPath = "NOTES"
+					ignoreEntry = "NOTES\n"
+				} else if tc.hardLink {
+					trackedPath = "notes"
+					recreatedPath = "notes"
+					ignoreEntry = "notes\n"
+				}
+				writeCheckpointFile(t, source, trackedPath, "tracked-env\n")
+				runGit(t, source, "--literal-pathspecs", "add", "--", trackedPath)
+				runGit(t, source, "commit", "-m", "track env")
+				remote := initBareRemote(t)
+				runGit(t, source, "remote", "add", "origin", remote)
+				runGit(t, source, "push", "-u", "origin", "main")
+				root := filepath.Join(t.TempDir(), "workspaces")
+				owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue := Issue{Identifier: "example#rescheduled-env", NativeRework: true, ProgressBaseRef: "main"}
+				info, err := owner.Create(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.rename {
+					runGit(t, info.Path, "mv", ".env", "example.env")
+				} else {
+					runGit(t, info.Path, "--literal-pathspecs", "rm", "--", trackedPath)
+				}
+				if tc.hardLink {
+					writeCheckpointFile(t, info.Path, "report", "report-body\n")
+					runGit(t, info.Path, "add", "report")
+				}
+				writeCheckpointFile(t, info.Path, ".gitignore", ignoreEntry)
+				runGit(t, info.Path, "add", ".gitignore")
+				runGit(t, info.Path, "commit", "-m", "untrack env")
+
+				writeCheckpointFile(t, source, "upstream.txt", "upstream change\n")
+				runGit(t, source, "add", "upstream.txt")
+				runGit(t, source, "commit", "-m", "upstream commit")
+				runGit(t, source, "push", "origin", "main")
+				targetHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+				key := filepath.Join(t.TempDir(), "signing-key")
+				if out, err := exec.CommandContext(t.Context(), sshKeygen, "-t", "ed25519", "-N", "", "-f", key).CombinedOutput(); err != nil {
+					t.Fatalf("ssh-keygen failed: %v: %s", err, out)
+				}
+				failingSigner := filepath.Join(t.TempDir(), "failing-signer")
+				script := "#!/bin/sh\nfor arg do payload=$arg; done\nif test -f \"$payload\"; then\n content=$(cat \"$payload\")\n case \"$content\" in *\"untrack env\"*) exit 1;; esac\nfi\nexec " + shellQuote(sshKeygen) + " \"$@\"\n"
+				if err := os.WriteFile(failingSigner, []byte(script), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "config", "commit.gpgsign", "true")
+				runGit(t, source, "config", "gpg.format", "ssh")
+				runGit(t, source, "config", "user.signingkey", key)
+				runGit(t, source, "config", "gpg.ssh.program", failingSigner)
+
+				if _, rebaseErr := runGitAt(t.Context(), info.Path, "rebase", "--no-update-refs", "--no-autostash", "--no-rebase-merges", targetHead); rebaseErr == nil {
+					t.Fatal("expected rebase with failing signer to pause")
+				}
+				var symlinkTarget string
+				wantBody := "local-secret\n"
+				if tc.symlink {
+					symlinkTarget = t.TempDir()
+					if err := os.Symlink(symlinkTarget, filepath.Join(info.Path, "config")); err != nil {
+						t.Fatal(err)
+					}
+				} else if tc.hardLink {
+					if err := os.Link(filepath.Join(info.Path, "report"), filepath.Join(info.Path, recreatedPath)); err != nil {
+						t.Fatal(err)
+					}
+					wantBody = "report-body\n"
+				} else {
+					writeCheckpointFile(t, info.Path, recreatedPath, wantBody)
+				}
+				runGit(t, source, "config", "gpg.ssh.program", sshKeygen)
+				recoveredOwner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := recoveredOwner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil }); !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("FinalizeNativeWork() with obstructed reset err = %v, want ErrMergeResolutionInvalid", err)
+				}
+				if tc.symlink {
+					gotTarget, err := os.Readlink(filepath.Join(info.Path, "config"))
+					if err != nil || gotTarget != symlinkTarget {
+						t.Fatalf("config symlink after refusal = (%q, %v), want %q preserved", gotTarget, err, symlinkTarget)
+					}
+				} else {
+					gotEnv, err := os.ReadFile(filepath.Join(info.Path, recreatedPath))
+					if err != nil || string(gotEnv) != wantBody {
+						t.Fatalf("%s after refusal = (%q, %v), want %q preserved", recreatedPath, string(gotEnv), err, wantBody)
+					}
+				}
+			})
+		}
+	})
+}
