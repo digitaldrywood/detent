@@ -151,6 +151,9 @@ func TestNativeInstanceBlockerCompletion(t *testing.T) {
 // workflow through the lane ledger and releases the claim instead of
 // continuing the item in its active lane.
 func TestNativeChangeRunCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping multi-scenario native completion test in -short mode")
+	}
 	t.Parallel()
 	workflow := []connector.WorkflowState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
