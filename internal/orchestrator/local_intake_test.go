@@ -61,9 +61,9 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 		lane, mode, want string
 		landing          *runpkg.NativeLanding
 	}{
-		{lane: "Rework", mode: runpkg.RunModeImplement, want: "Merging"},
+		{lane: "Rework", mode: runpkg.RunModeImplement, want: "Human Review"},
 		{lane: "Merging", mode: runpkg.RunModeMerge, want: "Rework", landing: &runpkg.NativeLanding{RefusalKind: workspace.LandRefusalConflict, Refusal: "source conflict"}},
-		{lane: "Rework", mode: runpkg.RunModeImplement, want: "Merging"},
+		{lane: "Rework", mode: runpkg.RunModeImplement, want: "Human Review"},
 		{lane: "Merging", mode: runpkg.RunModeMerge, want: "Done", landing: &runpkg.NativeLanding{Landed: true, ChangeID: "change_1", VersionID: "version_2", HeadSHA: "head", MergeSHA: "merged"}},
 	} {
 		t.Run(turn.lane+" to "+turn.want, func(t *testing.T) {
@@ -73,7 +73,7 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 				t.Fatal("admitted continuation suppressed")
 			}
 			state.Running[issue.ID] = Running{Issue: issue, StartedAt: now, Mode: turn.mode}
-			tracker.reviewed = new(true)
+			tracker.reviewed = new(turn.landing != nil)
 			result := runpkg.RunResult{FinalState: FinalStateCompleted, NativeChange: change, NativeLanding: turn.landing}
 			if turn.landing != nil && turn.landing.Landed {
 				tracker.stateIssues[2].State = "Done"

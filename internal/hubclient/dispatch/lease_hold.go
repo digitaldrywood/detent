@@ -65,3 +65,16 @@ func (s *Scheduler) syncLeaseHold(ctx context.Context) {
 		}
 	}
 }
+
+func (s *Scheduler) holdNativeFetch(ctx context.Context) func() {
+	s.mu.Lock()
+	s.nativeFetches++
+	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
+	return func() {
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(ctx)
+	}
+}

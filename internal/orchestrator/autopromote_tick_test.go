@@ -4607,8 +4607,8 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
 	}
 	for _, fragment := range []string{
-		"queue_depth=2",
-		"ready_count=1",
+		"selection_position=1",
+		"selection_reason=clean_head",
 	} {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)

@@ -55,6 +55,11 @@ import (
 type reviewExecutionHost struct {
 	executioncontract.ExecutionHost
 	client *hubapi.Client
+	claim  executioncontract.ExecutionClaim
+}
+
+func (h reviewExecutionHost) ExecutionClaim(item string) (executioncontract.ExecutionClaim, bool) {
+	return h.claim, item == string(h.claim.Lease.WorkItemID)
 }
 
 func (h reviewExecutionHost) Transport() *hubapi.Client                                   { return h.client }
@@ -1283,7 +1288,8 @@ func testChangeVersionRecordPublication(t *testing.T, running bool, repository t
 			t.Fatal(err)
 		}
 		activeLease := tracker.NativeLease{ID: tracker.LeaseID(lease.LeaseID), WorkItemID: item.WorkItemID, FencingToken: tracker.FencingToken(lease.FencingToken), PolicyID: descriptor.ID}
-		execution, err := nativechange.NewRecoveredExecution(reviewExecutionHost{client: client}, ctx, executioncontract.ExecutionClaim{Source: connector, Lease: activeLease}, checkpoint.State{Data: observation.Data, Diff: &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}, PreparedFinalization: &tracker.NativeFinalization{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}})
+		claim := executioncontract.ExecutionClaim{Source: connector, Lease: activeLease, Deadline: time.Now().Add(time.Hour)}
+		execution, err := nativechange.NewRecoveredExecution(reviewExecutionHost{client: client, claim: claim}, ctx, claim, checkpoint.State{Data: observation.Data, Diff: &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}, PreparedFinalization: &tracker.NativeFinalization{Changed: true, ChangeID: change.ID, VersionID: version.ID, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA}})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -193,6 +193,7 @@ func TestNativeReviewPublicationRetry(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					r.sleepInhibitor = nil
 					newExecution := func() *receiptReviewExecution {
 						events := []string{}
 						e := &receiptReviewExecution{implementationReviewExecution: &implementationReviewExecution{events: &events}}

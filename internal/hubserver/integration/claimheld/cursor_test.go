@@ -75,9 +75,9 @@ func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 	h := hubfixture.Open(t, hubfixture.Config{})
 	f := newHeldProject(t, h, "", hubserver.HostedProjectStates())
 	for index := range refused {
-		f.createIn(t, fmt.Sprintf("Unreviewed landing %d", index), 0, "Merging")
+		f.createIn(t, fmt.Sprintf("Blocked without recorded recovery %d", index), 0, "Blocked")
 	}
-	target := f.create(t, "Eligible after the landing prefix", 3)
+	target := f.create(t, "Eligible after the refused prefix", 3)
 	other := f.enroll(t)
 	pages := (refused + 99) / 100
 
@@ -118,7 +118,7 @@ func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 	}
 	tenant := newHeldProject(t, h, hubfixture.Secondary, hubserver.HostedProjectStates())
 	for index := range 5 {
-		tenant.createIn(t, fmt.Sprintf("Tenant landing %d", index), 0, "Merging")
+		tenant.createIn(t, fmt.Sprintf("Tenant blocked work %d", index), 0, "Blocked")
 	}
 	tenant.scanAs(t, tenant.runner, "tenant-runner")
 	if after, _ := f.cursor(t, f.runner); after != before {

@@ -110,6 +110,18 @@ func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(con
 	})
 }
 
+type publicationFaultWorkspace struct {
+	*workspace.LocalGit
+	mutate func(context.Context, string) error
+}
+
+func (w publicationFaultWorkspace) PrepareGitHubPublication(ctx context.Context, info workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if err := w.mutate(ctx, info.Path); err != nil {
+		return workspace.GitHubPublication{}, fmt.Errorf("inject publication fault: %w", err)
+	}
+	return w.LocalGit.PrepareGitHubPublication(ctx, info, issue, opts)
+}
+
 // TestNativeRunnerOpensChangeAndLeavesDispatch runs the production runner with
 // a fake agent in a real git worktree against a real hub. A run that commits
 // opens a Change Request carrying the stored attempt diff and the item moves
@@ -616,8 +628,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					}
 					nativeChangeGit(t, path, "add", "CHANGE.md")
 				}
-				nativeChangeGit(t, source, "commit", "-m", "parallel source")
-				nativeChangeGit(t, source, "push", "origin", "main")
 			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			if execution == nil {
@@ -643,6 +653,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 			}
 			provider := &committingAgent{finalMessage: test.FinalMessage, dependencyOnly: test.DependencyOnly, failedCheck: test.FailedCheck, commit: test.Commit, dirty: test.Dirty, staged: test.Staged || genuinePublication, validator: test.Validator, lowScore: test.LowScore, complete: test.Absorbed || test.Delivered != "" || test.SummaryFailure, hold: test.Hold, inProgress: test.LateConflict}
+			if test.LateConflict {
+				provider.duringTurn = sync.OnceFunc(func() {
+					nativeChangeGit(t, source, "commit", "-m", "parallel source")
+					nativeChangeGit(t, source, "push", "origin", "main")
+				})
+			}
 			if test.SourceFixture != "" {
 				provider.duringTurn = func() {
 					for path, original := range fixtures {
@@ -1627,17 +1643,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if test.PublicationFault == "post_push_read" {
 					nativeChangeGit(t, remote, "update-ref", "-d", "refs/heads/"+oldPublicationBranch)
 				}
-				if test.PublicationFault == "dirty_source" {
-					if err := os.WriteFile(filepath.Join(provider.workspace, "UNFINISHED.md"), []byte("preserve unfinished source"), 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if test.PublicationFault == "changed_head" {
-					nativeChangeGit(t, provider.workspace, "commit", "--allow-empty", "-m", "new local source")
-				}
-				if test.PublicationFault == "branch" {
-					nativeChangeGit(t, provider.workspace, "branch", "-m", "renamed-publication")
-				}
 				if test.PublicationFault == "missing_remote" {
 					nativeChangeGit(t, remote, "update-ref", "-d", "refs/heads/"+oldPublicationBranch)
 				}
@@ -1800,7 +1805,37 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(err)
 					}
 				}
+				var mutateCheckout func(context.Context, string) error
+				switch test.PublicationFault {
+				case "dirty_source":
+					mutateCheckout = func(_ context.Context, path string) error {
+						return os.WriteFile(filepath.Join(path, "UNFINISHED.md"), []byte("preserve unfinished source"), 0o600)
+					}
+				case "changed_head":
+					mutateCheckout = func(ctx context.Context, path string) error {
+						return exec.CommandContext(ctx, "git", "-C", path, "commit", "--allow-empty", "-m", "new local source").Run()
+					}
+				case "branch":
+					mutateCheckout = func(ctx context.Context, path string) error {
+						return exec.CommandContext(ctx, "git", "-C", path, "branch", "-m", "renamed-publication").Run()
+					}
+				}
+				var faultApplied atomic.Bool
+				if mutateCheckout != nil {
+					dependencies.Workspace = publicationFaultWorkspace{LocalGit: backend.(*workspace.LocalGit), mutate: func(ctx context.Context, path string) error {
+						err := mutateCheckout(ctx, path)
+						faultApplied.Store(err == nil)
+						return err
+					}}
+					agent, err = runner.NewRunner(dependencies)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{ownedExecution: owner, forge: forge, losePush: &losePush, retainedHead: retainedHead, publicationFault: publicationFault}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+				if mutateCheckout != nil && !faultApplied.Load() {
+					t.Fatalf("publication fault did not reach the recovered checkout: %v", err)
+				}
 				result.NativeChange = owner.NativeChange()
 				if test.PublicationFault == "initial_read" || test.PublicationFault == "post_push_read" {
 					if !refReadFailed.Load() {
@@ -2059,10 +2094,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				h.claim(t, next.ID)
 				return
 			}
+			var interruptedConflictAttempt string
 			if test.LateConflict {
 				owner := execution.(*ownedExecution)
-				if err != nil || result.FinalState != runner.FinalStateCompleted || result.NativeChange != nil || owner.CompletionData().Outcome != "succeeded" || owner.CompletionSnapshot().WorktreeState != "dirty" || checks.DirtyArtifacts(t, Underlying(owner)) {
-					t.Fatalf("late host conflict lost successful dirty continuation: result=%+v outcome=%+v error=%v", result, owner.CompletionData(), err)
+				var incomplete *workspace.SourceFinalizationIncomplete
+				if !errors.As(err, &incomplete) || incomplete.Status != workspace.MergePrepareStatusConflict || result.NativeChange != nil || owner.CompletionData().Outcome != "interrupted" || owner.CompletionSnapshot().WorktreeState != "dirty" || checks.DirtyArtifacts(t, Underlying(owner)) {
+					t.Fatalf("late host conflict lost interrupted dirty continuation: outcome=%s recovery=%s error=%v", owner.CompletionData().Outcome, owner.CompletionSnapshot().WorktreeState, err)
 				}
 				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
 				if readErr != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
@@ -2083,14 +2120,18 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatalf("late conflict lost durable native attempt: %+v, %v", recovery.Attempts, readErr)
 				}
 				attempt := recovery.Attempts[0]
-				if attempt.Status != "succeeded" || attempt.Sequence != owner.CompletionData().Sequence || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "dirty" || attempt.Checkpoint.HeadSHA != result.DiffStats.HeadSHA {
+				interruptedConflictAttempt = attempt.AttemptID
+				if attempt.Status != "interrupted" || attempt.Sequence != owner.CompletionData().Sequence || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "dirty" || attempt.Checkpoint.HeadSHA != result.DiffStats.HeadSHA {
 					t.Fatalf("late conflict receipt disagrees with authentic outcome: %+v", attempt)
 				}
 				if attempt.Disposition == nil || attempt.Disposition.Status != "in_progress" || attempt.Disposition.Blockers || attempt.Disposition.HumanAction || attempt.Disposition.ReasonCode != "" {
 					t.Fatalf("late conflict did not retain an unfinished disposition: %+v", attempt.Disposition)
 				}
 				previousLease := execution.Recovery().Lease
-				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "interrupted"); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.native.Release(t.Context(), previousLease, "released"); err != nil {
 					t.Fatal(err)
 				}
 				candidates := h.candidatesIn(t, "Rework")
@@ -2113,6 +2154,20 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if !provider.bound && !test.SSH {
 				t.Fatalf("native worker did not bind its conversation: run error=%v", err)
+			}
+			if test.WantNone {
+				var incomplete *workspace.SourceFinalizationIncomplete
+				if !errors.As(err, &incomplete) || incomplete.Status != workspace.MergePrepareStatusDirty || result.NativeChange != nil || !slices.Contains(result.DiffStats.UntrackedPaths, "SCRATCH.md") {
+					t.Fatalf("unstaged source did not produce a recoverable finalization refusal: result=%+v error=%v", result.DiffStats, err)
+				}
+				data, readErr := os.ReadFile(filepath.Join(provider.workspace, "SCRATCH.md"))
+				if readErr != nil || string(data) != "draft\n" {
+					t.Fatalf("unstaged source was altered during finalization: %q, %v", data, readErr)
+				}
+				if state := h.state(t, issue.ID); state != test.WantState || len(h.changes(t, issue.ID)) != 0 {
+					t.Fatalf("dirty work moved to %s or opened a change", state)
+				}
+				return
 			}
 			if test.BrokenSigning {
 				signature, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "log", "-1", "--format=%G?").Output()
@@ -2326,15 +2381,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				if h.state(t, issue.ID) != test.WantState || len(h.candidatesIn(t, "Rework")) != 0 || provider.calls != 1 {
 					t.Fatal("refused publication redispatched coding instead of review")
-				}
-				return
-			}
-			if test.WantNone {
-				if change != nil {
-					t.Fatalf("dirty work reported %#v; it takes the ordinary completion path", change)
-				}
-				if state := h.state(t, issue.ID); state != test.WantState || len(h.changes(t, issue.ID)) != 0 {
-					t.Fatalf("dirty work moved to %s or opened a change", state)
 				}
 				return
 			}
@@ -2613,8 +2659,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatalf("completed conflict journey lost authentic attempts: %+v, %v", attempts.Items, err)
 					}
 					for _, attempt := range attempts.Items {
-						if attempt.Status != "succeeded" || attempt.PolicyID != h.descriptor.ID {
-							t.Fatalf("host conflict became a failed or repinned attempt: %+v", attempt)
+						wantStatus := "succeeded"
+						if attempt.AttemptID == interruptedConflictAttempt {
+							wantStatus = "interrupted"
+						}
+						if attempt.Status != wantStatus || attempt.PolicyID != h.descriptor.ID {
+							t.Fatalf("conflict journey changed attempt status or policy: attempt=%s status=%s want=%s policy=%s", attempt.AttemptID, attempt.Status, wantStatus, attempt.PolicyID)
 						}
 					}
 				}
@@ -3319,7 +3369,9 @@ func PublicationFixtureKeepsLeaseUntilHandoff(t *testing.T, factories Constructo
 		t.Fatal(err)
 	}
 	returned()
-	SetSchedulerNow(h.scheduler, time.Now().Add(2*h.scheduler.LeaseDuration()))
+	if _, err := h.scheduler.RenewClaimHeartbeat(guarded, issue.ID, h.clock()); err != nil {
+		t.Fatalf("renew publication claim before handoff: %v", err)
+	}
 	if err := fixture.Validate(guarded); err != nil {
 		t.Fatalf("publication guard did not retain renewable authority: %v", err)
 	}

@@ -30,6 +30,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type publicationClaimHost struct {
+	executioncontract.ExecutionHost
+	claim executioncontract.ExecutionClaim
+}
+
+func (h publicationClaimHost) ExecutionClaim(item string) (executioncontract.ExecutionClaim, bool) {
+	return h.claim, item == string(h.claim.Lease.WorkItemID)
+}
+
 func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -50,10 +59,13 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 		{name: "refused version retains its failure", head: "published-head", effect: "confirmed", versionError: "version refused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			lease := tracker.NativeLease{ID: "lease", WorkItemID: "item", FencingToken: 1}
+			host := publicationClaimHost{claim: executioncontract.ExecutionClaim{Lease: lease, Deadline: time.Now().Add(time.Hour)}}
 			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
 			execution := &nativeExecution{
-				scheduler: &executionAuthority{now: time.Now},
+				scheduler: &executionAuthority{now: time.Now, host: host},
+				claim:     nativeClaim{lease: lease},
 				settled:   !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
 				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},

@@ -24,6 +24,7 @@ type Request struct {
 	Backend         workspace.Backend
 	Info            workspace.Info
 	Issue           workspace.Issue
+	PublishedSource *workspace.PhaseSource
 	Description     string
 	HumanReview     bool
 	AutomatedReview bool
@@ -75,7 +76,13 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 		if pushedHead != head || pushedTree != tree {
 			return errors.New("pushed plan source does not match the reviewed source")
 		}
-		return req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, "")
+		if err := req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, ""); err != nil {
+			return err
+		}
+		if req.PublishedSource != nil {
+			*req.PublishedSource = workspace.PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
+		}
+		return nil
 	}
 	phase, approval := "plan_draft", ""
 	if !state.NeedsProvider() && state.AnswerID != "" && state.AnswerAttemptID != "" {
