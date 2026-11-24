@@ -279,7 +279,7 @@ endif
 
 $(GOLANGCI_LINT_CUSTOM): $(GOLANGCI_LINT) .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
 	@grep -q '^version: $(GOLANGCI_LINT_VERSION)$$' .custom-gcl.yml || { echo ".custom-gcl.yml version must match $(GOLANGCI_LINT_VERSION_FILE) ($(GOLANGCI_LINT_VERSION))"; exit 1; }
-	GIT_ALLOW_PROTOCOL=https GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" custom --destination "$(GOLANGCI_LINT_CUSTOM_DIR)" --name golangci-lint-custom
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" custom --destination "$(GOLANGCI_LINT_CUSTOM_DIR)" --name golangci-lint-custom
 
 $(GOLANGCI_LINT):
 	@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"

@@ -25,24 +25,33 @@ if name == "go" and args[:1] == ["env"]:
     print("fixture")
     sys.exit(0)
 with Path(".git/trace").open("a") as stream:
-    stream.write(json.dumps({"tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"), "token": "DETENT_API_TOKEN" in os.environ, "postgres": os.environ.get("DETENT_TEST_POSTGRES"), "tmpdir": os.environ.get("TMPDIR")}) + "\n")
+    stream.write(json.dumps({
+        "tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"),
+        "token": "DETENT_API_TOKEN" in os.environ, "postgres": os.environ.get("DETENT_TEST_POSTGRES"),
+        "tmpdir": os.environ.get("TMPDIR"), "git_protocols": os.environ.get("GIT_ALLOW_PROTOCOL"),
+    }) + "\n")
 if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "golangci-lint" and os.environ.get("FAIL_STAGE") == "lint"):
     sys.exit(17)
 if name == "go" and args[:1] == ["list"]:
+    embeds = {
+        "lib": ["data.txt"],
+        ".": ["Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"],
+    }
     for directory, imports, test_imports in (
         ("lib", [], []),
-        ("app", ["example.test/lib"], []),
+        ("app", ["example.test/lib", "example.test"], []),
         ("integration", [], ["example.test/app"]),
         ("consumer", ["example.test/integration"], []),
         ("dual", ["example.test/lib"], ["example.test/app"]),
         ("dualconsumer", ["example.test/dual"], []),
         ("unrelated", [], []),
         ("removed", [], []),
+        ("internal/workspace/validationcmd", ["example.test"], []),
         (".", [], []),
     ):
         if not list(Path(directory).glob("*.go")):
             continue
-        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test" if directory == "." else "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": ["data.txt"] if directory == "lib" else []}))
+        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test" if directory == "." else "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": embeds.get(directory, [])}))
     for directory in sorted(Path("many").glob("*/source.go")):
         print(json.dumps({"Dir": str(directory.parent.resolve()), "ImportPath": "example.test/" + directory.parent.as_posix()}))
 if name == "go" and args[:1] == ["test"]:
@@ -117,6 +126,7 @@ class ShortLandingGateTest(unittest.TestCase):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def test_changed_package_includes_transitive_and_test_dependents(self):
+        self.env["GIT_ALLOW_PROTOCOL"] = ""
         cases = (
             ("test only", ("lib/source_test.go",), ["./lib"], "1", 1, 1),
             ("test only with the whole budget", ("lib/source_test.go",), ["./lib"], "4", 1, 4),
@@ -139,6 +149,7 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertTrue(any(check["scope"] == "unit-short" and check["exit_code"] == 0 for check in evidence))
                 trace = self.trace()
                 self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
+                self.assertEqual([call["git_protocols"] for call in trace], ["", "", "", "", "https", ""])
                 test = trace[3]
                 self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], sorted(expected + self.required_packages))
                 self.assertFalse(test["token"])
@@ -164,6 +175,30 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
                 self.assertIn("assets", trace[0]["args"])
                 self.assertIn("generate-docs", trace[0]["args"])
+
+    def test_embedded_landing_script_selects_its_evidence_consumer(self):
+        consumer = "internal/workspace/validationcmd"
+        (self.root / consumer).mkdir(parents=True)
+        (self.root / consumer / "evidence.go").write_text("package validationcmd\n")
+        (self.root / "embed.go").write_text("package fixture\n")
+        (self.root / "Makefile").write_text("TEST_PROCS ?= 4\n")
+        self.commit()
+        for path, additional in (
+            ("scripts/check-landing.sh", []),
+            ("scripts/check-evidence.sh", []),
+            ("scripts/check-landing.py", []),
+            ("Makefile", ["./app", "./integration"]),
+        ):
+            with self.subTest(path=path):
+                self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
+                with (self.root / path).open("a") as stream:
+                    stream.write("\n")
+                self.commit()
+                result = self.run_gate()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
+                selected = [arg for arg in test["args"] if arg == "." or arg.startswith("./")]
+                self.assertEqual(selected, sorted([".", "./" + consumer, *additional, *self.required_packages]))
 
     def test_test_imports_select_without_propagating(self):
         for name in ("consumer", "dual", "dualconsumer"):
