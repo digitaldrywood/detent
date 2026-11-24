@@ -133,15 +133,24 @@ while raw.strip():
     packages[package["ImportPath"]] = package
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
-embedded_landing_scripts = {"scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"}
+landing_recipe_scripts = {
+    "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py",
+    "scripts/check-landing-lint.mk", "scripts/build-custom-linter.sh",
+}
+landing_recipe_changed = bool(landing_recipe_scripts.intersection(changed))
 direct = set()
 propagated = set()
 lint = set()
 prefixes = {}
+runner_package = None
 for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
     prefix = "" if directory == "." else directory + "/"
     prefixes[name] = prefix
+    if directory == "internal/runner":
+        runner_package = name
+    if landing_recipe_changed and directory == "internal/workspace/validationcmd":
+        direct.add(name)
     for path in changed:
         if path and path.startswith(prefix):
             relative = path[len(prefix):]
@@ -152,10 +161,7 @@ for name, package in packages.items():
                     propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-                evidence_consumer = name + "/internal/workspace/validationcmd"
-                if not prefix and relative in embedded_landing_scripts and evidence_consumer in packages:
-                    direct.add(evidence_consumer)
-                else:
+                if prefix or relative not in landing_recipe_scripts:
                     propagated.add(name)
 for path in changed:
     if path and not path.endswith(".go"):
@@ -169,6 +175,8 @@ dependents = {
 selected = set(packages) if wide else direct | propagated | dependents
 if wide:
     print("wide\t./...")
+if landing_recipe_changed and runner_package and runner_package not in selected:
+    print("recipe-test\t./internal/runner")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
     for name in sorted(names):
         directory = Path(packages[name]["Dir"]).relative_to(root).as_posix()
@@ -178,10 +186,12 @@ PY
 test_packages=()
 lint_packages=()
 lint_scope=(--new-from-rev="$base" --whole-files)
+recipe_test_package=
 while IFS=$'\t' read -r scope package; do
     case "$scope" in
         test) test_packages+=("$package") ;;
         lint) lint_packages+=("$package") ;;
+        recipe-test) recipe_test_package=$package ;;
         wide) lint_scope=() ;;
     esac
 done <<< "$selection"
@@ -195,8 +205,16 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     package_digest=$(python3 scripts/check-landing.py digest "${test_packages[@]}")
     DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=30m
 fi
+if [ -n "$recipe_test_package" ]; then
+    check_with_evidence unit-landing-recipe go test -p "$procs" -short -timeout=120s \
+        -run '^TestNativeImplementationReviewPrecedesAcceptanceValidator$' "$recipe_test_package"
+fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
-    make -j1 -f Makefile -f scripts/check-landing-lint.mk landing-linter LANDING_LINTER="$linter" TEST_PROCS="$procs"
+    if [ -f .custom-gcl.yml ]; then
+        make -j1 -f Makefile -f scripts/check-landing-lint.mk landing-linter LANDING_LINTER="$linter" TEST_PROCS="$procs"
+    else
+        make -j1 "$linter" TEST_PROCS="$procs"
+    fi
     check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
