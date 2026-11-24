@@ -243,7 +243,24 @@ case $name in
                     status=1
                 else output='/var/lib/docker overlayfs'; fi ;;
             --version) output='Docker version 29.1.3, build fixture' ;;
-            create) printf '%s\n' "$cid" > "${args[2]}"; touch "$FIXTURE_ROOT/probe-container" ;;
+            create)
+                if [[ ${DOCKER_PROBE_FAILURE:-} == create-rejected ]]; then
+                    printf 'daemon rejected create\n' >&2; status=1
+                else
+                    printf '%s\n' "${args[4]:-}" "${args[6]:-}" > "$FIXTURE_ROOT/probe-container"
+                    if [[ ${DOCKER_PROBE_FAILURE:-} == create ]]; then
+                        printf 'Docker create response lost\n' >&2; status=124
+                    else
+                        printf '%s\n' "$cid" > "${args[2]}"
+                    fi
+                fi ;;
+            ps)
+                if [[ -f $FIXTURE_ROOT/probe-container ]]; then
+                    { read -r probe_name; read -r probe_label; } < "$FIXTURE_ROOT/probe-container"
+                    if [[ -n $probe_name && -n $probe_label && ${args[4]} == "name=^/$probe_name\$" && ${args[6]} == "label=$probe_label" ]]; then
+                        output=$cid
+                    fi
+                fi ;;
             start)
                 if [[ ${DOCKER_PROBE_FAILURE:-} == start ]]; then
                     printf 'failed to mount overlay: invalid argument\n' >&2; status=125
@@ -897,6 +914,8 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.env["DOCKER_CANDIDATE"] = "30.0.0-1"
 
         for stage, diagnostic, expected in (
+            ("create", "Docker create response lost", ["create", "ps", "rm"]),
+            ("create-rejected", "daemon rejected create", ["create", "ps"]),
             ("start", "failed to mount overlay: invalid argument", ["create", "start", "rm"]),
             ("exec", "failed to open /proc/70/ns/ipc: Permission denied", ["create", "start", "exec", "rm"]),
             ("", "", ["create", "start", "exec", "stop", "inspect", "rm"]),
@@ -918,9 +937,10 @@ class SpriteBootstrapTests(unittest.TestCase):
                 docker_calls = [args[2:] for cmd, args in self.calls()[before:] if cmd == "docker" and args[0] == "--host"]
                 self.assertEqual(docker_calls[0], ["info"])
                 probe = [args for args in docker_calls if args[0] not in ("info", "--version")]
-                self.assertEqual([args[0] for args in probe], expected)
-                self.assertEqual(probe[-1][:-1], ["rm", "--volumes", "--force"] if stage else ["rm", "--volumes"])
                 self.assertFalse((self.root / "probe-container").exists())
+                self.assertEqual([args[0] for args in probe], expected)
+                if expected[-1] == "rm":
+                    self.assertEqual(probe[-1][:-1], ["rm", "--volumes", "--force"] if stage else ["rm", "--volumes"])
                 self.assertEqual({path: path.read_bytes() for path in paths}, original)
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
 
