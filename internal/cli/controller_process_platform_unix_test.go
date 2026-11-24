@@ -99,7 +99,7 @@ func TestControllerAdoptionPreservesWorkerAndClaimsOnNewBuild(t *testing.T) {
 	})
 	defer hubServer.Close()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(name, t.TempDir())
+		t.Setenv(name, testenv.TempDir(t))
 	}
 	bootstrap, err := json.Marshal(fixture)
 	if err != nil {

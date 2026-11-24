@@ -402,11 +402,11 @@ func testLocalWorkerScenario(t *testing.T, scenario string) {
 	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	defer cancel()
 	scheduler, native, connection, workflow, create, revoke := localWorkerHub(t)
-	scratch := t.TempDir()
+	scratch := testenv.TempDir(t)
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(name, scratch)
 	}
-	workflow.Config.Workspace.Root = t.TempDir()
+	workflow.Config.Workspace.Root = testenv.TempDir(t)
 	descriptor := workflow.Config.Policy
 	artifacts, publish, cacheRoot := localWorkerArtifacts(t)
 	publishRelease := publish
@@ -745,6 +745,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 	defer cancel()
 	var events []tracker.NativeRunEvent
 	var registration runnersession.Mutation
+	var registeredSessionID int64
 	var acked, reconnectReads int
 	var inventory func() []runnerauth.AttemptWorker
 	var reconnectSource *hubclient.NativeConnector
@@ -778,9 +779,18 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 				return nil, err
 			}
 			if mutation.Worker != nil && mutation.Worker.CleanupPath != "" {
-				mu.Lock()
-				registration = mutation
-				mu.Unlock()
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				if recorder.Code == http.StatusOK {
+					var snapshot runnersession.Snapshot
+					if err := json.Unmarshal(recorder.Body.Bytes(), &snapshot); err != nil {
+						return nil, err
+					}
+					mu.Lock()
+					registration, registeredSessionID = mutation, snapshot.ID
+					mu.Unlock()
+				}
+				return recorder.Result(), nil
 			}
 		}
 		if event.Worker != nil {
@@ -885,7 +895,7 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			}
 		}
 	}, intercept)
-	workspaceRoot := t.TempDir()
+	workspaceRoot := testenv.TempDir(t)
 	workflow.Config.Workspace.Root = workspaceRoot
 	artifacts, publish, _ := localWorkerArtifacts(t)
 	publish("1.0.0")
@@ -1046,13 +1056,17 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			return
 		}
 		sessionWorker := registration.Worker
-		if len(events) != 1 || after[0] != before[0] || sessionWorker == nil || registration.SessionID <= 0 ||
-			registration.LeaseID != events[0].Data.LeaseID || registration.FencingToken != events[0].Data.FencingToken ||
-			sessionWorker.PID == int(before[0].Worker.PID) || filepath.Dir(filepath.Dir(sessionWorker.CleanupPath)) != bestEffortTestPath(t, workspaceRoot) {
-			t.Fatalf("overlap lost primary ownership or fenced session registration: owners=%+v session=%+v", after, sessionWorker)
+		if len(events) != 1 || after[0] != before[0] {
+			t.Fatalf("overlap changed primary ownership: before=%+v after=%+v events=%d", before, after, len(events))
+		}
+		if sessionWorker == nil || registeredSessionID <= 0 || registration.LeaseID != events[0].Data.LeaseID || registration.FencingToken != events[0].Data.FencingToken {
+			t.Fatalf("overlap lost fenced session registration: %+v", registration)
+		}
+		if sessionWorker.PID == int(before[0].Worker.PID) || sessionWorker.CleanupRoot != bestEffortTestPath(t, workspaceRoot) || filepath.Dir(filepath.Dir(sessionWorker.CleanupPath)) != sessionWorker.CleanupRoot {
+			t.Fatalf("overlapping worker has invalid process or cleanup scope: %+v", sessionWorker)
 		}
 		var snapshot runnersession.Snapshot
-		path := fmt.Sprintf("%s/runner-sessions/%d", workerClient.Scope(), registration.SessionID)
+		path := fmt.Sprintf("%s/runner-sessions/%d", workerClient.Scope(), registeredSessionID)
 		err = workerClient.Transport().Request(ctx, http.MethodGet, path, nil, &snapshot)
 		if err != nil || snapshot.Worker == nil || *snapshot.Worker != *sessionWorker {
 			t.Fatalf("overlapping worker was not durable on its session: %+v %v", snapshot.Worker, err)

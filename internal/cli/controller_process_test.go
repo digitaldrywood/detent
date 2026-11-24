@@ -33,6 +33,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -303,7 +304,7 @@ func TestControllerAdoptionProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer prepared.Release()
-	fixture.Workflow.Config.Workspace.Root = t.TempDir()
+	fixture.Workflow.Config.Workspace.Root = testenv.TempDir(t)
 	built, err := buildRunner(fixture.Workflow, "local", t.TempDir(), globalconfig.Memory{}, gobudget.Budget{}, nil, logger, serviceapi.Connection{})
 	if err != nil {
 		t.Fatal(err)

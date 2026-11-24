@@ -44,6 +44,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -211,7 +212,7 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	cfg.Workspace.Root = t.TempDir()
+	cfg.Workspace.Root = testenv.TempDir(t)
 	cfg.Workspace.Kind = workspace.KindFilesystem
 	cfg.Hooks.AfterCreate = "printf A > hook-marker"
 	connection := serviceapi.Connection{Address: "100.111.222.33:4100", DispositionToken: "worker-token"}
