@@ -203,7 +203,7 @@ func (w *HTTP) servePerson(c echo.Context, scope hubscope.NativeScope, record wo
 		return nil
 	}
 	if err := w.Relay.AttachPerson(connection); err != nil {
-		w.CloseRelayAudit(context.WithoutCancel(ctx), record, connection, "server_shutdown")
+		w.CloseRelayAudit(ctx, record, connection, "server_shutdown")
 		w.closeRelaySocket(connection.Socket, "server_shutdown")
 		return nil
 	}
@@ -221,7 +221,7 @@ func (w *HTTP) servePerson(c echo.Context, scope hubscope.NativeScope, record wo
 	connection.Close("client_closed")
 	w.Relay.DetachPerson(ctx, connection, w.now())
 	reason := connection.Reason()
-	w.CloseRelayAudit(context.WithoutCancel(ctx), record, connection, reason)
+	w.CloseRelayAudit(ctx, record, connection, reason)
 	w.closeRelaySocket(connection.Socket, reason)
 	return nil
 }
@@ -662,6 +662,11 @@ func (w *HTTP) HandlePersonFrame(ctx context.Context, connection *Connection, re
 		// for nothing either, so there is nothing to re-authorize.
 		w.handlePersonAck(connection, frame)
 		return
+	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, w.RequestBudget)
+		defer cancel()
 	}
 	// Every other person-originated frame resets the idle clock and re-proves
 	// the authority behind it.
@@ -1312,6 +1317,8 @@ func (w *HTTP) CloseRelayAudit(ctx context.Context, record workspacehub.Record, 
 	if connection.AuditID == "" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.DefaultCleanupBudget)
+	defer cancel()
 	in, out := connection.Counters()
 	now := w.now()
 	err := w.AccessWrite(ctx, record.OrganizationID, func(writer tenantstore.Writer) error {

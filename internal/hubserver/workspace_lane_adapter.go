@@ -103,6 +103,7 @@ func relayRunnerDeps() workspacerelay.HTTPDeps {
 
 func (s *Service) relayHTTP(w *workspaceService) *workspacerelay.HTTP {
 	deps := relayRunnerDeps()
+	deps.RequestBudget = s.config.RequestBudget
 	deps.AccessRead = s.accessRead
 	deps.AccessWrite = s.accessWrite
 	deps.AuthInput = s.authInput

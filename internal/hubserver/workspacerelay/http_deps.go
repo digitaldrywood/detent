@@ -22,6 +22,7 @@ import (
 
 type HTTPDeps struct {
 	AuthorityTicker         func(time.Duration) *time.Ticker
+	RequestBudget           time.Duration
 	ReadOperatorWorkspace   func(context.Context, hubscope.NativeScope, string) (workspacehub.Record, error)
 	Relay                   *Relay
 	AccessRead              func(context.Context, tracker.OrganizationID, func(tenantstore.Reader) error) error

@@ -64,11 +64,7 @@ func (w *HTTP) ReadOperatorFiles(ctx context.Context, scope hubscope.NativeScope
 	if err := w.OpenRelayAudit(ctx, record, connection, principal); err != nil {
 		return nil, err
 	}
-	defer func() {
-		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), WriteTimeout)
-		defer cancel()
-		w.CloseRelayAudit(auditCtx, record, connection, "person_closed")
-	}()
+	defer w.CloseRelayAudit(ctx, record, connection, "person_closed")
 	if err := w.Relay.AttachPerson(connection); err != nil {
 		return nil, workspacehub.ErrOperationUnavailable
 	}
