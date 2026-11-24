@@ -46,6 +46,7 @@ if name == "go" and args[:1] == ["list"]:
         ("dualconsumer", ["example.test/dual"], []),
         ("unrelated", [], []),
         ("removed", [], []),
+        ("internal/runner", ["example.test/internal/workspace/validationcmd"], []),
         ("internal/workspace/validationcmd", ["example.test"], []),
         (".", [], []),
     ):
@@ -88,7 +89,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh", "check-landing.py"):
+        for name in ("check-landing.sh", "check-evidence.sh", "check-landing.py", "check-landing-lint.mk", "build-custom-linter.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
@@ -175,6 +176,7 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertIn("generate-docs", trace[0]["args"])
 
     def test_linter_build_preserves_explicit_git_transport_policy(self):
+        (self.root / ".custom-gcl.yml").write_text("version: v2.14.0\n")
         (self.root / "lib/source_test.go").write_text("package lib\n")
         self.commit()
         for policy in (None, "", "file"):
@@ -191,18 +193,23 @@ class ShortLandingGateTest(unittest.TestCase):
                 for call in trace:
                     self.assertEqual(call["git_protocols"], policy, call)
 
-    def test_embedded_landing_script_selects_its_evidence_consumer(self):
-        consumer = "internal/workspace/validationcmd"
-        (self.root / consumer).mkdir(parents=True)
-        (self.root / consumer / "evidence.go").write_text("package validationcmd\n")
+    def test_landing_recipe_changes_select_its_consumers(self):
+        consumers = ["internal/runner", "internal/workspace/validationcmd"]
+        for consumer in consumers:
+            directory = self.root / consumer
+            directory.mkdir(parents=True)
+            (directory / "source.go").write_text(f"package {directory.name}\n")
         (self.root / "embed.go").write_text("package fixture\n")
         (self.root / "Makefile").write_text("TEST_PROCS ?= 4\n")
         self.commit()
-        for path, additional in (
-            ("scripts/check-landing.sh", []),
-            ("scripts/check-evidence.sh", []),
-            ("scripts/check-landing.py", []),
-            ("Makefile", ["./app", "./integration"]),
+        for path, regular, focused in (
+            ("scripts/check-landing.sh", [".", "./internal/workspace/validationcmd"], True),
+            ("scripts/check-evidence.sh", [".", "./internal/workspace/validationcmd"], True),
+            ("scripts/check-landing.py", [".", "./internal/workspace/validationcmd"], True),
+            ("scripts/check-landing-lint.mk", [".", "./internal/workspace/validationcmd"], True),
+            ("scripts/build-custom-linter.sh", [".", "./internal/workspace/validationcmd"], True),
+            ("Makefile", [".", "./app", "./integration", "./internal/runner", "./internal/workspace/validationcmd"], False),
+            ("internal/runner/source.go", ["./internal/runner"], False),
         ):
             with self.subTest(path=path):
                 self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
@@ -211,9 +218,15 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.commit()
                 result = self.run_gate()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                test = next(call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test")
-                selected = [arg for arg in test["args"] if arg == "." or arg.startswith("./")]
-                self.assertEqual(selected, sorted([".", "./" + consumer, *additional, *self.required_packages]))
+                tests = [call["args"] for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test"]
+                selected = [arg for arg in tests[0] if arg == "." or arg.startswith("./")]
+                self.assertEqual(selected, sorted(regular + self.required_packages))
+                if focused:
+                    self.assertEqual(tests[1:], [["test", "-p", "2", "-short", "-timeout=120s", "-run",
+                                                  "^TestNativeImplementationReviewPrecedesAcceptanceValidator$",
+                                                  "./internal/runner"]])
+                else:
+                    self.assertEqual(len(tests), 1)
 
     def test_test_imports_select_without_propagating(self):
         for name in ("consumer", "dual", "dualconsumer"):
