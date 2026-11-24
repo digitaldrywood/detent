@@ -177,7 +177,7 @@ class ShortLandingGateTest(unittest.TestCase):
     def test_linter_build_preserves_explicit_git_transport_policy(self):
         (self.root / "lib/source_test.go").write_text("package lib\n")
         self.commit()
-        for policy, expected_build_policy in ((None, "https"), ("", ""), ("file", "file")):
+        for policy in (None, "", "file"):
             with self.subTest(policy=policy):
                 if policy is None:
                     self.env.pop("GIT_ALLOW_PROTOCOL", None)
@@ -186,10 +186,10 @@ class ShortLandingGateTest(unittest.TestCase):
                 result = self.run_gate()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 trace = self.trace()
-                build = next(call for call in trace if call["tool"] == "make" and self.linter in call["args"])
+                build = next(call for call in trace if call["tool"] == "make" and "landing-linter" in call["args"])
+                self.assertIn("LANDING_LINTER=" + self.linter, build["args"])
                 for call in trace:
-                    expected = expected_build_policy if call is build else policy
-                    self.assertEqual(call["git_protocols"], expected, call)
+                    self.assertEqual(call["git_protocols"], policy, call)
 
     def test_embedded_landing_script_selects_its_evidence_consumer(self):
         consumer = "internal/workspace/validationcmd"
