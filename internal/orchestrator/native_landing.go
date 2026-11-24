@@ -102,6 +102,11 @@ func (o *Orchestrator) completeNativeLandingRun(
 				if !allowed {
 					return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", target))
 				}
+				if execution := o.nativeCompletionExecution(event); execution != nil && execution.Recovery().Issue.ReleaseDelivery != nil {
+					if err := execution.Finish(ctx, "succeeded"); err != nil {
+						return handoff(fmt.Errorf("record reconciled release delivery: %w", err))
+					}
+				}
 				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, from, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{}); err != nil {
 					return handoff(fmt.Errorf("complete landed native item: %w", err))
 				}
