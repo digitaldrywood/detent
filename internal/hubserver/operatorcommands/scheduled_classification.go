@@ -2,25 +2,33 @@ package operatorcommands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
 type ScheduledCIDeps struct {
 	Repository tenantstore.Repository
+	Plans      *hostedplans.Service
+	Authorize  func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error
+	Verify     func(context.Context, hubscope.NativeScope, progresscheck.CIFailure) error
 	Now        func() time.Time
 	Text       CITextBackend
 	Error      func(echo.Context, error) error
@@ -97,6 +105,50 @@ func ScheduledRepository(ctx context.Context, reader tenantstore.Repository, sco
 	return repository, hubapi.ProjectRecordError(err)
 }
 
+func (s ScheduledCIDeps) reserveClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure) error {
+	identity, err := json.Marshal([]string{string(scope.Project), input.Repository, input.RunID, input.RunAttempt, input.JobID})
+	if err != nil {
+		return fmt.Errorf("encode CI classification identity: %w", err)
+	}
+	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.Authorize(ctx, w, scope, true); err != nil {
+			return err
+		}
+		return s.Plans.ReserveScheduledClassification(ctx, w, scope.Organization, "scheduled-ci/"+policy.Digest(identity), s.Now().UTC())
+	})
+}
+
+func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, result progresscheck.CIDecision) error {
+	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.Authorize(ctx, w, scope, true); err != nil {
+			return err
+		}
+		owner, ok := w.(policystore.ScheduledWriter)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		now := s.Now().UTC()
+		limit := int64(math.MaxInt64)
+		if s.Plans.Plans() != nil {
+			entitlement, err := hubapi.FeatureResult(s.Plans.EntitlementRecord(ctx, w, now))
+			if err != nil {
+				return err
+			}
+			if allowance, limited := entitlement.Allowances["collaboration_bytes"]; limited {
+				limit = allowance
+			}
+		}
+		usage, err := owner.StoreScheduledDecision(ctx, scope.Project, input, result, now, limit)
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+		}
+		return nil
+	})
+}
+
 func (s ScheduledCIDeps) Classify(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
 	if scope.Credential.HostedRole == "reporter" {
@@ -126,6 +178,12 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, result)
 	}
+	if err := s.Verify(ctx, scope, input); err != nil {
+		return s.Error(c, err)
+	}
+	if err := s.reserveClassification(ctx, scope, input); err != nil {
+		return s.Error(c, err)
+	}
 	result, err = (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -133,14 +191,7 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 		}
 		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
 	}
-	err = s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		owner, ok := w.(policystore.ScheduledWriter)
-		if !ok {
-			return hubapi.NativeWorkItemStorageUnavailable()
-		}
-		return owner.StoreScheduledDecision(ctx, scope.Project, input, result, s.Now().UTC())
-	})
-	if err != nil {
+	if err := s.storeClassification(ctx, scope, input, result); err != nil {
 		return s.Error(c, fmt.Errorf("store CI classification: %w", err))
 	}
 	result, _, err = s.readCIClassification(ctx, scope, input)

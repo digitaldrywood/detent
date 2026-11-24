@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
@@ -23,11 +24,19 @@ func (s *session) ReadScheduledDecision(ctx context.Context, project tracker.Pro
 	return result, result.Validate()
 }
 
-func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure, result progresscheck.CIDecision, at time.Time) error {
+func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure, result progresscheck.CIDecision, at time.Time, limit int64) (billingstore.UsageResult, error) {
 	if project == "" || input.Validate() != nil || result.Validate() != nil || at.IsZero() {
-		return eventstore.ErrInvalidRecord
+		return billingstore.UsageResult{}, eventstore.ErrInvalidRecord
 	}
-	return mapError(ctx, s.queries.StoreScheduledDecision(ctx, pgquery.StoreScheduledDecisionParams{OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA, RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome), Target: result.Target, Reason: result.Reason, CreatedAt: at.UTC()}))
+	inserted, err := s.queries.StoreScheduledDecision(ctx, pgquery.StoreScheduledDecisionParams{OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA, RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome), Target: result.Target, Reason: result.Reason, CreatedAt: at.UTC()})
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	if inserted == 0 {
+		return billingstore.UsageResult{Allowed: true}, nil
+	}
+	bytes := len(s.organization) + len(project) + len(input.Repository) + len(input.HeadSHA) + len(input.RunID) + len(input.RunAttempt) + len(input.JobID) + len(result.Outcome) + len(result.Target) + len(result.Reason) + 8
+	return s.AdjustCollaborationBytes(ctx, int64(bytes), limit)
 }
 
 func (s *session) ScheduledLandedWorkItems(ctx context.Context, project tracker.ProjectID, sha string) ([]string, error) {

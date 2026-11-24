@@ -9,6 +9,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const ScheduledClassificationStage = "scheduled-classification"
+
 type GitHubImportRequest struct {
 	CompareBase       string
 	CompareHead       string

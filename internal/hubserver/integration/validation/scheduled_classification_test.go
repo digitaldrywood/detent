@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
@@ -25,6 +30,8 @@ type ciDecisionBackend struct {
 	expected bool
 	decision progresscheck.CIDecision
 	fail     bool
+	calls    int
+	onCall   func()
 }
 
 func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
@@ -32,6 +39,11 @@ func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnR
 		b.t.Fatal("replay or invalid evidence reached the AI backend")
 	}
 	b.expected = false
+	b.calls++
+	if onCall := b.onCall; onCall != nil {
+		b.onCall = nil
+		onCall()
+	}
 	if !request.TextOnly || !request.ReadOnly || request.MaxTurns != 1 || request.ToolInstructions != progresscheck.CIInstructions || request.SupplementalTools {
 		b.t.Fatal("CI decision backend may only generate text from evidence")
 	}
@@ -49,11 +61,22 @@ func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnR
 	return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: string(raw)})
 }
 
+type scheduledClassificationImporter struct{}
+
+func (scheduledClassificationImporter) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	if request.Stage != githubcontract.ScheduledClassificationStage || request.Scheduled == nil || request.Scheduled.RunID != "1" || request.Scheduled.JobID == "999" {
+		return hubserver.GitHubImportPage{}, errors.New("unknown run or job")
+	}
+	return hubserver.GitHubImportPage{Scheduled: request.Scheduled}, nil
+}
+
 func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 	t.Parallel()
 	backend := &ciDecisionBackend{}
 	hub := hubfixture.Open(t, hubserver.Config{
-		Conversation: &hubserver.ConversationConfig{Backend: backend, Model: "configured-model"},
+		Clock:         func() time.Time { return time.Unix(7200, 0).UTC() },
+		ImportBackend: scheduledClassificationImporter{},
+		Conversation:  &hubserver.ConversationConfig{Backend: backend, Model: "configured-model"},
 	})
 	storage := hub.Repository
 	repository := "owner/repository"
@@ -87,17 +110,23 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			actor := hubtest.Credential(t, storage, org, hubtest.CredentialOptions{KeyScope: "write", Projects: []tracker.ProjectID{firstProject, secondProject}})
+			actor := hubtest.Credential(t, storage, org, hubtest.CredentialOptions{KeyScope: "write", Now: hub.Now(), Projects: []tracker.ProjectID{firstProject, secondProject}})
+			request := func(project tracker.ProjectID, input progresscheck.CIFailure) *httptest.ResponseRecorder {
+				path := hubfixture.ProjectBase(org, project) + "/scheduled-ci-decisions"
+				return hub.Request(t, http.MethodPost, path, actor.Token, input)
+			}
 			call := func(project tracker.ProjectID, input progresscheck.CIFailure, status int) *httptest.ResponseRecorder {
 				t.Helper()
-				path := hubfixture.ProjectBase(org, project) + "/scheduled-ci-decisions"
-				response := hub.Request(t, http.MethodPost, path, actor.Token, input)
+				response := request(project, input)
 				if response.Code != status {
 					t.Fatalf("status=%d want=%d body=%s", response.Code, status, response.Body.String())
 				}
 				return response
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
+			if test.name == "Go test" {
+				backend.onCall = func() { call(firstProject, input, http.StatusConflict) }
+			}
 			backend.expected = true
 			var first progresscheck.CIDecision
 			for n := range 2 {
@@ -129,6 +158,56 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			input.HeadSHA = strings.Repeat("a", 40)
 			input.LogTail = strings.Repeat("x", 8001)
 			call(firstProject, input, http.StatusUnprocessableEntity)
+			input.LogTail = test.log
+			if test.name == "unknown" {
+				unknownRun, unknownJob := input, input
+				unknownRun.RunID, unknownJob.JobID = "2", "999"
+				for _, unknown := range []progresscheck.CIFailure{unknownRun, unknownJob} {
+					call(firstProject, unknown, http.StatusUnprocessableEntity)
+				}
+			}
+			if !test.fail {
+				return
+			}
+			plans := hostedplans.PilotPlans()
+			limit := plans.Plans[0].Allowances["api_mutations"]
+			window := hub.Now()
+			err := storage.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+				used, err := w.BillingUsage(t.Context(), window, "api_mutations")
+				if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+					return err
+				}
+				usage, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: org, ID: "existing-api-usage", WindowStart: window, Metric: "api_mutations", Amount: limit - used - 1}, limit)
+				if err == nil && !usage.Applied {
+					t.Fatal("failed to seed existing API usage")
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeCalls := backend.calls
+			for n := range 30 {
+				distinct := input
+				distinct.JobID = fmt.Sprint(n + 100)
+				backend.expected = true
+				response := request(firstProject, distinct)
+				want := http.StatusTooManyRequests
+				if n == 0 {
+					want = http.StatusOK
+				}
+				if response.Code != want {
+					t.Errorf("verified job %d: status=%d want=%d", n, response.Code, want)
+				}
+			}
+			backend.expected = false
+			var rows int
+			if err := hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1 AND project_id=$2`, org, firstProject).Scan(&rows); err != nil {
+				t.Fatal(err)
+			}
+			if calls := backend.calls - beforeCalls; calls != 1 || rows != 2 {
+				t.Fatalf("distinct jobs made %d model calls and left %d decisions, want 1 call and 2 decisions (including the existing decision)", calls, rows)
+			}
 		})
 	}
 }
