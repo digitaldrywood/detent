@@ -13,6 +13,30 @@ matches_go_tool() {
 	'
 }
 
+install_go_tool() {
+	local binary="$1" package="$2" version="$3" toolchain="$4" available
+	if matches_go_tool "$binary" "$package" "$version" "$toolchain"; then
+		return
+	fi
+	mkdir -p "$(dirname "$binary")"
+	available="$(command -v "${binary##*/}" || true)"
+	if [[ "$available" != "$binary" ]] && matches_go_tool "$available" "$package" "$version" "$toolchain"; then
+		cp "$available" "$binary"
+	else
+		printf 'Installing %s@%s\n' "$package" "$version"
+		GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$(dirname "$binary")" go install -p "${TEST_PROCS:-4}" "$package@$version"
+	fi
+}
+
+if [[ "${0##*/}" == golangci-lint ]]; then
+	if [[ "$#" == 5 && "$1" == custom && "$2" == --destination && "$4" == --name && "$5" == golangci-lint-custom && -f .custom-gcl.yml ]]; then
+		version="$(cat .golangci-version)"
+		heft_version="$(awk '/digitaldrywood\/heft$/ { found = 1 } found && $1 == "version:" { print $2; exit }' .custom-gcl.yml)"
+		exec bash scripts/runner-setup.sh go-linter "$version" "$heft_version" "$3/$5"
+	fi
+	exec "$0.upstream" "$@"
+fi
+
 case "${1:-}" in
 	go-tool)
 		package="$2"
@@ -24,16 +48,14 @@ case "${1:-}" in
 			install_dir="${install_dir:-$(go env GOPATH)/bin}"
 			binary="$install_dir/$binary"
 		fi
-		if matches_go_tool "$binary" "$package" "$version" "$toolchain"; then
-			exit 0
-		fi
-		mkdir -p "$(dirname "$binary")"
-		available="$(command -v "${binary##*/}" || true)"
-		if [[ "$available" != "$binary" ]] && matches_go_tool "$available" "$package" "$version" "$toolchain"; then
-			cp "$available" "$binary"
+		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* && -f .custom-gcl.yml ]]; then
+			if ! matches_go_tool "$binary.upstream" "$package" "$version" "$toolchain"; then
+				install_go_tool "$binary" "$package" "$version" "$toolchain"
+				mv "$binary" "$binary.upstream"
+			fi
+			cp scripts/runner-setup.sh "$binary"
 		else
-			printf 'Installing %s@%s\n' "$package" "$version"
-			GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$(dirname "$binary")" go install -p "${TEST_PROCS:-4}" "$package@$version"
+			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi
 		;;
 	go-linter)
