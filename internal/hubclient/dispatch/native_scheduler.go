@@ -284,9 +284,6 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
-	if reportErr != nil {
-		return reportErr
-	}
 	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
@@ -345,7 +342,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.machine.Capacity = min(appliedCapacity.RuntimeLimit, appliedCapacity.ClientLimit, appliedCapacity.LocalLimit)
 	}
 	s.nativeHeartbeats[project] = s.now()
-	return nil
+	return reportErr
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {

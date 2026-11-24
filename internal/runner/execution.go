@@ -384,7 +384,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
 			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
-		if req.phaseReceipts {
+		if req.phaseReceipts || legacyPublishedSource {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
 		}
 	}
@@ -903,6 +903,11 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 					}
 				}
 			}
+		}
+	}
+	if !req.phaseReceipts && issue.Source != nil && req.phaseContinuation != nil {
+		if phase := req.phaseContinuation.LastPushed; phase != nil && phase.Branch == info.PublishBranch() {
+			req.phaseReceipts = true
 		}
 	}
 	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)

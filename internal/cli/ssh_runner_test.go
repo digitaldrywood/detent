@@ -556,6 +556,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
+		cfg.Agent.MaxTurns = 2
 	}
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
@@ -620,6 +621,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		request.WorkerHost = "local"
 		t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 		t.Setenv("DETENT_SSH_TEST_HELPER", "worker")
+	}
+	if failingReview {
+		request.Mode, request.Routine = runnerpkg.RunModeImplement, nil
 	}
 	var probe *sshNativeProbe
 	if native {

@@ -102,6 +102,10 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			h := newNativeChangeHubWithStates(t, "In Review", states, details, maintenance)
 			previousPolicy := h.descriptor.ID
 			h.descriptor.Gates.Validator = true
+			plan := gate.PlanConfig{Enabled: test.planning, Review: gate.PlanReviewAutomated}
+			if test.planning {
+				h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = true, plan.Review
+			}
 			h.descriptor = h.descriptor.WithID()
 			if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
 				t.Fatal(err)
@@ -264,7 +268,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Cleanup(func() { faultSource(false) })
 				}
 
-				expectedSite := "recover native Change source"
+				expectedSite := "recover published Change source"
 				if test.checkpointOnly {
 					expectedSite = "checkpoint_unavailable"
 				}
@@ -443,7 +447,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: plan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -495,7 +499,13 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 			}
 			providerA := &committingAgent{staged: true, validator: "pass", complete: true}
+			if test.planning {
+				providerA.duringPlan = func(runner.AgentTurnRequest) {}
+			}
 			first := run(sourceA, providerA, candidateA, h.scheduler.RunExecution(issue.ID))
+			if test.planning && providerA.planCalls != 2 {
+				t.Fatalf("initial run skipped planning or independent plan review: %d calls", providerA.planCalls)
+			}
 			oldHead := first.NativeChange.HeadSHA
 			phases, err := h.native.ItemPhaseReceipts(t.Context(), item)
 			if err != nil || len(phases) == 0 || phases[0].HeadSHA != oldHead || phases[0].TreeSHA != headTree(remote, oldHead) ||
@@ -707,6 +717,14 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
+			if test.planning {
+				providerB.duringPlan = func(request runner.AgentTurnRequest) {
+					data, err := os.ReadFile(filepath.Join(request.Workspace, "CHANGE.md"))
+					if err != nil || string(data) != "changed\n" {
+						t.Fatalf("plan turn started without recovered source: %q, %v", data, err)
+					}
+				}
+			}
 			resumeVerified, resumedTurns := 0, 0
 			if test.restartIntent == "unfinished" {
 				providerB.complete, providerB.inProgress = false, true
@@ -754,9 +772,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					if err != nil || strings.TrimSpace(string(conflicts)) != "CHANGE.md" {
 						t.Fatalf("expected a real source conflict: %q, %v", conflicts, err)
 					}
-					if test.landing && test.restartIntent != "resolved" {
-						return
-					}
 					resolution := "integrated\n"
 					if test.restartIntent == "resolved" && !test.landing {
 						resolution += "resolved deliverable\n"
@@ -765,6 +780,12 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						t.Fatal(err)
 					}
 					nativeChangeGit(t, providerB.workspace, "add", "CHANGE.md")
+					if test.landing && test.restartIntent != "resolved" {
+						if err := os.WriteFile(filepath.Join(providerB.workspace, "CHANGE.md"), []byte(resolution+"unfinished edit\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
 					expectedFiles["CHANGE.md"] = resolution
 				}
 				if test.transferCode {
@@ -945,8 +966,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			if test.transferCode {
 				expectedBase = initialBase
 			}
-			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != expectedBase || providerB.calls != 2 {
-				t.Fatalf("rework reused old head or validation: %+v, calls=%d", second.NativeChange, providerB.calls)
+			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != expectedBase || providerB.calls-providerB.planCalls != 2 {
+				t.Fatalf("rework reused old head or validation: %+v, prior head=%s expected base=%s calls=%d", second.NativeChange, oldHead, expectedBase, providerB.calls)
 			}
 			nativeChangeGit(t, remote, "merge-base", "--is-ancestor", oldHead, second.NativeChange.HeadSHA)
 			detail, err := h.admin.Change(context.Background(), item, first.NativeChange.ChangeID)

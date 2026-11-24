@@ -2639,8 +2639,10 @@ type committingAgent struct {
 	workspace        string
 	writableCalls    int
 	calls            int
+	planCalls        int
 	bound            bool
 	duringTurn       func()
+	duringPlan       func(runner.AgentTurnRequest)
 	duringLiveTurn   func(runner.AgentTurnRequest, runner.AgentUpdateHandler)
 	afterTurn        func()
 	duringValidation func(runner.AgentTurnRequest)
@@ -2899,6 +2901,22 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 		defer a.afterTurn()
 	}
 	a.calls++
+	if a.duringPlan != nil {
+		draft := strings.Contains(request.Prompt, "This dispatch is plan-only.")
+		review := strings.HasPrefix(request.Prompt, "Independently review the proposed implementation plan")
+		if draft || review {
+			a.planCalls++
+			a.duringPlan(request)
+			if !request.ReadOnly {
+				return runner.AgentTurnResult{}, errors.New("planning turn must be read-only")
+			}
+			message := "Update CHANGE.md and run the configured validation command."
+			if review {
+				message = "APPROVED"
+			}
+			return runner.AgentTurnResult{}, onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: message})
+		}
+	}
 	if strings.Contains(request.Prompt, "independent Detent implementation reviewer") {
 		if request.Resume.ThreadID != "" || request.Resume.SessionID != "" || !request.ReadOnly || !strings.Contains(request.Prompt, "Reviewed native version:") {
 			return runner.AgentTurnResult{}, errors.New("native source reviewer did not start a fresh read-only version review")
