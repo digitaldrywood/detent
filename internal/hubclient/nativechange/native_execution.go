@@ -604,6 +604,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 }
 
 func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
+	if e.data.Outcome == "" && !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -1034,6 +1037,9 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
 	}
 	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
+	if !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
 	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return err
 	}
@@ -1179,6 +1185,9 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	publishedRuntime, err := json.Marshal(e.pending.Data.Runtime)
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
+	}
+	if e.pending.Type == "run.finished" && !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return err

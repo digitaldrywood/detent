@@ -491,8 +491,10 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 					if !errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
 						t.Fatalf("guard cancellation cause = %v", context.Cause(guarded))
 					}
-					if err := execution.Finish(detached, tc.outcome); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || completions != 0 || diffWrites != 1 {
-						t.Fatalf("expired lease published: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
+					for _, ctx := range []context.Context{t.Context(), detached} {
+						if err := execution.Finish(ctx, tc.outcome); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || completions != 0 || diffWrites != 1 {
+							t.Fatalf("lost lease published: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
+						}
 					}
 					return
 				}
