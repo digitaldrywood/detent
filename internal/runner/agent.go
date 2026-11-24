@@ -1783,7 +1783,7 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
@@ -2163,16 +2163,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if repository, ok := req.Execution.(RepositoryExecution); ok {
 				repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 			}
+			if source, ok := req.Execution.(ChangeSourceExecution); ok {
+				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+				})
+			}
 			if req.phaseContinuation != nil && info.PublicationBranch != "" {
 				publication := req
 				publication.phaseReceipts = true
 				if publishErr := publishItemPhase(ctx, publication, runWorkspace, info, workspaceIssue, "implement", ""); publishErr != nil {
 					return result, errors.Join(err, publishErr)
 				}
-			} else if source, ok := req.Execution.(ChangeSourceExecution); ok {
-				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
-				})
 			}
 			if artifacts, ok := req.Execution.(ArtifactExecution); ok {
 				if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {

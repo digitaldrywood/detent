@@ -125,5 +125,11 @@ func (e *sshNativeProbe) RecoverChangeSource(ctx context.Context) (workspace.Cha
 }
 
 func (*sshNativeProbe) RecordReview(context.Context, gate.ValidatorResult) error { return nil }
-func (*sshNativeProbe) ProviderCapacity() *providercapacity.Reservation          { return nil }
-func (*sshNativeProbe) RecordUsage(context.Context, tracker.NativeUsage) error   { return nil }
+func (*sshNativeProbe) RecordSourceValidation(ctx context.Context, _ gate.CommandResult) error {
+	return ctx.Err()
+}
+func (*sshNativeProbe) PublishValidationEvidence(ctx context.Context, _ []runner.ValidationEvidence) error {
+	return ctx.Err()
+}
+func (*sshNativeProbe) ProviderCapacity() *providercapacity.Reservation        { return nil }
+func (*sshNativeProbe) RecordUsage(context.Context, tracker.NativeUsage) error { return nil }

@@ -3,7 +3,6 @@ package scenariotest
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -81,7 +80,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		PollInterval: time.Hour, MaxConcurrentAgents: 1,
 		ActiveStates: []string{"Rework", "In Progress", "Merging"}, TerminalStates: []string{"Done"},
 		AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false), Gate: backend.gate},
-	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

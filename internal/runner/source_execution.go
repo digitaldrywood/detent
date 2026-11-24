@@ -147,6 +147,9 @@ func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, ver
 	if source == nil || !completedSourceDisposition(source.message) {
 		return nil
 	}
+	if !req.phaseReceipts && req.publishedPhaseSource != nil && req.publishedPhaseSource.HeadSHA != "" {
+		req.phaseReceipts = true
+	}
 	identity := ""
 	if version != nil {
 		identity = version.ID

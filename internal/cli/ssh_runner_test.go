@@ -553,6 +553,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
+		cfg.Agent.MaxTurns = 2
 	}
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
@@ -602,6 +603,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		updatesMu.Unlock()
 		return nil
 	}}
+	if failingReview {
+		request.Mode, request.Routine = runnerpkg.RunModeImplement, nil
+	}
 	local := len(producerFailure) > 1 && producerFailure[1]
 	if local {
 		artifacts, publish, _ := localWorkerArtifacts(t, true)

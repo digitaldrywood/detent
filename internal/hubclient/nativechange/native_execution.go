@@ -606,6 +606,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	// again is safe, because it reuses the item's change.
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
+		if !e.claimActive() {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
 		if err := api.MutationEffectError(ctx); err != nil {
 			return err
 		}
@@ -631,7 +634,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		}
 		if diffErr != nil && e.ownsChangeCompletion() {
 			err := e.executionError(ctx, diffErr)
-			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			if !e.claimActive() || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}
 			if nativeTransportUnavailable(err) {
@@ -974,10 +977,13 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	if e.diffSource == nil {
-		if e.lastDiff != nil && (e.worktreeHead == "" || e.worktreeHead == e.lastDiff.HeadSHA) {
-			return nil
+		if e.lastDiff == nil {
+			return errors.New("the run's final attempt diff source is unavailable")
 		}
-		return errors.New("the run's final attempt diff source is unavailable")
+		if e.worktreeHead != "" && e.worktreeHead != e.lastDiff.HeadSHA {
+			return errors.New("the attempt diff does not match the final checkpoint head")
+		}
+		return nil
 	}
 	request, ok := e.diffSource(ctx)
 	if !ok {

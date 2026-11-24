@@ -284,13 +284,14 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
-	if reportErr != nil {
-		return reportErr
+	if reportErr == nil {
+		s.reconcileReleasedExecutions(ctx, source)
 	}
-	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
-	s.nativeHeartbeats[project] = s.now()
+	if reportErr == nil {
+		s.nativeHeartbeats[project] = s.now()
+	}
 	if projectConfig != nil {
 		if s.configHeartbeats == nil {
 			s.configHeartbeats = make(map[tracker.ProjectID]time.Time)
@@ -315,6 +316,9 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 				return err
 			}
 		}
+	}
+	if reportErr != nil {
+		return reportErr
 	}
 	if updateSupported {
 		if request := s.client.UpdateRequest(); request != nil {

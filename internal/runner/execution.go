@@ -382,7 +382,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
 			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
-		if req.phaseReceipts {
+		if req.phaseReceipts || legacyPublishedSource {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
 		}
 	}
@@ -903,6 +903,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			}
 		}
 	}
+	if !req.phaseReceipts && req.publishedPhaseSource != nil && issue.Source != nil && info.PublishBranch() != "" {
+		req.phaseReceipts = true
+	}
 	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
@@ -1081,7 +1084,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		return false, errors.Join(completionErr, err)
 	}
 	if err := recordExecutionCheckpoint(checkpointCtx, req.Execution, checkpoint); err != nil {
-		return false, errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
 	cancellation := executionCancellation(req)
 	completionErr = errors.Join(completionErr, cancellation)
