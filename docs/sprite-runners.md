@@ -393,6 +393,8 @@ the database as its unprivileged user.
 For a responsive local Docker daemon, the bootstrap starts an isolated
 PostgreSQL 17 probe with temporary storage and no published ports. It verifies
 readiness through Docker exec, checks for a clean stop, and removes the probe.
+Reruns against the bootstrap-managed service also recheck the effective
+snapshot storage and root `docker-init` as PID 1.
 Mount and OCI exec failures are reported before runner enrollment or restart.
 Docker capability checks leave existing services, packages and data roots in
 place. Adopting the managed defaults on an existing installation is a separate

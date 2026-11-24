@@ -182,6 +182,9 @@ case $name in
         elif [[ $1 == test && ( ${3:-} == /var/run/docker.sock || ${3:-} == /etc/docker/daemon.json ) ]]; then
             status=1
         elif [[ $1 == find && $2 == /var/lib/docker ]]; then
+            if [[ -n ${DOCKER_OPERATOR_LAUNCHER:-} ]]; then
+                printf '%s\n' "$DOCKER_OPERATOR_LAUNCHER" > "$HOME/.local/lib/detent-sprite-runner/start-docker"
+            fi
             output=${DOCKER_ROOT_ENTRY:-}
         else execute=true; fi ;;
     go)
@@ -248,6 +251,8 @@ case $name in
             exec)
                 if [[ ${DOCKER_PROBE_FAILURE:-} == exec ]]; then
                     printf 'OCI runtime exec failed: failed to open /proc/70/ns/ipc: Permission denied\n' >&2; status=126
+                elif [[ ${DOCKER_PROBE_FAILURE:-} == init && ${args[4]:-} == *docker-init* ]]; then
+                    status=1
                 fi ;;
             inspect) if [[ ${args[2]} == '{{.State.Pid}}' ]]; then output=1234; else output=0; fi ;;
             stop) [[ -f $FIXTURE_ROOT/probe-container ]] || status=1 ;;
@@ -943,7 +948,7 @@ class SpriteBootstrapTests(unittest.TestCase):
                     self.assertIn("Docker endpoint is not a local Unix socket", result.stdout)
                 self.assert_preserved_docker(0)
 
-    def test_docker_storage_checks_cover_the_effective_snapshot_mount(self):
+    def test_managed_docker_checks_cover_the_effective_snapshot_mount_and_init_on_retry(self):
         self.env["DOCKER_SUPPORTED"] = "1"
         for setting, value, diagnostic, installs in (
             ("DOCKER_FILESYSTEM", "overlay", "requires an ext4 mount at /var/lib/docker", False),
@@ -951,17 +956,37 @@ class SpriteBootstrapTests(unittest.TestCase):
             ("DOCKER_SNAPSHOT_ROOT", "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs",
              "snapshot upperdir is outside /var/lib/docker", True),
             ("DOCKER_SNAPSHOT_FILESYSTEM", "overlay", "snapshot upperdir is not on ext4", True),
+            ("DOCKER_PROBE_FAILURE", "init", "must start PostgreSQL with root docker-init as PID 1", True),
         ):
             with self.subTest(setting=setting):
                 self.fresh_sprite()
                 self.env[setting] = value
-                result = self.run_bootstrap()
+                for attempt in range(2 if installs else 1):
+                    with self.subTest(attempt=attempt + 1):
+                        before = len(self.calls())
+                        result = self.run_bootstrap()
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(diagnostic, result.stderr)
+                        self.assertFalse(self.registrations())
+                        self.assertFalse(any(cmd == "sprite-env" and args[:2] == ["checkpoints", "create"]
+                                             for cmd, args in self.calls()[before:]))
+                        self.assertFalse((self.root / "probe-container").exists())
+                        if attempt:
+                            self.assert_preserved_docker(before)
                 self.env.pop(setting)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(diagnostic, result.stderr)
-                self.assertFalse(self.registrations())
                 self.assertEqual((self.root / "docker.io.version").exists(), installs)
-                self.assertFalse((self.root / "probe-container").exists())
+
+    def test_docker_launcher_created_during_bootstrap_is_preserved(self):
+        operator_launcher = "#!/bin/bash\nexec dockerd --data-root /operator/docker\n"
+        self.env.update(DOCKER_SUPPORTED="1", DOCKER_OPERATOR_LAUNCHER=operator_launcher.rstrip("\n"))
+        result = self.run_bootstrap()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not create the Docker launcher", result.stderr)
+        launcher = self.home / ".local/lib/detent-sprite-runner/start-docker"
+        self.assertEqual(launcher.read_bytes(), operator_launcher.encode())
+        self.assertEqual(launcher.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.root / "service-detent-docker.json").exists())
+        self.assertFalse(self.registrations())
 
     def test_postgresql_repository_candidates_and_partial_installation(self):
         cases = (
