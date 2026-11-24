@@ -330,6 +330,9 @@ func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
 }
 
 func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow checkout hook verification test in -short mode")
+	}
 	for _, tc := range []struct {
 		name      string
 		hook      string
@@ -456,6 +459,9 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 }
 
 func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow resumed phase finalization test in -short mode")
+	}
 	for _, tc := range []struct {
 		name                 string
 		advanceBase          bool
