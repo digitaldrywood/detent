@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -40,9 +39,15 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	workspacesRoot := filepath.Join(t.TempDir(), "workspaces")
 	hub := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)})
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	nativeChangeGit(t, sourceRoot, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, sourceRoot, "remote", "add", "origin", remote)
+	nativeChangeGit(t, sourceRoot, "push", "origin", "main")
+	hub.configureCloneURL(remote)
 	created, err := hub.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Record agent output", Body: "Write the requested output file." + issueContractTestSections, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +98,7 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 				USDPerOutputToken:      0.01,
 			},
 		},
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger: slog.New(slog.NewTextHandler(t.Output(), nil)),
 	})
 	if err != nil {
 		t.Fatalf("runner.NewRunner() error = %v", err)
@@ -104,14 +109,14 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 		Policy:                 hub.descriptor,
 		PollInterval:           time.Hour,
 		MaxConcurrentAgents:    1,
-		ActiveStates:           []string{"Todo", "In Progress"},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
 		TerminalStates:         []string{"Done", "Cancelled"},
 		ContinuationRetryDelay: time.Hour,
 	}, orchestrator.Dependencies{
 		Connector:  hub.connector,
 		Scheduling: hub.scheduler,
 		Runner:     runnerBackend,
-		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:     slog.New(slog.NewTextHandler(t.Output(), nil)),
 	})
 	if err != nil {
 		t.Fatalf("orchestrator.New() error = %v", err)
@@ -135,11 +140,13 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	stop()
 
 	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
-		t.Fatalf("dirty uncommitted result retry = %+v, present = %t", retry, ok)
+		t.Fatalf("dirty uncommitted result retry: attempt = %d, present = %t, error = %v", retry.Attempt, ok, retry.Error)
+	} else if retry.Issue.State != "Rework" {
+		t.Fatalf("dirty uncommitted result retry: state = %q, want Rework", retry.Issue.State)
 	}
 	diffStat := state.DiffStats[issue.ID]
 	if diffStat.FilesChanged != 1 || diffStat.AddedLines != 1 || diffStat.RemovedLines != 0 || diffStat.Status != "changed" {
-		t.Fatalf("DiffStats = %#v, want one added file", diffStat)
+		t.Fatalf("DiffStats = %#v, want one added file; retry=%v", diffStat, state.Retry[issue.ID].Error)
 	}
 
 	entries, err := os.ReadDir(workspacesRoot)

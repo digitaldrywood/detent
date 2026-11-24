@@ -1433,7 +1433,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					directory := filepath.Dir(path)
 					head, err := exec.CommandContext(t.Context(), "git", "-C", directory, "rev-parse", "HEAD").Output()
 					if err != nil || strings.TrimSpace(string(head)) != change.HeadSHA || directory == provider.workspace {
-						t.Fatalf("resumed workspace lost fresh immutable source: path=%s head=%s error=%v", directory, head, err)
+						t.Fatalf("resumed workspace lost fresh immutable source: path=%s head=%q want=%s error=%v", directory, strings.TrimSpace(string(head)), change.HeadSHA, err)
 					}
 					nativeChangeGit(t, directory, "diff", "--exit-code", change.HeadSHA, "--", "CHANGE.md")
 				}
@@ -1971,9 +1971,18 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if test.Expired {
 				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
-				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
-					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
+				attempt := evidence.Attempt
+				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) || readErr != nil || attempt == nil || attempt.Status != "interrupted" || attempt.Checkpoint == nil || attempt.Checkpoint.HeadSHA == "" || attempt.Finalization != nil {
+					t.Fatalf("parent expiry lost the interrupted checkpoint: attempt=%+v read=%v run=%v", attempt, readErr, err)
 				}
+				if source, readErr := os.ReadFile(filepath.Join(provider.workspace, "CHANGE.md")); readErr != nil || string(source) != "changed\n" {
+					t.Fatalf("parent expiry lost local source: %q, %v", source, readErr)
+				}
+				changes := h.changes(t, issue.ID)
+				if expected == nil && len(changes) != 0 || expected != nil && (len(changes) != 1 || changes[0].CurrentVersion != expected.Change.CurrentVersion) {
+					t.Fatalf("parent expiry changed published source: %+v", changes)
+				}
+				return
 			}
 			if test.SSH && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()

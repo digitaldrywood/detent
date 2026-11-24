@@ -135,15 +135,15 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer stopGuard()
-			assertRuntime := func(heartbeat time.Time, sequence int64, expired bool) {
+			assertRuntime := func(heartbeat time.Time, sequence int64) {
 				t.Helper()
 				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
 				if err != nil || evidence.Attempt == nil {
 					t.Fatalf("runtime=%+v error=%v", evidence, err)
 				}
 				a := evidence.Attempt
-				if a.Runtime == nil || !a.Runtime.HeartbeatAt.Equal(heartbeat) || a.Sequence != sequence || !a.Current || (a.RuntimeFreshness == "expired") != expired {
-					t.Fatalf("elapsed=%v runtime=%+v attempt=%+v want heartbeat=%v sequence=%d expired=%v", time.Since(at), a.Runtime, a, heartbeat, sequence, expired)
+				if a.Runtime == nil || !a.Runtime.HeartbeatAt.Equal(heartbeat) || a.Sequence != sequence || !a.Current || a.RuntimeFreshness != "available" || !a.LeaseRenewedAt.Equal(now) {
+					t.Fatalf("runtime=%+v attempt=%+v want heartbeat=%v sequence=%d lease renewal=%v", a.Runtime, a, heartbeat, sequence, now)
 				}
 				var view runnerauth.Runner
 				if err := h.admin.Transport().Request(t.Context(), http.MethodGet, "/api/v2/organizations/"+string(h.organization)+"/runners/"+file.Identity.RunnerID+"/routing", nil, &view); err != nil {
@@ -162,7 +162,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					alive, probeErr := procgroup.Alive(worker)
 					t.Fatalf("renew at %s: %v; state=%s eligible=%v dependencies=%t read=%v alive=%t probe=%v", elapsed, err, current.State, current.SchedulingEligible, current.DependencyReady, readErr, alive, probeErr)
 				}
-				assertRuntime(at, 1, elapsed >= ttl)
+				assertRuntime(at, 1)
 			}
 			loseSupervisor(errors.New("supervisor lost"))
 			<-guarded.Done()
@@ -190,7 +190,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			assertRuntime(at, 1, true)
+			assertRuntime(at, 1)
 		})
 	}
 }

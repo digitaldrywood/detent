@@ -1856,7 +1856,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		resumePhase := phaseSource != nil && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan
 		publicationRecovery = publicationRecovery && resumePhase
-		if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
+		if phaseSource != nil && recovery.Change != nil && phaseSource.HeadSHA == recovery.Change.HeadSHA && phaseSource.PolicyID == recovery.Lease.PolicyID &&
+			req.executionRole() != RoleRework && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
+			reviewRecovery = nativeReviewResumeAttempt(recovery, gate.Effective(workflow.Config.Gate).Run)
+		}
+		if reviewRecovery == nil && resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
 			turnRecovery = nativePhaseTurnResumeAttempt(recovery, *phaseSource)
 		}
 		req.ResumeState = store.AgentResumeState{}
@@ -2372,6 +2376,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if reviewRecovery != nil {
 		if err := req.Execution.Validate(ctx); err != nil {
 			return RunResult{}, err
+		}
+		if req.phaseReceipts {
+			if err := recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, false, true); err != nil {
+				return RunResult{}, fmt.Errorf("%w: recover native review source: %w", ErrNativeRecoveryRequired, err)
+			}
 		}
 		if !phaserecovery.ReviewMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
@@ -3271,6 +3280,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 
 		if turnErr != nil {
+			var incomplete *workspace.SourceFinalizationIncomplete
+			if ctx.Err() == nil && errors.As(turnErr, &incomplete) {
+				if recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "final"); recoveryState != nil {
+					result.DiffStats = runobserve.DiffStatsFromWorkspace(recoveryState.DiffStat)
+					result.DiffStats.RecoveryStateExpected = true
+					result.DiffStats.ApplyRecoveryState(recoveryState)
+					applyDeliverableState(&result.DiffStats, deliverableState)
+				}
+			}
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 			return result, errors.Join(

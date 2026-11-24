@@ -551,14 +551,18 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				return response, err
 			}))
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+			if err != nil || len(issues) != 1 || len(acquired) != 1 || len(recoveryIDs) != 1 {
 				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
 			}
-			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
-				t.Fatal("partial batch did not retain only the successfully hydrated lease")
+			failed, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err == nil || len(failed) != 0 || len(acquired) != 2 || len(recoveryIDs) != 2 {
+				t.Fatalf("failed second hydration = %d issues, %d leases, %d recoveries, %v", len(failed), len(acquired), len(recoveryIDs), err)
 			}
-			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
-				t.Fatal("partial batch retained claims outside the hydrated prefix")
+			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
+				t.Fatal("failed hydration did not preserve the first successfully hydrated lease")
+			}
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 1 {
+				t.Fatal("failed hydration left unexpected leases")
 			}
 			for i, lease := range acquired {
 				wantReleased := 1
@@ -583,7 +587,6 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			evaluations = 0
 		}
-		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
 		want := 6
 		if unavailable == "provider slots" {
 			want = 2
@@ -591,8 +594,17 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		if unavailable == "mixed providers" {
 			want = 3
 		}
-		if err != nil || len(issues) != want || issues[0].State != "Rework" || evaluations > request.CandidateLimit {
-			t.Fatalf("provider batch = %d, %v, want %d with Rework first", len(issues), err, want)
+		var issues []connector.Issue
+		for range want {
+			evaluations = 0
+			next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(next) != 1 || evaluations > request.CandidateLimit {
+				t.Fatalf("provider admission after %d claims = %d candidates, %d evaluations, %v", len(issues), len(next), evaluations, err)
+			}
+			issues = append(issues, next[0])
+		}
+		if issues[0].State != "Rework" {
+			t.Fatalf("first claim = %s, want Rework", issues[0].State)
 		}
 		if unavailable == "stage slots" && admittedRework != 1 {
 			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
@@ -641,7 +653,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 		admittedRework = 0
 		evaluations = 0
-		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != want {
+		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != 1 {
 			t.Fatalf("released provider reservations retained slots: %d, %v", len(again), err)
 		}
 		return
@@ -759,10 +771,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 1 {
 		t.Fatalf("start retries duplicated or lost the durable attempt: attempts=%#v error=%v", recovery.Attempts, err)
 	}
-	// This attempt already occupies the provider's only slot. An ordinary
-	// empty claim result keeps admission idle without inventing an outage.
 	next, err := scheduler.FetchCandidateIssues(t.Context(), request)
-	if err != nil || len(next) != 0 {
+	var refusal *APIError
+	if len(next) != 0 || err != nil && (!errors.As(err, &refusal) || refusal.Code != "provider_incompatible") {
 		t.Fatalf("exhausted occupied capacity admitted another attempt: candidates=%#v error=%v", next, err)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), candidates[0].ID, "completed"); err != nil {

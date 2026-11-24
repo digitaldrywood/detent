@@ -606,7 +606,8 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	// again is safe, because it reuses the item's change.
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
-		if !e.claimActive() {
+		delivered := e.releaseDelivery != nil && e.releaseDelivery.DeliveredSHA != ""
+		if !delivered && !e.claimActive() {
 			return runner.ErrExecutionAuthorityUnavailable
 		}
 		if err := api.MutationEffectError(ctx); err != nil {
@@ -858,7 +859,10 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	var rejection *nativeCompletionRejection
 	var releasedAttempt *tracker.NativeAttempt
 	if outcome != "" && !finished {
-		if publicationUnavailable && expectedState != "" {
+		if outcome != "succeeded" && !e.claimActive() {
+			finishErr = runner.ErrExecutionAuthorityUnavailable
+		}
+		if finishErr == nil && publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.NativeClient().Issue(ctx, e.claim.lease.WorkItemID)
 			if err != nil {
 				finishErr = e.executionError(ctx, err)

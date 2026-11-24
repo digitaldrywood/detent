@@ -76,9 +76,16 @@ func TestNativeRunnerReachesHumanReviewWithoutGitHub(t *testing.T) {
 				h = newNativeChangeHubWithStates(t, "Human Review", hubserver.HostedProjectStates())
 				issue = h.createInProgress(t, "Update the README")
 			}
+			source := nativeChangeSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+			nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+			nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+			nativeChangeGit(t, source, "push", "origin", "main")
+			h.configureCloneURL(remote)
 			candidate := h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID)
-			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: nativeChangeSourceRepo(t), AutoBranch: true})
+			backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
 			}
