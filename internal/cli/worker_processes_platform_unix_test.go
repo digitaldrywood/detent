@@ -6,24 +6,31 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestReapWorkerProcessesAtStartup(t *testing.T) {
 	const childEnv = "DETENT_TEST_WORKER_SCRATCH_CHILD"
 	if os.Getenv(childEnv) == "1" {
+		if data, err := os.ReadFile(os.Getenv("DETENT_TEST_EXPORT")); err != nil || string(data) != "interrupted export" {
+			t.Fatalf("consumer could not open export after producer exit: %q %v", data, err)
+		}
 		if _, err := fmt.Fprintln(os.Stdout, "ready"); err != nil {
 			t.Fatal(err)
 		}
@@ -36,12 +43,28 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 
 	for _, stale := range []bool{false, true} {
 		t.Run(fmt.Sprintf("scratch reservation survives owner loss/stale=%t", stale), func(t *testing.T) {
-
 			root := t.TempDir()
 			scratch, err := workspace.PrepareWorkerScratch(t.Context(), root)
 			if err != nil {
 				t.Fatal(err)
 			}
+			liveScratch, err := workspace.PrepareWorkerScratch(t.Context(), root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := workspace.CleanupWorkerScratch(root, liveScratch); err != nil {
+					t.Error(err)
+				}
+			})
+			cacheRoot := t.TempDir()
+			cache, err := toolcache.NewManaged(t.Context(), cacheRoot, filepath.Join(root, "cache-owner"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			interrupted := restartCacheExport(t, cacheRoot, scratch, "interrupted export", now)
+			live := restartCacheExport(t, cacheRoot, liveScratch, "live export", now)
 			backend := &memorySessions{}
 			sessionID, err := backend.StartSession(t.Context(), store.SessionStart{IssueID: "host-gate", StartedAt: time.Now().UTC(), AgentRole: store.WorkerProcessRoleHostValidation})
 			if err != nil {
@@ -51,7 +74,7 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestReapWorkerProcessesAtStartup$")
-			cmd.Env = []string{childEnv + "=1"}
+			cmd.Env = []string{childEnv + "=1", "DETENT_TEST_EXPORT=" + interrupted, "GOCOVERDIR=" + t.TempDir()}
 			cmd.Dir = scratch
 			procgroup.SetTempDir(cmd, scratch)
 			procgroup.Configure(t.Context(), cmd)
@@ -122,6 +145,20 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			active, err := backend.ListActiveWorkerProcesses(t.Context())
 			if err != nil || len(active) != 0 {
 				t.Fatalf("reservation not released after child termination: %+v %v", active, err)
+			}
+			wantEvicted := int64(len("interrupted export"))
+			if stale {
+				wantEvicted = 0
+			}
+			report, err := cache.Maintain(t.Context(), toolcache.Policy{MaxBytes: 1}.WithReclaimBytes(wantEvicted), now)
+			if err != nil || report.SizeEvictedBytes != wantEvicted {
+				t.Fatalf("cache trim after startup cleanup: %#v, %v", report, err)
+			}
+			if _, err := os.Stat(interrupted); (stale && err != nil) || (!stale && !errors.Is(err, os.ErrNotExist)) {
+				t.Fatalf("interrupted export lifetime: %v", err)
+			}
+			if data, err := os.ReadFile(live); err != nil || string(data) != "live export" {
+				t.Fatalf("startup cleanup disturbed a separate consumer: %q %v", data, err)
 			}
 			_, statErr := os.Stat(scratch)
 			if stale {
@@ -204,4 +241,36 @@ func TestReapWorkerProcessesAtStartup(t *testing.T) {
 			t.Fatalf("logs missing %q:\n%s", want, logs.String())
 		}
 	}
+}
+
+func restartCacheExport(t *testing.T, root, scratch, contents string, now time.Time) string {
+	t.Helper()
+	body := []byte(contents)
+	output := sha256.Sum256(body)
+	var input, result bytes.Buffer
+	encoder := json.NewEncoder(&input)
+	if err := encoder.Encode(map[string]any{
+		"ID": 1, "Command": "put", "ActionID": output[:], "OutputID": output[:], "BodySize": len(body),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Encode(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := toolcache.RunProgram(root, scratch, &input, &result); err != nil {
+		t.Fatal(err)
+	}
+	var response struct{ DiskPath string }
+	decoder := json.NewDecoder(&result)
+	for range 2 {
+		if err := decoder.Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cacheFile := filepath.Join(root, fmt.Sprintf("%02x", output[0]), fmt.Sprintf("%x-d", output))
+	at := now.Add(-4 * time.Hour)
+	if err := os.Chtimes(cacheFile, at, at); err != nil {
+		t.Fatal(err)
+	}
+	return response.DiskPath
 }

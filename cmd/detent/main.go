@@ -21,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
-		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
+		if err := toolcache.RunProgramFromEnvironment(os.Stdin, os.Stdout); err != nil {
 			slog.Error("managed Go cache program failed", "error", err)
 			os.Exit(1)
 		}
