@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -15,5 +16,5 @@ type ScheduledReader interface {
 
 type ScheduledWriter interface {
 	ScheduledReader
-	StoreScheduledDecision(context.Context, tracker.ProjectID, progresscheck.CIFailure, progresscheck.CIDecision, time.Time) error
+	StoreScheduledDecision(context.Context, tracker.ProjectID, progresscheck.CIFailure, progresscheck.CIDecision, time.Time, int64) (billingstore.UsageResult, error)
 }

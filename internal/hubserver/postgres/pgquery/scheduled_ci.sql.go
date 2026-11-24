@@ -83,7 +83,7 @@ func (q *Queries) ScheduledLandedWorkItems(ctx context.Context, arg ScheduledLan
 	return items, nil
 }
 
-const storeScheduledDecision = `-- name: StoreScheduledDecision :exec
+const storeScheduledDecision = `-- name: StoreScheduledDecision :execrows
 INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING
 `
@@ -102,8 +102,8 @@ type StoreScheduledDecisionParams struct {
 	CreatedAt      time.Time
 }
 
-func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduledDecisionParams) error {
-	_, err := q.db.Exec(ctx, storeScheduledDecision,
+func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduledDecisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, storeScheduledDecision,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Repository,
@@ -116,5 +116,8 @@ func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduled
 		arg.Reason,
 		arg.CreatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

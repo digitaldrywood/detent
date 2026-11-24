@@ -159,13 +159,17 @@ func TestReconcileNativeProfileDoesNotFetchIssues(t *testing.T) {
 func TestImportScheduledOccurrence(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		changeRun func(map[string]any)
-		changeJob func(map[string]any)
-		status    int
-		valid     bool
+		name       string
+		changeRun  func(map[string]any)
+		changeJob  func(map[string]any)
+		status     int
+		valid      bool
+		stage      string
+		conclusion string
 	}{
 		{name: "failed job while workflow is running", valid: true},
+		{name: "classification verifies a cancelled job", stage: githubcontract.ScheduledClassificationStage, conclusion: "cancelled", valid: true},
+		{name: "repair refuses a cancelled job", conclusion: "cancelled"},
 		{name: "wrong run", changeRun: func(r map[string]any) { r["id"] = 124 }},
 		{name: "wrong attempt", changeRun: func(r map[string]any) { r["run_attempt"] = 2 }},
 		{name: "unproven tested SHA", changeRun: func(r map[string]any) { r["head_sha"] = strings.Repeat("b", 40) }},
@@ -189,6 +193,9 @@ func TestImportScheduledOccurrence(t *testing.T) {
 			evidence := gate.ScheduledEvidence{Schema: 1, Repository: "org/repo", OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Coverage", RunURL: "https://github.com/org/repo/actions/runs/123/attempts/1", JobURL: "https://github.com/org/repo/actions/jobs/456", HeadSHA: sha, Conclusion: "failure"}
 			run := map[string]any{"id": 123, "run_attempt": 1, "path": ".github/workflows/ci.yml", "head_sha": sha, "head_branch": "develop", "event": "schedule", "status": "in_progress", "repository": map[string]any{"full_name": "org/repo"}, "head_repository": map[string]any{"full_name": "org/repo"}}
 			job := map[string]any{"id": 456, "run_id": 123, "name": "Coverage", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-11T12:00:00Z", "completed_at": "2026-10-11T12:01:00Z"}
+			if test.conclusion != "" {
+				evidence.Conclusion, job["conclusion"] = test.conclusion, test.conclusion
+			}
 			if test.changeRun != nil {
 				test.changeRun(run)
 			}
@@ -204,7 +211,11 @@ func TestImportScheduledOccurrence(t *testing.T) {
 				steps = append(steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{job}}})
 			}
 			client := &scriptedRESTClient{t: t, steps: steps}
-			page, err := NewImporter(client).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Profile: "native", Repository: "org/repo", Stage: "scheduled", Scheduled: &evidence})
+			stage := test.stage
+			if stage == "" {
+				stage = "scheduled"
+			}
+			page, err := NewImporter(client).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{Profile: "native", Repository: "org/repo", Stage: stage, Scheduled: &evidence})
 			if (err == nil) != test.valid || (page.Scheduled != nil) != test.valid {
 				t.Fatalf("page=%+v err=%v", page, err)
 			}

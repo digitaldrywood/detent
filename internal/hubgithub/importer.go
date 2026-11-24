@@ -43,7 +43,7 @@ func (i *Importer) FetchImportPage(ctx context.Context, request githubcontract.G
 	if request.Stage == "batch" {
 		return i.fetchBatch(ctx, request)
 	}
-	if request.Stage == "scheduled" {
+	if request.Stage == "scheduled" || request.Stage == githubcontract.ScheduledClassificationStage {
 		return i.fetchScheduledOccurrence(ctx, request)
 	}
 	if request.Stage == "edits" {
@@ -231,7 +231,7 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 		return githubcontract.GitHubImportPage{}, err
 	}
 	for _, job := range jobs.Jobs {
-		if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && (job.Conclusion == "failure" || job.Conclusion == "timed_out") {
+		if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && matchesScheduledJobConclusion(request.Stage, job.Conclusion) {
 			evidence.Checks = nil
 			evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
 			evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID
@@ -239,6 +239,13 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 		}
 	}
 	return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
+}
+
+func matchesScheduledJobConclusion(stage, conclusion string) bool {
+	if stage == githubcontract.ScheduledClassificationStage {
+		return conclusion != "" && conclusion != "success"
+	}
+	return conclusion == "failure" || conclusion == "timed_out"
 }
 
 func matchesScheduledCIWorkflow(request githubcontract.GitHubImportRequest, workflow, branch string) bool {
