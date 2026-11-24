@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -194,6 +195,38 @@ type phaseCompletionExecution struct {
 	publication tracker.NativePhaseReceipt
 }
 
+type phaseResumeExecution struct {
+	phaseCompletionExecution
+	validation gate.CommandResult
+	gateErr    error
+	phaseErr   error
+}
+
+func (e *phaseResumeExecution) RecordSourceValidation(_ context.Context, result gate.CommandResult) error {
+	e.validation = result
+	return e.gateErr
+}
+
+func (e *phaseResumeExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	if e.phaseErr != nil {
+		return e.phaseErr
+	}
+	return e.phaseCompletionExecution.VerifyPhaseAuthority(ctx)
+}
+
+func (*phaseResumeExecution) RecordStep(context.Context, tracker.NativeStepReceipt) error {
+	return nil
+}
+
+func (e *phaseResumeExecution) Step(_ context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
+	for _, receipt := range e.recovery.Attempts[0].Steps {
+		if receipt.Matches(binding) {
+			return receipt, nil
+		}
+	}
+	return tracker.NativeStepReceipt{}, nil
+}
+
 type phaseCompletionWorkspace struct {
 	*workspace.LocalGit
 	beforePreservation func()
@@ -224,6 +257,20 @@ type phaseCheckoutWorkspace struct {
 	itemPhaseWorkspace
 	issue workspace.Issue
 	stop  error
+}
+
+type phaseResumeWorkspace struct {
+	*workspace.LocalGit
+	restoredHead string
+}
+
+func (w *phaseResumeWorkspace) BeforeRun(ctx context.Context, info workspace.Info, issue workspace.Issue) error {
+	head, err := w.Head(ctx, info, issue)
+	if err != nil {
+		return err
+	}
+	w.restoredHead = head
+	return w.LocalGit.BeforeRun(ctx, info, issue)
 }
 
 func (w *phaseCheckoutWorkspace) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
@@ -331,18 +378,32 @@ func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
 
 func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		hook      string
-		movesHead bool
-		advanced  bool
-		wantStart bool
-		live      bool
+		name        string
+		hook        string
+		movesHead   bool
+		advanced    bool
+		wantStart   bool
+		live        bool
+		resumeGate  bool
+		advanceBase bool
+		refusal     string
+		baseGate    bool
+		wantRework  bool
+		staleFence  bool
 	}{
 		{name: "unchanged", wantStart: true},
 		{name: "advance without a receipt", advanced: true, wantStart: true},
 		{name: "hook edited the recovered source", advanced: true, hook: "printf 'changed\\n' >> README.md"},
 		{name: "live lease retains staged and unstaged work", live: true, wantStart: true},
 		{name: "live lease hook removed the published Change from ancestry", live: true, hook: "git update-ref HEAD ", movesHead: true},
+		{name: "current base keeps the next gate phase", resumeGate: true, live: true},
+		{name: "ordinary retry on an older base keeps the next gate phase", resumeGate: true, advanceBase: true},
+		{name: "base refusal on current source keeps the next gate phase", resumeGate: true, refusal: workspace.LandRefusalBaseMoved},
+		{name: "base moved refreshes the held phase before implementation", resumeGate: true, advanceBase: true, live: true, refusal: workspace.LandRefusalBaseMoved, wantRework: true},
+		{name: "base moved refreshes the replaced phase before implementation", resumeGate: true, advanceBase: true, refusal: workspace.LandRefusalBaseMoved, wantRework: true},
+		{name: "landing gate failure on base refreshes the held phase", resumeGate: true, advanceBase: true, live: true, baseGate: true, wantRework: true},
+		{name: "landing gate failure on base refreshes the replaced phase", resumeGate: true, advanceBase: true, baseGate: true, wantRework: true},
+		{name: "stale fence cannot refresh a held phase", resumeGate: true, advanceBase: true, live: true, refusal: workspace.LandRefusalBaseMoved, staleFence: true},
 		{name: "unchanged with index flags", hook: "git update-index --assume-unchanged README.md && git update-index --skip-worktree README.md", wantStart: true},
 		{name: "hook changed HEAD", hook: "git switch --detach ", movesHead: true},
 		{name: "hook detached the same HEAD", hook: "git switch --detach HEAD"},
@@ -354,6 +415,11 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			source := initRunnerSourceRepo(t)
 			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
+			if tc.resumeGate {
+				const repository = "https://github.com/example-org/example-project"
+				runRunnerGit(t, source, "config", "url."+remote+".insteadOf", repository)
+				runRunnerGit(t, source, "remote", "set-url", "origin", repository)
+			}
 			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
 			hooks := workspace.Hooks{BeforeRun: tc.hook}
 			if tc.movesHead {
@@ -376,6 +442,10 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.resumeGate {
+				writeLocalProgressFile(t, seed.Path, "item.txt", "phase work\n")
+				runRunnerGit(t, seed.Path, "add", "item.txt")
+			}
 			runRunnerGit(t, seed.Path, "commit", "--allow-empty", "-m", "complete phase")
 			head := strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD"))
 			tree := strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD^{tree}"))
@@ -388,18 +458,20 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 				runRunnerGit(t, seed.Path, "push", "origin", "HEAD:refs/heads/"+branch)
 			}
 
-			execution := &phaseCheckoutExecution{
+			execution := &phaseResumeExecution{phaseCompletionExecution: phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
 				testExecution: &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "replacement-lease"}}},
 				continuation: tracker.NativePhaseContinuation{
 					RepositoryURL: remote, NextPhase: "implement",
 					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
 				},
-			}
+			}}}
 			if tc.live {
 				replacement = prior
 				execution.recovery.Lease = tracker.NativeLease{ID: "old-lease", FencingToken: 1}
 				execution.recovery.Change = &tracker.NativeChangeReference{VersionID: "version_published", HeadSHA: head}
 				execution.continuation.ActiveAttemptID = prior.Attempt
+			}
+			if tc.live && !tc.resumeGate {
 				path := filepath.Join(seed.Path, "retry.txt")
 				if err := os.WriteFile(path, []byte("staged work\n"), 0o600); err != nil {
 					t.Fatal(err)
@@ -415,15 +487,109 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			}
 			cfg := config.Default()
 			cfg.Tracker.Kind = config.TrackerHubNative
+			resumed := &phaseResumeWorkspace{LocalGit: backend}
+			currentBase := base
+			if tc.resumeGate {
+				execution.gateErr = errors.New("stop after observing the resumed gate")
+				if tc.staleFence {
+					execution.phaseErr = ErrExecutionAuthorityUnavailable
+				}
+				cfg.Gate.Run = "test -f item.txt"
+				state, err := backend.RecoveryState(t.Context(), seed, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var rejectedGate *gate.CommandResult
+				if tc.baseGate {
+					cfg.Gate.Run = "test -f gate-fix.txt"
+					for _, path := range []string{source, seed.Path} {
+						command := exec.CommandContext(t.Context(), "sh", "-c", cfg.Gate.Run)
+						command.Dir = path
+						var exit *exec.ExitError
+						if err := command.Run(); !errors.As(err, &exit) || exit.ExitCode() != 1 {
+							t.Fatalf("original landing gate in %s did not fail: %v", path, err)
+						}
+					}
+					rejectedGate = &gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: head, TreeSHA: tree, ExitCode: 1, Attribution: "independent"}
+				}
+				if tc.advanceBase {
+					writeLocalProgressFile(t, source, "gate-fix.txt", "base update\n")
+					runRunnerGit(t, source, "add", "gate-fix.txt")
+					runRunnerGit(t, source, "commit", "-m", "fix gate on target")
+					runRunnerGit(t, source, "push", "origin", "main")
+					currentBase = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				}
+				attempt := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: prior.Attempt, LeaseID: "old-lease", FencingToken: 1}}
+				execution.continuation.LastPushed.AttemptID = prior.Attempt
+				execution.continuation.NextPhase = "project_gate"
+				execution.continuation.Receipts = []tracker.NativePhaseReceipt{*execution.continuation.LastPushed}
+				execution.recovery.Attempts = []tracker.NativeAttempt{attempt}
+				if tc.refusal != "" || tc.baseGate {
+					change := tracker.NativeChangeReference{ChangeID: "change_fixture", VersionID: "version_fixture", HeadSHA: head}
+					execution.recovery.Change = &change
+					landing := &tracker.NativeLandingReceipt{ChangeID: change.ChangeID, VersionID: change.VersionID, HeadSHA: head, RefusalKind: tc.refusal}
+					if tc.baseGate {
+						landing.GateFailed = true
+						landing.Gate = rejectedGate
+						issue.State = "Rework"
+					} else {
+						landing.BaseSHA = currentBase
+					}
+					execution.recovery.Attempts = append(execution.recovery.Attempts, tracker.NativeAttempt{
+						NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: landing}},
+					})
+				}
+				step := stepBinding(execution, "agent_turn", executionCheckpoint(&state), tracker.NativeChangeReference{})
+				step.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				commit := stepBinding(execution, "commit", step.Source, tracker.NativeChangeReference{})
+				commit.FinalizedBaseSHA = base
+				execution.recovery.Attempts[0].Steps = []tracker.NativeStepReceipt{step, commit}
+			}
 			r, err := NewRunner(Dependencies{
 				Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, ProjectID: prior.Project,
-				Workspace: backend, AgentBackend: agent, ProcessSource: emptyProcessSource,
+				Workspace: resumed, AgentBackend: agent, ProcessSource: emptyProcessSource,
 				Store: newNativeSessionOwner(policy.Descriptor{}).client(replacement.Attempt), Logger: slog.New(slog.DiscardHandler),
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := r.Run(t.Context(), RunRequest{ProjectID: prior.Project, Mode: RunModeImplement, Execution: execution, Issue: issue, AttemptWorkspace: replacement})
+			var attempt Execution = &execution.phaseCheckoutExecution
+			if tc.resumeGate {
+				attempt = execution
+			}
+			result, err := r.Run(t.Context(), RunRequest{ProjectID: prior.Project, Mode: RunModeImplement, Execution: attempt, Issue: issue, AttemptWorkspace: replacement})
+			if tc.resumeGate {
+				if resumed.restoredHead != head {
+					t.Fatalf("restored phase commit = %s, want %s, error %v", resumed.restoredHead, head, err)
+				}
+				target.AttemptWorkspace = replacement
+				info, infoErr := backend.Existing(target)
+				if infoErr != nil {
+					t.Fatal(infoErr)
+				}
+				selectedBase := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", currentBase, "HEAD"))
+				switch {
+				case tc.staleFence:
+					if !errors.Is(err, ErrExecutionAuthorityUnavailable) || agent.calls != 0 || execution.validation.Command != "" || selectedBase != base {
+						t.Fatalf("stale fence advanced phase: base %s, turns %d, gate %+v, error %v", selectedBase, agent.calls, execution.validation, err)
+					}
+					if held := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); held != head {
+						t.Fatalf("stale fence changed held commit to %s, want %s", held, head)
+					}
+				case tc.wantRework:
+					if agent.calls != 1 || !result.TurnStarted || execution.validation.Command != "" || selectedBase != currentBase {
+						t.Fatalf("expected implementation on %s, got base %s, turns %d, gate %+v, error %v", currentBase, selectedBase, agent.calls, execution.validation, err)
+					}
+				default:
+					if !errors.Is(err, execution.gateErr) || agent.calls != 0 || execution.validation.HeadSHA != head || execution.validation.TreeSHA != tree || execution.validation.ExitCode != 0 || selectedBase != base {
+						t.Fatalf("expected gate on preserved phase %s at base %s, got base %s, turns %d, gate %+v, error %v", head, base, selectedBase, agent.calls, execution.validation, err)
+					}
+				}
+				if got := gitfixture.ReadFile(t, filepath.Join(info.Path, "item.txt")); got != "phase work\n" {
+					t.Fatalf("restored work = %q", got)
+				}
+				return
+			}
 			if tc.wantStart {
 				if agent.calls != 1 || !result.TurnStarted {
 					t.Fatalf("verified phase checkout did not reach execution: calls=%d error=%v", agent.calls, err)

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -126,6 +128,17 @@ func verifyItemPhaseCheckout(ctx context.Context, backend workspace.Backend, inf
 		return fmt.Errorf("%w: verify the recorded phase after setup: %w", ErrNativeRecoveryRequired, err)
 	}
 	return nil
+}
+
+func (r *Runner) prepareRunRework(ctx context.Context, req RunRequest, preparer workspace.ReworkPreparer, info workspace.Info, issue workspace.Issue, authorize func(context.Context) error) (workspace.MergePrepareResult, error) {
+	started := r.now()
+	prepared, err := preparer.PrepareRework(ctx, info, issue, workspace.MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}, authorize)
+	r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(prepared.Status, err))
+	r.recordPipeline(req, gate.Interval("rebase", started, r.now(), reworkPreparationOutcome(prepared.Status, err)))
+	if err != nil {
+		return prepared, fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
+	}
+	return prepared, nil
 }
 
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {

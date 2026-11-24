@@ -2228,6 +2228,24 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if workspaceIssue.RetainPhaseCheckout && !info.Created && turnRecovery != nil && !phaserecovery.TurnMatches(turnRecovery, recoveryState) {
 		turnRecovery, publicationRecovery = nil, false
 	}
+	var preparedRework workspace.MergePrepareResult
+	if phaseSource != nil && turnRecovery != nil && landingRework && !publicationRecovery {
+		preparer, ok := runWorkspace.(workspace.ReworkPreparer)
+		if !ok {
+			return RunResult{}, fmt.Errorf("%w: workspace cannot prepare the recovered phase for rework", ErrNativeRecoveryRequired)
+		}
+		preparedRework, err = r.prepareRunRework(ctx, req, preparer, info, workspaceIssue, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if preparedRework.Status != workspace.MergePrepareStatusClean || preparedRework.HeadSHA != phaseSource.HeadSHA {
+			turnRecovery = nil
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return RunResult{}, ErrNativeRecoveryRequired
+			}
+		}
+	}
 	var promptRecoveryState *workspace.RecoveryState
 	initialDeliverableState := workspaceDeliverableStateObservation{}
 	initialArtifactEvidence := workspaceArtifactEvidenceObservation{}
@@ -2620,11 +2638,17 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
-			started := r.now()
-			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
-			r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(precheck.Status, err))
-			outcome := reworkPreparationOutcome(precheck.Status, err)
-			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
+			precheck := preparedRework
+			if precheck.Status == "" {
+				authorize := req.Execution.Validate
+				if req.phaseReceipts && landingRework {
+					authorize = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority
+				}
+				precheck, err = r.prepareRunRework(ctx, req, preparer, info, workspaceIssue, authorize)
+				if err != nil {
+					return RunResult{}, err
+				}
+			}
 			if precheck.Status == workspace.MergePrepareStatusConflict {
 				resolutionStarted := r.now()
 				defer func() {
@@ -2634,9 +2658,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					}
 					r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
 				}()
-			}
-			if err != nil {
-				return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
 			}
 			resumeSource := recoveryState
 			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")

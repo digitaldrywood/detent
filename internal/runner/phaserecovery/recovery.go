@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner/prompt"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -229,7 +230,9 @@ func ReworkFindings(version, head string, audit *tracker.SecurityAuditReview, re
 
 func LandingNeedsRework(recovery tracker.NativeRecovery) bool {
 	landing := Landing(recovery)
-	return landing != nil && !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "")
+	return landing != nil && !landing.Landed && (landing.RefusalKind == workspace.LandRefusalConflict ||
+		landing.RefusalKind == workspace.LandRefusalBaseMoved && landing.BaseSHA != "" ||
+		landing.GateFailed && landing.Gate != nil && landing.Gate.ExitCode != 0 && landing.Gate.Attribution == failureattribution.Independent)
 }
 
 func NativeReviewConversationRefusal(recovery tracker.NativeRecovery) string {
