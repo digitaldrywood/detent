@@ -16,9 +16,10 @@ import (
 )
 
 type readOnlyAuditTestBackend struct {
-	requests []AgentTurnRequest
-	tools    [][]AgentTool
-	onTools  func(context.Context, AgentToolHandler) error
+	requests          []AgentTurnRequest
+	tools             [][]AgentTool
+	preToolCommentary string
+	onTools           func(context.Context, AgentToolHandler) error
 }
 
 func (b *readOnlyAuditTestBackend) Name() string { return "audit" }
@@ -30,6 +31,11 @@ func (b *readOnlyAuditTestBackend) RunTurn(ctx context.Context, req AgentTurnReq
 func (b *readOnlyAuditTestBackend) RunTurnWithTools(ctx context.Context, req AgentTurnRequest, tools []AgentTool, handler AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
 	b.requests = append(b.requests, req)
 	b.tools = append(b.tools, tools)
+	if b.preToolCommentary != "" {
+		if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, TurnID: "turn_audit", ItemID: "msg_commentary", Delta: b.preToolCommentary}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
 	if err := update(AgentUpdate{Type: AgentUpdateToolStarted}); err != nil {
 		return AgentTurnResult{}, err
 	}
@@ -41,7 +47,19 @@ func (b *readOnlyAuditTestBackend) RunTurnWithTools(ctx context.Context, req Age
 	if err := update(AgentUpdate{Type: AgentUpdateToolCompleted}); err != nil {
 		return AgentTurnResult{}, err
 	}
-	if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","summary":"verified middleware in commit tree","findings":[]}`}); err != nil {
+	if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, TurnID: "turn_audit", ItemID: "msg_final", Delta: `{"verdict":"pass",`}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, TurnID: "turn_audit", Delta: `"summary":"verified middleware in commit tree","findings":[]}`}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := update(AgentUpdate{Type: AgentUpdateToolStarted, TurnID: "turn_aux", AuxiliaryTurn: true}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, TurnID: "turn_aux", ItemID: "msg_aux", AuxiliaryTurn: true, Delta: "auxiliary commentary must not replace verdict"}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := update(AgentUpdate{Type: AgentUpdateToolCompleted, TurnID: "turn_aux", AuxiliaryTurn: true}); err != nil {
 		return AgentTurnResult{}, err
 	}
 	return AgentTurnResult{ThreadID: "thread_audit", SessionID: "session_audit"}, nil
@@ -102,6 +120,7 @@ func TestSecurityAuditReadOnlyCommitTreeTools(t *testing.T) {
 
 	var checkedTools bool
 	backend := &readOnlyAuditTestBackend{
+		preToolCommentary: "I will inspect middleware.go at head_sha before rendering the audit verdict.",
 		onTools: func(ctx context.Context, handler AgentToolHandler) error {
 			checkedTools = true
 			res, err := handler(ctx, AgentToolCall{Name: "read_repo_file", Arguments: json.RawMessage(`{"path":"middleware.go"}`)})
