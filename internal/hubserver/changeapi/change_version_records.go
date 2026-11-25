@@ -58,7 +58,7 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	}
 	if err := s.deps.ValidateChangeVersion(request.ChangeVersionInput); err != nil {
 		if visualErr := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-			return s.deps.ValidateVersionAttachments(ctx, r, scope, request.Artifacts)
+			return s.deps.ValidateVersionAttachments(ctx, r, scope, "", request.Artifacts)
 		}); visualErr != nil {
 			return nil, hubapi.ProjectRecordError(visualErr)
 		}
@@ -77,10 +77,17 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	if change.CurrentVersion != request.ExpectedVersionID {
 		return nil, hubapi.NativeConflict(change.Revision)
 	}
+	if err := validateImplementationContent(scope, request); err != nil {
+		return nil, err
+	}
 	sourceRun, err := s.PrepareChangeVersionRun(ctx, scope, change, request)
 	if errors.Is(err, errNoChangeVersionRun) {
 		sourceRun, err = nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	evidenceIDs, err := implementationEvidenceIDs(scope, request, sourceRun)
 	if err != nil {
 		return nil, err
 	}
@@ -94,8 +101,18 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	} else if len(request.SourceBundle) > 0 {
 		return nil, hubapi.NativePublicInvalid("Source bundle requires immutable source metadata")
 	}
+	suppliedArtifacts := request.Artifacts
+	var evidence []tracker.ChangeArtifact
 	if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
-		return s.deps.ValidateVersionAttachments(ctx, r, scope, request.Artifacts)
+		if len(evidenceIDs) > 0 {
+			var err error
+			evidence, err = readImplementationEvidence(ctx, scope, change.WorkItemID, evidenceIDs, r.Attachment)
+			if err != nil {
+				return err
+			}
+			request.Artifacts = append(request.Artifacts, evidence...)
+		}
+		return s.deps.ValidateVersionAttachments(ctx, r, scope, request.Outcome, suppliedArtifacts)
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
@@ -193,9 +210,6 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 			if _, err := s.deps.LockChangeRecordOperation(ctx, w, scope, item, changeID, ""); err != nil {
 				return err
 			}
-			if err := s.deps.BindVersionAttachments(ctx, w, scope, item, request.Artifacts); err != nil {
-				return err
-			}
 			if prior, err := w.Receipt(ctx, scope.Credential.ID, operation, request.IdempotencyKey); err == nil {
 				if prior.RequestHash != hash {
 					return hubapi.NativeConflict(change.Revision)
@@ -215,6 +229,12 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 				return err
 			}
 			if err := s.recheckChangeVersionRun(ctx, w, sourceRun); err != nil {
+				return err
+			}
+			if err := bindImplementationEvidence(ctx, w, scope, change.WorkItemID, evidenceIDs, evidence); err != nil {
+				return err
+			}
+			if err := s.deps.BindVersionAttachments(ctx, w, scope, item, suppliedArtifacts); err != nil {
 				return err
 			}
 			for _, item := range change.LinkedIssues {

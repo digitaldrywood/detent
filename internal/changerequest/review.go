@@ -66,8 +66,10 @@ func ValidReference(value string) bool {
 	return slices.Contains([]string{"https", "s3", "gs"}, u.Scheme) && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == ""
 }
 
+const MaxArtifacts = 64
+
 func ValidateArtifacts(artifacts []tracker.ChangeArtifact) error {
-	if len(artifacts) > 64 {
+	if len(artifacts) > MaxArtifacts {
 		return errors.New("at most 64 artifact references are permitted")
 	}
 	for _, artifact := range artifacts {

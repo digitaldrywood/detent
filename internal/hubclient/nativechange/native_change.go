@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -123,6 +125,9 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			if version.HeadSHA == diff.HeadSHA {
 				if err := e.publishVersion(ctx, diff, change); err != nil {
 					return err
+				}
+				if change.VersionID != version.ID {
+					e.finalizationSource, e.finalizationAttempt = nil, ""
 				}
 				e.settled = true
 				return nil
@@ -297,9 +302,25 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	if err := e.requireRecoveredSource(detail, diff); err != nil {
 		return "", false, err
 	}
+	outcome, evidence, err := e.publicationEvidence(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	artifacts := []tracker.ChangeArtifact{}
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion || version.HeadSHA != diff.HeadSHA {
 			continue
+		}
+		var previousEvidence []string
+		if e.ownsIssueCompletion() {
+			for _, artifact := range version.Artifacts {
+				if artifact.CaptureAttemptID != "" {
+					previousEvidence = append(previousEvidence, strings.TrimPrefix(artifact.URI, "attachment:"))
+				} else {
+					artifacts = append(artifacts, artifact)
+				}
+			}
+			evidence = mergeEvidenceIDs(previousEvidence, evidence)
 		}
 
 		if detail.Summary.Status == "stale_policy" {
@@ -315,6 +336,9 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		// that recorded session, so publish this execution's validated source
 		// rather than repeatedly auditing an unreviewable imported version.
 		if version.AttemptID == "" && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
+			break
+		}
+		if e.ownsIssueCompletion() && (outcome != "" && outcome != version.Outcome || !slices.Equal(evidence, previousEvidence)) {
 			break
 		}
 		e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
@@ -348,15 +372,17 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	}
 	e.publication = nil
 	request := tracker.PublishChangeVersion{
-		Mutation:          tracker.Mutation{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
-		ExpectedVersionID: detail.Change.CurrentVersion,
-		SourceBundle:      bundle,
+		Mutation:              tracker.Mutation{LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
+		ExpectedVersionID:     detail.Change.CurrentVersion,
+		EvidenceAttachmentIDs: evidence,
+		SourceBundle:          bundle,
 		ChangeVersionInput: tracker.ChangeVersionInput{
+			Outcome:    outcome,
 			Validation: e.validation,
 			BaseSHA:    diff.BaseSHA, HeadSHA: diff.HeadSHA, MergeBaseSHA: diff.BaseSHA,
 			Repository: e.repository,
 			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
-			Artifacts:  []tracker.ChangeArtifact{},
+			Artifacts:  artifacts,
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
 			Source: source,
 		},

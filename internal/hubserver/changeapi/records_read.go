@@ -243,6 +243,7 @@ func (s *RecordReader) selectedChangeDetail(ctx context.Context, scope hubscope.
 			version.LandingQuality = landed.Quality
 		}
 		result.Versions = append(result.Versions, version)
+		describeImplementation(&result.Change, version)
 	}
 	for _, row := range evidence {
 		raw, err := content.Evidence(ctx, row)
@@ -427,6 +428,7 @@ func (s *RecordReader) HydrateCurrentChangeDetailSelection(ctx context.Context, 
 		return tracker.ChangeDetail{}, corestore.ErrInvalidPage
 	}
 	detail := tracker.ChangeDetail{Change: change, Versions: []tracker.ChangeVersion{ChangeVersionResponse(version)}}
+	describeImplementation(&detail.Change, version)
 	for _, row := range evidence {
 		if row.OrganizationID != scope.Organization || row.ChangeID != changeRecord.ID {
 			return tracker.ChangeDetail{}, corestore.ErrTenantMismatch

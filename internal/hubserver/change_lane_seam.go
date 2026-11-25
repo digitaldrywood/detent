@@ -385,8 +385,12 @@ func (s *Service) changeVersionPublication() *changeapi.VersionPublication {
 	})
 }
 
-func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, artifacts []tracker.ChangeArtifact) error {
-	_, err := validateChangeRecordContent(ctx, r, scope, nil, artifacts, "artifacts", false)
+func validateVersionAttachments(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, outcome string, artifacts []tracker.ChangeArtifact) error {
+	var fields []cloudContentField
+	if outcome != "" {
+		fields = []cloudContentField{{name: "outcome", value: outcome}}
+	}
+	_, err := validateChangeRecordContent(ctx, r, scope, fields, artifacts, "artifacts", false)
 	return err
 }
 

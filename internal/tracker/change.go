@@ -60,10 +60,12 @@ type LandChangeVersion struct {
 }
 
 type ChangeArtifact struct {
-	Kind         string `json:"kind"`
-	URI          string `json:"uri"`
-	SHA256       string `json:"sha256"`
-	Availability string `json:"availability"`
+	Kind             string `json:"kind"`
+	URI              string `json:"uri"`
+	SHA256           string `json:"sha256"`
+	Availability     string `json:"availability"`
+	CaptureAttemptID string `json:"capture_attempt_id,omitempty"`
+	CaptureCaption   string `json:"capture_caption,omitempty"`
 }
 
 type ChangeExternalReference struct {
@@ -102,6 +104,7 @@ type ReviewDisposition struct {
 }
 
 type ChangeVersionInput struct {
+	Outcome            string                   `json:"outcome,omitempty"`
 	ReviewDispositions []ReviewDisposition      `json:"review_dispositions,omitempty"`
 	Validation         *gate.CommandResult      `json:"validation,omitempty"`
 	BaseSHA            string                   `json:"base_sha"`
@@ -145,8 +148,9 @@ type CreateChange struct {
 
 type PublishChangeVersion struct {
 	Mutation
-	ExpectedVersionID string `json:"expected_version_id"`
-	SourceBundle      []byte `json:"source_bundle,omitempty"`
+	EvidenceAttachmentIDs []string `json:"evidence_attachment_ids,omitempty"`
+	ExpectedVersionID     string   `json:"expected_version_id"`
+	SourceBundle          []byte   `json:"source_bundle,omitempty"`
 	ChangeVersionInput
 }
 

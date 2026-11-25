@@ -28,7 +28,7 @@ type VersionPublicationDeps struct {
 	Authority          VersionAuthority
 	DefaultAuthority   func() VersionAuthority
 
-	ValidateVersionAttachments      func(context.Context, tenantstore.Reader, hubscope.NativeScope, []tracker.ChangeArtifact) error
+	ValidateVersionAttachments      func(context.Context, tenantstore.Reader, hubscope.NativeScope, string, []tracker.ChangeArtifact) error
 	BindVersionAttachments          func(context.Context, tenantstore.Writer, hubscope.NativeScope, string, []tracker.ChangeArtifact) error
 	RunDetailContext                func(ctx context.Context) context.Context
 	RunDetailStore                  func() attachment.DetailStore

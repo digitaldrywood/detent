@@ -124,6 +124,7 @@ func (s *Reads) ReadBoundedChangeRecord(ctx context.Context, scope hubscope.Nati
 			return result, err
 		}
 		detail.Versions = []tracker.ChangeVersion{s.deps.BoundedChangeVersion(version)}
+		describeImplementation(&detail.Change, version)
 	}
 	summary, err := s.readBoundedChangeSummary(ctx, scope, change, current, selection.EvidenceSequence)
 	if err != nil {
