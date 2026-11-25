@@ -903,7 +903,11 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			}
 		}
 	}
-	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
+	publication := req
+	if req.phaseContinuation != nil && issue.Source != nil {
+		publication.phaseReceipts = true
+	}
+	phaseCompleted := finalizationErr == nil && publication.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
@@ -928,7 +932,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
 		}
 		if finalizationErr == nil {
-			finalizationErr = publishItemPhase(ctx, req, backend, info, publicationIssue, "implement", "")
+			finalizationErr = publishItemPhase(ctx, publication, backend, info, publicationIssue, "implement", "")
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
@@ -985,7 +989,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 								err = recorder.RecordSourceValidation(ctx, receipt)
 							}
 							if err == nil && phaseCompleted {
-								err = publishItemPhase(ctx, req, backend, info, issue, "project_gate", command)
+								err = publishItemPhase(ctx, publication, backend, info, issue, "project_gate", command)
 							}
 							if err == nil && req.retainedReview != nil {
 								req.retainedReview.validation = &receipt

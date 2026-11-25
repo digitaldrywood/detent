@@ -161,6 +161,9 @@ func PhaseTurnAttempt(recovery tracker.NativeRecovery, phase tracker.NativePhase
 		if attempt.AttemptID != phase.AttemptID {
 			continue
 		}
+		if attempt.Status == "succeeded" {
+			return nil
+		}
 		for _, receipt := range attempt.Steps {
 			if receipt.Step != "agent_turn" || receipt.PolicyID != recovery.Lease.PolicyID || receipt.Source.HeadSHA != phase.HeadSHA ||
 				receipt.ReviewState != tracker.NativeStepReviewState(recovery) || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) {

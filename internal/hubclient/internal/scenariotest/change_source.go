@@ -26,6 +26,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -93,6 +94,10 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				states[2].Transitions = append(states[2].Transitions, "Merging")
 				states[3].Transitions = append(states[3].Transitions, "Merging")
 				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}})
+				if test.landing && test.restartIntent != "resolved" {
+					states[len(states)-1].Transitions = append(states[len(states)-1].Transitions, "Blocked")
+					states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Rework"}})
+				}
 			}
 			details := &archivedRunDetails{}
 			var maintenance time.Duration
@@ -264,7 +269,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Cleanup(func() { faultSource(false) })
 				}
 
-				expectedSite := "recover native Change source"
+				expectedSite := "recover published Change source"
 				if test.checkpointOnly {
 					expectedSite = "checkpoint_unavailable"
 				}
@@ -443,7 +448,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning, Review: gate.PlanReviewAutomated}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -801,6 +806,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				target := "Rework"
 				if test.restartIntent == "resolved" {
 					target = "Done"
+				} else if test.landing {
+					target = "Blocked"
 				}
 				second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID), target)
 				detail, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
@@ -814,7 +821,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Fatalf("restart changed original source/review: %+v, %v", detail, err)
 				}
 				if test.restartIntent != "resolved" {
-					if detail.Change.CurrentLanding() != nil || h.state(t, issue.ID) != "Rework" || head(remote) != newBase {
+					if detail.Change.CurrentLanding() != nil || h.state(t, issue.ID) != target || head(remote) != newBase {
 						t.Fatalf("unfinished/stale completion manufactured acceptance: change=%+v result=%+v", detail.Change, second)
 					}
 					recovery, err := h.admin.Recovery(t.Context(), item)
@@ -824,6 +831,22 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					for _, attempt := range recovery.Attempts {
 						if attempt.Runtime != nil && attempt.Runtime.Completion != nil && attempt.Runtime.Completion.AcceptanceRecorded {
 							t.Fatalf("unaccepted source recorded acceptance: %+v", attempt)
+						}
+					}
+					if target == "Blocked" {
+						held := slices.ContainsFunc(recovery.History, func(event tracker.CollaborationEvent) bool {
+							signal, ok := workpad.SignalFromComment(event.Data.ReasonDetail, "", "")
+							return event.Data.FromState == "Merging" && event.Data.ToState == "Blocked" &&
+								ok && signal.Status == workpad.StatusBlocked && strings.Contains(signal.HumanAction, "CHANGE.md")
+						})
+						if !held || len(h.candidatesIn(t, "Rework")) != 0 {
+							t.Fatal("unresolved landing did not retain its conflict question and release the claim")
+						}
+						if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{
+							Mutation: api.NativeMutationKey(), ExpectedRevision: recovery.Issue.Revision,
+							State: "Rework", Reason: "user_requested", ReasonDetail: "Review both changes to CHANGE.md and preserve their intent.",
+						}); err != nil {
+							t.Fatal(err)
 						}
 					}
 					if test.restartIntent == "stale" && !test.landing && (resumeVerified != 1 || resumedTurns != 1 || providerB.writableCalls != 2 || providerB.validator != "fail") {

@@ -1783,7 +1783,7 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
