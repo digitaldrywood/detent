@@ -802,8 +802,8 @@ func TestPostgresRoleWaitsForOwnerBackendExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { observer.Close() })
-	var watchStarted time.Time
-	if err := observer.QueryRowContext(ctx, "SELECT clock_timestamp()").Scan(&watchStarted); err != nil {
+	var adminPID int
+	if err := processTemplate.server.admin.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&adminPID); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
@@ -824,9 +824,8 @@ func TestPostgresRoleWaitsForOwnerBackendExit(t *testing.T) {
 		}
 		var waiting bool
 		if err := observer.QueryRowContext(ctx, `SELECT EXISTS (
-			SELECT 1 FROM pg_stat_activity
-			WHERE query_start >= $1 AND query LIKE $2
-		)`, watchStarted, "%FROM pg_stat_activity WHERE datname = $1 AND usename = $2%").Scan(&waiting); err != nil {
+			SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND query LIKE '%pg_stat_activity%'
+		)`, adminPID).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
