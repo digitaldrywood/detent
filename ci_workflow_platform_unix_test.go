@@ -42,7 +42,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			linter := "#!/bin/sh\nprintf 'pinned:%s:%s\\n' \"$GOTOOLCHAIN\" \"$*\"\n"
 			fixture := filepath.Join(root, "pinned-linter")
 			write(fixture, linter)
-			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\ncase \"$*\" in 'install -p '*' github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0') ;; *) exit 1 ;; esac\ncp pinned-linter \"$GOBIN/golangci-lint\"\n")
+			write(filepath.Join(bin, "go"), "#!/bin/sh\nset -eu\n[ \"$GOTOOLCHAIN\" = go1.26.6 ]\ncase \"$*\" in 'install -p '*' github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0') ;; *) exit 1 ;; esac\ncp \"$DETENT_TEST_PINNED_LINTER\" \"$GOBIN/golangci-lint\"\n")
 			if cached {
 				cachedPath := filepath.Join(root, "tmp/tools/golangci-lint/v2.9.0/go1.26.6/golangci-lint")
 				write(cachedPath, linter)
@@ -53,7 +53,7 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 			}
 			cmd := exec.CommandContext(t.Context(), makePath, "lint")
 			cmd.Dir = root
-			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "DETENT_TEST_PINNED_LINTER="+fixture)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("make lint: %v\n%s", err, output)

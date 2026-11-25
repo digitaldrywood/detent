@@ -97,20 +97,36 @@ run_linter() {
 		build_custom_linter "$version" "$heft_version" "$3/$5"
 		return
 	fi
-	exec "$0.upstream" "$@"
+	if [[ "$#" == 1 && "$1" == version ]]; then
+		exec "$0.upstream" version
+	fi
+	printf 'Unsupported restricted linter invocation\n' >&2
+	return 1
 }
 
 install_restricted_linter() (
-	local binary="$1" package="$2" version="$3" toolchain="$4" heft_version="$5" staging
+	local binary="$1" package="$2" version="$3" toolchain="$4" heft_version="" staging
 	linter_output "$PWD" "$binary"
-	linter_output "$PWD" "$binary.upstream"
+	if [[ -e .custom-gcl.yml || -L .custom-gcl.yml ]]; then
+		heft_version="$(read_heft_version)"
+		if [[ -z "$heft_version" ]]; then
+			printf 'Custom linter configuration must pin a Heft version\n' >&2
+			return 1
+		fi
+		linter_output "$PWD" "$binary.upstream"
+	fi
 	mkdir -p "$(dirname "$binary")"
 	staging="$(mktemp -d "$(dirname "$binary")/.linter-install.XXXXXX")"
 	trap 'rm -rf -- "$staging"' EXIT
 	(
 		cd "$staging"
+		printf 'Installing %s@%s\n' "$package" "$version"
 		GOWORK=off GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$staging" go install -p "${TEST_PROCS:-4}" "$package@$version"
 	)
+	if [[ -z "$heft_version" ]]; then
+		linter_output "$PWD" "$binary" "$staging/golangci-lint"
+		return
+	fi
 	linter_output "$PWD" "$binary.upstream" "$staging/golangci-lint"
 	{
 		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
@@ -145,9 +161,8 @@ case "${1:-}" in
 			install_dir="${install_dir:-$(go env GOPATH)/bin}"
 			binary="$install_dir/$binary"
 		fi
-		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* && ( -e .custom-gcl.yml || -L .custom-gcl.yml ) ]]; then
-			heft_version="$(read_heft_version)"
-			install_restricted_linter "$binary" "$package" "$version" "$toolchain" "$heft_version"
+		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* ]]; then
+			install_restricted_linter "$binary" "$package" "$version" "$toolchain"
 		else
 			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi

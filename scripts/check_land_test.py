@@ -162,6 +162,10 @@ exit 42
             setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(setup.returncode, 1, setup.stderr)
             self.assertIn("must be at most 4096 bytes", setup.stderr)
+            config.write_text("plugins: []\n")
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(setup.returncode, 1, setup.stderr)
+            self.assertIn("must pin a Heft version", setup.stderr)
             config.write_text(config_text)
             external_dir = root / "external-tools"
             external_dir.mkdir()
@@ -202,6 +206,22 @@ exit 42
             result = subprocess.run(build_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 42, result.stderr)
             self.assertEqual(result.stderr, "installed builder reached Go\n")
+            for arguments in (
+                ["custom", "--name", "golangci-lint-custom", "--destination", str(custom_dir)],
+                ["--verbose", "custom", "--destination", str(custom_dir), "--name", "golangci-lint-custom"],
+            ):
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run([str(installer), *arguments], cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertIn("Unsupported restricted linter invocation", result.stderr)
+            with self.subTest(config="absent"):
+                config.unlink()
+                shutil.copy2(substitute, installer)
+                setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(setup.returncode, 0, setup.stderr)
+                stock = subprocess.run([str(installer), "run"], cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(stock.returncode, 0, stock.stderr)
+                self.assertEqual(stock.stdout, "pinned upstream called\n")
 
     def test_race_package_partition(self):
         packages = subprocess.check_output(["go", "list", "./..."], cwd=ROOT, text=True).splitlines()
