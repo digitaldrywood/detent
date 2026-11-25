@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner/internal/gitfixture"
@@ -218,6 +219,10 @@ func (*phaseResumeExecution) RecordStep(context.Context, tracker.NativeStepRecei
 	return nil
 }
 
+func (*phaseResumeExecution) PrepareFinish(context.Context, string, string, *tracker.NativeTerminalFailure) error {
+	return nil
+}
+
 func (e *phaseResumeExecution) Step(_ context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
 	for _, receipt := range e.recovery.Attempts[0].Steps {
 		if receipt.Matches(binding) {
@@ -377,6 +382,8 @@ func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
 }
 
 func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
+	const complete = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	const repository = "https://github.com/example-org/example-project"
 	for _, tc := range []struct {
 		name        string
 		hook        string
@@ -416,7 +423,6 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			source := initRunnerSourceRepo(t)
 			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
 			if tc.resumeGate {
-				const repository = "https://github.com/example-org/example-project"
 				runRunnerGit(t, source, "config", "url."+remote+".insteadOf", repository)
 				runRunnerGit(t, source, "remote", "set-url", "origin", repository)
 			}
@@ -459,10 +465,10 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			}
 
 			execution := &phaseResumeExecution{phaseCompletionExecution: phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
-				testExecution: &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "replacement-lease"}}},
+				testExecution: &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "replacement-lease", FencingToken: 2}}},
 				continuation: tracker.NativePhaseContinuation{
 					RepositoryURL: remote, NextPhase: "implement",
-					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
+					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease", FencingToken: 1}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
 				},
 			}}}
 			if tc.live {
@@ -501,16 +507,27 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 				}
 				var rejectedGate *gate.CommandResult
 				if tc.baseGate {
-					cfg.Gate.Run = "test -f gate-fix.txt"
-					for _, path := range []string{source, seed.Path} {
+					cfg.Gate.Run = "test -f gate-fix.txt || { printf 'missing base gate fix\\n'; exit 1; }"
+					runRejectedGate := func(path, commit string) gate.CommandResult {
+						t.Helper()
 						command := exec.CommandContext(t.Context(), "sh", "-c", cfg.Gate.Run)
 						command.Dir = path
+						output, err := command.CombinedOutput()
 						var exit *exec.ExitError
-						if err := command.Run(); !errors.As(err, &exit) || exit.ExitCode() != 1 {
+						if !errors.As(err, &exit) || exit.ExitCode() != 1 {
 							t.Fatalf("original landing gate in %s did not fail: %v", path, err)
 						}
+						return gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: commit, FinishedAt: time.Now(), ExitCode: exit.ExitCode(), Output: string(output)}
 					}
-					rejectedGate = &gate.CommandResult{Command: cfg.Gate.Run, HeadSHA: head, TreeSHA: tree, ExitCode: 1, Attribution: "independent"}
+					failure := runRejectedGate(seed.Path, head)
+					failure.TreeSHA = tree
+					reproduction := gate.CommandObservation(runRejectedGate(source, base))
+					failure.BaseReproduction = &reproduction
+					gate.NormalizeCommandAttribution(base, head, &failure)
+					if failure.Attribution != failureattribution.Independent {
+						t.Fatalf("original landing gate attribution = %q", failure.Attribution)
+					}
+					rejectedGate = &failure
 				}
 				if tc.advanceBase {
 					writeLocalProgressFile(t, source, "gate-fix.txt", "base update\n")
@@ -518,6 +535,29 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 					runRunnerGit(t, source, "commit", "-m", "fix gate on target")
 					runRunnerGit(t, source, "push", "origin", "main")
 					currentBase = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				}
+				if tc.baseGate && !tc.live {
+					replacementSource := filepath.Join(t.TempDir(), "source")
+					runRunnerGit(t, source, "clone", "--no-local", "--single-branch", "--branch", "main", remote, replacementSource)
+					runRunnerGit(t, replacementSource, "config", "url."+remote+".insteadOf", repository)
+					runRunnerGit(t, replacementSource, "config", "user.name", "Test User")
+					runRunnerGit(t, replacementSource, "config", "user.email", "test@example.com")
+					runRunnerGit(t, replacementSource, "config", "commit.gpgsign", "false")
+					runRunnerGit(t, replacementSource, "remote", "set-url", "origin", repository)
+					backend, err = workspace.NewLocalGit(workspace.LocalGitOptions{
+						ProcessSource: emptyProcessSource, Root: filepath.Join(t.TempDir(), "workspaces"),
+						SourceRoot: replacementSource, AutoBranch: true,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					resumed.LocalGit = backend
+				}
+				if tc.baseGate {
+					agent.err = nil
+					agent.updates = append(agent.updates,
+						AgentUpdate{Type: AgentUpdateMessageDelta, Delta: complete},
+						AgentUpdate{Type: AgentUpdateTurnCompleted, Status: "completed"})
 				}
 				attempt := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: prior.Attempt, LeaseID: "old-lease", FencingToken: 1}}
 				execution.continuation.LastPushed.AttemptID = prior.Attempt
@@ -540,7 +580,7 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 					})
 				}
 				step := stepBinding(execution, "agent_turn", executionCheckpoint(&state), tracker.NativeChangeReference{})
-				step.CompletionBody = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				step.CompletionBody = complete
 				commit := stepBinding(execution, "commit", step.Source, tracker.NativeChangeReference{})
 				commit.FinalizedBaseSHA = base
 				execution.recovery.Attempts[0].Steps = []tracker.NativeStepReceipt{step, commit}
@@ -576,6 +616,18 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 					if held := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); held != head {
 						t.Fatalf("stale fence changed held commit to %s, want %s", held, head)
 					}
+				case tc.baseGate:
+					receipt := execution.publication
+					if agent.calls != 1 || !result.TurnStarted || selectedBase != currentBase || !errors.Is(err, execution.gateErr) {
+						t.Fatalf("expected implementation and then the gate on %s, got base %s, turns %d, gate %+v, error %v", currentBase, selectedBase, agent.calls, execution.validation, err)
+					}
+					if receipt.Phase != "implement" || receipt.HeadSHA == head || receipt.HeadSHA != execution.validation.HeadSHA || receipt.TreeSHA != execution.validation.TreeSHA || execution.validation.ExitCode != 0 {
+						t.Fatalf("gate did not pass on the newly published implementation: receipt %+v, gate %+v", receipt, execution.validation)
+					}
+					if pushed := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", "refs/heads/"+branch)); pushed != receipt.HeadSHA {
+						t.Fatalf("pushed phase = %s, want %s", pushed, receipt.HeadSHA)
+					}
+					runRunnerGit(t, info.Path, "merge-base", "--is-ancestor", head, receipt.HeadSHA)
 				case tc.wantRework:
 					if agent.calls != 1 || !result.TurnStarted || execution.validation.Command != "" || selectedBase != currentBase {
 						t.Fatalf("expected implementation on %s, got base %s, turns %d, gate %+v, error %v", currentBase, selectedBase, agent.calls, execution.validation, err)
