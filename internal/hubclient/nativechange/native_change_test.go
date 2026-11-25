@@ -827,7 +827,14 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				h.failChanges.failEvents.Store(!test.version)
 				h.failChanges.failVersions.Store(test.version)
 			}
-			if !test.outage || test.completeDuring {
+			if test.completeDuring {
+				if err := execution.Finish(guarded, "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("completion after lease expiry returned %v", err)
+				}
+				if execution.data.Outcome != "" || !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("completion after lease expiry recorded outcome %q or left the guard active: %v", execution.data.Outcome, context.Cause(guarded))
+				}
+			} else if !test.outage {
 				if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("unpublished finish = %v", err)
 				}
@@ -873,7 +880,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 			if test.outage {
 				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(2*time.Minute))
 				testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
-				if guarded.Err() != nil {
+				if !test.completeDuring && guarded.Err() != nil {
 					t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
 				}
 				offline.Store(false)
@@ -883,7 +890,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				h.failChanges.failVersions.Store(false)
 			}
 			if test.outage {
-				if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				if err := execution.Validate(t.Context()); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("expired execution retained authority: %v", err)
 				}
 				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))

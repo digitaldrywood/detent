@@ -590,6 +590,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 }
 
 func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
+	if e.data.Outcome == "" && !e.claimActive() {
+		return e.unavailable(runner.ErrExecutionAuthorityUnavailable)
+	}
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -631,6 +634,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		}
 		if diffErr != nil && e.ownsChangeCompletion() {
 			err := e.executionError(ctx, diffErr)
+			if effectErr := api.MutationEffectError(ctx); effectErr != nil {
+				return errors.Join(err, effectErr)
+			}
 			if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 				return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 			}

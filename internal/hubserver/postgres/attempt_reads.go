@@ -45,7 +45,7 @@ func (s *session) AttemptMetadata(ctx context.Context, project tracker.ProjectID
 		return metadata, nil
 	}
 	batch := &pgx.Batch{}
-	batch.Queue(observedLeaseSQL+"l.lease_id=ANY($2::text[])", s.organization, leases).Query(func(rows pgx.Rows) error {
+	batch.Queue(observedLeaseSQL+"l.lease_id=ANY($2::text[])", s.organization, leases, s.leaseClockValue()).Query(func(rows pgx.Rows) error {
 		defer rows.Close()
 		for rows.Next() {
 			value, err := scanObservedLease(rows)
