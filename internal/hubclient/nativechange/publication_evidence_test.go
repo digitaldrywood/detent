@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,15 +127,21 @@ func TestPublicationRetainsAttemptEvidence(t *testing.T) {
 			if len(version.Artifacts) != len(wantEvidence) {
 				t.Fatalf("retained screenshots missing or duplicated: %+v", version.Artifacts)
 			}
+			if len(version.EvidenceCaptures) != len(wantEvidence) {
+				t.Fatalf("retained screenshot provenance missing or duplicated: %+v", version.EvidenceCaptures)
+			}
 			for i, meta := range wantEvidence {
 				got := version.Artifacts[i]
 				availability := "available"
 				if meta.DeletedAt != nil {
 					availability = "missing"
 				}
-				if got.URI != "attachment:"+meta.ID || got.SHA256 != meta.SHA256 || got.Availability != availability ||
-					got.CaptureAttemptID != e.data.AttemptID || got.CaptureCaption != caption {
-					t.Fatalf("screenshot lost identity or capture provenance: %+v", got)
+				if got.URI != "attachment:"+meta.ID || got.SHA256 != meta.SHA256 || got.Availability != availability {
+					t.Fatalf("screenshot lost identity or availability: %+v", got)
+				}
+				capture := version.EvidenceCaptures[i]
+				if capture.AttachmentID != meta.ID || capture.AttemptID != e.data.AttemptID || capture.Caption != caption {
+					t.Fatalf("screenshot lost capture provenance: %+v", capture)
 				}
 			}
 			if !strings.Contains(detail.Change.Body, rationale) || strings.Contains(detail.Change.Body, "detent-status") {
@@ -154,8 +161,12 @@ func TestPublicationRetainsAttemptEvidence(t *testing.T) {
 			if err != nil || bounded.Change.Body != detail.Change.Body {
 				t.Fatalf("bounded Change read lost the description: %q, %v", bounded.Change.Body, err)
 			}
+			current := slices.IndexFunc(bounded.Versions, func(v tracker.ChangeVersion) bool { return v.ID == version.ID })
+			if current < 0 || !slices.Equal(bounded.Versions[current].EvidenceCaptures, version.EvidenceCaptures) {
+				t.Fatalf("bounded Change read lost capture provenance: %+v", bounded.Versions)
+			}
 			replay, err := h.native.PublishChangeVersion(ctx, item, change.ChangeID, published)
-			if err != nil || replay.ID != version.ID {
+			if err != nil || replay.ID != version.ID || !slices.Equal(replay.EvidenceCaptures, version.EvidenceCaptures) {
 				t.Fatalf("publication replay = %s, %v", replay.ID, err)
 			}
 			again, _, err := e.publishChangeVersion(ctx, change.ChangeID, diff)

@@ -21,11 +21,6 @@ func validateImplementationContent(scope hubscope.NativeScope, request tracker.P
 	if len(request.Outcome) > workpad.MaxFinalSummaryBytes || strings.ContainsRune(request.Outcome, 0) {
 		return hubapi.NativePublicInvalid("Implementation outcome exceeds the supported description format")
 	}
-	for _, artifact := range append([]tracker.ChangeArtifact{request.Code}, request.Artifacts...) {
-		if artifact.CaptureAttemptID != "" || artifact.CaptureCaption != "" {
-			return hubapi.NativePublicInvalid("Capture provenance must come from retained attempt evidence")
-		}
-	}
 	if (request.Outcome != "" || len(request.EvidenceAttachmentIDs) != 0) && (scope.Credential.Scope != hubapi.APIScopeWorker || !scope.Credential.Runner.Valid()) {
 		return hubapi.NativePublicInvalid("Implementation outcome and evidence require a fenced runner publication")
 	}
@@ -64,8 +59,13 @@ func implementationEvidenceIDs(scope hubscope.NativeScope, request tracker.Publi
 	return ids, nil
 }
 
-func readImplementationEvidence(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ids []string, read func(context.Context, tracker.ProjectID, string) (attachmentstore.Record, error)) ([]tracker.ChangeArtifact, error) {
-	var evidence []tracker.ChangeArtifact
+type implementationEvidence struct {
+	artifact tracker.ChangeArtifact
+	capture  tracker.ChangeEvidenceCapture
+}
+
+func readImplementationEvidence(ctx context.Context, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ids []string, read func(context.Context, tracker.ProjectID, string) (attachmentstore.Record, error)) ([]implementationEvidence, error) {
+	var evidence []implementationEvidence
 	for _, id := range ids {
 		row, err := read(ctx, scope.Project, id)
 		if errors.Is(err, corestore.ErrNotFound) {
@@ -89,15 +89,15 @@ func readImplementationEvidence(ctx context.Context, scope hubscope.NativeScope,
 		case "image/png", "image/jpeg", "application/pdf":
 			kind = "artifact"
 		}
-		evidence = append(evidence, tracker.ChangeArtifact{
-			Kind: kind, URI: "attachment:" + id, SHA256: meta.SHA256, Availability: availability,
-			CaptureAttemptID: row.EvidenceAttemptID, CaptureCaption: row.EvidenceCaption,
+		evidence = append(evidence, implementationEvidence{
+			artifact: tracker.ChangeArtifact{Kind: kind, URI: "attachment:" + id, SHA256: meta.SHA256, Availability: availability},
+			capture:  tracker.ChangeEvidenceCapture{AttachmentID: id, AttemptID: row.EvidenceAttemptID, Caption: row.EvidenceCaption},
 		})
 	}
 	return evidence, nil
 }
 
-func bindImplementationEvidence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ids []string, expected []tracker.ChangeArtifact) error {
+func bindImplementationEvidence(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item tracker.NativeWorkItemID, ids []string, expected []implementationEvidence) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -112,11 +112,11 @@ func bindImplementationEvidence(ctx context.Context, w tenantstore.Writer, scope
 	if !slices.Equal(expected, current) {
 		return corestore.ErrRevisionConflict
 	}
-	for i, id := range ids {
-		if current[i].Availability != "available" {
+	for _, evidence := range current {
+		if evidence.artifact.Availability != "available" {
 			continue
 		}
-		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: id, WorkItemID: item, RetainWithWorkItem: true}); err != nil {
+		if err := w.BindAttachment(ctx, attachmentstore.Reference{ProjectID: scope.Project, AttachmentID: evidence.capture.AttachmentID, WorkItemID: item, RetainWithWorkItem: true}); err != nil {
 			return err
 		}
 	}

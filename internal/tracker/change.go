@@ -60,12 +60,16 @@ type LandChangeVersion struct {
 }
 
 type ChangeArtifact struct {
-	Kind             string `json:"kind"`
-	URI              string `json:"uri"`
-	SHA256           string `json:"sha256"`
-	Availability     string `json:"availability"`
-	CaptureAttemptID string `json:"capture_attempt_id,omitempty"`
-	CaptureCaption   string `json:"capture_caption,omitempty"`
+	Kind         string `json:"kind"`
+	URI          string `json:"uri"`
+	SHA256       string `json:"sha256"`
+	Availability string `json:"availability"`
+}
+
+type ChangeEvidenceCapture struct {
+	AttachmentID string `json:"attachment_id"`
+	AttemptID    string `json:"attempt_id"`
+	Caption      string `json:"caption"`
 }
 
 type ChangeExternalReference struct {
@@ -126,7 +130,8 @@ type ChangeCheckExpectation struct {
 }
 
 type ChangeVersion struct {
-	LandingQuality *LandingQualitySnapshot `json:"landing_quality,omitempty"`
+	EvidenceCaptures []ChangeEvidenceCapture `json:"evidence_captures,omitempty"`
+	LandingQuality   *LandingQualitySnapshot `json:"landing_quality,omitempty"`
 	ChangeVersionInput
 	Landing      *NativeLandingReceipt    `json:"landing,omitempty"`
 	ID           string                   `json:"version_id"`

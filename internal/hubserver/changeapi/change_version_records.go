@@ -101,8 +101,7 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 	} else if len(request.SourceBundle) > 0 {
 		return nil, hubapi.NativePublicInvalid("Source bundle requires immutable source metadata")
 	}
-	suppliedArtifacts := request.Artifacts
-	var evidence []tracker.ChangeArtifact
+	var evidence []implementationEvidence
 	if err := s.deps.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if len(evidenceIDs) > 0 {
 			var err error
@@ -110,9 +109,8 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 			if err != nil {
 				return err
 			}
-			request.Artifacts = append(request.Artifacts, evidence...)
 		}
-		return s.deps.ValidateVersionAttachments(ctx, r, scope, request.Outcome, suppliedArtifacts)
+		return s.deps.ValidateVersionAttachments(ctx, r, scope, request.Outcome, request.Artifacts)
 	}); err != nil {
 		return nil, hubapi.ProjectRecordError(err)
 	}
@@ -135,6 +133,10 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 		checks = append(checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: hubcontent.PayloadNativeID(ctx, "check")})
 	}
 	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: hubcontent.PayloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approval.Policy, ReviewPolicy: approval.ReviewPolicy, Checks: checks, Actor: scope.Actor(), CreatedAt: hubcontent.PayloadTimestamp(ctx, now)}
+	for _, retained := range evidence {
+		version.Artifacts = append(version.Artifacts, retained.artifact)
+		version.EvidenceCaptures = append(version.EvidenceCaptures, retained.capture)
+	}
 	versionRaw, err := json.Marshal(version)
 	if err != nil {
 		return nil, err
@@ -234,7 +236,7 @@ func (s *VersionPublication) PublishChangeVersionRecordCommand(ctx context.Conte
 			if err := bindImplementationEvidence(ctx, w, scope, change.WorkItemID, evidenceIDs, evidence); err != nil {
 				return err
 			}
-			if err := s.deps.BindVersionAttachments(ctx, w, scope, item, suppliedArtifacts); err != nil {
+			if err := s.deps.BindVersionAttachments(ctx, w, scope, item, request.Artifacts); err != nil {
 				return err
 			}
 			for _, item := range change.LinkedIssues {

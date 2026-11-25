@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -313,10 +312,13 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		}
 		var previousEvidence []string
 		if e.ownsIssueCompletion() {
+			captured := make(map[string]bool, len(version.EvidenceCaptures))
+			for _, capture := range version.EvidenceCaptures {
+				previousEvidence = append(previousEvidence, capture.AttachmentID)
+				captured["attachment:"+capture.AttachmentID] = true
+			}
 			for _, artifact := range version.Artifacts {
-				if artifact.CaptureAttemptID != "" {
-					previousEvidence = append(previousEvidence, strings.TrimPrefix(artifact.URI, "attachment:"))
-				} else {
+				if !captured[artifact.URI] {
 					artifacts = append(artifacts, artifact)
 				}
 			}
