@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -211,6 +212,10 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	return completed.result, state.Retry[request.Issue.ID].Issue, completed.err
 }
 
+type unreservedLanding struct{ Lifecycle }
+
+func (unreservedLanding) ProviderCapacity() *providercapacity.Reservation { return nil }
+
 func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequest) (runner.RunResult, error) {
 	if r.calls.Add(1) != 1 {
 		if r.retryStarted != nil {
@@ -241,6 +246,9 @@ func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequ
 			err = r.prepare(ctx, request)
 		}
 	} else {
+		if r.expectPendingLanding {
+			request.Execution = unreservedLanding{request.Execution.(Lifecycle)}
+		}
 		result, err = r.Runner.Run(ctx, request)
 	}
 	r.completed <- nativeCompletionRun{result: result, err: err}

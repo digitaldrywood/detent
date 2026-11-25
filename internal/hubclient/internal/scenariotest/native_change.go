@@ -925,7 +925,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			if test.SummaryFailure {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if postedSource.Load() && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
-						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("summary unavailable")), Request: request}, nil
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
 					}
 					response, err := transport.RoundTrip(request)
 					if err == nil && response != nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reviews") && response.StatusCode >= 200 && response.StatusCode < 300 {

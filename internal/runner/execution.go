@@ -720,7 +720,7 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 }
 
 func recordExecutionCheckpoint(ctx context.Context, execution Execution, checkpoint tracker.NativeCheckpoint) error {
-	return preserveCancellation(ctx, execution.Checkpoint(ctx, checkpoint), "runner.checkpoint")
+	return failedStep("checkpoint_recovery", preserveCancellation(ctx, execution.Checkpoint(ctx, checkpoint), "runner.checkpoint"))
 }
 
 func executionCheckpointPreservingPublication(execution Execution, state *workspace.RecoveryState) tracker.NativeCheckpoint {

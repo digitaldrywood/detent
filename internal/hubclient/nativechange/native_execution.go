@@ -609,6 +609,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		if err := api.MutationEffectError(ctx); err != nil {
 			return err
 		}
+		if !e.settled && e.ownsChangeCompletion() && !e.claimActive() {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
 		if e.storedSeq == finish && e.lastDiff != nil && e.worktreeHead != "" && e.lastDiff.HeadSHA != e.worktreeHead {
 			if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
 				return err
@@ -974,7 +977,10 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	if e.diffSource == nil {
-		if e.lastDiff != nil && (e.worktreeHead == "" || e.worktreeHead == e.lastDiff.HeadSHA) {
+		if e.lastDiff != nil {
+			if e.worktreeHead != "" && e.worktreeHead != e.lastDiff.HeadSHA {
+				return errors.New("the attempt diff does not match the final checkpoint head")
+			}
 			return nil
 		}
 		return errors.New("the run's final attempt diff source is unavailable")

@@ -1783,7 +1783,7 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
@@ -1845,7 +1845,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	legacyPublishedSource := mode == RunModeImplement && !req.phaseReceipts && req.phaseContinuation != nil
 	planPending := mode == RunModeImplement && req.phaseContinuation != nil && req.phaseContinuation.Plan != nil && !req.phaseContinuation.Plan.Accepted
 	var reviewRecovery, turnRecovery *tracker.NativeAttempt
-	var repairResume bool
+	var repairResume, restoreReviewedSource bool
 	publicationRecovery := req.publicationRecovery(mode)
 	var phaseSource *tracker.NativePhaseReceipt
 	if req.phaseReceipts && mode == RunModeImplement {
@@ -1856,8 +1856,19 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		resumePhase := phaseSource != nil && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan
 		publicationRecovery = publicationRecovery && resumePhase
-		if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
+		if phaseSource != nil && recovery.Change != nil && phaseSource.HeadSHA == recovery.Change.HeadSHA {
+			if !req.operatorFreshRetry() {
+				reviewRecovery = nativeReviewResumeAttempt(recovery, gate.Effective(workflow.Config.Gate).Run)
+			}
+			restoreReviewedSource = reviewRecovery != nil || recovery.SourceVersionID != "" || req.executionRole() == RoleRework || phaserecovery.LandingNeedsRework(recovery)
+		}
+		if reviewRecovery != nil {
+			repairResume = len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
+		} else if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
 			turnRecovery = nativePhaseTurnResumeAttempt(recovery, *phaseSource)
+			if turnRecovery != nil && turnRecovery.Status == "succeeded" && (req.executionRole() == RoleRework || recovery.SourceVersionID != "") {
+				turnRecovery = nil
+			}
 		}
 		req.ResumeState = store.AgentResumeState{}
 	} else {
@@ -1928,6 +1939,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	retainedLanding := nativeLanding && req.RetainItemWorkspace
 	workspaceIssue.RetainedLanding = retainedLanding
 	var sourceErr error
+	if restoreReviewedSource {
+		if err := recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, false, true); err != nil {
+			return RunResult{}, fmt.Errorf("%w: recover published Change source: %w", ErrNativeRecoveryRequired, err)
+		}
+	}
 	if !retainedLanding && !req.phaseReceipts {
 		sourceErr = recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
 		if legacyPublishedSource {
@@ -2169,7 +2185,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				if publishErr := publishItemPhase(ctx, publication, runWorkspace, info, workspaceIssue, "implement", ""); publishErr != nil {
 					return result, errors.Join(err, publishErr)
 				}
-			} else if source, ok := req.Execution.(ChangeSourceExecution); ok {
+			}
+			if source, ok := req.Execution.(ChangeSourceExecution); ok {
 				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 				})
@@ -2218,6 +2235,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if err := verifyItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
 			return RunResult{}, err
 		}
+	}
+	if legacyPublishedSource && workspaceIssue.Source != nil && req.phaseContinuation.LastPushed != nil && info.PublishBranch() == req.phaseContinuation.LastPushed.Branch {
+		req.phaseReceipts = true
+		req.publishedPhaseSource = &workspace.PhaseSource{}
 	}
 	if info.RecoveredPhase.HeadSHA != "" {
 		*req.publishedPhaseSource = info.RecoveredPhase

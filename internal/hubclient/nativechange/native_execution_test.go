@@ -1982,13 +1982,13 @@ func TestNativeCheckpointWithoutReadableDiff(t *testing.T) {
 				if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
 					t.Fatal(err)
 				}
-				err := execution.Checkpoint(t.Context(), checkpoint)
-				if state == "dirty" {
-					if err != nil {
-						t.Fatalf("dirty recovery checkpoint requires a final diff: %v", err)
+				if err := execution.Checkpoint(t.Context(), checkpoint); err != nil {
+					t.Fatalf("repeat recovery checkpoint: %v", err)
+				}
+				if !test.recovers {
+					if err := execution.captureDiff(t.Context()); err == nil || !strings.Contains(err.Error(), "final attempt diff is unavailable") || execution.lastDiff != nil {
+						t.Fatalf("unavailable source supplied a final diff: %+v, %v", execution.lastDiff, err)
 					}
-				} else if err == nil || !strings.Contains(err.Error(), "final attempt diff is unavailable") {
-					t.Fatalf("final %s checkpoint accepted an unavailable diff: %v", state, err)
 				}
 				if test.recovers && (execution.lastDiff == nil || execution.lastDiff.HeadSHA != checkpoint.HeadSHA || len(execution.lastDiff.Files) != 1) {
 					t.Fatalf("readable dirty checkpoint did not retain its initial safe diff: %+v", execution.lastDiff)
@@ -2006,7 +2006,7 @@ func TestNativeCheckpointWithoutReadableDiff(t *testing.T) {
 					t.Fatalf("publish recovered checkpoint: %v", err)
 				}
 				var stored tracker.AttemptDiff
-				err = h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/attempts/"+execution.data.AttemptID+"/diff", nil, &stored)
+				err := h.admin.Transport().Request(t.Context(), http.MethodGet, h.admin.Scope()+"/attempts/"+execution.data.AttemptID+"/diff", nil, &stored)
 				if err != nil || stored.HeadSHA != checkpoint.HeadSHA || len(stored.Files) != 1 || stored.Files[0].Path != "README.md" {
 					t.Fatalf("recovered final diff = %+v, error=%v", stored, err)
 				}
