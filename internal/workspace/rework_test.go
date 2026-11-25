@@ -3736,3 +3736,98 @@ func TestFinalizeNativeWorkPausedRebaseMergeDoneAccounting(t *testing.T) {
 		}
 	})
 }
+
+func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name          string
+		featureChmod  bool
+		helperContent string
+		deleteHelper  bool
+		chmodHelper   bool
+		wantErr       bool
+	}{
+		{name: "adapted non-conflicted file", helperContent: "package app\n// adapted to upstream\n"},
+		{name: "dropped non-conflicted file restored to parent", helperContent: "package app\n// base\n", wantErr: true},
+		{name: "dropped non-conflicted file restored to parent with chmod", helperContent: "package app\n// base\n", chmodHelper: true, wantErr: true},
+		{name: "dropped non-conflicted file restored to parent keeping feature chmod", featureChmod: true, helperContent: "package app\n// base\n", chmodHelper: true, wantErr: true},
+		{name: "deleted non-conflicted file", deleteHelper: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			writeCheckpointFile(t, source, "conflict.txt", "base\n")
+			writeCheckpointFile(t, source, "helper_test.go", "package app\n// base\n")
+			runGit(t, source, "add", "conflict.txt", "helper_test.go")
+			runGit(t, source, "commit", "-m", "add base files")
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+
+			root := t.TempDir()
+			owner, err := NewLocalGit(LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "example#semantic-rebase", NativeRework: true, ProgressBaseRef: "main"}
+			info, err := owner.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCheckpointFile(t, info.Path, "conflict.txt", "feature\n")
+			writeCheckpointFile(t, info.Path, "helper_test.go", "package app\n// feature\n")
+			if tc.featureChmod {
+				if err := os.Chmod(filepath.Join(info.Path, "helper_test.go"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runGit(t, info.Path, "add", "conflict.txt", "helper_test.go")
+			runGit(t, info.Path, "commit", "-m", "feature commit")
+
+			writeCheckpointFile(t, source, "conflict.txt", "upstream\n")
+			runGit(t, source, "add", "conflict.txt")
+			runGit(t, source, "commit", "-m", "upstream conflict")
+			runGit(t, source, "push", "origin", "main")
+
+			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(context.Context) error { return nil })
+			if err != nil {
+				t.Fatalf("PrepareRework() err = %v", err)
+			}
+			if prepared.Status != MergePrepareStatusConflict {
+				t.Fatalf("PrepareRework() status = %s, want conflict", prepared.Status)
+			}
+
+			writeCheckpointFile(t, info.Path, "conflict.txt", "upstream+feature\n")
+			if tc.deleteHelper {
+				runGit(t, info.Path, "rm", "-f", "helper_test.go")
+				runGit(t, info.Path, "add", "conflict.txt")
+			} else {
+				writeCheckpointFile(t, info.Path, "helper_test.go", tc.helperContent)
+				if tc.chmodHelper {
+					if err := os.Chmod(filepath.Join(info.Path, "helper_test.go"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runGit(t, info.Path, "add", "conflict.txt", "helper_test.go")
+			}
+
+			head, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil })
+			if tc.wantErr {
+				if !errors.Is(err, ErrMergeResolutionInvalid) {
+					t.Fatalf("FinalizeNativeWork() err = %v, want ErrMergeResolutionInvalid", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FinalizeNativeWork() err = %v", err)
+			}
+			if strings.TrimSpace(head) == "" {
+				t.Fatal("FinalizeNativeWork() returned empty head")
+			}
+			gotHelper, err := os.ReadFile(filepath.Join(info.Path, "helper_test.go"))
+			if err != nil || string(gotHelper) != tc.helperContent {
+				t.Fatalf("helper_test.go = (%q, %v), want %q", string(gotHelper), err, tc.helperContent)
+			}
+		})
+	}
+}

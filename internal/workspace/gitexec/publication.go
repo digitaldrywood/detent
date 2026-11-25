@@ -646,7 +646,7 @@ func IsolatedMergeTreeIndex(ctx context.Context, path, base, branch1, branch2 st
 		indexPath := filepath.Join(source.gitDir, "index")
 		diffIndex := func(tree string) (string, error) {
 			env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+indexPath)
-			return withCommandEnvironment(ctx, scratch, env, true, "", RunCommand, "--git-dir="+scratch, "diff-index", "--cached", "--name-only", "-z", tree)
+			return withCommandEnvironment(ctx, scratch, env, true, "", RunCommand, "--git-dir="+scratch, "diff-index", "--cached", "--raw", "--no-renames", "-z", tree)
 		}
 		merged, mergeErr := read("merge-tree", "--write-tree", "--name-only", "-z", "--merge-base="+base, branch1, branch2)
 		return verify(read, diffIndex, merged, mergeErr)

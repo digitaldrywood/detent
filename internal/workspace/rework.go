@@ -1766,6 +1766,7 @@ func verifyStagedConflictResolution(ctx context.Context, path, prev, src string)
 		if tErr != nil {
 			return tErr
 		}
+		prevTree = strings.TrimSpace(prevTree)
 		var mergedTree string
 		conflictedPaths := make(map[string]struct{})
 		if mErr == nil {
@@ -1788,36 +1789,52 @@ func verifyStagedConflictResolution(ctx context.Context, path, prev, src string)
 				}
 			}
 		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
+		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--raw", "--no-renames", "-r", "-z", prevTree, mergedTree)
 		if cErr != nil {
 			return cErr
 		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
+		requiredClean := make(map[string]rawDiffEntry)
+		for name, entry := range parseRawDiffEntries(cleanMergedRaw) {
 			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
+				requiredClean[name] = entry
 			}
 		}
 		if len(requiredClean) == 0 {
 			return nil
 		}
-		diffRaw, dErr := diffIndex(mergedTree)
+		changedRaw, dErr := diffIndex(prevTree)
 		if dErr != nil {
 			return dErr
 		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase staged resolution alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
+		stagedChanged := parseRawDiffEntries(changedRaw)
+		for name, want := range requiredClean {
+			got, ok := stagedChanged[name]
+			if !ok || got.newMode != want.newMode || (want.oldSHA != want.newSHA && got.newSHA == want.oldSHA) {
+				return fmt.Errorf("%w: paused rebase staged resolution drops non-conflicted source files", ErrMergeResolutionInvalid)
 			}
 		}
 		return nil
 	})
+}
+
+type rawDiffEntry struct {
+	newMode string
+	oldSHA  string
+	newSHA  string
+}
+
+func parseRawDiffEntries(raw string) map[string]rawDiffEntry {
+	fields := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
+	out := make(map[string]rawDiffEntry, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		meta := strings.Fields(strings.TrimPrefix(strings.TrimSpace(fields[i]), ":"))
+		name := fields[i+1]
+		if len(meta) < 5 || name == "" {
+			continue
+		}
+		out[name] = rawDiffEntry{newMode: meta[1], oldSHA: meta[2], newSHA: meta[3]}
+	}
+	return out
 }
 
 func verifyAssignedCommitsAccounted(ctx context.Context, path, onto, origHead string, accounted []string) error {
@@ -1989,32 +2006,29 @@ func verifyReplayedCommit(ctx context.Context, path, prev, src, dst string) erro
 		if tErr != nil {
 			return tErr
 		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
+		prevTree = strings.TrimSpace(prevTree)
+		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--raw", "--no-renames", "-r", "-z", prevTree, mergedTree)
 		if cErr != nil {
 			return cErr
 		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
+		requiredClean := make(map[string]rawDiffEntry)
+		for name, entry := range parseRawDiffEntries(cleanMergedRaw) {
 			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
+				requiredClean[name] = entry
 			}
 		}
 		if len(requiredClean) == 0 {
 			return nil
 		}
-		diffPathsRaw, dErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", mergedTree, dst+"^{tree}")
+		changedRaw, dErr := read("diff-tree", "--no-commit-id", "--raw", "--no-renames", "-r", "-z", prevTree, dst+"^{tree}")
 		if dErr != nil {
 			return dErr
 		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffPathsRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase replayed commit alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
+		replayedChanged := parseRawDiffEntries(changedRaw)
+		for name, want := range requiredClean {
+			got, ok := replayedChanged[name]
+			if !ok || got.newMode != want.newMode || (want.oldSHA != want.newSHA && got.newSHA == want.oldSHA) {
+				return fmt.Errorf("%w: paused rebase replayed commit drops non-conflicted source files", ErrMergeResolutionInvalid)
 			}
 		}
 		return nil
