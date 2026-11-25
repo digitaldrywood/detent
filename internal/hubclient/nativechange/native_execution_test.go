@@ -2391,6 +2391,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			switch test.boundary {
 			case "expired before write":
 				offset = time.Until(claim.deadline)
+				if err := execution.Finish(ctx, "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("finish after lease expiry = %v, want execution authority unavailable", err)
+				}
 				wantErr, wantWrites = runner.ErrExecutionAuthorityUnavailable, 0
 			case "expires during write":
 				offset = time.Until(claim.deadline) - 10*time.Second
