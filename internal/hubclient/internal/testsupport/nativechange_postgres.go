@@ -97,7 +97,7 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 	admin := nativeChangeTemplate.Database(t)
 	connection := pgtransport.Connection{User: "example_" + uuid.NewString()[:8], Password: uuid.NewString(), SSLMode: "disable"}
 	var dataDirectory string
-	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &connection.Host, &dataDirectory); err != nil {
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, COALESCE(host(inet_server_addr()), current_setting('unix_socket_directories')), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &connection.Host, &dataDirectory); err != nil {
 		t.Fatal(err)
 	}
 	if connection.Host == "." {

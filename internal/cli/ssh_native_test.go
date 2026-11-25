@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -106,6 +107,20 @@ func (e *sshNativeProbe) PrepareFinish(_ context.Context, _, finalMessage string
 	defer e.mu.Unlock()
 	e.finalMessage = finalMessage
 	return nil
+}
+
+func (e *sshNativeProbe) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
+	if result.ExitCode != 0 || result.HeadSHA == "" || result.TreeSHA == "" {
+		return errors.New("expected a successful commit-bound gate result")
+	}
+	return ctx.Err()
+}
+
+func (*sshNativeProbe) PublishValidationEvidence(ctx context.Context, files []runner.ValidationEvidence) error {
+	if len(files) != 0 {
+		return errors.New("unexpected SSH fixture validation attachment")
+	}
+	return ctx.Err()
 }
 
 func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation, error) {

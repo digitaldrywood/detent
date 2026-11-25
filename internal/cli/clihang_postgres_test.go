@@ -74,7 +74,7 @@ func clihangPostgresHub(t *testing.T, token string, content entryauthority.Conte
 	connection := pgtransport.Connection{User: "example_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Password: uuid.NewString(), SSLMode: "disable"}
 	var address, directory string
 	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer,
-		COALESCE(inet_server_addr()::text, current_setting('unix_socket_directories')), current_setting('data_directory')`).Scan(
+		COALESCE(host(inet_server_addr()), current_setting('unix_socket_directories')), current_setting('data_directory')`).Scan(
 		&connection.Database, &connection.Port, &address, &directory); err != nil {
 		t.Fatal(err)
 	}

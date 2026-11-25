@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
+	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
 	identityPath := filepath.Join(root, "private", "identity.json")
 	desired := runnerauth.ProjectConfiguration{ProjectID: "prj_example", Authority: "hub_configuration", ConfigRevision: strings.Repeat("d", 64), Source: "cloud_workflow", EffectivePolicy: &policy.Descriptor{ID: "policy_example"}, ObservedAt: time.Now().UTC()}
 	request := runnerauth.ProjectConfigurationRequest{RequestID: "detach-example", Operation: "detach_local_project", ProjectID: "prj_example", Desired: &desired}
@@ -85,6 +87,10 @@ func TestHeadlessRunnerAppliesHubConfigurationCommands(t *testing.T) {
 	configPath := filepath.Join(root, "global.yaml")
 	cfg, err := globalconfig.DefaultAt(configPath, globalconfig.WithHome(root))
 	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Client.ProviderCapacityFile = filepath.Join(root, "capacity.json")
+	if err := os.WriteFile(cfg.Client.ProviderCapacityFile, []byte(`[{"provider":"example","backend":"fixture","account_alias":"example","models":["example"],"availability":"unknown","observed_at":"2026-01-01T00:00:00Z"}]`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg.Global.MaxConcurrentAgents = 1

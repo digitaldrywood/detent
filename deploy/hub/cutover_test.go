@@ -11,11 +11,21 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
+
+func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
 
 func TestPostgresCutoverFencesCopiesAndSelectsPostgresRelease(t *testing.T) {
 	for _, test := range []cutoverCase{
@@ -57,6 +67,23 @@ type cutoverCase struct {
 func cutoverFixture(t *testing.T, test cutoverCase) {
 	t.Helper()
 	root := t.TempDir()
+	databaseRoot := root
+	if runtime.GOOS == "darwin" {
+		info, err := os.Stat(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := exec.CommandContext(t.Context(), "python3", "-c", `import os,sys; s=os.stat(sys.argv[1]); print(f"/.vol/{s.st_dev}/{s.st_ino}")`, root).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		short := strings.TrimSpace(string(output))
+		resolved, err := os.Stat(short)
+		if err != nil || !os.SameFile(info, resolved) {
+			t.Fatalf("resolve disposable fixture by file ID: %v", err)
+		}
+		databaseRoot = short
+	}
 	for _, name := range []string{
 		"bin", "config", "run/lock", "var/lib/detent-hub", "opt/detent-hub/releases", "source-state", "source-repo",
 		"tenant-root/org_example", "sys/fs/cgroup/system.slice/detent-cloud.service", "proc/111", "proc/112", "proc/222",
@@ -116,14 +143,14 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 			}
 		}
 	}
-	registryPath := filepath.Join(root, "source-state/registry.db")
+	registryPath := filepath.Join(databaseRoot, "source-state/registry.db")
 	startRegistryWriter(t, registryPath)
 	for _, path := range []string{
-		filepath.Join(root, "tenant-root/org_example/hub.db.metrics.sqlite"),
+		filepath.Join(databaseRoot, "tenant-root/org_example/hub.db.metrics.sqlite"),
 	} {
 		createSQLiteFile(t, path)
 	}
-	tenantDatabase := filepath.Join(root, "tenant-root/org_example/hub.db")
+	tenantDatabase := filepath.Join(databaseRoot, "tenant-root/org_example/hub.db")
 	if test.checkpointedWALSource || test.existingEmptyWALSource {
 		createCheckpointedWALSQLiteFile(t, tenantDatabase)
 		if _, err := os.Lstat(tenantDatabase + "-wal"); !os.IsNotExist(err) {
@@ -137,14 +164,14 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 	} else {
 		createSQLiteFile(t, tenantDatabase)
 	}
-	createSQLiteFile(t, filepath.Join(root, "source-state/auth.db"))
+	createSQLiteFile(t, filepath.Join(databaseRoot, "source-state/auth.db"))
 
 	script, err := os.ReadFile("cutover-postgres.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if test.sourceWALMutation {
-		destination := filepath.Join(root, "sealed-mutated-wal.db")
+		destination := filepath.Join(databaseRoot, "sealed-mutated-wal.db")
 		if err := runSealedCopy(t, string(script), registryPath, destination, true); err == nil {
 			t.Fatal("sealed copy accepted changed WAL bytes")
 		}
@@ -154,7 +181,7 @@ func cutoverFixture(t *testing.T, test cutoverCase) {
 		return
 	}
 	if test.checkpointedWALSource || test.existingEmptyWALSource {
-		directCopy := filepath.Join(root, "sealed-checkpointed-wal.db")
+		directCopy := filepath.Join(databaseRoot, "sealed-checkpointed-wal.db")
 		if err := runSealedCopy(t, string(script), tenantDatabase, directCopy, false); err != nil {
 			t.Fatal(err)
 		}
@@ -373,6 +400,7 @@ case "${1:-}" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -o|-g) shift 2 ;;
+        "$FIXTURE_DATABASE_ROOT"/*) args+=("$FIXTURE_ROOT/${1#"$FIXTURE_DATABASE_ROOT"/}"); shift ;;
         *) args+=("$1"); shift ;;
       esac
     done
@@ -420,7 +448,7 @@ exec "$@"
 	if err := os.WriteFile(scriptPath, []byte(isolated), 0700); err != nil {
 		t.Fatal(err)
 	}
-	backupRoot := filepath.Join(root, "sealed")
+	backupRoot := filepath.Join(databaseRoot, "sealed")
 	realFlock, err := exec.LookPath("flock")
 	if err != nil {
 		t.Fatal(err)
@@ -437,8 +465,8 @@ exec "$@"
 		"--repository-root", filepath.Join(root, "source-repo"),
 		"--cloud-env", cloudEnv,
 		"--attachments-env", attachmentsEnv,
-		"--source-state", filepath.Join(root, "source-state"),
-		"--tenant-root", filepath.Join(root, "tenant-root"),
+		"--source-state", filepath.Join(databaseRoot, "source-state"),
+		"--tenant-root", filepath.Join(databaseRoot, "tenant-root"),
 		"--backup-root", backupRoot,
 		"--health-url", server.URL,
 	)
@@ -451,6 +479,7 @@ exec "$@"
 		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"TMPDIR="+root,
 		"FIXTURE_ROOT="+root,
+		"FIXTURE_DATABASE_ROOT="+databaseRoot,
 		"FIXTURE_CLOUD_ENV="+cloudEnv,
 		"FIXTURE_ATTACHMENTS_ENV="+attachmentsEnv,
 		"FIXTURE_CURRENT_LINK="+currentLink,
