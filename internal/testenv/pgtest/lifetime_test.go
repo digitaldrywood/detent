@@ -122,7 +122,7 @@ func TestBinaryLifetime(t *testing.T) {
 			}
 			t.Cleanup(func() { ready.Close(); writer.Close() })
 			cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestBinaryLifetime$", "-test.timeout="+flag.Lookup("test.timeout").Value.String())
-			cmd.Env = append(os.Environ(), "DETENT_PGTEST_LIFETIME="+tc.name, "GOCOVERDIR="+t.TempDir())
+			cmd.Env = append(os.Environ(), Environment+"=binary", "DETENT_PGTEST_LIFETIME="+tc.name, "GOCOVERDIR="+t.TempDir())
 			root := os.TempDir()
 			if tc.long {
 				root = t.TempDir()

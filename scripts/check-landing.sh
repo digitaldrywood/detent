@@ -29,7 +29,183 @@ if ! command -v initdb >/dev/null || ! command -v postgres >/dev/null; then
         fi
     fi
 fi
-export DETENT_TEST_POSTGRES=binary
+
+pg_sup_pid=""
+cleanup_landing_postgres() {
+    if [ -n "$pg_sup_pid" ]; then
+        kill -TERM "$pg_sup_pid" 2>/dev/null || true
+        local deadline=$((SECONDS + 15))
+        while kill -0 "$pg_sup_pid" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+            sleep 0.05
+        done
+        pg_sup_pid=""
+    fi
+}
+trap cleanup_landing_postgres EXIT
+
+start_landing_postgres() {
+    if [ -n "${DETENT_TEST_POSTGRES:-}" ] && [ "${DETENT_TEST_POSTGRES}" != "binary" ]; then
+        return 0
+    fi
+    if ! command -v initdb >/dev/null || ! command -v postgres >/dev/null; then
+        export DETENT_TEST_POSTGRES=binary
+        return 0
+    fi
+    local tmp_base="${TMPDIR:-/tmp}"
+    local -a pg_extra_args=()
+    local pg_major
+    pg_major=$(postgres --version | awk '{split($3, a, "."); print a[1]}')
+    if [ "${pg_major:-0}" -ge 18 ] 2>/dev/null; then
+        pg_extra_args+=(-c file_copy_method=clone)
+    fi
+    local tag val
+    exec 3< <(exec env -u PGHOST -u PGPORT -u PGUSER -u PGPASSWORD -u PGDATABASE -u PGSSLMODE -u PGSSLROOTCERT \
+        LC_ALL=C /bin/sh -c '
+parent_pid="$1"
+tmp_base="$2"
+shift 2
+sup_pid=$$
+printf "SUP %s\n" "$sup_pid"
+pg_dir=""
+pg_sock=""
+child=""
+phase="initdb"
+watchdog=""
+shutting_down=""
+cleanup() {
+    if [ -n "$watchdog" ]; then
+        kill -TERM "$watchdog" 2>/dev/null || true
+        wait "$watchdog" 2>/dev/null || true
+    fi
+    if [ -n "$pg_dir" ]; then
+        rm -rf "$pg_dir" 2>/dev/null || true
+    fi
+    if [ -n "$pg_sock" ]; then
+        rm -rf "$pg_sock" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+signal_child() {
+    if [ -z "$child" ] || [ -z "$shutting_down" ]; then
+        return 0
+    fi
+    if [ "$shutting_down" = "fast" ]; then
+        if [ "$phase" = "postgres" ]; then
+            kill -INT "$child" 2>/dev/null || true
+        else
+            kill -TERM "$child" 2>/dev/null || true
+        fi
+    else
+        if [ "$phase" = "postgres" ]; then
+            kill -QUIT "$child" 2>/dev/null || true
+        else
+            kill -KILL "$child" 2>/dev/null || true
+        fi
+    fi
+}
+fast_shutdown() {
+    shutting_down=fast
+    signal_child
+}
+abort_shutdown() {
+    shutting_down=abort
+    signal_child
+}
+trap fast_shutdown TERM INT
+trap abort_shutdown USR1
+(
+    while kill -0 "$sup_pid" 2>/dev/null; do
+        ppid=$(ps -o ppid= -p "$sup_pid" 2>/dev/null | tr -d " ")
+        if [ -z "$ppid" ] || [ "$ppid" != "$parent_pid" ]; then
+            kill -USR1 "$sup_pid" 2>/dev/null || true
+            exit 0
+        fi
+        sleep 0.2
+    done
+) </dev/null >/dev/null 2>&1 &
+watchdog=$!
+pg_dir=$(mktemp -d "${tmp_base%/}/detent-landing-pg.XXXXXX") || { printf "ERR mktemp\n"; exit 1; }
+pg_sock=$(mktemp -d "/tmp/pgs-land.XXXXXX") || { printf "ERR mktemp\n"; exit 1; }
+if [ -z "$pg_dir" ] || [ -z "$pg_sock" ] || [ -n "$shutting_down" ]; then
+    printf "ERR mktemp\n"
+    exit 1
+fi
+pg_log="$pg_dir/postgres.log"
+initdb -D "$pg_dir/data" -U detent_test --auth=trust --no-locale --encoding=UTF8 </dev/null >"$pg_log" 2>&1 &
+child=$!
+signal_child
+status=0
+while kill -0 "$child" 2>/dev/null; do
+    wait "$child" && status=0 || status=$?
+done
+child=""
+if [ -n "$shutting_down" ] || [ "$status" -ne 0 ]; then
+    cat "$pg_log" >&2 2>/dev/null || true
+    printf "ERR initdb\n"
+    exit 1
+fi
+phase="postgres"
+postgres \
+    -D "$pg_dir/data" \
+    -h "" \
+    -k "$pg_sock" \
+    -c lc_messages=C \
+    -c logging_collector=off \
+    -c fsync=off \
+    -c synchronous_commit=off \
+    -c full_page_writes=off \
+    -c max_connections=512 \
+    "$@" </dev/null >"$pg_log" 2>&1 &
+child=$!
+signal_child
+ready=0
+elapsed=0
+while [ "$elapsed" -lt 300 ]; do
+    if [ -n "$shutting_down" ]; then
+        break
+    fi
+    if [ -f "$pg_log" ] && grep -q "database system is ready to accept connections" "$pg_log"; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$child" 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+    elapsed=$((elapsed + 1))
+done
+if [ "$ready" -ne 1 ]; then
+    cat "$pg_log" >&2 2>/dev/null || true
+    kill -QUIT "$child" 2>/dev/null || true
+    while kill -0 "$child" 2>/dev/null; do
+        wait "$child" || true
+    done
+    printf "ERR postgres\n"
+    exit 1
+fi
+printf "READY %s %s\n" "$pg_sock" "$pg_dir"
+exec >&-
+status=0
+while kill -0 "$child" 2>/dev/null; do
+    wait "$child" && status=0 || status=$?
+done
+exit "$status"
+' pg-landing "$$" "$tmp_base" ${pg_extra_args[@]+"${pg_extra_args[@]}"})
+    if read -r tag val <&3 && [ "$tag" = "SUP" ]; then
+        pg_sup_pid="$val"
+    else
+        exec 3<&-
+        return 1
+    fi
+    local pg_sock_ready=""
+    if read -r tag pg_sock_ready _ <&3 && [ "$tag" = "READY" ]; then
+        exec 3<&-
+        export DETENT_TEST_POSTGRES="postgres://detent_test@127.0.0.1:5432/postgres?host=${pg_sock_ready}"
+        return 0
+    fi
+    exec 3<&-
+    return 1
+}
 
 needs_assets=$(python3 - "$base" "$head" <<'PY'
 import os
@@ -142,6 +318,7 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
     test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    start_landing_postgres
     env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=30m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then

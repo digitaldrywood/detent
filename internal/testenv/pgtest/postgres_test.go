@@ -1022,6 +1022,18 @@ func TestBinaryDurabilitySettingsAndURLPreservation(t *testing.T) {
 }
 
 func TestTemplatesShareBinaryClusterAndKeepOwnership(t *testing.T) {
+	if os.Getenv(Environment) != "binary" {
+		binary, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), binary, "-test.run=^TestTemplatesShareBinaryClusterAndKeepOwnership$", "-test.timeout=60s")
+		cmd.Env = append(os.Environ(), Environment+"=binary", "GOCOVERDIR="+t.TempDir())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("binary cluster ownership subprocess failed: %v\n%s", err, out)
+		}
+		return
+	}
 	root := processTemplate.Database(t)
 	ctx, cancel := testContext(t)
 	defer cancel()
@@ -1031,7 +1043,9 @@ func TestTemplatesShareBinaryClusterAndKeepOwnership(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			if err := p.Close(ctx); err != nil {
+			cleanupCtx, cleanupCancel := cleanupContext(ctx)
+			defer cleanupCancel()
+			if err := p.Close(cleanupCtx); err != nil {
 				t.Error(err)
 			}
 		})
