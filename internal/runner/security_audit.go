@@ -100,6 +100,15 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		ctx = isolation.WithPolicy(ctx, isolation.Policy{})
 	}
 	auditConfig := gateSecurityAuditConfig(workflow.Config)
+	hasCheckout := false
+	checkoutPath := strings.TrimSpace(req.WorkspacePath)
+	headSHA := strings.TrimSpace(req.Snapshot.HeadSHA)
+	if checkoutPath != "" && headSHA != "" {
+		if info, statErr := os.Stat(checkoutPath); statErr == nil && info.IsDir() {
+			hasCheckout = true
+		}
+	}
+	req.Snapshot.CheckoutAvailable = hasCheckout
 	plan, err := securityaudit.BuildPlan(req.Snapshot, securityAuditMaxDiffBytes(auditConfig))
 	if err != nil {
 		return execution, err
@@ -123,6 +132,13 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	auditWorkspace, err := r.prepareSecurityAuditWorkspace()
 	if err != nil {
 		return execution, err
+	}
+	var auditTools []AgentTool
+	var auditToolHandler AgentToolHandler
+	auditToolBudget := NewAgentToolBudget(0, 0)
+	if hasCheckout {
+		auditTools, auditToolHandler = securityAuditRepoTools(checkoutPath, headSHA)
+		auditToolBudget = NewAgentToolBudget(securityAuditMaxToolCalls, securityAuditMaxToolBytes)
 	}
 	removeAuditWorkspace := true
 	defer func() {
@@ -266,8 +282,10 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			Workspace:          auditWorkspace,
 			Prompt:             prompt,
 			Resume:             resume,
-			ToolInstructions:   securityaudit.ToolInstructions(),
+			ToolInstructions:   securityaudit.ToolInstructionsForCheckout(hasCheckout),
 			ReadOnly:           true,
+			IsolatedTools:      true,
+			ToolBudget:         auditToolBudget,
 			Model:              selectedModel,
 			ModelProvider:      modelProvider,
 			ServiceTier:        serviceTier,
@@ -279,9 +297,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			RSSPollInterval:    r.rssPollInterval,
 			processRSS:         r.processRSS,
 			reserveScratch:     r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
-		}, nil, nil, func(updateCtx context.Context, update AgentUpdate) error {
+		}, auditTools, auditToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 			r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
-			if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
+			if !hasCheckout && (update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted) {
 				return ErrSecurityAuditToolUse
 			}
 			if update.WorkerProcess.PID > 0 {

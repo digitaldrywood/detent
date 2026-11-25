@@ -38,8 +38,9 @@ type FileDiffs struct {
 	// requested base ref and HEAD when there is one, else HEAD itself.
 	BaseSHA string
 	// HeadSHA is the worktree's HEAD at the time of the diff.
-	HeadSHA string
-	Files   []FileDiff
+	HeadSHA       string
+	WorkspacePath string
+	Files         []FileDiff
 	// Truncated reports that the patch output exceeded maxBytes. The file
 	// list and its counts are still complete; the patches are absent.
 	Truncated bool
