@@ -28,11 +28,43 @@ install_go_tool() {
 	fi
 }
 
+build_custom_linter() (
+	local version="$1" heft_version="$2" binary="$3"
+	local release='^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$'
+	local module=github.com/golangci/golangci-lint/v2
+	local temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}" build_dir
+	if [[ ! "$version" =~ $release || ! "$heft_version" =~ $release ]]; then
+		printf 'Custom linter requires pinned golangci-lint and Heft versions\n' >&2
+		return 1
+	fi
+	if [[ "$binary" != /* ]]; then
+		binary="$PWD/$binary"
+	fi
+	mkdir -p "$temp_root" "$(dirname "$binary")"
+	temp_root="$(cd "$temp_root" && pwd)"
+	build_dir="$(mktemp -d "$temp_root/detent-linter.XXXXXX")"
+	trap 'rm -rf -- "$build_dir"' EXIT
+	cd "$build_dir"
+	export GOWORK=off
+	go mod init example.com/detent-linter
+	go mod download "$module@$version"
+	cp "$(go env GOMODCACHE)/$module@$version/cmd/golangci-lint/main.go" .
+	cat > plugins.go <<'EOF'
+package main
+
+import _ "github.com/digitaldrywood/heft/plugin"
+EOF
+	go mod edit -require="$module@$version" -require="github.com/digitaldrywood/heft@$heft_version"
+	go build -mod=mod -p "${TEST_PROCS:-4}" -ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=unknown" -o golangci-lint-custom .
+	mv golangci-lint-custom "$binary"
+)
+
 if [[ "${0##*/}" == golangci-lint ]]; then
 	if [[ "$#" == 5 && "$1" == custom && "$2" == --destination && "$4" == --name && "$5" == golangci-lint-custom && -f .custom-gcl.yml ]]; then
 		version="$(cat .golangci-version)"
 		heft_version="$(awk '/digitaldrywood\/heft$/ { found = 1 } found && $1 == "version:" { print $2; exit }' .custom-gcl.yml)"
-		exec bash scripts/runner-setup.sh go-linter "$version" "$heft_version" "$3/$5"
+		build_custom_linter "$version" "$heft_version" "$3/$5"
+		exit
 	fi
 	exec "$0.upstream" "$@"
 fi
@@ -57,31 +89,6 @@ case "${1:-}" in
 		else
 			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi
-		;;
-	go-linter)
-		version="$2"
-		heft_version="$3"
-		binary="$4"
-		module=github.com/golangci/golangci-lint/v2
-		temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}"
-		mkdir -p "$temp_root" "$(dirname "$binary")"
-		build_dir="$(mktemp -d "$temp_root/detent-linter.XXXXXX")"
-		trap 'rm -rf -- "$build_dir"' EXIT
-		export GOWORK=off
-		go mod download "$module@$version"
-		cp "$(go env GOMODCACHE)/$module@$version/cmd/golangci-lint/main.go" "$build_dir/"
-		cat > "$build_dir/plugins.go" <<'EOF'
-package main
-
-import _ "github.com/digitaldrywood/heft/plugin"
-EOF
-		(
-			cd "$build_dir"
-			go mod init example.com/detent-linter
-			go mod edit -require="$module@$version" -require="github.com/digitaldrywood/heft@$heft_version"
-			go build -mod=mod -p "${TEST_PROCS:-4}" -ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=unknown" -o golangci-lint-custom .
-		)
-		mv "$build_dir/golangci-lint-custom" "$binary"
 		;;
 	node-deps)
 		cd "$2"

@@ -114,6 +114,29 @@ if stage == os.environ.get("PROBE_FAILURE"):
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
 class LandingGateTest(unittest.TestCase):
+    def test_installed_linter_build_does_not_run_checkout_script(self):
+        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
+        self.assertIsNotNone(scratch, "a supplied scratch directory is required")
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            root = Path(directory)
+            checkout = root / "checkout"
+            (checkout / "scripts").mkdir(parents=True)
+            (checkout / ".golangci-version").write_text("v2.14.0\n")
+            (checkout / ".custom-gcl.yml").write_text("plugins:\n  - module: github.com/digitaldrywood/heft\n    version: v0.1.0\n")
+            (checkout / "scripts/runner-setup.sh").write_text("printf 'checkout script executed\\n' >&2\nexit 29\n")
+            installer = root / "golangci-lint"
+            shutil.copy2(ROOT / "scripts/runner-setup.sh", installer)
+            go = root / "go"
+            go.write_text("#!/bin/sh\nprintf 'installed builder reached Go\\n' >&2\nexit 42\n")
+            go.chmod(0o700)
+            result = subprocess.run(
+                [str(installer), "custom", "--destination", str(root / "output"), "--name", "golangci-lint-custom"],
+                cwd=checkout, env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(result.returncode, 42, result.stderr)
+            self.assertEqual(result.stderr, "installed builder reached Go\n")
+
     def test_race_package_partition(self):
         packages = subprocess.check_output(["go", "list", "./..."], cwd=ROOT, text=True).splitlines()
         module = "github.com/digitaldrywood/detent"
