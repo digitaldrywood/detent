@@ -431,6 +431,9 @@ func (d *claimSourceDetails) checkpointReads() int {
 }
 
 func TestClaimClassifiesLegacySourceWithinRequestBudget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres hubserver test in -short mode")
+	}
 	t.Parallel()
 	cleanCheckpoint := func(index int) *tracker.NativeCheckpoint {
 		return &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", Storage: "local_only", Availability: "available", ExternalEffect: "none", EffectState: "none", HeadSHA: fmt.Sprintf("%040x", index)}

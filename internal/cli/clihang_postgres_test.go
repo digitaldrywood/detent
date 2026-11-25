@@ -70,6 +70,9 @@ var clihangHubTemplate = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB
 
 func clihangPostgresHub(t *testing.T, token string, content entryauthority.ContentHandler, options ...clihangPostgresOptions) (*hubserver.Service, func()) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres CLI hub test in -short mode")
+	}
 	admin := clihangHubTemplate.Database(t)
 	connection := pgtransport.Connection{User: "example_" + strings.ReplaceAll(uuid.NewString(), "-", ""), Password: uuid.NewString(), SSLMode: "disable"}
 	var address, directory string

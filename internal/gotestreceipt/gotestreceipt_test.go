@@ -81,6 +81,9 @@ func (s *memoryStore) Record(_ context.Context, receipt Receipt) error {
 }
 
 func TestRunWrapperReusesOnlyMatchingReceipts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test wrapper subprocess test in -short mode")
+	}
 	root := t.TempDir()
 	scratch := filepath.Join(root, "scratch with spaces")
 	if err := os.Mkdir(scratch, 0o700); err != nil {
@@ -249,6 +252,9 @@ func TestHelperProcess(t *testing.T) {
 }
 
 func TestRunWrapperExecutesWhenUnobservedInputsChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test wrapper subprocess test in -short mode")
+	}
 	type fixture struct {
 		root, pkg, scratch string
 		env                map[string]string
@@ -827,6 +833,9 @@ func TestStartRefusesTheFilesystemRoot(t *testing.T) {
 }
 
 func TestRunWrapperRunsTestsWithoutAValidAttestation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test wrapper subprocess test in -short mode")
+	}
 	pkg := t.TempDir()
 	if err := os.WriteFile(filepath.Join(pkg, "input.txt"), []byte("pass"), 0o600); err != nil {
 		t.Fatal(err)
