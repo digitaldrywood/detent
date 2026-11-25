@@ -71,7 +71,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			const ttl = 600 * time.Second
-			h.scheduler, err = newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: file.Identity.MachineID, Hostname: "worker", Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: ttl})
+			h.scheduler, err = newTestScheduler(client, SchedulerConfig{Now: clock, OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: file.Identity.MachineID, Hostname: "worker", Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: ttl})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +122,6 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 			at := time.Now().UTC().Truncate(time.Microsecond)
 			hubTime.Store(at.UnixNano())
 			now := at
-			h.scheduler.now = clock
 			if err := execution.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: at, WorkerLaunch: &tracker.NativeWorkerLaunch{PID: worker.PID, GroupID: worker.GroupID, ProcessStart: worker.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: at}}); err != nil {
 				t.Fatal(err)
 			}
@@ -157,7 +156,7 @@ func TestNativeRuntimeHeartbeatDuringQuietCommand(t *testing.T) {
 			for elapsed := 50 * time.Second; elapsed <= 3*ttl; elapsed += 50 * time.Second {
 				now = at.Add(elapsed)
 				hubTime.Store(now.UnixNano())
-				if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now); err != nil {
+				if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, now); err != nil {
 					current, readErr := h.native.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
 					alive, probeErr := procgroup.Alive(worker)
 					t.Fatalf("renew at %s: %v; state=%s eligible=%v dependencies=%t read=%v alive=%t probe=%v", elapsed, err, current.State, current.SchedulingEligible, current.DependencyReady, readErr, alive, probeErr)
