@@ -50,10 +50,27 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 		{name: "refused version retains its failure", head: "published-head", effect: "confirmed", versionError: "version refused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, HeartbeatInterval: time.Second, LeaseTTL: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor := clientTestPolicy()
+			lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", FencingToken: 1, PolicyID: descriptor.ID}
+			claim := nativeClaim{source: fixtureConnector(native), lease: lease, deadline: time.Now().Add(time.Hour)}
+			fixtureInstallClaim(t, scheduler, claim, descriptor, "project")
 			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
 			execution := &nativeExecution{
-				scheduler: &executionAuthority{now: time.Now},
+				scheduler: authority(scheduler),
+				claim:     claim,
 				settled:   !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
 				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},
@@ -2260,8 +2277,9 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 	for _, test := range []struct {
 		status    int
 		published bool
-	}{{502, false}, {503, false}, {0, false}, {502, true}, {503, true}, {0, true}} {
-		t.Run(fmt.Sprintf("%d/published=%t", test.status, test.published), func(t *testing.T) {
+		expires   bool
+	}{{502, false, false}, {503, false, false}, {0, false, false}, {502, true, false}, {503, true, false}, {0, true, false}, {503, true, true}} {
+		t.Run(fmt.Sprintf("%d/published=%t/expires=%t", test.status, test.published, test.expires), func(t *testing.T) {
 			status := test.status
 			start := time.Now()
 			descriptor := clientTestPolicy()
@@ -2337,6 +2355,16 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 				t.Fatal("retry extended outage bound")
 			}
 			offline = false
+			if test.expires {
+				fixtureSetNow(scheduler, claim.deadline)
+				if err := execution.Finish(t.Context(), "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("expired completion returned %v", err)
+				}
+				if finished.Type != "" || execution.data.Outcome != "" || execution.publication == nil {
+					t.Fatal("expired completion wrote a terminal outcome or discarded the publication receipt")
+				}
+				return
+			}
 			if err := scheduler.Heartbeat(t.Context()); err != nil {
 				t.Fatal(err)
 			}
