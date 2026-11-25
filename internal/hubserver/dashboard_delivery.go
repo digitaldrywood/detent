@@ -270,7 +270,9 @@ func (d *dashboardDelivery) projectState(ctx context.Context, key dashboardProje
 			return nil
 		})
 	}
-	d.states[key] = state
+	if ctx.Err() == nil {
+		d.states[key] = state
+	}
 	return state
 }
 
@@ -400,7 +402,13 @@ func (d *dashboardDelivery) deliver(ctx context.Context) {
 			}
 		}
 		if err != nil {
-			if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil {
+				d.mu.Lock()
+				d.remaining = max(d.remaining, d.subs.Len())
+				d.mu.Unlock()
+				return
+			}
+			if !errors.Is(err, context.Canceled) {
 				d.service.config.Logger.ErrorContext(ctx, "deliver dashboard page", "error", err)
 			}
 			sub.reset(sub.sequence)

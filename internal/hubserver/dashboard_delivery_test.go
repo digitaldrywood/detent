@@ -237,6 +237,55 @@ func TestHostedEventsRecoveryAndAdmissionBudget(t *testing.T) {
 	readHostedCursorFrame(t, otherStream, "lane", second)
 }
 
+func TestDashboardDeliveryTickFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cancelTick bool
+	}{
+		{name: "read failure resets subscription"},
+		{name: "canceled tick leaves subscription pending", cancelTick: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tick, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			repository := &countingTenantRepository{readErr: errors.New("read failed")}
+			cfg := Config{TenantRepository: repository, Logger: discardLogger(), Clock: func() time.Time {
+				if tc.cancelTick {
+					cancel()
+					repository.readErr = tick.Err()
+				}
+				return time.Now()
+			}}
+			d := newDashboardDelivery(&Service{config: cfg.Normalized()})
+			sub := &dashboardSubscription{scope: hubscope.NativeScope{Organization: "org_example", Project: "prj_example"}}
+			if !d.add(sub) {
+				t.Fatal("could not add subscription")
+			}
+			defer d.remove(sub)
+			d.changed()
+			d.deliver(tick)
+			if !tc.cancelTick {
+				select {
+				case frame := <-sub.frames:
+					if frame.event != "reset" || !frame.terminal {
+						t.Fatalf("frame = %+v, want terminal reset", frame)
+					}
+				default:
+					t.Fatal("missing reset frame")
+				}
+				return
+			}
+			if sub.terminal || len(sub.frames) != 0 || d.remaining == 0 {
+				t.Fatal("canceled tick did not leave the subscription pending")
+			}
+			d.deliver(t.Context())
+			if repository.reads != 2 {
+				t.Fatalf("reads = %d, want a new read on the next tick", repository.reads)
+			}
+		})
+	}
+}
+
 func TestHostedEventsReplayLiveHandoff(t *testing.T) {
 	t.Parallel()
 	f, user, d := controlledPostgresDelivery(t, hubdeps.DashboardDelivery{PageSize: 1, Budget: 1})

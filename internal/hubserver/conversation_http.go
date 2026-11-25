@@ -137,6 +137,7 @@ func (s *Service) conversationHTTPDeps() conversations.HTTPDeps {
 		RefreshStream:   s.refreshConversationStream,
 		StreamHeartbeat: s.streamHeartbeat,
 		StreamAuthorize: s.streamAuthorize,
+		RequestBudget:   s.config.RequestBudget,
 	}
 }
 

@@ -284,7 +284,10 @@ func (h *HTTP) StreamEvents(c echo.Context) error {
 	defer authorize.Stop()
 	cursor := after
 	for {
-		poll, cancelPoll := context.WithTimeout(ctx, hubapi.DefaultRequestBudget)
+		poll, cancelPoll := ctx, func() {}
+		if _, bounded := ctx.Deadline(); !bounded {
+			poll, cancelPoll = context.WithTimeout(ctx, h.deps.RequestBudget)
+		}
 		if scope.Credential.EntryKey != nil {
 			stream.Authorize = func() error {
 				_, err := h.ReauthorizeStream(poll, c, &scope, record.ID)
@@ -616,6 +619,7 @@ type HTTPDeps struct {
 	RefreshStream   func(context.Context, echo.Context, *hubscope.NativeScope) error
 	StreamHeartbeat func() time.Duration
 	StreamAuthorize func() time.Duration
+	RequestBudget   time.Duration
 }
 
 type HTTP struct{ deps HTTPDeps }
