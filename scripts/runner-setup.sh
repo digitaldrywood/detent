@@ -107,10 +107,11 @@ install_restricted_linter() (
 	mkdir -p "$(dirname "$binary")"
 	staging="$(mktemp -d "$(dirname "$binary")/.linter-install.XXXXXX")"
 	trap 'rm -rf -- "$staging"' EXIT
-	if ! matches_go_tool "$binary.upstream" "$package" "$version" "$toolchain"; then
-		install_go_tool "$staging/golangci-lint" "$package" "$version" "$toolchain"
-		linter_output "$PWD" "$binary.upstream" "$staging/golangci-lint"
-	fi
+	(
+		cd "$staging"
+		GOWORK=off GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$staging" go install -p "${TEST_PROCS:-4}" "$package@$version"
+	)
+	linter_output "$PWD" "$binary.upstream" "$staging/golangci-lint"
 	{
 		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
 		declare -f linter_output build_custom_linter run_linter

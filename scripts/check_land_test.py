@@ -128,10 +128,17 @@ class LandingGateTest(unittest.TestCase):
             checkout_setup.write_text("#!/bin/sh\nprintf 'checkout script executed\\n' >&2\nexit 29\n")
             checkout_setup.chmod(0o700)
             installer = checkout / "tmp/tools/golangci-lint/v2.14.0/go1.27.3/golangci-lint"
+            substitute = root / "golangci-lint"
+            substitute.write_text("#!/bin/sh\nprintf 'supplied upstream executed\\n' >&2\nexit 29\n")
+            substitute.chmod(0o700)
             go = root / "go"
             go.write_text("""#!/bin/sh
+if [ "$1" = version ]; then
+    printf 'fixture: go1.27.3\\npath github.com/golangci/golangci-lint/v2/cmd/golangci-lint\\nmod github.com/golangci/golangci-lint/v2 v2.14.0\\n'
+    exit 0
+fi
 if [ "$1" = install ]; then
-    printf '#!/bin/sh\\nexit 0\\n' > "$GOBIN/golangci-lint"
+    printf '#!/bin/sh\\nprintf "pinned upstream called\\\\n"\\n' > "$GOBIN/golangci-lint"
     chmod 700 "$GOBIN/golangci-lint"
     exit 0
 fi
@@ -172,8 +179,12 @@ exit 42
             self.assertNotEqual(setup.returncode, 0, setup.stderr)
             self.assertFalse(list(upstream.iterdir()))
             upstream.rmdir()
+            shutil.copy2(substitute, upstream)
             setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(setup.returncode, 0, setup.stderr)
+            stock = subprocess.run([str(installer), "version"], cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(stock.returncode, 0, stock.stderr)
+            self.assertEqual(stock.stdout, "pinned upstream called\n")
             version_file = checkout / ".golangci-version"
             version_file.unlink()
             replacement = root / "replacement-version"
