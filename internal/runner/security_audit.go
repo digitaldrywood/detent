@@ -269,6 +269,8 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 		}
 		identity, prompt := plan.Chunk(index)
 		var output strings.Builder
+		lastOutputTurn := ""
+		lastOutputItem := ""
 		previousUsage := runResult.Tokens
 		turnStarted := false
 		runResult.ReportedCostMicros, runResult.CostSource = nil, ""
@@ -299,8 +301,15 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			reserveScratch:     r.reserveSessionWorkerScratch(sessionID, r.securityAuditRoot, auditWorkspace),
 		}, auditTools, auditToolHandler, func(updateCtx context.Context, update AgentUpdate) error {
 			r.providerUsage.ObserveUpdate(runtimeIdentity.BackendID, update)
-			if !hasCheckout && (update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted) {
-				return ErrSecurityAuditToolUse
+			if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
+				if !hasCheckout {
+					return ErrSecurityAuditToolUse
+				}
+				if !update.AuxiliaryTurn {
+					output.Reset()
+					lastOutputTurn = ""
+					lastOutputItem = ""
+				}
 			}
 			if update.WorkerProcess.PID > 0 {
 				execution.WorkerProcess = update.WorkerProcess
@@ -311,7 +320,21 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 			if req.usageExecution == nil {
 				r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 			}
-			if update.Type == AgentUpdateMessageDelta {
+			if !update.AuxiliaryTurn && update.Type == AgentUpdateMessageDelta && update.Delta != "" {
+				turnID := strings.TrimSpace(update.TurnID)
+				itemID := strings.TrimSpace(update.ItemID)
+				if turnID != "" && lastOutputTurn != "" && turnID != lastOutputTurn {
+					output.Reset()
+					lastOutputItem = ""
+				} else if itemID != "" && lastOutputItem != "" && itemID != lastOutputItem {
+					output.Reset()
+				}
+				if turnID != "" {
+					lastOutputTurn = turnID
+				}
+				if itemID != "" {
+					lastOutputItem = itemID
+				}
 				output.WriteString(update.Delta)
 			}
 			previousIdentity := runResult.RuntimeIdentity
