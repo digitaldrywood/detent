@@ -60,10 +60,9 @@ EOF
 )
 
 run_linter() {
-	if [[ "$#" == 5 && "$1" == custom && "$2" == --destination && "$4" == --name && "$5" == golangci-lint-custom && -f .custom-gcl.yml ]]; then
-		local version heft_version
-		version="$(cat .golangci-version)"
-		heft_version="$(awk '/digitaldrywood\/heft$/ { found = 1 } found && $1 == "version:" { print $2; exit }' .custom-gcl.yml)"
+	local version="$1" heft_version="$2"
+	shift 2
+	if [[ "$#" == 5 && "$1" == custom && "$2" == --destination && "$4" == --name && "$5" == golangci-lint-custom ]]; then
 		build_custom_linter "$version" "$heft_version" "$3/$5"
 		return
 	fi
@@ -71,17 +70,30 @@ run_linter() {
 }
 
 install_linter_launcher() (
-	local binary="$1" launcher
+	local binary="$1" version="$2" heft_version="$3" launcher
 	launcher="$(mktemp "$binary.XXXXXX")"
 	trap 'rm -f -- "$launcher"' EXIT
 	{
 		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
 		declare -f build_custom_linter run_linter
-		printf '%s\n' 'run_linter "$@"'
+		printf 'run_linter %q %q "$@"\n' "$version" "$heft_version"
 	} > "$launcher"
 	chmod 0755 "$launcher"
 	mv -f -- "$launcher" "$binary"
 )
+
+read_heft_version() {
+	local config=.custom-gcl.yml contents=""
+	if [[ ! -f "$config" || -L "$config" ]]; then
+		printf 'Custom linter configuration must be a regular file\n' >&2
+		return 1
+	fi
+	if IFS= LC_ALL=C read -r -d '' -n 4097 contents < "$config"; then
+		printf 'Custom linter configuration must be at most 4096 bytes and contain no NUL bytes\n' >&2
+		return 1
+	fi
+	awk '/digitaldrywood\/heft$/ { found = 1 } found && $1 == "version:" { print $2; exit }' <<< "$contents"
+}
 
 case "${1:-}" in
 	go-tool)
@@ -94,12 +106,13 @@ case "${1:-}" in
 			install_dir="${install_dir:-$(go env GOPATH)/bin}"
 			binary="$install_dir/$binary"
 		fi
-		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* && -f .custom-gcl.yml ]]; then
+		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* && ( -e .custom-gcl.yml || -L .custom-gcl.yml ) ]]; then
+			heft_version="$(read_heft_version)"
 			if ! matches_go_tool "$binary.upstream" "$package" "$version" "$toolchain"; then
 				install_go_tool "$binary" "$package" "$version" "$toolchain"
 				mv "$binary" "$binary.upstream"
 			fi
-			install_linter_launcher "$binary"
+			install_linter_launcher "$binary" "$version" "$heft_version"
 		else
 			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi

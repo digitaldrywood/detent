@@ -122,7 +122,8 @@ class LandingGateTest(unittest.TestCase):
             checkout = root / "checkout"
             (checkout / "scripts").mkdir(parents=True)
             (checkout / ".golangci-version").write_text("v2.14.0\n")
-            (checkout / ".custom-gcl.yml").write_text("plugins:\n  - module: github.com/digitaldrywood/heft\n    version: v0.1.0\n")
+            config = checkout / ".custom-gcl.yml"
+            config_text = "plugins:\n  - module: github.com/digitaldrywood/heft\n    version: v0.1.0\n"
             checkout_setup = checkout / "scripts/runner-setup.sh"
             checkout_setup.write_text("#!/bin/sh\nprintf 'checkout script executed\\n' >&2\nexit 29\n")
             checkout_setup.chmod(0o700)
@@ -139,11 +140,30 @@ exit 42
 """)
             go.chmod(0o700)
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"], GIT_ALLOW_PROTOCOL="")
-            setup = subprocess.run(
-                ["bash", str(ROOT / "scripts/runner-setup.sh"), "go-tool", "github.com/golangci/golangci-lint/v2/cmd/golangci-lint", "v2.14.0", str(installer), "go1.27.3"],
-                cwd=checkout, env=env, capture_output=True, text=True, timeout=15,
-            )
+            setup_command = [
+                "bash", str(ROOT / "scripts/runner-setup.sh"), "go-tool",
+                "github.com/golangci/golangci-lint/v2/cmd/golangci-lint", "v2.14.0", str(installer), "go1.27.3",
+            ]
+            external_config = root / "linked-config"
+            external_config.write_text(config_text)
+            config.symlink_to(external_config)
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(setup.returncode, 1, setup.stderr)
+            self.assertIn("must be a regular file", setup.stderr)
+            config.unlink()
+            config.write_text(config_text + "\n" * 4097)
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(setup.returncode, 1, setup.stderr)
+            self.assertIn("must be at most 4096 bytes", setup.stderr)
+            config.write_text(config_text)
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(setup.returncode, 0, setup.stderr)
+            version_file = checkout / ".golangci-version"
+            version_file.unlink()
+            replacement = root / "replacement-version"
+            replacement.write_text("invalid version\n")
+            version_file.symlink_to(replacement)
+            config.write_text("plugins: []\n")
             result = subprocess.run(
                 [str(installer), "custom", "--destination", str(root / "output"), "--name", "golangci-lint-custom"],
                 cwd=checkout, env=env, capture_output=True, text=True, timeout=15,
