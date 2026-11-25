@@ -59,15 +59,29 @@ EOF
 	mv golangci-lint-custom "$binary"
 )
 
-if [[ "${0##*/}" == golangci-lint ]]; then
+run_linter() {
 	if [[ "$#" == 5 && "$1" == custom && "$2" == --destination && "$4" == --name && "$5" == golangci-lint-custom && -f .custom-gcl.yml ]]; then
+		local version heft_version
 		version="$(cat .golangci-version)"
 		heft_version="$(awk '/digitaldrywood\/heft$/ { found = 1 } found && $1 == "version:" { print $2; exit }' .custom-gcl.yml)"
 		build_custom_linter "$version" "$heft_version" "$3/$5"
-		exit
+		return
 	fi
 	exec "$0.upstream" "$@"
-fi
+}
+
+install_linter_launcher() (
+	local binary="$1" launcher
+	launcher="$(mktemp "$binary.XXXXXX")"
+	trap 'rm -f -- "$launcher"' EXIT
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		declare -f build_custom_linter run_linter
+		printf '%s\n' 'run_linter "$@"'
+	} > "$launcher"
+	chmod 0755 "$launcher"
+	mv -f -- "$launcher" "$binary"
+)
 
 case "${1:-}" in
 	go-tool)
@@ -85,7 +99,7 @@ case "${1:-}" in
 				install_go_tool "$binary" "$package" "$version" "$toolchain"
 				mv "$binary" "$binary.upstream"
 			fi
-			cp scripts/runner-setup.sh "$binary"
+			install_linter_launcher "$binary"
 		else
 			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi

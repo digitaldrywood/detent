@@ -123,16 +123,30 @@ class LandingGateTest(unittest.TestCase):
             (checkout / "scripts").mkdir(parents=True)
             (checkout / ".golangci-version").write_text("v2.14.0\n")
             (checkout / ".custom-gcl.yml").write_text("plugins:\n  - module: github.com/digitaldrywood/heft\n    version: v0.1.0\n")
-            (checkout / "scripts/runner-setup.sh").write_text("printf 'checkout script executed\\n' >&2\nexit 29\n")
-            installer = root / "golangci-lint"
-            shutil.copy2(ROOT / "scripts/runner-setup.sh", installer)
+            checkout_setup = checkout / "scripts/runner-setup.sh"
+            checkout_setup.write_text("#!/bin/sh\nprintf 'checkout script executed\\n' >&2\nexit 29\n")
+            checkout_setup.chmod(0o700)
+            installer = checkout / "tmp/tools/golangci-lint/v2.14.0/go1.27.3/golangci-lint"
             go = root / "go"
-            go.write_text("#!/bin/sh\nprintf 'installed builder reached Go\\n' >&2\nexit 42\n")
+            go.write_text("""#!/bin/sh
+if [ "$1" = install ]; then
+    printf '#!/bin/sh\\nexit 0\\n' > "$GOBIN/golangci-lint"
+    chmod 700 "$GOBIN/golangci-lint"
+    exit 0
+fi
+printf 'installed builder reached Go\\n' >&2
+exit 42
+""")
             go.chmod(0o700)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"], GIT_ALLOW_PROTOCOL="")
+            setup = subprocess.run(
+                ["bash", str(ROOT / "scripts/runner-setup.sh"), "go-tool", "github.com/golangci/golangci-lint/v2/cmd/golangci-lint", "v2.14.0", str(installer), "go1.27.3"],
+                cwd=checkout, env=env, capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(setup.returncode, 0, setup.stderr)
             result = subprocess.run(
                 [str(installer), "custom", "--destination", str(root / "output"), "--name", "golangci-lint-custom"],
-                cwd=checkout, env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"]),
-                capture_output=True, text=True, timeout=15,
+                cwd=checkout, env=env, capture_output=True, text=True, timeout=15,
             )
             self.assertEqual(result.returncode, 42, result.stderr)
             self.assertEqual(result.stderr, "installed builder reached Go\n")
