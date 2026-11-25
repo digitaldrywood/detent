@@ -590,7 +590,7 @@ func (s *Scheduler) restartBehindControlLocked() (Status, bool) {
 	if pending == nil || s.cfg.RequestRestart == nil {
 		return Status{}, false
 	}
-	if !s.cfg.RequestRestart(pending.installed.Binary) {
+	if !s.requestRestart(pending.installed) {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
 			status.LastError = "Update restart request was declined"
@@ -726,7 +726,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		applied.FailureReason = "Update state persistence failed"
 		return applied, persistErr
 	}
-	restartRequested := s.cfg.RequestRestart != nil && s.cfg.RequestRestart(applied.Binary)
+	restartRequested := s.requestRestart(applied)
 	if !restartRequested {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
@@ -923,28 +923,27 @@ func (s *Scheduler) SetLifecycleReporter(report func(context.Context, runnerauth
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	s.cfg.ReportLifecycle = report
-	restart := s.cfg.RequestRestart
-	if restart != nil && report != nil {
-		s.cfg.RequestRestart = func(binary string) bool {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			s.mu.RLock()
-			var target string
-			if s.enrolledReceipt != nil {
-				target = s.enrolledReceipt.Request.Version
-			}
-			s.mu.RUnlock()
-			if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", target); err != nil {
-				s.cfg.Logger.Warn("report update shutdown", "error", err)
-				return false
-			}
-			accepted := restart(binary)
-			if !accepted {
-				if err := report(ctx, runnerauth.LifecycleReady, "", ""); err != nil {
-					s.cfg.Logger.Warn("report deferred update restart", "error", err)
-				}
-			}
-			return accepted
-		}
+}
+
+func (s *Scheduler) requestRestart(installed Status) bool {
+	if s.cfg.RequestRestart == nil {
+		return false
 	}
+	report := s.cfg.ReportLifecycle
+	if report == nil {
+		return s.cfg.RequestRestart(installed.Binary)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", installed.LatestVersion); err != nil {
+		s.cfg.Logger.Warn("report update shutdown", "error", err)
+		return false
+	}
+	if s.cfg.RequestRestart(installed.Binary) {
+		return true
+	}
+	if err := report(ctx, runnerauth.LifecycleReady, "", ""); err != nil {
+		s.cfg.Logger.Warn("report deferred update restart", "error", err)
+	}
+	return false
 }
