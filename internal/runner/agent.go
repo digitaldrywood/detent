@@ -1783,7 +1783,7 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
@@ -1856,7 +1856,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		resumePhase := phaseSource != nil && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan
 		publicationRecovery = publicationRecovery && resumePhase
-		if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
+		reviewedRework := req.executionRole() == RoleRework && continuation.NextPhase == RunModeMerge && !phaserecovery.LandingNeedsRework(recovery)
+		if resumePhase && !reviewedRework && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
 			turnRecovery = nativePhaseTurnResumeAttempt(recovery, *phaseSource)
 		}
 		req.ResumeState = store.AgentResumeState{}
@@ -3169,6 +3170,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
+		if legacyPublishedSource && req.finalizeNativeWork {
+			req.phaseReceipts = true
+			req.publishedPhaseSource = &workspace.PhaseSource{}
+		}
 		if req.finalizeNativeWork && cleanupErr == nil && result.FinalState == FinalStateCompleted && !req.phaseReceipts {
 			if err := r.recordAgentStep(afterRunCtx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
 				turnErr = err

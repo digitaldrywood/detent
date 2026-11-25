@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -125,5 +126,17 @@ func (e *sshNativeProbe) RecoverChangeSource(ctx context.Context) (workspace.Cha
 }
 
 func (*sshNativeProbe) RecordReview(context.Context, gate.ValidatorResult) error { return nil }
-func (*sshNativeProbe) ProviderCapacity() *providercapacity.Reservation          { return nil }
-func (*sshNativeProbe) RecordUsage(context.Context, tracker.NativeUsage) error   { return nil }
+func (*sshNativeProbe) RecordSourceValidation(_ context.Context, result gate.CommandResult) error {
+	if result.HeadSHA == "" || result.TreeSHA == "" || result.ExitCode != 0 {
+		return errors.New("fixture source validation requires a passing commit and tree")
+	}
+	return nil
+}
+func (*sshNativeProbe) PublishValidationEvidence(_ context.Context, files []runner.ValidationEvidence) error {
+	if len(files) != 0 {
+		return errors.New("fixture does not produce validation files")
+	}
+	return nil
+}
+func (*sshNativeProbe) ProviderCapacity() *providercapacity.Reservation        { return nil }
+func (*sshNativeProbe) RecordUsage(context.Context, tracker.NativeUsage) error { return nil }

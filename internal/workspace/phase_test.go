@@ -378,34 +378,47 @@ func TestLivePhaseRetryKeepsCheckoutAndPublicationFence(t *testing.T) {
 }
 
 func TestItemPhasePushReconcilesConcurrentRefUpdate(t *testing.T) {
-	for _, sameHead := range []bool{true, false} {
-		name := "divergent head"
-		if sameHead {
-			name = "intended head"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		sameHead        bool
+		checkoutChanged bool
+	}{
+		{name: "intended head", sameHead: true},
+		{name: "divergent head"},
+		{name: "checkout changes after source verification", checkoutChanged: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			f.issue.PublicationRepository = f.remote
 			ref := "refs/heads/" + f.info.PublishBranch()
 			intended := f.head
+			f.issue.VerifiedPhaseHead = intended
 			concurrent := intended
-			if !sameHead {
+			if !test.sameHead {
 				concurrent = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
 			}
 			calls := 0
 			_, head, _, err := f.backend.PushItemPhase(t.Context(), f.info, f.issue, func(context.Context) error {
 				calls++
-				if calls == 2 {
+				if test.checkoutChanged && calls == 1 {
+					runGit(t, f.info.Path, "reset", "--hard", concurrent)
+				} else if !test.checkoutChanged && calls == 2 {
 					runGit(t, f.info.Path, "push", "origin", concurrent+":"+ref)
 				}
 				return nil
 			})
 			var refusal *LandRefusal
-			if sameHead && (err != nil || head != intended) {
+			if test.sameHead && (err != nil || head != intended) {
 				t.Fatalf("publication = %s, error = %v, want %s", head, err, intended)
 			}
-			if !sameHead && (!errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved) {
+			if !test.sameHead && (!errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved) {
 				t.Fatalf("publication error = %v, want moved item branch", err)
+			}
+			if test.checkoutChanged {
+				if remote, exists, err := gitexec.PublicationBranchHead(t.Context(), f.remote, f.info.PublishBranch()); err != nil || exists {
+					t.Fatalf("unverified checkout created remote head %s: %v", remote, err)
+				}
+				return
 			}
 			if remote := strings.TrimSpace(runGit(t, f.remote, "rev-parse", ref)); remote != concurrent {
 				t.Fatalf("remote head = %s, want %s", remote, concurrent)

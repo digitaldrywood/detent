@@ -45,7 +45,8 @@ func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracke
 	admin := testsupport.ScenarioPostgresDatabase(t)
 	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
 	var socket, data string
-	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &socket, &data); err != nil {
+	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer,
+		COALESCE(host(inet_server_addr()), current_setting('unix_socket_directories')), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &socket, &data); err != nil {
 		t.Fatal(err)
 	}
 	connection.Host = socket

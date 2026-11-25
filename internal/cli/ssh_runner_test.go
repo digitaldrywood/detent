@@ -546,6 +546,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Codex.Command = "env DETENT_SSH_TEST_SANDBOX=" + expectedSandbox + " DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
 	failingReview := len(producerFailure) != 0 && producerFailure[0]
 	if failingReview {
+		cfg.Agent.MaxTurns = 2
 		repository := "https://github.com/example-org/example-project"
 		for _, sourceRoot := range []string{source, remoteSource} {
 			git(sourceRoot, "config", "url."+bare+".insteadOf", repository)
@@ -602,6 +603,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		updatesMu.Unlock()
 		return nil
 	}}
+	if failingReview {
+		request.Mode, request.Routine = runnerpkg.RunModeImplement, nil
+	}
 	local := len(producerFailure) > 1 && producerFailure[1]
 	if local {
 		artifacts, publish, _ := localWorkerArtifacts(t, true)

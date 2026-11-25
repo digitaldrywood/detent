@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/internal/scenariohooks"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -64,6 +65,10 @@ type nativeCompletionRun struct {
 	err     error
 }
 
+type landingWithoutProvider struct{ *ownedExecution }
+
+func (landingWithoutProvider) ProviderCapacity() *providercapacity.Reservation { return nil }
+
 func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativeCompletionRunner, request runner.RunRequest, target string) (runner.RunResult, connector.Issue, error) {
 	t.Helper()
 	if state := h.state(t, request.Issue.ID); state != "Rework" && state != "In Progress" && state != "Merging" {
@@ -109,7 +114,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 			t.Fatal(err)
 		}
 	case <-testenv.WaitContext(t, t.Context()).Done():
-		t.Fatal("no-change completion did not release its claim")
+		t.Fatalf("native completion did not release its claim: landing=%+v change=%+v error=%v", completed.result.NativeLanding, completed.result.NativeChange, completed.err)
 	}
 	if err := orch.Drain(t.Context()); err != nil {
 		t.Fatal(err)
@@ -241,6 +246,11 @@ func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequ
 			err = r.prepare(ctx, request)
 		}
 	} else {
+		if r.expectPendingLanding && request.Mode == runner.RunModeMerge {
+			if owner, ok := request.Execution.(*ownedExecution); ok {
+				request.Execution = landingWithoutProvider{owner}
+			}
+		}
 		result, err = r.Runner.Run(ctx, request)
 	}
 	r.completed <- nativeCompletionRun{result: result, err: err}

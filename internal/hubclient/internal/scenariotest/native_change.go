@@ -169,11 +169,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Rework"}})
 			}
 			if test.SummaryFailure {
-				states[1].Transitions = append(states[1].Transitions, "Blocked")
-				states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"In Progress"}})
 				if test.Feedback != "" {
 					states[1].Transitions = append(states[1].Transitions, "Rework")
-					states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Blocked", review, "Done"}})
+					states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", review, "Done"}})
 				}
 			}
 			var clockOffset atomic.Int64
@@ -644,6 +642,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			provider := &committingAgent{finalMessage: test.FinalMessage, dependencyOnly: test.DependencyOnly, failedCheck: test.FailedCheck, commit: test.Commit, dirty: test.Dirty, staged: test.Staged || genuinePublication, validator: test.Validator, lowScore: test.LowScore, complete: test.Absorbed || test.Delivered != "" || test.SummaryFailure, hold: test.Hold, inProgress: test.LateConflict}
 			if test.SourceFixture != "" {
+				provider.complete = test.SourceFixture != "synthetic"
 				provider.duringTurn = func() {
 					for path, original := range fixtures {
 						file := filepath.Join(provider.workspace, path)
@@ -925,7 +924,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			if test.SummaryFailure {
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if postedSource.Load() && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
-						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("summary unavailable")), Request: request}, nil
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"summary rejected","code":"invalid_request"}`)), Request: request}, nil
 					}
 					response, err := transport.RoundTrip(request)
 					if err == nil && response != nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reviews") && response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -1083,6 +1082,8 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatalf("independent terminal history was not established: %+v", peerBefore)
 					}
 					transitionAttempts := 0
+					outageCtx, endOutage := context.WithCancel(t.Context())
+					defer endOutage()
 					ownerClient := owner.claim.source.NativeClient().Transport()
 					ownerTransport := fixtureClient(ownerClient).requests.Load()
 					ownerConnector, err := NewNativeConnector(owner.claim.source.NativeClient())
@@ -1092,11 +1093,13 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					fixtureClient(ownerClient).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 						if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/workflow") {
 							transitionAttempts++
+							endOutage()
 							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("completion unavailable")), Request: request}, nil
 						}
 						return ownerTransport.RoundTrip(request)
 					}))
-					if err := ownerConnector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err == nil || transitionAttempts == 0 {
+					outageCtx = api.WithMutationAuthority(outageCtx, owner.claim.source.NativeClient().Scope(), owner.Recovery().Lease, nil)
+					if err := ownerConnector.UpdateIssueState(outageCtx, issue.ID, review); err == nil || transitionAttempts == 0 {
 						t.Fatalf("completion outage did not reach the tracker transition: requests=%d error=%v", transitionAttempts, err)
 					}
 					fixtureClient(ownerClient).requests.Store(ownerTransport)
@@ -1139,7 +1142,8 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatal(err)
 					}
 				}
-				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Blocked"); err != nil {
+				laneCtx := api.WithMutationAuthority(t.Context(), h.native.Scope(), oldLease, nil)
+				if err := h.connector.UpdateIssueState(laneCtx, issue.ID, review); err != nil {
 					t.Fatal(err)
 				}
 				if test.LegacyReleaseRestart {
@@ -1155,14 +1159,17 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					ownerClient := owner.claim.source.NativeClient().Transport()
 					transport := fixtureClient(ownerClient).requests.Load()
 					releaseAttempts := 0
+					outageCtx, endOutage := context.WithCancel(t.Context())
+					defer endOutage()
 					fixtureClient(ownerClient).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 						if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 							releaseAttempts++
+							endOutage()
 							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("release unavailable")), Request: request}, nil
 						}
 						return transport.RoundTrip(request)
 					}))
-					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err == nil || releaseAttempts == 0 {
+					if err := h.scheduler.ReleaseClaim(outageCtx, issue.ID, "completed"); err == nil || releaseAttempts == 0 {
 						t.Fatalf("acknowledged interruption did not reach release outage: requests=%d error=%v", releaseAttempts, err)
 					}
 					fixtureClient(ownerClient).requests.Store(transport)
@@ -2118,6 +2125,13 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				return
 			}
+			if test.SourceFixture != "" && test.SourceFixture != "synthetic" {
+				refs, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(refname)", "refs/heads").Output()
+				if !errors.Is(err, workspace.ErrCheckpointUnsafe) || !strings.Contains(err.Error(), "possible credential in selected content") || len(h.changes(t, issue.ID)) != 0 || readErr != nil || !slices.Equal(strings.Fields(string(refs)), []string{"refs/heads/main"}) {
+					t.Fatalf("unsafe source was published or lost its capture refusal: refs=%s read=%v error=%v", refs, readErr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run: %v (provider calls: %d; writable calls: %d; final message: %s)", err, provider.calls, provider.writableCalls, result.FinalMessage)
 			}
@@ -2206,12 +2220,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 			}
 			change := result.NativeChange
-			if test.SourceFixture != "" && test.SourceFixture != "synthetic" {
-				if change == nil || change.Changed || change.VersionID != "" || change.VersionError != "checkpoint could not be safely published: possible credential in selected content" || len(h.changes(t, issue.ID)) != 0 {
-					t.Fatal("unsafe source was published or lost its capture refusal")
-				}
-				return
-			}
 			if test.AdvanceTarget {
 				attempt := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff

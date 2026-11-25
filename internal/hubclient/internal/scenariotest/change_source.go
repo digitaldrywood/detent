@@ -92,7 +92,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				states[1].Transitions = append(states[1].Transitions, "Rework", "Merging")
 				states[2].Transitions = append(states[2].Transitions, "Merging")
 				states[3].Transitions = append(states[3].Transitions, "Merging")
-				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}})
+				states = append(states, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Blocked", "Done"}},
+					tracker.NativeState{Name: "Blocked", Transitions: []string{"Rework"}})
 			}
 			details := &archivedRunDetails{}
 			var maintenance time.Duration
@@ -264,7 +265,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Cleanup(func() { faultSource(false) })
 				}
 
-				expectedSite := "recover native Change source"
+				expectedSite := "recover published Change source"
 				if test.checkpointOnly {
 					expectedSite = "checkpoint_unavailable"
 				}
@@ -443,7 +444,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				plan := gate.PlanConfig{Enabled: h.descriptor.Gates.PlanEnabled, Review: h.descriptor.Gates.PlanReview}
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: plan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -567,6 +569,14 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			}
 			if updatePolicy {
 				h.repolicy(t)
+			}
+			if test.planning {
+				previous := h.descriptor.ID
+				h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = true, gate.PlanReviewAutomated
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := os.WriteFile(filepath.Join(sourceA, "UPSTREAM.md"), []byte("new dev base\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -801,6 +811,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				target := "Rework"
 				if test.restartIntent == "resolved" {
 					target = "Done"
+				} else if test.landing {
+					target = "Blocked"
 				}
 				second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID), target)
 				detail, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
@@ -814,6 +826,19 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					t.Fatalf("restart changed original source/review: %+v, %v", detail, err)
 				}
 				if test.restartIntent != "resolved" {
+					if test.landing {
+						disposition := runner.NativeDispositionFromMessage(second.FinalMessage)
+						if disposition == nil || disposition.Status != "blocked" || !disposition.HumanAction {
+							t.Fatalf("unresolved landing lost its recorded question: %+v", disposition)
+						}
+						current, err := h.admin.Issue(t.Context(), item)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+							t.Fatal(err)
+						}
+					}
 					if detail.Change.CurrentLanding() != nil || h.state(t, issue.ID) != "Rework" || head(remote) != newBase {
 						t.Fatalf("unfinished/stale completion manufactured acceptance: change=%+v result=%+v", detail.Change, second)
 					}

@@ -277,6 +277,7 @@ type Issue struct {
 	PullRequestHeadSHA      string
 	PublicationRepository   string
 	ExpectedPhaseRemoteHead string
+	VerifiedPhaseHead       string
 	PullRequestRepository   string
 	PullRequestNumber       int
 	PullRequestBranch       string

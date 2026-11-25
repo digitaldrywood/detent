@@ -56,7 +56,7 @@ func verifyCheckout(read func(...string) (string, error), expectedHead, expected
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository, verifiedHead string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -79,6 +79,9 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		head, tree, err = readHead(read)
 		if err != nil {
 			return err
+		}
+		if verifiedHead != "" && head != verifiedHead {
+			return moved()
 		}
 		previous, _, err := gitexec.PublicationBranchHead(ctx, repository, branch)
 		if err != nil {

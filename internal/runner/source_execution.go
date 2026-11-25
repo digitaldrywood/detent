@@ -148,11 +148,42 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if issue.ExpectedPhaseRemoteHead == "" && req.publishedPhaseSource != nil {
 		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
 	}
+	if publisher, ok := backend.(itemPhaseWorkspace); ok && phase == "implement" {
+		if err := bindVerifiedPhaseSource(ctx, req.Execution, publisher, info, &issue); err != nil {
+			return failedStep("publication", err)
+		}
+	}
 	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
 	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
 		*req.publishedPhaseSource = source
 	}
 	return failedStep("publication", err)
+}
+
+func bindVerifiedPhaseSource(ctx context.Context, execution Execution, backend itemPhaseWorkspace, info workspace.Info, issue *workspace.Issue) error {
+	source, ok := execution.(ChangeSourceExecution)
+	if !ok {
+		return nil
+	}
+	head, _, err := backend.ItemPhaseHead(ctx, info, *issue)
+	if err != nil {
+		return fmt.Errorf("read finalized phase head: %w", err)
+	}
+	base := attemptDiffBase(ctx, info, *issue)
+	if head != base {
+		capture, err := workspace.CaptureChangeSource(ctx, info.Path, base, head)
+		if err != nil {
+			return err
+		}
+		source.SetChangeSource(func(ctx context.Context, requestedBase, requestedHead string) (tracker.ChangeSourceCapture, error) {
+			if requestedBase == base && requestedHead == head {
+				return capture, nil
+			}
+			return workspace.CaptureChangeSource(ctx, info.Path, requestedBase, requestedHead)
+		})
+	}
+	issue.VerifiedPhaseHead = head
+	return nil
 }
 
 func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {

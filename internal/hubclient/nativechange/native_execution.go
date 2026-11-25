@@ -606,6 +606,9 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 	// again is safe, because it reuses the item's change.
 	finish := e.data.Sequence + 1
 	if outcome == "succeeded" {
+		if !e.claimActive() {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
 		if err := api.MutationEffectError(ctx); err != nil {
 			return err
 		}
@@ -985,7 +988,18 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 			e.lastDiff = nil
 			return errors.New("worktree HEAD moved after the attempt diff was captured")
 		}
-		return errors.New("the run's final attempt diff is unavailable")
+		if e.lastDiff == nil {
+			return errors.New("the run's final attempt diff is unavailable")
+		}
+		if e.lastDiff.HeadSHA != e.worktreeHead {
+			return errors.New("the attempt diff does not match the final checkpoint head")
+		}
+		checkpoint := e.data.Handoff
+		if checkpoint == nil || e.storedSeq < e.data.Sequence || checkpoint.HeadSHA != e.worktreeHead || checkpoint.WorktreeState != e.worktreeState ||
+			e.worktreeHead == "" || (checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed") {
+			return errors.New("the run's final attempt diff is unavailable")
+		}
+		request = *e.lastDiff
 	}
 	e.lastDiff = &request
 	if e.worktreeState == "clean" || e.worktreeState == "unpushed" {
