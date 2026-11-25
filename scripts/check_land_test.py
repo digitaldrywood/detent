@@ -156,6 +156,22 @@ exit 42
             self.assertEqual(setup.returncode, 1, setup.stderr)
             self.assertIn("must be at most 4096 bytes", setup.stderr)
             config.write_text(config_text)
+            external_dir = root / "external-tools"
+            external_dir.mkdir()
+            sentinel = external_dir / "golangci-lint"
+            sentinel.write_text("existing executable\n")
+            installer.parent.mkdir(parents=True)
+            upstream = installer.with_name("golangci-lint.upstream")
+            upstream.symlink_to(external_dir, target_is_directory=True)
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(sentinel.read_text(), "existing executable\n")
+            self.assertNotEqual(setup.returncode, 0, setup.stderr)
+            upstream.unlink()
+            upstream.mkdir()
+            setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(setup.returncode, 0, setup.stderr)
+            self.assertFalse(list(upstream.iterdir()))
+            upstream.rmdir()
             setup = subprocess.run(setup_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(setup.returncode, 0, setup.stderr)
             version_file = checkout / ".golangci-version"
@@ -164,10 +180,15 @@ exit 42
             replacement.write_text("invalid version\n")
             version_file.symlink_to(replacement)
             config.write_text("plugins: []\n")
-            result = subprocess.run(
-                [str(installer), "custom", "--destination", str(root / "output"), "--name", "golangci-lint-custom"],
-                cwd=checkout, env=env, capture_output=True, text=True, timeout=15,
-            )
+            custom_dir = checkout / "tmp/tools/custom"
+            build_command = [str(installer), "custom", "--destination", str(custom_dir), "--name", "golangci-lint-custom"]
+            custom_dir.symlink_to(external_dir, target_is_directory=True)
+            result = subprocess.run(build_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("non-symlink directories", result.stderr)
+            self.assertEqual(list(external_dir.iterdir()), [sentinel])
+            custom_dir.unlink()
+            result = subprocess.run(build_command, cwd=checkout, env=env, capture_output=True, text=True, timeout=15)
             self.assertEqual(result.returncode, 42, result.stderr)
             self.assertEqual(result.stderr, "installed builder reached Go\n")
 

@@ -28,11 +28,40 @@ install_go_tool() {
 	fi
 }
 
+linter_output() {
+	python3 -I - "$1" "$2" "${3:-}" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+
+checkout, destination, source = sys.argv[1:]
+prefix = checkout + "/tmp/tools/"
+if not destination.startswith(prefix):
+    raise SystemExit("Linter output must be inside the checkout's tmp/tools directory")
+parts = destination.removeprefix(checkout + "/").split("/")
+if any(part in ("", ".", "..") for part in parts):
+    raise SystemExit("Linter output path must use ordinary path components")
+path = Path(checkout)
+for index, part in enumerate(parts):
+    path = path / part
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        continue
+    expected = stat.S_ISREG if index == len(parts) - 1 else stat.S_ISDIR
+    if not expected(mode):
+        raise SystemExit("Linter output requires regular files and non-symlink directories")
+if source:
+    os.replace(source, path)
+PY
+}
+
 build_custom_linter() (
 	local version="$1" heft_version="$2" binary="$3"
 	local release='^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$'
 	local module=github.com/golangci/golangci-lint/v2
-	local temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}" build_dir
+	local checkout="$PWD" temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}" build_dir output=""
 	if [[ ! "$version" =~ $release || ! "$heft_version" =~ $release ]]; then
 		printf 'Custom linter requires pinned golangci-lint and Heft versions\n' >&2
 		return 1
@@ -40,10 +69,12 @@ build_custom_linter() (
 	if [[ "$binary" != /* ]]; then
 		binary="$PWD/$binary"
 	fi
+	linter_output "$checkout" "$binary"
 	mkdir -p "$temp_root" "$(dirname "$binary")"
 	temp_root="$(cd "$temp_root" && pwd)"
 	build_dir="$(mktemp -d "$temp_root/detent-linter.XXXXXX")"
-	trap 'rm -rf -- "$build_dir"' EXIT
+	trap 'rm -rf -- "$build_dir"; if [[ -n "$output" ]]; then rm -f -- "$output"; fi' EXIT
+	output="$(mktemp "$binary.XXXXXX")"
 	cd "$build_dir"
 	export GOWORK=off
 	go mod init example.com/detent-linter
@@ -55,8 +86,8 @@ package main
 import _ "github.com/digitaldrywood/heft/plugin"
 EOF
 	go mod edit -require="$module@$version" -require="github.com/digitaldrywood/heft@$heft_version"
-	go build -mod=mod -p "${TEST_PROCS:-4}" -ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=unknown" -o golangci-lint-custom .
-	mv golangci-lint-custom "$binary"
+	go build -mod=mod -p "${TEST_PROCS:-4}" -ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=unknown" -o "$output" .
+	linter_output "$checkout" "$binary" "$output"
 )
 
 run_linter() {
@@ -69,17 +100,24 @@ run_linter() {
 	exec "$0.upstream" "$@"
 }
 
-install_linter_launcher() (
-	local binary="$1" version="$2" heft_version="$3" launcher
-	launcher="$(mktemp "$binary.XXXXXX")"
-	trap 'rm -f -- "$launcher"' EXIT
+install_restricted_linter() (
+	local binary="$1" package="$2" version="$3" toolchain="$4" heft_version="$5" staging
+	linter_output "$PWD" "$binary"
+	linter_output "$PWD" "$binary.upstream"
+	mkdir -p "$(dirname "$binary")"
+	staging="$(mktemp -d "$(dirname "$binary")/.linter-install.XXXXXX")"
+	trap 'rm -rf -- "$staging"' EXIT
+	if ! matches_go_tool "$binary.upstream" "$package" "$version" "$toolchain"; then
+		install_go_tool "$staging/golangci-lint" "$package" "$version" "$toolchain"
+		linter_output "$PWD" "$binary.upstream" "$staging/golangci-lint"
+	fi
 	{
 		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
-		declare -f build_custom_linter run_linter
+		declare -f linter_output build_custom_linter run_linter
 		printf 'run_linter %q %q "$@"\n' "$version" "$heft_version"
-	} > "$launcher"
-	chmod 0755 "$launcher"
-	mv -f -- "$launcher" "$binary"
+	} > "$staging/launcher"
+	chmod 0755 "$staging/launcher"
+	linter_output "$PWD" "$binary" "$staging/launcher"
 )
 
 read_heft_version() {
@@ -108,11 +146,7 @@ case "${1:-}" in
 		fi
 		if [[ "$package" == github.com/golangci/golangci-lint/v2/cmd/golangci-lint && "${GIT_ALLOW_PROTOCOL-unrestricted}" == "" && "$binary" == "$PWD"/tmp/tools/golangci-lint/* && ( -e .custom-gcl.yml || -L .custom-gcl.yml ) ]]; then
 			heft_version="$(read_heft_version)"
-			if ! matches_go_tool "$binary.upstream" "$package" "$version" "$toolchain"; then
-				install_go_tool "$binary" "$package" "$version" "$toolchain"
-				mv "$binary" "$binary.upstream"
-			fi
-			install_linter_launcher "$binary" "$version" "$heft_version"
+			install_restricted_linter "$binary" "$package" "$version" "$toolchain" "$heft_version"
 		else
 			install_go_tool "$binary" "$package" "$version" "$toolchain"
 		fi
