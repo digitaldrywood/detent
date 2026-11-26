@@ -240,16 +240,13 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
-    assets_log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-landing-assets.XXXXXX")
-    assets_status=0
-    make -j1 assets generate-docs TEST_PROCS="$procs" >"$assets_log" 2>&1 || assets_status=$?
-    if [ "$assets_status" -ne 0 ]; then
-        cat "$assets_log" >&2
-        rm -f "$assets_log"
+    if assets_tail=$(make -j1 assets generate-docs TEST_PROCS="$procs" 2>&1 | tail -c 65536); then
+        printf 'Landing assets and generated documentation built successfully.\n'
+    else
+        assets_status=$?
+        printf '%s\n' "$assets_tail" >&2
         exit "$assets_status"
     fi
-    rm -f "$assets_log"
-    printf 'Landing assets and generated documentation built successfully.\n'
 fi
 go build -p "$procs" ./...
 

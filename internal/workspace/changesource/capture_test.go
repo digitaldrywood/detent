@@ -81,4 +81,25 @@ func TestVerifyChangeSourceKeepsSourceWorktree(t *testing.T) {
 	}
 }
 
+func TestDescribeUsesPublishedGitObjects(t *testing.T) {
+	source := gitfixture.SourceRepo(t)
+	base := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	gitfixture.WriteFile(t, source, "README.md", "edited source\n")
+	gitfixture.Git(t, source, "commit", "-am", "edit source")
+	head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	before, err := Describe(t.Context(), source, base, head)
+	if err != nil || !strings.Contains(before.Patch, "+edited source") {
+		t.Fatalf("describe original source = %q, %v", before.Patch, err)
+	}
+	gitfixture.Git(t, source, "replace", head, base)
+	after, err := Describe(t.Context(), source, base, head)
+	if err != nil || before.Patch != after.Patch || before.Source != after.Source {
+		t.Fatalf("local Git replacement changed the review source: patch = %q, digest = %q, error = %v", after.Patch, after.Source.DiffSHA256, err)
+	}
+	digest, err := Diff(t.Context(), source, base, head)
+	if err != nil || digest != before.Source.DiffSHA256 {
+		t.Fatalf("local Git replacement changed the recovered source digest: %q, %v", digest, err)
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }
