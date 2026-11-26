@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/changesource"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 func (l *LocalGit) CaptureRecoveryChangeSource(ctx context.Context, issue Issue, base, head string) (tracker.ChangeSourceCapture, error) {
@@ -133,7 +134,7 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if baseErr != nil {
 		return false, fmt.Errorf("resolve recovery base: %w", baseErr)
 	}
-	indexBefore, err := gitIndexChecksum(ctx, normalized.Path)
+	indexBefore, err := rebase.IndexChecksum(ctx, normalized.Path)
 	if err != nil {
 		return false, err
 	}
@@ -194,7 +195,7 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if err != nil {
 		return false, err
 	}
-	indexNow, err := gitIndexChecksum(ctx, normalized.Path)
+	indexNow, err := rebase.IndexChecksum(ctx, normalized.Path)
 	if err != nil {
 		return false, err
 	}

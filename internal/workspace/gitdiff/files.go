@@ -1,4 +1,4 @@
-package workspace
+package gitdiff
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 // Per-file diffs. GitDiffFrom answers one patch blob,
@@ -70,12 +71,12 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		}
 		return FileDiffs{}, fmt.Errorf("stat workspace path: %w", err)
 	}
-	if paused, err := rebaseInProgress(ctx, workspacePath); err != nil {
+	if paused, err := rebase.InProgress(ctx, workspacePath); err != nil {
 		return FileDiffs{}, err
 	} else if paused {
-		return FileDiffs{}, fmt.Errorf("%w: attempt diff has a paused rebase", ErrMergeResolutionInvalid)
+		return FileDiffs{}, fmt.Errorf("%w: attempt diff has a paused rebase", rebase.ErrInvalidResolution)
 	}
-	indexPath, err := gitIndexPath(ctx, workspacePath)
+	indexPath, err := IndexPath(ctx, workspacePath)
 	if err != nil {
 		return FileDiffs{}, err
 	}
@@ -86,7 +87,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	defer cleanup()
 
 	env := []string{"GIT_INDEX_FILE=" + tempIndex}
-	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
+	if _, err := gitexec.WithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
 		return FileDiffs{}, fmt.Errorf("git add intent to add: %w", err)
 	}
 	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
@@ -104,7 +105,7 @@ func GitCommitFileDiffs(ctx context.Context, workspacePath, baseRef, head string
 	if !gitexec.ValidHead(head) {
 		return FileDiffs{}, errors.New("finalized diff requires an immutable commit")
 	}
-	observed, err := runGitAt(ctx, workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	observed, err := gitexec.Run(ctx, workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("read finalized worktree head: %w", err)
 	}
@@ -124,9 +125,9 @@ func gitFileDiffs(ctx context.Context, workspacePath string, env []string, resul
 	// the repository's configuration.
 	diffArgs := func(flags ...string) []string {
 		args := append([]string{"diff", "--no-ext-diff", "--find-renames"}, flags...)
-		return gitDiagnosticArgs(append(args, revisions...)...)
+		return DiagnosticArgs(append(args, revisions...)...)
 	}
-	numstat, err := runGitAtWithEnv(ctx, workspacePath, env, diffArgs("--numstat", "-z")...)
+	numstat, err := gitexec.WithEnv(ctx, workspacePath, env, diffArgs("--numstat", "-z")...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff numstat: %w", err)
 	}
@@ -134,7 +135,7 @@ func gitFileDiffs(ctx context.Context, workspacePath string, env []string, resul
 	if err != nil {
 		return FileDiffs{}, err
 	}
-	statuses, err := runGitAtWithEnv(ctx, workspacePath, env, diffArgs("--name-status", "-z")...)
+	statuses, err := gitexec.WithEnv(ctx, workspacePath, env, diffArgs("--name-status", "-z")...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff name-status: %w", err)
 	}
@@ -144,7 +145,7 @@ func gitFileDiffs(ctx context.Context, workspacePath string, env []string, resul
 		result.Truncated = maxBytes == 0 && len(files) != 0
 		return result, nil
 	}
-	patch, truncated, err := gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes, diffArgs("--no-textconv")...)
+	patch, truncated, err := gitexec.WithinLimit(ctx, workspacePath, env, maxBytes, diffArgs("--no-textconv")...)
 	if err != nil {
 		return FileDiffs{}, err
 	}
@@ -160,7 +161,7 @@ func gitFileDiffs(ctx context.Context, workspacePath string, env []string, resul
 // there is none. An unborn branch has no HEAD, which is a state a fresh
 // worktree is legitimately in, so it is not an error.
 func gitResolve(ctx context.Context, workspacePath, revision string) string {
-	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
+	output, err := gitexec.Run(ctx, workspacePath, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
 	if err != nil {
 		return ""
 	}
@@ -313,7 +314,7 @@ func attachGitPatches(files []FileDiff, sections []string) {
 // delays a run's start by seconds rather than stalling it.
 func AttemptBase(ctx context.Context, workspacePath string) string {
 	if branch := attemptDefaultBranch(ctx, workspacePath); branch != "" {
-		if output, err := runGitAt(ctx, workspacePath, "merge-base", "HEAD", "refs/remotes/"+defaultGitRemote+"/"+branch); err == nil && strings.TrimSpace(output) != "" {
+		if output, err := gitexec.Run(ctx, workspacePath, "merge-base", "HEAD", "refs/remotes/"+gitexec.DefaultRemote+"/"+branch); err == nil && strings.TrimSpace(output) != "" {
 			return strings.TrimSpace(output)
 		}
 	}
@@ -323,14 +324,14 @@ func AttemptBase(ctx context.Context, workspacePath string) string {
 const attemptRemoteTimeout = 5 * time.Second
 
 func attemptDefaultBranch(ctx context.Context, workspacePath string) string {
-	if output, err := runGitAt(ctx, workspacePath, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+defaultGitRemote+"/HEAD"); err == nil {
-		if branch := strings.TrimPrefix(strings.TrimSpace(output), defaultGitRemote+"/"); branch != "" {
+	if output, err := gitexec.Run(ctx, workspacePath, "symbolic-ref", "--quiet", "--short", "refs/remotes/"+gitexec.DefaultRemote+"/HEAD"); err == nil {
+		if branch := strings.TrimPrefix(strings.TrimSpace(output), gitexec.DefaultRemote+"/"); branch != "" {
 			return branch
 		}
 	}
 	remoteCtx, cancel := context.WithTimeout(ctx, attemptRemoteTimeout)
 	defer cancel()
-	branch, err := remoteDefaultBranch(remoteCtx, workspacePath, defaultGitRemote)
+	branch, err := gitexec.RemoteDefaultBranch(remoteCtx, workspacePath, gitexec.DefaultRemote)
 	if err != nil {
 		return ""
 	}

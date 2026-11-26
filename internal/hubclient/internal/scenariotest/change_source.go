@@ -533,7 +533,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 					}
 					response.Body.Close()
 					if response.StatusCode != http.StatusConflict {
-						return nil, errors.New("Hub accepted mismatched Git phase provenance")
+						return nil, errors.New("hub accepted mismatched Git phase provenance")
 					}
 					refusedForgedPhase.Store(true)
 					return transport.RoundTrip(request)

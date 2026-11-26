@@ -225,10 +225,16 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					Message  string
 					Eligible bool
 				}{message, eligible}, err
-			case "PhaseReceipts", "VerifyPhaseAuthority", "RecordPhaseReceipt", "StartPhased", "SetPhaseProvider", "LatestRoundVerdict", "RecordRoundVerdict", "FreezeExecutionChecklist", "ExecutionChecklist", "RecordLoopIntervention":
-				if _, ok := request.Execution.(PhaseReceiptExecution); !ok && name == "PhaseReceipts" {
+			case "PhaseReceipts":
+				if _, ok := request.Execution.(PhaseReceiptExecution); !ok {
 					return (*tracker.NativePhaseContinuation)(nil), nil
 				}
+				result, err := invokeSSHMethod(ctx, request.Execution, name, arguments)
+				if errors.Is(err, ErrPhaseReceiptsUnavailable) {
+					return (*tracker.NativePhaseContinuation)(nil), nil
+				}
+				return result, err
+			case "VerifyPhaseAuthority", "RecordPhaseReceipt", "StartPhased", "SetPhaseProvider", "LatestRoundVerdict", "RecordRoundVerdict", "FreezeExecutionChecklist", "ExecutionChecklist", "RecordLoopIntervention":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "SourceReview", "PrepareSourceIteration", "PrepareMergeResolution", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "SpoolArtifactLog", "FinalizeArtifacts", "FinalizeArtifactsWithSpoolCount", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)

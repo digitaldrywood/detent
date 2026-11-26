@@ -18,6 +18,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gotestreceipt"
+	"github.com/digitaldrywood/detent/internal/workspace/mergeintent"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 func TestMain(m *testing.M) {
@@ -594,7 +596,7 @@ func testLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T, tests []merge
 					t.Fatal(err)
 				}
 				t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
-				subjects, err := mergeTargetCommitSubjects(t.Context(), info.Path, "HEAD", "main", []string{"README.md"})
+				subjects, err := mergeintent.TargetCommitSubjects(t.Context(), info.Path, "HEAD", "main", []string{"README.md"})
 				if len(subjects) != 0 || err == nil || !strings.Contains(err.Error(), "read merge target commit subjects") {
 					t.Fatalf("failed subject lookup = %v, %v", subjects, err)
 				}
@@ -631,9 +633,9 @@ func testLocalGitPrepareMergeAbortsConflictingRebase(t *testing.T, tests []merge
 			if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "feature\n" {
 				t.Fatalf("README after aborted rebase = %q, want feature branch content", got)
 			}
-			inProgress, err := rebaseInProgress(context.Background(), info.Path)
+			inProgress, err := rebase.InProgress(context.Background(), info.Path)
 			if err != nil {
-				t.Fatalf("rebaseInProgress() error = %v", err)
+				t.Fatalf("rebase.InProgress() error = %v", err)
 			}
 			if inProgress {
 				t.Fatal("rebase still in progress after PrepareMerge conflict")

@@ -17,6 +17,8 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
+	"github.com/digitaldrywood/detent/internal/workspace/gitdiff"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
@@ -217,7 +219,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				issue.Checkpoint = nil
 				if test.clean {
 					runGit(t, info.Path, "merge-base", "--is-ancestor", base, "HEAD")
-				} else if paused, err := rebaseInProgress(t.Context(), info.Path); err != nil || !paused {
+				} else if paused, err := rebase.InProgress(t.Context(), info.Path); err != nil || !paused {
 					t.Fatalf("checkpoint conflict has no paused replay: paused=%v error=%v", paused, err)
 				}
 				got := runGit(t, info.Path, "show", info.Branch+":retained.txt")
@@ -407,7 +409,7 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					t.Fatal("machine rebase invoked signing")
 				}
 				runGit(t, info.Path, "merge-base", "--is-ancestor", base, head)
-				if paused, err := rebaseInProgress(t.Context(), info.Path); paused || err != nil {
+				if paused, err := rebase.InProgress(t.Context(), info.Path); paused || err != nil {
 					t.Fatalf("rebase remains paused: %v", err)
 				}
 			}
@@ -427,13 +429,13 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 func TestLocalGitReworkPreservesIncorporatedSource(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name             string
-		incorporation    string
-		conflict         bool
-		followup         bool
-		remoteOnly       bool
-		dirtySubmodule   bool
-		noAdvanceTarget  bool
+		name            string
+		incorporation   string
+		conflict        bool
+		followup        bool
+		remoteOnly      bool
+		dirtySubmodule  bool
+		noAdvanceTarget bool
 	}{
 		{name: "merged source awaiting evidence", incorporation: "merge"},
 		{name: "merged source with dirty submodule under ignoreSubmodules=all", incorporation: "merge", dirtySubmodule: true},
@@ -1252,7 +1254,7 @@ func TestFinalizeNativeWorkContinuesPausedRebaseForInProgressCode(t *testing.T) 
 					}
 				}
 				if tc.unrelatedPendingPick {
-					if active, aErr := rebaseInProgress(t.Context(), f.info.Path); aErr != nil || !active {
+					if active, aErr := rebase.InProgress(t.Context(), f.info.Path); aErr != nil || !active {
 						t.Fatalf("invalid pending pick rebase should remain untouched: active=%v err=%v", active, aErr)
 					}
 				} else if paused, pErr := f.backend.verifyReworkBranch(t.Context(), f.info, issue); pErr != nil || !paused {
@@ -1401,7 +1403,7 @@ func TestFinalizeNativeWorkContinuesPausedRebaseForInProgressCode(t *testing.T) 
 			conflictIssue.Checkpoint = nil
 			conflictIssue.ProgressBaseRef = "remote-only-conflict"
 			preConflictHead := strings.TrimSpace(runGit(t, retained.Path, "rev-parse", "refs/heads/"+retained.Branch))
-			preConflictDigest := workspaceRecoveryFingerprint(preConflictHead, "")
+			preConflictDigest := gitdiff.RecoveryFingerprint(preConflictHead, "")
 			preparedConflict, err := f.backend.PrepareRework(t.Context(), retained, conflictIssue, MergePrepareOptions{TargetBranch: "remote-only-conflict"}, func(ctx context.Context) error { return ctx.Err() })
 			if err != nil {
 				t.Fatalf("PrepareRework(remote-only-conflict) error = %v", err)
@@ -2150,9 +2152,9 @@ func TestPrepareReworkRejectsConcurrentRebaseChangeBeforeSkip(t *testing.T) {
 			if calls != 3 {
 				t.Fatalf("validate calls = %d, want 3 (skip callback)", calls)
 			}
-			active, activeErr := rebaseInProgress(t.Context(), f.info.Path)
+			active, activeErr := rebase.InProgress(t.Context(), f.info.Path)
 			if activeErr != nil || !active {
-				t.Fatalf("rebaseInProgress() = (%v, %v), want (true, nil)", active, activeErr)
+				t.Fatalf("rebase.InProgress() = (%v, %v), want (true, nil)", active, activeErr)
 			}
 			tc.verify(t, f.info.Path)
 		})
@@ -2294,9 +2296,9 @@ func TestPrepareReworkRejectsCheckoutChangeDuringFinalValidation(t *testing.T) {
 				t.Fatalf("validate calls = %d, want >= %d", calls, tc.mutateCall)
 			}
 			if tc.expectStillPaused {
-				active, activeErr := rebaseInProgress(t.Context(), f.info.Path)
+				active, activeErr := rebase.InProgress(t.Context(), f.info.Path)
 				if activeErr != nil || !active {
-					t.Fatalf("rebaseInProgress() = (%v, %v), want (true, nil)", active, activeErr)
+					t.Fatalf("rebase.InProgress() = (%v, %v), want (true, nil)", active, activeErr)
 				}
 			}
 		})
@@ -3038,8 +3040,8 @@ func TestPushItemPhaseSerializesAgainstFinalizeNativeWorkReconciliationCommit(t 
 
 func TestPausedRebaseSnapshotRejectsFIFO(t *testing.T) {
 	if wtPath := os.Getenv("DETENT_TEST_SNAPSHOT_FIFO_PATH"); wtPath != "" {
-		if _, err := pausedRebaseSnapshot(t.Context(), wtPath); !errors.Is(err, ErrMergeResolutionInvalid) {
-			t.Fatalf("pausedRebaseSnapshot(fifo) err = %v, want ErrMergeResolutionInvalid", err)
+		if _, err := rebase.Snapshot(t.Context(), wtPath); !errors.Is(err, ErrMergeResolutionInvalid) {
+			t.Fatalf("rebase.Snapshot(fifo) err = %v, want ErrMergeResolutionInvalid", err)
 		}
 		return
 	}
@@ -3074,7 +3076,7 @@ func TestPausedRebaseSnapshotRejectsFIFO(t *testing.T) {
 		"GOCOVERDIR="+t.TempDir(),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("pausedRebaseSnapshot(fifo) subprocess failed: %v\n%s", err, out)
+		t.Fatalf("rebase.Snapshot(fifo) subprocess failed: %v\n%s", err, out)
 	}
 }
 
@@ -3090,7 +3092,7 @@ func TestGitIndexChecksumDetectsChangeUnderSkipHash(t *testing.T) {
 	if err := os.Chtimes(indexPath, fixedTime, fixedTime); err != nil {
 		t.Fatal(err)
 	}
-	sumA, err := gitIndexChecksum(t.Context(), f.info.Path)
+	sumA, err := rebase.IndexChecksum(t.Context(), f.info.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3100,12 +3102,12 @@ func TestGitIndexChecksumDetectsChangeUnderSkipHash(t *testing.T) {
 	if err := os.Chtimes(indexPath, fixedTime, fixedTime); err != nil {
 		t.Fatal(err)
 	}
-	sumB, err := gitIndexChecksum(t.Context(), f.info.Path)
+	sumB, err := rebase.IndexChecksum(t.Context(), f.info.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sumA == sumB {
-		t.Fatalf("gitIndexChecksum() identical (%q) across different staged contents with index.skipHash=true", sumA)
+		t.Fatalf("rebase.IndexChecksum() identical (%q) across different staged contents with index.skipHash=true", sumA)
 	}
 }
 

@@ -1,4 +1,4 @@
-package workspace
+package mergeintent
 
 import (
 	"context"
@@ -12,17 +12,19 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/markdownfence"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 const mergeCommitSubjectLimit = 40
 
-func mergeTargetCommitSubjects(ctx context.Context, directory, head, target string, conflicts []string) ([]string, error) {
+func TargetCommitSubjects(ctx context.Context, directory, head, target string, conflicts []string) ([]string, error) {
 	if len(conflicts) == 0 {
 		return nil, nil
 	}
 	args := []string{"--literal-pathspecs", "log", "--format=%s", "--max-count=41", head + ".." + target, "--"}
 	args = append(args, conflicts...)
-	out, err := runGitAt(ctx, directory, args...)
+	out, err := gitexec.Run(ctx, directory, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read merge target commit subjects: %w", err)
 	}
@@ -42,10 +44,10 @@ type mergeGoDeclaration struct {
 	file   string
 }
 
-func missingMergeGoDeclarations(ctx context.Context, directory, head, target, prHead, description string) ([]string, error) {
+func MissingGoDeclarations(ctx context.Context, directory, head, target, prHead, description string) ([]string, error) {
 	packages := make(map[string]bool)
 	for _, parent := range []string{target, prHead} {
-		out, err := runGitAt(ctx, directory, "diff", "--name-only", "--no-renames", "-z", parent, head, "--")
+		out, err := gitexec.Run(ctx, directory, "diff", "--name-only", "--no-renames", "-z", parent, head, "--")
 		if err != nil {
 			return nil, fmt.Errorf("read merge resolution changed paths: %w", err)
 		}
@@ -63,7 +65,7 @@ func missingMergeGoDeclarations(ctx context.Context, directory, head, target, pr
 	if err != nil {
 		return nil, err
 	}
-	base, err := runGitAt(ctx, directory, "merge-base", target, prHead)
+	base, err := gitexec.Run(ctx, directory, "merge-base", target, prHead)
 	if err != nil {
 		return nil, fmt.Errorf("read merge base: %w", err)
 	}
@@ -102,7 +104,7 @@ func missingMergeGoDeclarations(ctx context.Context, directory, head, target, pr
 }
 
 func mergeGoDeclarations(ctx context.Context, directory, revision string, packages map[string]bool, cache map[string]*ast.File, requireParse bool) (map[string]mergeGoDeclaration, error) {
-	out, err := runGitAt(ctx, directory, "ls-tree", "-r", "--format=%(objectname) %(path)", "-z", revision)
+	out, err := gitexec.Run(ctx, directory, "ls-tree", "-r", "--format=%(objectname) %(path)", "-z", revision)
 	if err != nil {
 		return nil, fmt.Errorf("list merge tree Go files: %w", err)
 	}
@@ -118,7 +120,7 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 		}
 		parsed := cache[object]
 		if parsed == nil {
-			source, err := runGitAt(ctx, directory, "cat-file", "blob", object)
+			source, err := gitexec.Run(ctx, directory, "cat-file", "blob", object)
 			if err != nil {
 				return nil, fmt.Errorf("read merge tree Go source: %w", err)
 			}
@@ -130,7 +132,7 @@ func mergeGoDeclarations(ctx context.Context, directory, revision string, packag
 				if !requireParse {
 					continue
 				}
-				return nil, fmt.Errorf("%w: cannot parse Go declarations in merge tree", ErrMergeResolutionInvalid)
+				return nil, fmt.Errorf("%w: cannot parse Go declarations in merge tree", rebase.ErrInvalidResolution)
 			}
 			cache[object] = parsed
 		}

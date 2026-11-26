@@ -1236,17 +1236,17 @@ func (r *Runner) runAgentTurn(
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
 	updates := runRequest
-	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
+	artifactWriter, spoolsArtifacts := runRequest.Execution.(spooledArtifactExecution)
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
 		})
 	}
 	var interventions []tracker.ExecutionLoopIntervention
-	loopOwner, _ := runRequest.Execution.(interface {
+	loopOwner, recordsLoops := runRequest.Execution.(interface {
 		RecordLoopIntervention(context.Context, tracker.ExecutionLoopIntervention) error
 	})
-	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && loopOwner != nil {
+	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && recordsLoops {
 		turnRequest.RecordLoopIntervention = func(event tracker.ExecutionLoopIntervention) {
 			event.Revision = runRequest.checklistRevision
 			if len(interventions) == progresscheck.ToolLoopWindow {
@@ -1316,7 +1316,7 @@ func (r *Runner) runAgentTurn(
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
+			if observe != nil && spoolsArtifacts && runRequest.artifactSpool != nil {
 				runRequest.artifactSpool.chunks++
 				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
@@ -2524,11 +2524,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			afterRunPending = false
 			return admission, err
 		}
-		if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
+		provider, ok := req.Execution.(phasedProviderExecution)
+		if !ok {
+			afterRunPending = false
+			return RunResult{}, ErrExecutionAuthorityUnavailable
+		}
+		if err := provider.SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
-		if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+		if err := verifyPhaseAuthority(ctx, req.Execution); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
@@ -2588,7 +2593,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if reviewRecovery != nil || turnRecovery != nil {
 			sessionErr = r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, r.now(), result, sessionModel, backendConfig.Kind, 0, AgentTurnResult{}, 0)
 		}
-		repair, needsRepair := err.(*sourceRepair)
+		var repair *sourceRepair
+		needsRepair := errors.As(err, &repair)
 		if !needsRepair || sessionErr != nil {
 			return result, errors.Join(err, sessionErr)
 		}
@@ -2597,7 +2603,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if repair.incomplete != nil {
 			if req.phaseReceipts {
-				if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+				if err := verifyPhaseAuthority(ctx, req.Execution); err != nil {
 					return result, errors.Join(repair, err)
 				}
 			}
@@ -2904,7 +2910,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
 			retry := r.roundRetry(sessionCtx, req, "implement", providerTimeout, &deadlines, retryDelay)
 			validate := func(ctx context.Context) error {
-				return progresscheck.AwaitRoundAuthority(ctx, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, retry)
+				return progresscheck.AwaitRoundAuthority(ctx, func(ctx context.Context) error { return verifyPhaseAuthority(ctx, req.Execution) }, retry)
 			}
 			assessment, verdictErr := r.decideRound(sessionCtx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err, false, retry)
 			if verdictErr != nil {
@@ -3177,7 +3183,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			var err error
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 			cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, result.TurnStarted)
-			repair, needsRepair := err.(*sourceRepair)
+			var repair *sourceRepair
+			needsRepair := errors.As(err, &repair)
 			if turnErr == nil && needsRepair && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
 				err = errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx))
 				if err == nil {
@@ -3195,7 +3202,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 				if err == nil && repair.incomplete != nil {
 					if req.phaseReceipts {
-						err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx)
+						err = verifyPhaseAuthority(ctx, req.Execution)
 					}
 					correctionPrompt = sourceFinalizationPrompt(repair.incomplete.Status)
 				}
