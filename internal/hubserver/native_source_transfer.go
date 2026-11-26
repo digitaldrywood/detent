@@ -53,7 +53,6 @@ type nativeSourceRecoverySnapshot struct {
 	item            corestore.WorkItem
 	itemVersion     eventstore.CollaborationVersion
 	version         *eventstore.Version
-	versionPushed   bool
 	attempt         hubrecords.TenantAttemptSnapshot
 	attemptFound    bool
 	unreleasedLease bool
@@ -116,10 +115,6 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 				return corestore.ErrNotFound
 			}
 			snapshot.version = &version
-			snapshot.versionPushed, err = claimsource.VersionPushed(ctx, r, scope.Project, snapshot.item.ID, version)
-			if err != nil {
-				return err
-			}
 		}
 		reader, ok := r.(leasestore.CheckpointAttemptReader)
 		if !ok {
@@ -234,12 +229,9 @@ func (s *Service) readNativeSourceRecoveryTenant(ctx context.Context, scope hubs
 		if view.AttemptID == "" {
 			view.AttemptID = row.AttemptID
 		}
-		view.Available = snapshot.versionPushed
-		if !view.Available {
-			view.Available, err = claimsource.VersionStored(ctx, s.runDetailStore(), scope.Organization, row)
-			if err != nil {
-				return view, err
-			}
+		view.Available, err = claimsource.VersionStored(ctx, s.runDetailStore(), scope.Organization, row)
+		if err != nil {
+			return view, err
 		}
 		if view.Available {
 			view.HeadSHA = row.HeadSHA

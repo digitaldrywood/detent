@@ -113,7 +113,7 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	receipts, err := client.ItemPhaseReceipts(ctx, lease.WorkItemID)
 	var refusal *APIError
 	if errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == "" {
-		return nil, runner.ErrPhaseReceiptsUnavailable
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
@@ -285,14 +285,13 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	}
 	err = e.retryPhasePublication(ctx, err, send)
 	if err == nil && recorded != request {
-		return errors.New("phase receipt from the Hub differs from the published source")
+		return errors.New("Hub phase receipt differs from the published source")
 	}
 	if err == nil {
 		e.mu.Lock()
 		e.phaseSource = &recorded
-		if phase == "implement" {
+		if phase == "implement" && e.mergeResolution {
 			e.sourceRequired = false
-			e.retainedSource = nil
 		}
 		if phase == "plan" {
 			e.phasePlanDigest = digest
@@ -324,7 +323,7 @@ func (e *nativeExecution) FreezeExecutionChecklist(ctx context.Context, list tra
 		recorded, err = client.PublishExecutionChecklist(ctx, lease.WorkItemID, input)
 	}
 	if err == nil && (recorded.AttemptID != attempt || recorded.PolicyID != lease.PolicyID || recorded.Revision != list.Revision) {
-		return errors.New("checklist from the Hub differs from the frozen execution criteria")
+		return errors.New("Hub checklist differs from the frozen execution criteria")
 	}
 	if err == nil {
 		e.frozenChecklist.Store(&recorded)
@@ -422,7 +421,7 @@ func (e *nativeExecution) publishRoundVerdict(ctx context.Context, input progres
 		recorded, err = client.PublishRoundVerdict(ctx, lease.WorkItemID, request)
 	}
 	if err == nil && (recorded.RoundID != input.RoundID || recorded.AttemptID != attempt || recorded.PolicyID != lease.PolicyID || recorded.Action != input.Action || recorded.NextPhase != input.NextPhase || recorded.HeadSHA != input.HeadSHA || recorded.TreeSHA != input.TreeSHA) {
-		return errors.New("round verdict from the Hub differs from the completed round")
+		return errors.New("Hub round verdict differs from the completed round")
 	}
 	err = e.executionError(ctx, err)
 	var refusal *APIError

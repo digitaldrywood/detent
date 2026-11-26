@@ -865,7 +865,7 @@ func recordWorktreeReworkBase(ctx context.Context, path, requestedTarget, resolv
 
 func (l *LocalGit) resolveReworkFetchRepository(ctx context.Context, path, remote string, issue Issue) (string, error) {
 	if configured := strings.TrimSpace(issue.PublicationRepository); configured != "" {
-		repository := gitexec.PublicationRepository(ctx, "", configured)
+		repository := gitexec.PublicationRepository("", configured)
 		if repository == "" {
 			return "", refuse(LandRefusalProtected, "the configured project publication repository cannot be resolved")
 		}
@@ -1397,8 +1397,9 @@ func openRegularGitFile(path string) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	linfo, statErr := root.Lstat(name)
-	if err := errors.Join(statErr, root.Close()); err != nil {
+	defer root.Close()
+	linfo, err := root.Lstat(name)
+	if err != nil {
 		return nil, nil, err
 	}
 	if !linfo.Mode().IsRegular() {
@@ -1410,24 +1411,26 @@ func openRegularGitFile(path string) (*os.File, os.FileInfo, error) {
 	}
 	info, err := file.Stat()
 	if err != nil {
-		return nil, nil, errors.Join(err, file.Close())
+		file.Close()
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() || !os.SameFile(linfo, info) {
-		return nil, nil, errors.Join(fmt.Errorf("%w: git metadata file is not regular", ErrMergeResolutionInvalid), file.Close())
+		file.Close()
+		return nil, nil, fmt.Errorf("%w: git metadata file is not regular", ErrMergeResolutionInvalid)
 	}
 	return file, info, nil
 }
 
-func readRegularGitFile(path string) (_ []byte, resultErr error) {
+func readRegularGitFile(path string) ([]byte, error) {
 	file, _, err := openRegularGitFile(path)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	return io.ReadAll(file)
 }
 
-func hashRegularGitFile(h io.Writer, path string, buf []byte) (resultErr error) {
+func hashRegularGitFile(h io.Writer, path string, buf []byte) error {
 	file, _, err := openRegularGitFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -1435,17 +1438,17 @@ func hashRegularGitFile(h io.Writer, path string, buf []byte) (resultErr error) 
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	_, err = io.CopyBuffer(h, file, buf)
 	return err
 }
 
-func readRegularGitFirstLine(path string) (_ string, resultErr error) {
+func readRegularGitFirstLine(path string) (string, error) {
 	file, _, err := openRegularGitFile(path)
 	if err != nil {
 		return "", err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	line, err := bufio.NewReader(io.LimitReader(file, 4096)).ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
@@ -1453,7 +1456,7 @@ func readRegularGitFirstLine(path string) (_ string, resultErr error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-func gitIndexChecksum(ctx context.Context, path string) (_ string, resultErr error) {
+func gitIndexChecksum(ctx context.Context, path string) (string, error) {
 	indexPath, err := gitPathFor(ctx, path, "index")
 	if err != nil {
 		return "", err
@@ -1465,7 +1468,7 @@ func gitIndexChecksum(ctx context.Context, path string) (_ string, resultErr err
 	if err != nil {
 		return "", err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	h := sha256.New()
 	if _, err := io.CopyBuffer(h, file, make([]byte, 32*1024)); err != nil {
 		return "", err
@@ -1578,7 +1581,7 @@ func pausedRebaseSnapshot(ctx context.Context, path string) (rebaseSnapshot, err
 	}, nil
 }
 
-func verifyActiveApplyPatchMatchesCommit(ctx context.Context, path, patchPath, commitSHA string) (resultErr error) {
+func verifyActiveApplyPatchMatchesCommit(ctx context.Context, path, patchPath, commitSHA string) error {
 	file, _, err := openRegularGitFile(patchPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -1586,7 +1589,7 @@ func verifyActiveApplyPatchMatchesCommit(ctx context.Context, path, patchPath, c
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	var prefix [5]byte
 	n, rErr := file.Read(prefix[:])
 	if rErr != nil && !errors.Is(rErr, io.EOF) {
@@ -1601,12 +1604,12 @@ func verifyActiveApplyPatchMatchesCommit(ctx context.Context, path, patchPath, c
 	return verifyApplyPatchFileMatchesCommit(ctx, path, file, commitSHA, bytes.HasPrefix(prefix[:n], []byte("From ")))
 }
 
-func verifyApplyPatchMatchesCommit(ctx context.Context, path, patchPath, commitSHA string, isMail bool) (resultErr error) {
+func verifyApplyPatchMatchesCommit(ctx context.Context, path, patchPath, commitSHA string, isMail bool) error {
 	file, _, err := openRegularGitFile(patchPath)
 	if err != nil {
 		return err
 	}
-	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
+	defer file.Close()
 	return verifyApplyPatchFileMatchesCommit(ctx, path, file, commitSHA, isMail)
 }
 

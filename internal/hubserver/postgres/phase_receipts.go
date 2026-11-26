@@ -34,14 +34,6 @@ func (s *session) RecordPhaseReceipt(ctx context.Context, project tracker.Projec
 	return phaseReceipt(row), mapError(ctx, err)
 }
 
-func (s *session) AttemptHasSourceReceipt(ctx context.Context, project tracker.ProjectID, issueID int64, attempt, head, policyID string) (bool, error) {
-	found, err := s.queries.NativeAttemptHasSourceReceipt(ctx, pgquery.NativeAttemptHasSourceReceiptParams{
-		OrganizationID: s.organization, ProjectID: project, IssueID: issueID,
-		AttemptID: attempt, HeadSHA: head, PolicyID: policyID,
-	})
-	return found, mapError(ctx, err)
-}
-
 func (s *session) RecentPhaseReceipts(ctx context.Context, project tracker.ProjectID, issueID int64) ([]tracker.NativePhaseReceipt, error) {
 	rows, err := s.queries.RecentNativePhaseReceipts(ctx, pgquery.RecentNativePhaseReceiptsParams{
 		OrganizationID: s.organization, ProjectID: project, IssueID: issueID,

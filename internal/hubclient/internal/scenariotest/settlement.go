@@ -849,7 +849,9 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 				}
 			}
 			if test.UnreadFinal {
-				execution.(runner.DiffExecution).SetDiffSource(nil)
+				execution.(runner.DiffExecution).SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{}, false
+				})
 			}
 			if test.SourceRefusal {
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
