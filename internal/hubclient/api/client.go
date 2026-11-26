@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -246,10 +247,25 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		if strings.HasSuffix(target, "/phases") {
 			publication = request.Mutation
 		}
+	case tracker.CreateChange:
+		if strings.HasSuffix(target, "/changes") {
+			publication = request.Mutation
+		}
+	case tracker.PublishChangeVersion:
+		if strings.HasSuffix(target, "/versions") {
+			publication = request.Mutation
+		}
+	case tracker.LandChangeVersion:
+		if strings.HasSuffix(target, "/landing") {
+			publication = request.Mutation
+		}
 	case tracker.ReviewChange:
 		if strings.HasSuffix(target, "/reviews") {
-			fenced = request.Mutation
-			replayMutation = fenced.IdempotencyKey != "" && fenced.LeaseID != "" && fenced.FencingToken > 0
+			publication = request.Mutation
+		}
+	case changerequest.ReviewSubmission:
+		if strings.HasSuffix(target, "/reviews") {
+			publication = request.Mutation
 		}
 	case progresscheck.Publication:
 		if strings.HasSuffix(target, "/progress") {

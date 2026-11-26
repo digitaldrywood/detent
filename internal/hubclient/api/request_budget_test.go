@@ -13,7 +13,10 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -151,7 +154,7 @@ func TestClientRequestBudgetContinuesAfterRepeatedRefusals(t *testing.T) {
 }
 
 func TestFencedPublicationRequestBudget(t *testing.T) {
-	for _, route := range []string{"phases", "progress"} {
+	for _, route := range []string{"phases", "progress", "changes", "versions", "landing"} {
 		for _, scenario := range []struct {
 			name       string
 			wantCalls  int
@@ -172,12 +175,19 @@ func TestFencedPublicationRequestBudget(t *testing.T) {
 					item := tracker.NativeWorkItemID("wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 					receipt := tracker.NativePhaseReceipt{Mutation: mutation, Phase: "implementation", AttemptID: "attempt"}
 					verdict := progresscheck.Publication{Mutation: mutation, AttemptID: "attempt", RoundInput: progresscheck.RoundInput{RoundID: "round"}}
+					wantPath := "/api/v2/organizations/org_example/projects/prj_example/work-items/" + string(item) + "/" + route
+					switch route {
+					case "versions":
+						wantPath = "/api/v2/organizations/org_example/projects/prj_example/work-items/" + string(item) + "/changes/change_example/versions"
+					case "landing":
+						wantPath = "/api/v2/organizations/org_example/projects/prj_example/work-items/" + string(item) + "/changes/change_example/versions/version_example/landing"
+					}
 					var sent []byte
 					calls, writes := 0, 0
 					transport := executionRoundTrip(func(req *http.Request) (*http.Response, error) {
 						calls++
-						if req.Method != http.MethodPost || req.URL.Path != "/api/v2/organizations/org_example/projects/prj_example/work-items/"+string(item)+"/"+route {
-							t.Fatalf("publication request = %s %s", req.Method, req.URL.Path)
+						if req.Method != http.MethodPost || req.URL.Path != wantPath {
+							t.Fatalf("publication request = %s %s, want POST %s", req.Method, req.URL.Path, wantPath)
 						}
 						body, err := io.ReadAll(req.Body)
 						if err != nil {
@@ -200,7 +210,14 @@ func TestFencedPublicationRequestBudget(t *testing.T) {
 							response.WriteString(`{"code":"stale_fencing_token"}`)
 						default:
 							writes++
-							response.Write(body)
+							switch route {
+							case "changes", "landing":
+								response.WriteString(`{"change_id":"change_example"}`)
+							case "versions":
+								response.WriteString(`{"version_id":"version_example"}`)
+							default:
+								response.Write(body)
+							}
 						}
 						return response.Result(), nil
 					})
@@ -219,17 +236,36 @@ func TestFencedPublicationRequestBudget(t *testing.T) {
 						defer cancel()
 					}
 					start := time.Now()
-					if route == "phases" {
+					switch route {
+					case "phases":
 						var recorded tracker.NativePhaseReceipt
 						recorded, err = native.PublishPhaseReceipt(ctx, item, receipt)
 						if err == nil && recorded != receipt {
 							t.Fatalf("recorded receipt = %#v, want %#v", recorded, receipt)
 						}
-					} else {
+					case "progress":
 						var recorded progresscheck.RoundVerdict
 						recorded, err = native.PublishRoundVerdict(ctx, item, verdict)
 						if err == nil && recorded.RoundID != verdict.RoundID {
 							t.Fatalf("recorded verdict round = %q, want %q", recorded.RoundID, verdict.RoundID)
+						}
+					case "changes":
+						var recorded tracker.ChangeRequest
+						recorded, err = native.CreateChange(ctx, item, tracker.CreateChange{Mutation: mutation, Title: "example"})
+						if err == nil && recorded.ID != "change_example" {
+							t.Fatalf("recorded change = %#v", recorded)
+						}
+					case "versions":
+						var recorded tracker.ChangeVersion
+						recorded, err = native.PublishChangeVersion(ctx, item, "change_example", tracker.PublishChangeVersion{Mutation: mutation})
+						if err == nil && recorded.ID != "version_example" {
+							t.Fatalf("recorded version = %#v", recorded)
+						}
+					case "landing":
+						var recorded tracker.ChangeRequest
+						recorded, err = native.LandChangeVersion(ctx, item, "change_example", "version_example", tracker.LandChangeVersion{Mutation: mutation})
+						if err == nil && recorded.ID != "change_example" {
+							t.Fatalf("recorded landed change = %#v", recorded)
 						}
 					}
 					switch scenario.name {
@@ -374,6 +410,73 @@ func TestClientRequestBudgetExemptions(t *testing.T) {
 				}
 				if elapsed := time.Since(start); elapsed != test.delay {
 					t.Fatalf("elapsed=%s want=%s", elapsed, test.delay)
+				}
+			})
+		})
+	}
+}
+
+func TestValidatorReviewBudgetWaitStopsOnLeaseLoss(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		bytes int
+	}{
+		{name: "inline", bytes: 1024},
+		{name: "archived", bytes: maxResponseBytes + 1024},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 7}
+				lost := errors.Join(runner.ErrExecutionAuthorityUnavailable, errors.New("revoked"))
+				reviewPosts := 0
+				transport := executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					switch {
+					case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/archives"):
+						raw, err := io.ReadAll(req.Body)
+						if err != nil {
+							t.Fatal(err)
+						}
+						stored, _, err := attachment.PrepareArchive("org_example", 1, bytes.NewReader(raw))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := json.NewEncoder(response).Encode(stored); err != nil {
+							t.Fatal(err)
+						}
+					case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/versions/version_example/reviews"):
+						reviewPosts++
+						refuseBudget(response, "60")
+					default:
+						t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+					}
+					return response.Result(), nil
+				})
+				client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: transport}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				guard, cancelGuard := context.WithCancelCause(t.Context())
+				defer cancelGuard(nil)
+				timer := time.AfterFunc(10*time.Second, func() { cancelGuard(lost) })
+				defer timer.Stop()
+				guarded := WithMutationAuthority(guard, native.base(), lease, nil)
+				finalization, cancelFinalization := context.WithTimeout(context.WithoutCancel(guarded), 3*time.Minute)
+				defer cancelFinalization()
+				payload := &gate.ValidatorResult{VersionID: "version_example", SessionID: 41, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make test", Output: strings.Repeat("x", test.bytes)}}}
+				start := time.Now()
+				err = native.PublishValidator(finalization, lease.WorkItemID, "change_example", "version_example", tracker.ReviewChange{
+					Mutation:          tracker.Mutation{IdempotencyKey: "attempt:validator", LeaseID: lease.ID, FencingToken: lease.FencingToken},
+					ExpectedVersionID: "version_example",
+					Decision:          "approved",
+					Validator:         payload,
+				})
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !errors.Is(err, lost) || reviewPosts != 1 || time.Since(start) != 10*time.Second || finalization.Err() != nil {
+					t.Fatalf("PublishValidator returned %v after %s and %d review POSTs (finalization err=%v)", err, time.Since(start), reviewPosts, finalization.Err())
 				}
 			})
 		})
