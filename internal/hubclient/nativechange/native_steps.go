@@ -290,8 +290,9 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	if err == nil {
 		e.mu.Lock()
 		e.phaseSource = &recorded
-		if phase == "implement" && e.mergeResolution {
+		if phase == "implement" {
 			e.sourceRequired = false
+			e.retainedSource = nil
 		}
 		if phase == "plan" {
 			e.phasePlanDigest = digest

@@ -590,6 +590,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 }
 
 func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
+	if outcome == "succeeded" && e.data.Identity != nil && !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -977,10 +980,13 @@ func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	if e.diffSource == nil {
-		if e.lastDiff != nil && (e.worktreeHead == "" || e.worktreeHead == e.lastDiff.HeadSHA) {
-			return nil
+		if e.lastDiff == nil {
+			return errors.New("the run's final attempt diff source is unavailable")
 		}
-		return errors.New("the run's final attempt diff source is unavailable")
+		if e.worktreeHead != "" && e.worktreeHead != e.lastDiff.HeadSHA {
+			return errors.New("the attempt diff does not match the final checkpoint head")
+		}
+		return nil
 	}
 	request, ok := e.diffSource(ctx)
 	if !ok {
