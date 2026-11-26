@@ -93,10 +93,11 @@ func (e *resolutionExecution) PrepareFinish(ctx context.Context, outcome, _ stri
 }
 
 type resolutionProvider struct {
-	request AgentTurnRequest
-	calls   int
-	content string
-	outside bool
+	request  AgentTurnRequest
+	calls    int
+	content  string
+	outside  bool
+	question bool
 }
 
 func (p *resolutionProvider) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
@@ -124,6 +125,12 @@ func (p *resolutionProvider) RunTurn(ctx context.Context, req AgentTurnRequest, 
 			return AgentTurnResult{}, err
 		}
 	}
+	if p.question {
+		message := workpad.BlockedDetail("Merge resolution needs direction.", "Which lines of feature.txt should be kept?")
+		if err := update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: message}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
 	return AgentTurnResult{}, ctx.Err()
 }
 
@@ -134,7 +141,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 		incorporated, reserved, direct, needsHuman                   bool
 	}{
 		{name: "direct landing resolves conflict under its held reservation", content: "first\nreviewed\nbase\n", reserved: true, direct: true},
-		{name: "direct landing asks one typed question for an unresolved conflict", failed: true, needsHuman: true, reserved: true, direct: true},
+		{name: "direct landing preserves the typed question for an unresolved conflict", failed: true, needsHuman: true, reserved: true, direct: true},
 		{name: "direct landing publishes a changed resolution for review", content: "first\nresolved\nbase\n", changed: true, reserved: true, direct: true},
 		{name: "unchanged reviewed diff retains review and lands", content: "first\nreviewed\nbase\n"},
 		{name: "pending conflict incorporated before next attempt lands without provider", content: "first\nreviewed\nthird\n", incorporated: true},
@@ -144,7 +151,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
 		{name: "changed diff publishes for review", content: "first\nresolved\nbase\n", changed: true},
 		{name: "budget refusal preserves landing without a provider turn", budgetDenied: true},
-		{name: "legacy pending conflict asks a typed question when unresolved", failed: true, needsHuman: true},
+		{name: "legacy pending conflict preserves the typed question when unresolved", failed: true, needsHuman: true},
 		{name: "failed configured gate returns to implementation", content: "first\ninvalid\nbase\n", failed: true, gateFailure: true},
 		{name: "unrelated edits return to implementation", content: "first\nreviewed\nbase\n", outside: true, failed: true},
 	} {
@@ -189,7 +196,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 			runRunnerGit(t, source, "commit", "-am", "sibling change")
 			runRunnerGit(t, source, "push", "origin", "main")
 			base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-			provider := &resolutionProvider{content: test.content, outside: test.outside}
+			provider := &resolutionProvider{content: test.content, outside: test.outside, question: test.needsHuman}
 			command := "git diff --check HEAD^ HEAD"
 			if test.gateFailure {
 				command = "git grep --quiet reviewed HEAD -- feature.txt"
