@@ -42,6 +42,18 @@ func verifyPhasePublication(t *testing.T) {
 			runGit(t, f.info.Path, "commit", "-am", "add fixture content")
 			runGit(t, f.info.Path, "revert", "--no-edit", "HEAD")
 		}},
+		{name: "oversized intermediate file", wantError: "phase source blob exceeds the scan limit", configure: func(t *testing.T, f landingFixture) {
+			path := filepath.Join(f.info.Path, "large.txt")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(path, (32<<20)+1); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, f.info.Path, "add", "large.txt")
+			runGit(t, f.info.Path, "commit", "-m", "add large fixture")
+			runGit(t, f.info.Path, "revert", "--no-edit", "HEAD")
+		}},
 		{name: "local changes", wantError: "review workspace has local changes", configure: func(t *testing.T, f landingFixture) {
 			writeFileDiffFile(t, f.info.Path, "feature.txt", "dirty\n")
 		}},
@@ -129,6 +141,42 @@ func TestItemPhasePushRefusesDivergentRemote(t *testing.T) {
 	}
 	if head := strings.TrimSpace(runGit(t, f.remote, "rev-parse", ref)); head != remote {
 		t.Fatalf("remote head = %s, want %s", head, remote)
+	}
+}
+
+func TestPreserveItemPhaseHistoryVerifiesFetchedSource(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		wrongTree bool
+	}{
+		{name: "Git diagnostics do not change the verified source"},
+		{name: "mismatched tree is rejected", wrongTree: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLandingFixture(t)
+			branch := f.info.PublishBranch()
+			runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/"+branch)
+			const repository = "https://github.com/example-org/example-project"
+			runGit(t, f.source, "remote", "set-url", "origin", repository)
+			runGit(t, f.source, "config", "url."+f.remote+".insteadOf", repository)
+			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
+			if tc.wrongTree {
+				tree = strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^{tree}"))
+			}
+			f.issue.PullRequestRepository = repository
+			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "continue the item")
+			runGit(t, f.source, "tag", "FETCH_HEAD", "HEAD")
+
+			previous := PhaseSource{Branch: branch, HeadSHA: f.head, TreeSHA: tree}
+			expected, err := f.backend.PreserveItemPhaseHistory(t.Context(), f.info, f.issue, previous, func(context.Context) error { return nil })
+			if tc.wrongTree {
+				if err == nil || !strings.Contains(err.Error(), "fetched tree differs from the recorded phase source") {
+					t.Fatalf("preserve phase history error = %v, want recorded tree mismatch", err)
+				}
+			} else if err != nil || expected != "" {
+				t.Fatalf("preserve already-ancestral phase history = %q, %v", expected, err)
+			}
+		})
 	}
 }
 

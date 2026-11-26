@@ -335,6 +335,17 @@ func ReadPublicationSource(ctx context.Context, path string, args ...string) (st
 	return withCommandEnvironment(ctx, path, IsolatedEnvironment(), true, "", RunCommand, args...)
 }
 
+func WithPublicationObjects(ctx context.Context, path string, use func(string) error) error {
+	return withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
+		return use(scratch)
+	})
+}
+
+func PublicationDiffWithinLimit(ctx context.Context, scratch string, maxBytes int, args ...string) (string, bool, error) {
+	env := append(IsolatedEnvironment(), "GIT_ATTR_NOSYSTEM=1")
+	return withinLimitEnvironment(ctx, scratch, env, maxBytes, append([]string{"-c", "core.attributesFile=" + os.DevNull, "diff"}, args...)...)
+}
+
 func pushPublication(ctx context.Context, scratch, repository, refspec string, options ...string) error {
 	args := append([]string{"push", "--no-follow-tags"}, options...)
 	_, err := runPublicationTransport(ctx, scratch, append(args, "--", repository, refspec)...)
