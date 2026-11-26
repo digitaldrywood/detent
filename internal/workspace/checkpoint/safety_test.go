@@ -59,7 +59,7 @@ func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 		want string
 	}{
 		{name: "commit count", want: "commit limit"},
-		{name: "commit message output", want: "commit message exceeds the output limit"},
+		{name: "commit object output", want: "commit object exceeds the output limit"},
 		{name: "changed paths output", want: "changed paths exceeds the output limit"},
 		{name: "changed paths across commits", want: "changed path limit"},
 	} {
@@ -78,7 +78,7 @@ func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 					if args[1] != "commit" || limit != 1<<20 {
 						t.Fatalf("unexpected commit read: %d, %v", limit, args)
 					}
-					return "tree example\n\nmessage\n", tc.name == "commit message output", nil
+					return "tree example\n\nmessage\n", tc.name == "commit object output", nil
 				case "diff-tree":
 					if limit != 4<<20 {
 						t.Fatalf("unexpected changed paths output limit: %d", limit)
@@ -92,6 +92,44 @@ func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 			err := PhaseHistory(git, commit, strings.Repeat("2", 40))
 			if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("scan error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPhaseHistoryScreensPublicationMetadata(t *testing.T) {
+	commit := strings.Repeat("1", 40)
+	credential := "ghp_" + strings.Repeat("Z", 36)
+	for _, tc := range []struct {
+		name   string
+		author string
+		path   string
+		unsafe bool
+	}{
+		{name: "ordinary metadata", author: "Test", path: "file.txt"},
+		{name: "credential in commit author", author: credential, path: "file.txt", unsafe: true},
+		{name: "credential in deleted path", author: "Test", path: credential + ".txt", unsafe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := func(_ int, args ...string) (string, bool, error) {
+				switch args[0] {
+				case "rev-list":
+					return commit + "\n", false, nil
+				case "cat-file":
+					return "tree " + commit + "\nauthor " + tc.author + " <test@example.test> 1 +0000\n\nmessage\n", false, nil
+				case "diff-tree":
+					return ":100644 000000 " + commit + " " + strings.Repeat("0", 40) + " D\x00" + tc.path + "\x00", false, nil
+				}
+				t.Fatalf("unexpected git command %v", args)
+				return "", false, nil
+			}
+			err := PhaseHistory(git, commit)
+			if tc.unsafe {
+				if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "possible credential") || strings.Contains(err.Error(), credential) {
+					t.Fatalf("expected a redacted credential refusal")
+				}
+			} else if err != nil {
+				t.Fatalf("scan ordinary metadata: %v", err)
 			}
 		})
 	}

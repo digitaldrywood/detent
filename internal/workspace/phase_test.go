@@ -173,33 +173,53 @@ func TestPreserveItemPhaseHistoryVerifiesFetchedSource(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		wrongTree bool
+		rewrite   bool
 	}{
 		{name: "Git diagnostics do not change the verified source"},
 		{name: "mismatched tree is rejected", wrongTree: true},
+		{name: "local rewrite cannot redirect phase recovery", rewrite: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			branch := f.info.PublishBranch()
 			runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/"+branch)
-			const repository = "https://github.com/example-org/example-project"
-			runGit(t, f.source, "remote", "set-url", "origin", repository)
-			runGit(t, f.source, "config", "url."+f.remote+".insteadOf", repository)
+			head := f.head
 			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
+			if tc.rewrite {
+				replacement := filepath.Join(t.TempDir(), "publisher")
+				runGit(t, f.info.Path, "clone", "--branch", branch, f.remote, replacement)
+				runGit(t, replacement, "-c", "user.name=Example", "-c", "user.email=example@example.test", "commit", "--allow-empty", "-m", "remote-only phase")
+				runGit(t, replacement, "push", "origin", "HEAD:refs/heads/"+branch)
+				head = strings.TrimSpace(runGit(t, replacement, "rev-parse", "HEAD"))
+				if _, err := gitexec.ReadPublicationSource(t.Context(), f.source, "cat-file", "-e", head+"^{commit}"); err == nil {
+					t.Fatal("phase source must be absent from the recovery checkout")
+				}
+				const projectRepository = "https://github.com/example-org/example-project"
+				f.issue.PullRequestRepository = projectRepository
+				runGit(t, f.source, "remote", "set-url", "origin", projectRepository)
+				runGit(t, f.source, "config", "url."+filepath.Join(t.TempDir(), "unrelated.git")+".insteadOf", projectRepository)
+			}
 			if tc.wrongTree {
 				tree = strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^{tree}"))
 			}
-			f.issue.PullRequestRepository = repository
+			f.issue.PublicationRepository = f.remote
 			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "continue the item")
 			runGit(t, f.source, "tag", "FETCH_HEAD", "HEAD")
 
-			previous := PhaseSource{Branch: branch, HeadSHA: f.head, TreeSHA: tree}
+			previous := PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
 			expected, err := f.backend.PreserveItemPhaseHistory(t.Context(), f.info, f.issue, previous, func(context.Context) error { return nil })
 			if tc.wrongTree {
 				if err == nil || !strings.Contains(err.Error(), "fetched tree differs from the recorded phase source") {
 					t.Fatalf("preserve phase history error = %v, want recorded tree mismatch", err)
 				}
-			} else if err != nil || expected != "" {
-				t.Fatalf("preserve already-ancestral phase history = %q, %v", expected, err)
+			} else {
+				want := ""
+				if tc.rewrite {
+					want = head
+				}
+				if err != nil || expected != want {
+					t.Fatalf("preserve phase history = %q, %v, want %q", expected, err, want)
+				}
 			}
 		})
 	}

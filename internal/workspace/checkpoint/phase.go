@@ -37,16 +37,15 @@ func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) err
 		if !gitexec.ValidHead(commit) {
 			return fmt.Errorf("%w: invalid phase commit identity", ErrUnsafe)
 		}
-		raw, err := readPhaseOutput(git, min(remaining, phaseCommitBytes), "commit message", "cat-file", "commit", commit)
+		raw, err := readPhaseOutput(git, min(remaining, phaseCommitBytes), "commit object", "cat-file", "commit", commit)
 		if err != nil {
 			return err
 		}
 		remaining -= len(raw)
-		_, message, ok := strings.Cut(raw, "\n\n")
-		if !ok {
-			return fmt.Errorf("%w: invalid phase commit message", ErrUnsafe)
+		if !strings.Contains(raw, "\n\n") {
+			return fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
 		}
-		if err := screenCredentials(message); err != nil {
+		if err := screenCredentials(raw); err != nil {
 			return err
 		}
 		changed, err := readPhaseOutput(git, min(remaining, phaseMetadataBytes), "changed paths",
@@ -77,6 +76,9 @@ func screenPhasePaths(git gitexec.BoundedRead, changed string, pathsRemaining, r
 		}
 		if !PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
 			return fmt.Errorf("%w: commit contains an unapproved path", ErrUnsafe)
+		}
+		if err := screenCredentials(path); err != nil {
+			return err
 		}
 		switch fields[1] {
 		case "000000":
