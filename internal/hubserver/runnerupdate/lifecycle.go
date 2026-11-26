@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id string, command runnerauth.LifecycleCommand) error {
@@ -28,6 +29,9 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 	command.LifecycleReport = report
 	if len(command.UpdateRequestID) > 128 {
 		return hubapi.PublicInvalid("valid runner update request required")
+	}
+	if command.PreviousGeneration < 0 || command.PreviousGeneration != 0 && report.State != runnerauth.LifecycleStarting {
+		return hubapi.PublicInvalid("valid runner start generation required")
 	}
 	encoded, err := json.Marshal(command)
 	if err != nil {
@@ -52,16 +56,7 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 		if err := owner.LockRunnerUpdate(ctx, id); err != nil {
 			return err
 		}
-		previousRefusal, found, err := owner.RunnerLifecycleReceipt(ctx, id, report, digest)
-		if err != nil || found {
-			refusal = previousRefusal
-			return err
-		}
-		now := s.deps.Now().UTC()
-		presented := report
-		var rollout runnerstore.Rollout
-		switch {
-		case report.State == runnerauth.LifecycleUpdating:
+		if report.State == runnerauth.LifecycleUpdating {
 			targetOwner, ok := w.(runnerstore.UpdateTargetWriter)
 			if !ok {
 				return hubapi.RunEventStorageUnavailable()
@@ -69,9 +64,31 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 			if err := targetOwner.LockOrganizationUpdateTarget(ctx, false); err != nil {
 				return err
 			}
-			rollout, refusal, err = authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
+		}
+		previousRefusal, found, err := owner.RunnerLifecycleReceipt(ctx, id, report, digest)
+		if err != nil || found {
+			refusal = previousRefusal
+			if err == nil && refusal == "" && report.State == runnerauth.LifecycleUpdating {
+				current, readErr := owner.RunnerLifecycle(ctx, id)
+				if readErr != nil {
+					return readErr
+				}
+				if current.ProcessID != report.ProcessID || current.Sequence != report.Sequence || current.State != runnerauth.LifecycleUpdating {
+					refusal = runnerstore.LifecycleInvalidTransition
+				} else {
+					_, refusal, err = s.authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
+				}
+			}
+			return err
+		}
+		now := s.deps.Now().UTC()
+		presented := report
+		var rollout runnerstore.Rollout
+		switch {
+		case report.State == runnerauth.LifecycleUpdating:
+			rollout, refusal, err = s.authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
 		case report.State == runnerauth.LifecycleDraining && report.TargetVersion != "":
-			_, refusal, err = authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
+			_, refusal, err = s.authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
 		case report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update":
 			if report.TargetVersion == "" {
 				refusal = runnerstore.LifecycleUpdateNotOffered
@@ -83,7 +100,7 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 			return err
 		}
 		if refusal == "" {
-			err := owner.ReportRunnerLifecycle(ctx, id, report, digest, rollout, now)
+			err := owner.ReportRunnerLifecycle(ctx, id, report, command.PreviousGeneration, digest, rollout, now)
 			if !errors.Is(err, corestore.ErrRevisionConflict) {
 				return err
 			}
@@ -91,13 +108,18 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 		}
 		return owner.RefuseRunnerLifecycle(ctx, id, presented, digest, refusal, now)
 	})
+	var startConflict runnerstore.LifecycleStartConflict
+	if errors.As(err, &startConflict) {
+		return &hubapi.Error{Code: runnerauth.LifecycleStartGenerationChanged, Message: startConflict.Error(),
+			CurrentRevision: tracker.Revision(startConflict.Generation), Status: http.StatusConflict, Public: true}
+	}
 	if err == nil && refusal != "" {
 		return hubapi.Conflict(0)
 	}
 	return err
 }
 
-func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id string, report runnerauth.LifecycleReport, requestID string) (runnerstore.Rollout, runnerstore.LifecycleRefusal, error) {
+func (s *Service) authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id string, report runnerauth.LifecycleReport, requestID string) (runnerstore.Rollout, runnerstore.LifecycleRefusal, error) {
 	if report.TargetVersion == "" {
 		return runnerstore.Rollout{}, runnerstore.LifecycleUpdateNotOffered, nil
 	}
@@ -105,12 +127,15 @@ func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id stri
 	if err != nil {
 		return runnerstore.Rollout{}, "", err
 	}
+	if state.Desired != nil && state.Desired.FollowHub {
+		state.DesiredAutomatic = true
+	}
 	urgent, err := w.RunnerUrgentUpdate(ctx)
 	if err != nil {
 		return runnerstore.Rollout{}, "", err
 	}
-	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: id}, Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
-	if err := ApplyAvailableRouting(ctx, w, &runner, urgent, report.Version); err != nil {
+	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: id}, Update: state.Observation}
+	if err := ApplyAvailableRouting(ctx, w, &runner, state, urgent, report.Version, s.deps.Version); err != nil {
 		return runnerstore.Rollout{}, "", err
 	}
 	if state.Observation != nil && (strings.TrimPrefix(state.Observation.Running.Version, "v") != report.Version || state.Observation.Running.Commit != report.BuildRevision) {

@@ -149,7 +149,7 @@ func (s *Service) projectOnboardingRecord(ctx context.Context, scope hubscope.Na
 		runnerLeases[lease.RunnerID] = append(runnerLeases[lease.RunnerID], lease.Lease)
 	}
 	for _, record := range records {
-		runner := runnerFromFleetRecord(record, now, urgent)
+		runner := s.runnerFromFleetRecord(record, now, urgent)
 		if !canManage && !runner.AllowsProject(scope.Project) {
 			continue
 		}

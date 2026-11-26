@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -19,6 +20,23 @@ import (
 type lifecycleUpdateCommand struct {
 	runnerauth.LifecycleReport
 	RequestID string `json:"update_request_id"`
+}
+
+func startLifecycle(t *testing.T, f receiptFixture, index int, report runnerauth.LifecycleReport) runnerauth.LifecycleCommand {
+	t.Helper()
+	path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/lifecycle"
+	command := runnerauth.LifecycleCommand{LifecycleReport: report}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], command)
+	if response.Code == http.StatusConflict {
+		var challenge hubapi.Error
+		if err := json.Unmarshal(response.Body.Bytes(), &challenge); err != nil || challenge.Code != runnerauth.LifecycleStartGenerationChanged || challenge.CurrentRevision < 1 {
+			t.Fatalf("start generation challenge = %s, error = %v", response.Body.String(), err)
+		}
+		command.PreviousGeneration = int64(challenge.CurrentRevision)
+		response = performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], command)
+	}
+	requireNativeStatus(t, response, http.StatusNoContent)
+	return command
 }
 
 func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
@@ -69,7 +87,10 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 						report.TargetVersion = "1.2.4"
 					}
 					var body any = report
-					if state == runnerauth.LifecycleUpdating {
+					switch state {
+					case runnerauth.LifecycleStarting:
+						body = startLifecycle(t, f, index, report)
+					case runnerauth.LifecycleUpdating:
 						body = lifecycleUpdateCommand{report, fmt.Sprintf("update_%d", index)}
 					}
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], body), http.StatusNoContent)
@@ -162,10 +183,71 @@ func TestPostgresRunnerLifecycleTransitions(t *testing.T) {
 	}
 }
 
+func TestPostgresRunnerLifecycleHistoryIsBounded(t *testing.T) {
+	f := newReceiptFixture(t)
+	for index, binding := range f.bindings {
+		path := "/api/v2/organizations/org_startup/runners/" + binding.RunnerID + "/lifecycle"
+		post := func(body any, status int) {
+			t.Helper()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], body), status)
+		}
+		read := func(wantRows int) runnerauth.Lifecycle {
+			t.Helper()
+			var current runnerauth.Lifecycle
+			err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(runnerstore.LifecycleReader)
+				lifecycle, err := owner.RunnerLifecycle(t.Context(), binding.RunnerID)
+				if err != nil {
+					return err
+				}
+				current = *lifecycle
+				history, err := owner.RunnerLifecycleHistory(t.Context(), binding.RunnerID, 100)
+				if err == nil && len(history) != wantRows {
+					t.Errorf("runner %d history has %d rows, want %d", index, len(history), wantRows)
+				}
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return current
+		}
+		report := runnerauth.LifecycleReport{ProcessID: "first-process", Sequence: 1, State: runnerauth.LifecycleStarting, Version: "1.2.3", BuildRevision: "revision"}
+		first := startLifecycle(t, f, index, report)
+		report.Sequence, report.State = 2, runnerauth.LifecycleReady
+		post(report, http.StatusNoContent)
+		ready := read(2)
+		for n := int64(3); n <= 70; n++ {
+			report.Sequence = n
+			post(report, http.StatusNoContent)
+		}
+		post(report, http.StatusNoContent)
+		if current := read(2); current.Sequence != 70 || !current.LastTransitionAt.Equal(ready.LastTransitionAt) {
+			t.Errorf("coalesced receipt moved the transition time or failed to advance the fence: %+v", current)
+		}
+		for range 34 {
+			report.Sequence++
+			report.State = runnerauth.LifecycleDraining
+			post(report, http.StatusNoContent)
+			report.Sequence++
+			report.State = runnerauth.LifecycleReady
+			post(report, http.StatusNoContent)
+		}
+		read(64)
+		report.ProcessID, report.Sequence, report.State = "new-process", 1, runnerauth.LifecycleStarting
+		startLifecycle(t, f, index, report)
+		post(first, http.StatusConflict)
+		if current := read(64); current.LifecycleReport != report {
+			t.Fatalf("evicted start receipt changed the current process: %+v", current)
+		}
+	}
+}
+
 func TestPostgresRunnerTargetOffers(t *testing.T) {
 	for _, scope := range []string{"runner", "organization"} {
 		t.Run(scope, func(t *testing.T) {
-			f := newReceiptFixture(t)
+			hubVersion := "1.3.0"
+			f := newReceiptFixtureAtVersion(t, &hubVersion, 3)
 			heartbeat, ok := f.service.Repository.(interface {
 				WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
 			})
@@ -173,7 +255,6 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 				t.Fatal("runner heartbeat owner unavailable")
 			}
 			admin := f.service.AdminKey(t)
-			service := New(Deps{Repository: f.service.Repository, Now: time.Now, Version: "1.3.0"})
 			now := time.Now().UTC().Truncate(time.Microsecond)
 			build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
 			observe := func(index int, running runnerauth.BuildEvidence) string {
@@ -185,6 +266,7 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 					if err != nil {
 						return err
 					}
+					service := New(Deps{Repository: f.service.Repository, Now: time.Now, Version: hubVersion})
 					return service.StoreObservation(ctx, w, identity, &observation, 2, running.Version, running.OS, running.Architecture, time.Now().UTC(), true)
 				}); err != nil {
 					t.Fatal(err)
@@ -193,6 +275,10 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			}
 			report := func(index int, body any, status int) {
 				t.Helper()
+				if start, ok := body.(runnerauth.LifecycleReport); ok && start.State == runnerauth.LifecycleStarting && status == http.StatusNoContent {
+					startLifecycle(t, f, index, start)
+					return
+				}
 				path := "/api/v2/organizations/org_startup/runners/" + f.bindings[index].RunnerID + "/lifecycle"
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, f.tokens[index], body), status)
 			}
@@ -246,6 +332,28 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			if initialOffer == nil || initialOffer.Version != "1.3.0" {
 				t.Fatalf("initial offer=%+v", initialOffer)
 			}
+			peer.Sequence, peer.State, peer.TargetVersion = 3, runnerauth.LifecycleDraining, "1.3.0"
+			report(1, lifecycleUpdateCommand{peer, initialOffer.ID}, http.StatusNoContent)
+			hubVersion = build.Version
+			peer.Sequence, peer.State = 4, runnerauth.LifecycleUpdating
+			report(1, lifecycleUpdateCommand{peer, initialOffer.ID}, http.StatusConflict)
+			if view := read(1); view.Desired != nil || view.TargetVersion != build.Version || view.Lifecycle == nil || view.Lifecycle.State != runnerauth.LifecycleDraining {
+				t.Fatalf("withdrawn offer during drain: %+v", view)
+			}
+			observe(1, build)
+			if fleet := peerFleet(); fleet.Desired != nil {
+				t.Fatalf("reconciliation kept the withdrawn offer: %+v", fleet)
+			}
+			hubVersion = "1.3.0"
+			observe(1, build)
+			peer.Sequence++
+			activation := lifecycleUpdateCommand{peer, initialOffer.ID}
+			report(1, activation, http.StatusNoContent)
+			hubVersion = build.Version
+			report(1, activation, http.StatusConflict)
+			hubVersion = "1.3.0"
+			peer.Sequence, peer.State, peer.TargetVersion = 6, runnerauth.LifecycleReady, ""
+			report(1, peer, http.StatusNoContent)
 			changedBuild := build
 			changedBuild.SHA256 = strings.Repeat("c", 64)
 			changedRevision := observe(1, changedBuild)
@@ -273,42 +381,54 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			if fleet := peerFleet(); fleet.Desired != nil {
 				t.Errorf("fleet returned a stale build offer at capacity: %+v", fleet)
 			}
-			peer.Sequence, peer.State, peer.TargetVersion = 3, runnerauth.LifecycleUpdating, "1.3.0"
+			peer.Sequence, peer.State, peer.TargetVersion = 7, runnerauth.LifecycleUpdating, "1.3.0"
 			report(1, lifecycleUpdateCommand{peer, changedOffer.ID}, http.StatusConflict)
 			observe(1, build)
 			if offer := read(1).Desired; offer == nil || !offer.Matches(*initialOffer) {
 				t.Errorf("known build lost its offer at capacity: %+v", offer)
 			}
-			starts := func(prefix string) runnerauth.LifecycleReport {
+			starts := func(index int, prefix string) runnerauth.LifecycleReport {
 				t.Helper()
 				var startup runnerauth.LifecycleReport
 				for i := range 3 {
 					startup = runnerauth.LifecycleReport{ProcessID: fmt.Sprintf("%s-%d", prefix, i), Sequence: 1, State: runnerauth.LifecycleStarting, Version: "1.3.0", BuildRevision: "new-revision"}
-					report(0, startup, http.StatusNoContent)
+					report(index, startup, http.StatusNoContent)
 				}
-				failed := read(0)
+				failed := read(index)
 				if failed.Health == "online" || failed.Lifecycle == nil || failed.Lifecycle.State != runnerauth.LifecycleStartFailed || failed.Lifecycle.ConsecutiveFailedStarts != 3 || failed.Lifecycle.Version != "1.3.0" {
 					t.Fatalf("failed runner=%+v", failed)
 				}
 				return startup
 			}
-			starts("unoffered")
+			starts(0, "unoffered")
 			if view := read(1); view.Desired == nil || peerFleet().Desired == nil {
 				t.Fatal("unoffered starts suppressed peer update")
 			}
 
-			start := runnerauth.LifecycleReport{ProcessID: "before-update", Sequence: 1, State: runnerauth.LifecycleStarting, Version: build.Version, BuildRevision: build.Commit}
-			report(0, start, http.StatusNoContent)
-			start.Sequence, start.State = 2, runnerauth.LifecycleReady
-			report(0, start, http.StatusNoContent)
-			observe(0, build)
-			offer := read(0).Desired
-			if offer == nil || offer.Version != "1.3.0" {
-				t.Fatalf("rollout offer=%+v", offer)
+			authorizeRollout := func(index int) {
+				t.Helper()
+				start := runnerauth.LifecycleReport{ProcessID: fmt.Sprintf("before-update-%d", index), Sequence: 1, State: runnerauth.LifecycleStarting, Version: build.Version, BuildRevision: build.Commit}
+				report(index, start, http.StatusNoContent)
+				start.Sequence, start.State = 2, runnerauth.LifecycleReady
+				report(index, start, http.StatusNoContent)
+				observe(index, build)
+				offer := read(index).Desired
+				if offer == nil || offer.Version != "1.3.0" {
+					t.Fatalf("rollout offer=%+v", offer)
+				}
+				start.Sequence, start.State, start.TargetVersion = 3, runnerauth.LifecycleUpdating, "1.3.0"
+				report(index, lifecycleUpdateCommand{start, offer.ID}, http.StatusNoContent)
 			}
-			start.Sequence, start.State, start.TargetVersion = 3, runnerauth.LifecycleUpdating, "1.3.0"
-			report(0, lifecycleUpdateCommand{start, offer.ID}, http.StatusNoContent)
-			authorizedFailure := starts("authorized")
+			authorizeRollout(0)
+			authorizedFailure := starts(0, "authorized")
+			if own, peer := read(0), read(1); own.Desired != nil || peer.Desired == nil || peerFleet().Desired == nil {
+				t.Fatalf("a single runner failure affected the peer or left its own offer active: own=%+v peer=%+v", own.Desired, peer.Desired)
+			}
+			if f.bindings[0].MachineID == f.bindings[2].MachineID {
+				t.Fatal("corroborating runners share a machine identity")
+			}
+			authorizeRollout(2)
+			starts(2, "corroborated")
 			if view := read(1); view.Desired != nil {
 				t.Fatalf("failed rollout still offered: %+v", view.Desired)
 			}
@@ -410,7 +530,7 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if current == nil || current.LifecycleReport != healthy || len(history) != 10 ||
+				if current == nil || current.LifecycleReport != healthy || len(history) < 4 ||
 					history[0].RolloutRequestID != newOffer.ID || history[1].RolloutRequestID != newOffer.ID ||
 					history[2].Refusal != runnerstore.LifecycleUpdateNotOffered || history[3].Refusal != runnerstore.LifecycleUpdateNotOffered {
 					t.Fatalf("activation history: current=%+v history=%+v", current, history)

@@ -63,10 +63,10 @@ func OfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request 
 	if err != nil {
 		return false, err
 	}
-	return offerAllowedForTarget(ctx, r, request, target, held)
+	return offerAllowedForTarget(ctx, r, id, request, target, held)
 }
 
-func offerAllowedForTarget(ctx context.Context, r tenantstore.Reader, request *runnerauth.UpdateRequest, target string, held bool) (bool, error) {
+func offerAllowedForTarget(ctx context.Context, r tenantstore.Reader, id string, request *runnerauth.UpdateRequest, target string, held bool) (bool, error) {
 	if request == nil {
 		return false, nil
 	}
@@ -74,7 +74,7 @@ func offerAllowedForTarget(ctx context.Context, r tenantstore.Reader, request *r
 		return false, nil
 	}
 	if owner, ok := r.(runnerstore.UpdateTargetReader); ok {
-		failed, err := owner.RunnerVersionFailed(ctx, strings.TrimPrefix(request.Version, "v"))
+		failed, err := owner.RunnerVersionFailed(ctx, id, strings.TrimPrefix(request.Version, "v"))
 		if err != nil {
 			return false, err
 		}
@@ -85,22 +85,23 @@ func offerAllowedForTarget(ctx context.Context, r tenantstore.Reader, request *r
 	return true, nil
 }
 
-func ApplyAvailableRouting(ctx context.Context, reader tenantstore.Reader, runner *runnerauth.Runner, urgent runnerstore.UrgentUpdate, version string) error {
+func ApplyAvailableRouting(ctx context.Context, reader tenantstore.Reader, runner *runnerauth.Runner, state runnerstore.UpdateState, urgent runnerstore.UrgentUpdate, version, hubVersion string) error {
+	runner.UpdateRequest = state.Desired
 	if runner.UpdateRequest == nil && urgent.Request == nil {
 		return nil
 	}
-	target, held, err := EffectiveTarget(ctx, reader, runner.RunnerID, "")
+	target, held, err := EffectiveTarget(ctx, reader, runner.RunnerID, Target(hubVersion))
 	if err != nil {
 		return err
 	}
-	allowed, err := offerAllowedForTarget(ctx, reader, runner.UpdateRequest, target, held)
+	allowed, err := offerAllowedForTarget(ctx, reader, runner.RunnerID, runner.UpdateRequest, target, held)
 	if err != nil {
 		return err
 	}
-	if !allowed {
+	if !allowed || state.AutomaticOfferIsObsolete(target) {
 		runner.UpdateRequest = nil
 	}
-	allowed, err = offerAllowedForTarget(ctx, reader, urgent.Request, target, held)
+	allowed, err = offerAllowedForTarget(ctx, reader, runner.RunnerID, urgent.Request, target, held)
 	if err != nil {
 		return err
 	}

@@ -5086,6 +5086,9 @@ type RunnerLifecycle struct {
 	RolloutVersion          string
 	RolloutRevision         int64
 	RefusedThroughSequence  int64
+	ProcessGeneration       int64
+	AcceptedHistorySlot     int16
+	LastReportDigest        string
 }
 
 type RunnerLifecycleTransition struct {
@@ -5106,6 +5109,7 @@ type RunnerLifecycleTransition struct {
 	Refusal                 string
 	RolloutRequestID        string
 	RefusalSlot             pgtype.Int2
+	AcceptedSlot            pgtype.Int2
 }
 
 type RunnerLocalCheck struct {
@@ -5566,6 +5570,7 @@ type RunnerUpdatePause struct {
 	RunnerID        string
 	Version         string
 	RolloutRevision int64
+	MachineID       string
 }
 
 type RunnerUpdateReceipt struct {

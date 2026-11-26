@@ -27,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -840,7 +841,7 @@ func TestReleasedExecutionPollingPaginatesPendingCleanup(t *testing.T) {
 				previous := runnerFromRoutingRecord(record, now, urgent)
 				expectedRouting, expectedRevision = previous.Routing, previous.Revision
 				var direct runnerauth.RoutingSnapshot
-				if err := readRunnerResponseRouting(t.Context(), reader, record.Record.Identity, &direct); err != nil {
+				if err := runnerfleet.ReadRunnerResponseRouting(t.Context(), reader, record.Record.Identity, &direct, ""); err != nil {
 					return err
 				}
 				if direct.Revision != expectedRevision || !reflect.DeepEqual(direct.Routing, expectedRouting) || direct.RepositoryListRequest != repositoryRequest.RequestID {

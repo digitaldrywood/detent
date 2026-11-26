@@ -27,6 +27,12 @@ type Rollout struct {
 	OrganizationRevision int64
 }
 
+type LifecycleStartConflict struct {
+	Generation int64
+}
+
+func (LifecycleStartConflict) Error() string { return "runner process generation changed" }
+
 type LifecycleReader interface {
 	RunnerLifecycle(context.Context, string) (*runnerauth.Lifecycle, error)
 	RunnerLifecycleHistory(context.Context, string, int) ([]LifecycleTransition, error)
@@ -42,5 +48,5 @@ type LifecycleWriter interface {
 	UpdateLocker
 	RunnerLifecycleReceipt(context.Context, string, runnerauth.LifecycleReport, string) (LifecycleRefusal, bool, error)
 	RefuseRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, string, LifecycleRefusal, time.Time) error
-	ReportRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, string, Rollout, time.Time) error
+	ReportRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, int64, string, Rollout, time.Time) error
 }

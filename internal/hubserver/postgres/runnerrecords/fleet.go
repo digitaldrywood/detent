@@ -8,9 +8,10 @@ import (
 
 func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.FleetRecord, indices map[string]int, ids []string) error {
 	rows, err := s.db.Query(ctx, `SELECT r.runner_id,COALESCE(NULLIF(o.version,''),NULLIF(t.version,''),''),
- EXISTS(SELECT 1 FROM runner_update_pauses f WHERE f.organization_id=r.organization_id AND f.version=d.version AND f.rollout_revision=COALESCE(o.revision,0)),
- EXISTS(SELECT 1 FROM runner_update_pauses f WHERE f.organization_id=r.organization_id AND f.version=u.version AND f.rollout_revision=COALESCE(o.revision,0)),
- COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL+`,false)
+ (SELECT `+pausedForRunnerSQL+` FROM (VALUES (r.organization_id,r.runner_id,d.version,COALESCE(o.revision,0))) candidate(organization_id,runner_id,version,revision)),
+ (SELECT `+pausedForRunnerSQL+` FROM (VALUES (r.organization_id,r.runner_id,u.version,COALESCE(o.revision,0))) candidate(organization_id,runner_id,version,revision)),
+ COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL+`,false),
+ COALESCE(`+automaticOfferSQL+`,false)
  FROM runner_identities r
  LEFT JOIN runner_update_targets o ON o.organization_id=r.organization_id AND o.runner_id=''
  LEFT JOIN runner_update_targets t ON t.organization_id=r.organization_id AND t.runner_id=r.runner_id
@@ -26,14 +27,15 @@ func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.Fle
 	defer rows.Close()
 	for rows.Next() {
 		var id, held, urgentVersion string
-		var failed, urgentFailed, currentHoldOffer bool
-		if err := rows.Scan(&id, &held, &failed, &urgentFailed, &urgentVersion, &currentHoldOffer); err != nil {
+		var failed, urgentFailed, currentHoldOffer, automatic bool
+		if err := rows.Scan(&id, &held, &failed, &urgentFailed, &urgentVersion, &currentHoldOffer, &automatic); err != nil {
 			return s.mapError(ctx, err)
 		}
 		record := &records[indices[id]]
 		state := &record.Update
 		state.UrgentPolicyChecked = true
 		state.UrgentAllowed = !urgentFailed && (held == "" || held == urgentVersion)
+		state.DesiredAutomatic = automatic
 		if state.Desired != nil && (failed || !currentHoldOffer || held != "" && held != state.Desired.Version) {
 			state.Desired = nil
 		}

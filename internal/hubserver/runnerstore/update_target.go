@@ -9,7 +9,7 @@ type UpdateTarget struct {
 
 type UpdateTargetReader interface {
 	RunnerUpdateTarget(context.Context, string) (UpdateTarget, error)
-	RunnerVersionFailed(context.Context, string) (bool, error)
+	RunnerVersionFailed(context.Context, string, string) (bool, error)
 }
 
 type UpdateTargetWriter interface {

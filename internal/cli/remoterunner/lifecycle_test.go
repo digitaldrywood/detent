@@ -2,11 +2,34 @@ package remoterunner
 
 import (
 	"context"
+	"net/http"
 	"slices"
 	"testing"
 
+	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
+
+func TestLifecycleRetriesStartWithHubGeneration(t *testing.T) {
+	var reports []runnerauth.LifecycleCommand
+	owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, command runnerauth.LifecycleCommand) error {
+		reports = append(reports, command)
+		if len(reports) == 1 {
+			return &api.APIError{Status: http.StatusConflict, Code: runnerauth.LifecycleStartGenerationChanged, CurrentRevision: 7}
+		}
+		return nil
+	})
+	for _, state := range []runnerauth.LifecycleState{runnerauth.LifecycleStarting, runnerauth.LifecycleReady} {
+		if err := owner.Report(t.Context(), state, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(reports) != 3 || reports[0].PreviousGeneration != 0 || reports[1].PreviousGeneration != 7 ||
+		reports[0].LifecycleReport != reports[1].LifecycleReport || reports[1].Sequence != 1 ||
+		reports[2].Sequence != 2 || reports[2].PreviousGeneration != 0 {
+		t.Fatalf("generation negotiation reports = %+v", reports)
+	}
+}
 
 func TestLifecycleReportsRoutingTransitions(t *testing.T) {
 	for _, initial := range []string{"active", "draining"} {

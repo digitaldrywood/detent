@@ -18,7 +18,7 @@ import (
 
 func TestLocalBoardMigrationToLanding(t *testing.T) {
 	t.Parallel()
-	hub := hubfixture.Open(t, hubfixture.Config{StaticFS: fstest.MapFS{
+	hub := hubfixture.Open(t, hubfixture.Config{Version: "0.118.0", StaticFS: fstest.MapFS{
 		"app/conversation/index.html": {Data: []byte("<!doctype html><html><head></head><body><div id=\"root\"></div></body></html>")},
 		"app/conversation/app.js":     {Data: []byte("console.log(1)")},
 	}})
@@ -52,8 +52,13 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 		t.Fatalf("local migration bootstrap has hosted identity or Cloud plans: %s", bootstrap.Body.String())
 	}
 	runner := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
+	runner.Redemption.Version = "0.117.56"
 	runner.Enroll(t)
-	runner.ReportCapacity(t)
+	heartbeat := hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(runner.Binding.MachineID)+"/heartbeat", runner.Redemption.Credential, map[string]any{
+		"version": runner.Redemption.Version, "display_name": runner.Redemption.DisplayName, "capacity": runner.Redemption.Capacity, "backend_isolation": runner.Redemption.BackendIsolation,
+		"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: runner.Redemption.Capacity, ClientLimit: runner.Redemption.Capacity, RuntimeLimit: runner.Redemption.Capacity, Manageable: true, ObservedAt: hub.Now()},
+	})
+	hubfixture.RequireStatus(t, heartbeat, http.StatusOK)
 	records := importRouteRecords()
 	var imported []tracker.NativeIssue
 	for _, record := range records {

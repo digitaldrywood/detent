@@ -10,8 +10,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
-func FromRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
+func FromRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate, hubVersion string) runnerauth.Runner {
 	identity, machine := record.Identity, record.Machine
+	if !record.Update.TargetHeld {
+		record.Update.TargetVersion = runnerupdate.Target(hubVersion)
+	}
+	if record.Update.AutomaticOfferIsObsolete(record.Update.TargetVersion) {
+		record.Update.Desired = nil
+	}
 	runner := runnerauth.Runner{
 		Binding:             runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID},
 		OrganizationID:      identity.OrganizationID,

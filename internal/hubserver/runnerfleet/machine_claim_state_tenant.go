@@ -32,7 +32,7 @@ func (d HeartbeatDeps) ReadRegistrationClaimStateTenant(ctx context.Context, sco
 		if err != nil {
 			return err
 		}
-		if err := ReadRunnerResponseRouting(ctx, r, identity, snapshot); err != nil {
+		if err := ReadRunnerResponseRouting(ctx, r, identity, snapshot, d.Version); err != nil {
 			return err
 		}
 		reader, ok := r.(runnerstore.ClaimStateReader)

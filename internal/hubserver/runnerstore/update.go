@@ -2,6 +2,7 @@ package runnerstore
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -16,7 +17,12 @@ type UpdateState struct {
 	OrganizationID      tracker.OrganizationID
 	RunnerID            string
 	Desired             *runnerauth.UpdateRequest
+	DesiredAutomatic    bool
 	Observation         *runnerauth.UpdateObservation
+}
+
+func (s UpdateState) AutomaticOfferIsObsolete(target string) bool {
+	return s.DesiredAutomatic && s.Desired != nil && s.Desired.Version != strings.TrimPrefix(target, "v")
 }
 
 type UpdateRequestRecord struct {
@@ -35,6 +41,7 @@ type AutomaticOfferPolicy struct {
 
 type AutomaticOfferWriter interface {
 	EnsureAutomaticRunnerOffer(context.Context, UpdateRequestRecord, AutomaticOfferPolicy) (string, error)
+	InvalidateAutomaticRunnerOffer(context.Context, string, string) error
 }
 
 type UrgentUpdate struct {

@@ -84,11 +84,21 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 		return err
 	}
 	version, held := policy.target(Target(s.deps.Version))
+	if state.AutomaticOfferIsObsolete(version) {
+		owner, ok := writer.(runnerstore.AutomaticOfferWriter)
+		if !ok {
+			return hubapi.RunEventStorageUnavailable()
+		}
+		if err := owner.InvalidateAutomaticRunnerOffer(ctx, identity.RunnerID, state.Desired.ID); err != nil {
+			return err
+		}
+		state.Desired = nil
+	}
 	if !published && !held {
 		return nil
 	}
 	probe := &runnerauth.UpdateRequest{Version: version}
-	allowed, err := offerAllowedForTarget(ctx, writer, probe, version, held)
+	allowed, err := offerAllowedForTarget(ctx, writer, identity.RunnerID, probe, version, held)
 	if err != nil {
 		return err
 	}
@@ -116,7 +126,7 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 	if err != nil {
 		return err
 	}
-	urgentAllowed, err := offerAllowedForTarget(ctx, writer, urgent.Request, version, held)
+	urgentAllowed, err := offerAllowedForTarget(ctx, writer, identity.RunnerID, urgent.Request, version, held)
 	if err != nil {
 		return err
 	}
@@ -198,7 +208,7 @@ func (s *Service) runner(ctx context.Context, reader tenantstore.Reader, runnerI
 	if err != nil {
 		return runnerauth.Runner{}, err
 	}
-	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}, Routing: runnerauth.Routing{UpdateRequest: state.Desired}, OrganizationID: identity.OrganizationID, Revision: identity.Revision, LastHeartbeatAt: identity.LastHeartbeatAt, Update: state.Observation}
+	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID, MachineID: identity.MachineID}, OrganizationID: identity.OrganizationID, Revision: identity.Revision, LastHeartbeatAt: identity.LastHeartbeatAt, Update: state.Observation}
 	if !identity.ExpiresAt.After(now) {
 		runner.Health = "expired"
 	} else {
@@ -217,7 +227,7 @@ func (s *Service) runner(ctx context.Context, reader tenantstore.Reader, runnerI
 		runner.Lifecycle = lifecycle
 		runner.ApplyLifecycle(now)
 	}
-	if err := ApplyAvailableRouting(ctx, reader, &runner, urgent, machine.Version); err != nil {
+	if err := ApplyAvailableRouting(ctx, reader, &runner, state, urgent, machine.Version, s.deps.Version); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	return runner, nil

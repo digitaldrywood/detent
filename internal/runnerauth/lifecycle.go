@@ -30,8 +30,11 @@ type LifecycleReport struct {
 
 type LifecycleCommand struct {
 	LifecycleReport
-	UpdateRequestID string `json:"update_request_id,omitempty"`
+	UpdateRequestID    string `json:"update_request_id,omitempty"`
+	PreviousGeneration int64  `json:"previous_generation,omitempty"`
 }
+
+const LifecycleStartGenerationChanged = "lifecycle_start_generation_changed"
 
 type Lifecycle struct {
 	LifecycleReport

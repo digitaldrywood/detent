@@ -46,7 +46,7 @@ func (s *Service) runnerRoutingDeps() runnerfleet.RoutingDeps {
 		NotifyDispatch:      s.runnerNotifyDispatch(),
 		AuthorizeAccess:     s.authorizeAccessScope,
 		ManagementProjects:  runnerManagementProjects,
-		FleetRecord:         runnerFromFleetRecord,
+		FleetRecord:         s.runnerFromFleetRecord,
 		AllRunnerGrants:     s.appAllRunnerGrants,
 		AllRunnerGrantsWith: s.appAllRunnerGrantsWith,
 		AuthorizeProject:    s.authorizeProjectRecord,
@@ -90,7 +90,10 @@ func (s *Service) requireRunnerAdministrationTenant(ctx context.Context, reader 
 }
 
 func runnerFromRoutingRecord(record runnerstore.RoutingRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
-	return (runnerfleet.RoutingDeps{FleetRecord: runnerFromFleetRecord, LandingCapacityKey: landingCapacityKey}).FromRoutingRecord(record, now, urgent)
+	view := func(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
+		return runnerfleet.FromRecord(record, now, urgent, record.Update.TargetVersion)
+	}
+	return (runnerfleet.RoutingDeps{FleetRecord: view, LandingCapacityKey: landingCapacityKey}).FromRoutingRecord(record, now, urgent)
 }
 
 func (s *Service) listRunnerRouting(c echo.Context) error {
@@ -775,10 +778,6 @@ func nativeStaleLease(err error, message string) error {
 	return executionapi.NativeStaleLease(err, message)
 }
 
-func validCheckpointRef(ref string) bool {
-	return executionapi.ValidCheckpointRef(ref)
-}
-
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
 	return executionapi.ValidateNativeExecution(nativeRejection, nativeTerminationData, data, eventType)
 }
@@ -852,10 +851,6 @@ func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run trac
 
 func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error) {
 	return s.runnerAttemptDeps().ReadNativeAttemptRunTenant(ctx, snapshot)
-}
-
-func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, detail *hubrecords.RunDetailReference) ([]byte, error) {
-	return s.runnerAttemptDeps().ReadAttemptCheckpointDetail(ctx, snapshot, detail)
 }
 
 func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
@@ -995,10 +990,6 @@ func (s *Service) heartbeatNativeMachineTenant(c echo.Context, request nativeMac
 
 func validateTenantHeartbeatProjection(request nativeMachineHeartbeatRequest, projectID tracker.ProjectID) error {
 	return runnerfleet.ValidateTenantHeartbeatProjection(request, projectID)
-}
-
-func readRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
-	return runnerfleet.ReadRunnerResponseRouting(ctx, r, identity, snapshot)
 }
 
 func (s *Service) readRegistrationClaimStateTenant(ctx context.Context, scope hubscope.NativeScope, snapshot *runnerauth.RoutingSnapshot) error {

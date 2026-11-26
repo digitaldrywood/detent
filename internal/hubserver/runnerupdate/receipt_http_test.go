@@ -35,15 +35,20 @@ type receiptFixture struct {
 
 func newReceiptFixture(t *testing.T) receiptFixture {
 	t.Helper()
+	return newReceiptFixtureAtVersion(t, new(string), 2)
+}
+
+func newReceiptFixtureAtVersion(t *testing.T, version *string, runners int) receiptFixture {
+	t.Helper()
 	repository := hubtest.Repository(t)
 	organization := hubtest.Organization(t, repository, hubtest.OrganizationOptions{ID: "org_startup"}).OrganizationID
 	project := hubtest.Project(t, repository, organization, hubtest.ProjectOptions{})
 	h := hubtest.NewHTTP(t, hubtest.HTTPOptions{Repository: repository, Organization: organization}, func(group *echo.Group, deps hubtest.HTTPDeps) {
-		service := New(Deps{Repository: repository, Now: time.Now})
-		RegisterRoutes(group, HTTPDeps{Service: func() *Service { return service }, Auth: func() *hubauth.Authenticator { return deps.Auth }, Admin: deps.API(hubauth.Admin), Worker: deps.API(hubauth.Worker), Error: deps.Error, Invalid: func(c echo.Context, err error) error { return deps.Error(c, hubapi.Invalid(err.Error())) }})
+		service := func() *Service { return New(Deps{Repository: repository, Now: time.Now, Version: *version}) }
+		RegisterRoutes(group, HTTPDeps{Service: service, Auth: func() *hubauth.Authenticator { return deps.Auth }, Admin: deps.API(hubauth.Admin), Worker: deps.API(hubauth.Worker), Error: deps.Error, Invalid: func(c echo.Context, err error) error { return deps.Error(c, hubapi.Invalid(err.Error())) }})
 	})
 	f := receiptFixture{service: h}
-	for range 2 {
+	for range runners {
 		actor, runner := h.RunnerCredential(t, hubtest.RunnerOptions{Projects: []tracker.ProjectID{project.ID}})
 		if err := repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
 			return w.ReplaceRunnerBackendIsolation(t.Context(), runner.Record.RunnerID, isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}})

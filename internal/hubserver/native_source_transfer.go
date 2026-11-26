@@ -322,7 +322,7 @@ func (s *Service) nativeSourceRecoveryDestinationsTenant(ctx context.Context, sc
 		}
 		for _, candidate := range page.Items {
 			record := candidate.Record
-			runner := runnerFromFleetRecord(record, now, urgent)
+			runner := s.runnerFromFleetRecord(record, now, urgent)
 			if !record.Isolation.SupportsOn(runner.IsolationTier, runner.OS) {
 				continue
 			}
@@ -445,7 +445,7 @@ func (s *Service) validateSourceDestinationTenant(ctx context.Context, r tenants
 	if err != nil {
 		return err
 	}
-	runner := runnerFromFleetRecord(candidate.Record, now, urgent)
+	runner := s.runnerFromFleetRecord(candidate.Record, now, urgent)
 	runner.Used, runner.HostUsed = candidate.RunnerUsed, candidate.HostUsed
 	runner.ProjectUsed = map[tracker.ProjectID]int{scope.Project: candidate.ProjectUsed}
 	runner.ProviderCapacity = candidate.Providers

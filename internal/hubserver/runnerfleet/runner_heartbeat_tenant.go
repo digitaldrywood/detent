@@ -435,7 +435,7 @@ func (d HeartbeatDeps) HeartbeatNativeMachineTenant(c echo.Context, request Nati
 		if current.OrganizationID != credential.Runner.OrganizationID || current.Scope != string(hubapi.APIScopeWorker) || current.Kind != "service" || !current.Valid(credential.Hash, now) || !RunnerIdentityMatchesHeldLease(identity, credential.Runner.OrganizationID, credential.Runner.RunnerID, credential.ID, credential.Runner.MachineID, now) || !slices.Contains(identity.Operations, runnerauth.Heartbeat) {
 			return hubscope.RunnerUnauthorized()
 		}
-		if err := ReadRunnerResponseRouting(ctx, r, identity, &snapshot); err != nil {
+		if err := ReadRunnerResponseRouting(ctx, r, identity, &snapshot, d.Version); err != nil {
 			return err
 		}
 		assigned, err = r.RunnerProjectAuthorized(ctx, identity.RunnerID, projectID, now)
@@ -528,7 +528,7 @@ func (d HeartbeatDeps) ReadRunnerResponseSnapshot(ctx context.Context, organizat
 	return repository.ReadTenantSnapshot(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error { return read(ctx, r, d.Now().UTC()) })
 }
 
-func ReadRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {
+func ReadRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot, hubVersion string) error {
 	projects, err := r.RunnerProjects(ctx, identity.RunnerID, runnerstore.MaxRunnerProjectList)
 	if err != nil {
 		return err
@@ -550,12 +550,12 @@ func ReadRunnerResponseRouting(ctx context.Context, r tenantstore.Reader, identi
 	if err != nil {
 		return err
 	}
-	updateRunner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, Routing: runnerauth.Routing{UpdateRequest: updateState.Desired}, Update: updateState.Observation}
+	updateRunner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: identity.RunnerID}, Update: updateState.Observation}
 	urgentUpdate, err := r.RunnerUrgentUpdate(ctx)
 	if err != nil {
 		return err
 	}
-	if err := runnerupdate.ApplyAvailableRouting(ctx, r, &updateRunner, urgentUpdate, record.Version); err != nil {
+	if err := runnerupdate.ApplyAvailableRouting(ctx, r, &updateRunner, updateState, urgentUpdate, record.Version, hubVersion); err != nil {
 		return err
 	}
 	routing.UpdateRequest = updateRunner.UpdateRequest

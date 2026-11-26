@@ -555,7 +555,7 @@ func (s *Service) coordinatorRunnerDeps() coordinator.RunnerDeps {
 			return repository.ReadTenantSnapshot(ctx, org, corestore.Serving, read)
 		},
 		Authorize: s.authorizeAccessScope,
-		View:      runnerFromRoutingRecord,
+		View:      s.runnerRoutingDeps().FromRoutingRecord,
 		Scope:     s.coordinatorScope,
 		Now:       s.config.Clock,
 		UpdateRouting: func(ctx context.Context, scope hubscope.NativeScope, id string, change runnerauth.RoutingChange, tier *string) error {

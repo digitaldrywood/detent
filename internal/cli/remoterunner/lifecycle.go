@@ -92,8 +92,15 @@ func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.Lifecycle
 	if state == runnerauth.LifecycleStartFailed {
 		next.ErrorCode = "startup_error"
 	}
-	if err := l.send(ctx, runnerauth.LifecycleCommand{LifecycleReport: next, UpdateRequestID: requestID}); err != nil {
-		var refusal *api.APIError
+	command := runnerauth.LifecycleCommand{LifecycleReport: next, UpdateRequestID: requestID}
+	err := l.send(ctx, command)
+	var refusal *api.APIError
+	if state == runnerauth.LifecycleStarting && errors.As(err, &refusal) &&
+		refusal.Status == http.StatusConflict && refusal.Code == runnerauth.LifecycleStartGenerationChanged && refusal.CurrentRevision > 0 {
+		command.PreviousGeneration = int64(refusal.CurrentRevision)
+		err = l.send(ctx, command)
+	}
+	if err != nil {
 		if errors.As(err, &refusal) && refusal.Status == http.StatusConflict {
 			l.report.Sequence = next.Sequence
 		}

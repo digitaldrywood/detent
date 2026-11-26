@@ -365,17 +365,17 @@ func TestPostgresFleetReadsNamesCapacityLeasesAndHistoryWithoutSQLite(t *testing
 			return err
 		}
 		report := runnerauth.LifecycleReport{ProcessID: "example-process", Sequence: 1, State: runnerauth.LifecycleStarting, Version: "0.177.5", BuildRevision: "example-revision"}
-		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_1", report, "example-start", runnerstore.Rollout{}, now.Add(-runnerauth.RunnerReadyTimeout)); err != nil {
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_1", report, 0, "example-start", runnerstore.Rollout{}, now.Add(-runnerauth.RunnerReadyTimeout)); err != nil {
 			return err
 		}
 		report.ProcessID = "example-peer-process"
 		report.TargetVersion = "0.177.5"
-		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, "peer-start", runnerstore.Rollout{}, now); err != nil {
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, 0, "peer-start", runnerstore.Rollout{}, now); err != nil {
 			return err
 		}
 		report.State = runnerauth.LifecycleReady
 		report.Sequence++
-		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, "peer-ready", runnerstore.Rollout{}, now); err != nil {
+		if err := lifecycle.ReportRunnerLifecycle(t.Context(), "runner_2", report, 0, "peer-ready", runnerstore.Rollout{}, now); err != nil {
 			return err
 		}
 		return targets.SetRunnerUpdateTarget(t.Context(), "runner_2", runnerstore.UpdateTarget{Version: "0.177.4"})

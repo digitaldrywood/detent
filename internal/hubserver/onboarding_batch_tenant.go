@@ -172,7 +172,7 @@ func (s *Service) projectOnboardingBatchTenant(ctx context.Context, organization
 	}
 	runners := make([]runnerauth.Runner, len(records))
 	for i, record := range records {
-		runner := runnerFromFleetRecord(record, now, urgent)
+		runner := s.runnerFromFleetRecord(record, now, urgent)
 		runner.HostUsed = len(hostSlots[runner.MachineID])
 		runner.Used = len(runnerSlots[runner.RunnerID])
 		runner.ProjectUsed = projectUsed[runner.RunnerID]

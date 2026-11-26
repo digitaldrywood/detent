@@ -179,7 +179,7 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 		providerViews := tenantFleetProviderViews(records, leases, now)
 		for _, record := range records {
 			identity, machine := record.Identity, record.Machine
-			runner := runnerFromFleetRecord(record, now, urgent)
+			runner := s.runnerFromFleetRecord(record, now, urgent)
 			if selectedProject != "" && !runner.AllowsProject(selectedProject) {
 				continue
 			}
@@ -323,8 +323,8 @@ func (s *Service) readHostedFleetSnapshotTenant(ctx context.Context, credential 
 	return result, reservations, nil
 }
 
-func runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
-	return runnerfleet.FromRecord(record, now, urgent)
+func (s *Service) runnerFromFleetRecord(record runnerstore.FleetRecord, now time.Time, urgent runnerstore.UrgentUpdate) runnerauth.Runner {
+	return runnerfleet.FromRecord(record, now, urgent, s.config.Version)
 }
 
 type tenantFleetAccount struct{ provider, shared, runner, alias string }

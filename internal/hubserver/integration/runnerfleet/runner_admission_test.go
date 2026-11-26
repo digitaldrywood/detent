@@ -2,6 +2,7 @@ package runnerfleet_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,7 +126,7 @@ func TestSelfHostedRunnerVersionCompatibility(t *testing.T) {
 		capabilities []string
 		want         int
 	}{
-		{"older feature set", "older-release", 2, []string{"native_issues", "scoped_collaboration"}, http.StatusOK},
+		{"older feature set", "0.117.56", 2, []string{"native_issues", "scoped_collaboration"}, http.StatusOK},
 		{"current feature set", "current-release", 2, []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}, http.StatusOK},
 		{"unknown required feature", "future-release", 2, []string{"native_issues", "scoped_collaboration", "future_required"}, http.StatusUnprocessableEntity},
 		{"unsupported major", "future-release", 99, []string{"native_issues", "scoped_collaboration"}, http.StatusUnprocessableEntity},
@@ -133,17 +134,40 @@ func TestSelfHostedRunnerVersionCompatibility(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := hubfixture.NewDefaultNative(t, hubfixture.Config{})
+			f := hubfixture.NewDefaultNative(t, hubfixture.Config{Version: "0.118.0"})
 			issue := f.Create(t, "work")
 			hubfixture.ApprovePolicy(t, f.Hub, f.Base+"/policy", hubfixture.Policy())
-			r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r := hubfixture.PrepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 			r.Redemption.Version = test.version
 			r.Enroll(t)
-			hubfixture.ReportRunnerCapacity(t, f.Hub, f.Base, r.Redemption.Credential, r.Binding.MachineID, r.Redemption.DisplayName, r.Redemption.BackendIsolation, r.Redemption.Capacity)
+			token := r.Redemption.Credential
+			heartbeat := f.Hub.Request(t, http.MethodPost, f.Base+"/machines/"+string(r.Binding.MachineID)+"/heartbeat", token, map[string]any{
+				"version": test.version, "display_name": r.Redemption.DisplayName, "capacity": r.Redemption.Capacity, "backend_isolation": r.Redemption.BackendIsolation,
+				"capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("c", 64), LocalLimit: r.Redemption.Capacity, ClientLimit: r.Redemption.Capacity, RuntimeLimit: r.Redemption.Capacity, Manageable: true, ObservedAt: f.Hub.Now()},
+			})
+			hubfixture.RequireStatus(t, heartbeat, http.StatusOK)
 			claim := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, WorkItemID: issue.WorkItemID,
 				MachineID: r.Binding.MachineID, SessionID: "version-session", TTLSeconds: 90,
 				ProtocolMajor: test.major, Capabilities: test.capabilities}
-			hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, f.Base+"/claims", r.Redemption.Credential, claim), test.want)
+			response := f.Hub.Request(t, http.MethodPost, f.Base+"/claims", token, claim)
+			hubfixture.RequireStatus(t, response, test.want)
+			if test.name == "older feature set" {
+				var lease tracker.NativeLease
+				hubfixture.Decode(t, response, &lease)
+				routing := f.Hub.Request(t, http.MethodGet, r.IdentityPath()+"/routing", token, nil)
+				hubfixture.RequireStatus(t, routing, http.StatusOK)
+				var runner runnerauth.Runner
+				hubfixture.Decode(t, routing, &runner)
+				if runner.Lifecycle != nil || runner.Health != "online" {
+					t.Fatalf("legacy runner health=%q lifecycle=%+v", runner.Health, runner.Lifecycle)
+				}
+				path := f.Base + "/work-items/" + string(issue.WorkItemID) + "/events"
+				event := hubfixture.StartedEvent(lease)
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, token, event), http.StatusOK)
+				event.Type, event.IdempotencyKey = "run.finished", "finish"
+				event.Data.Sequence, event.Data.Outcome, event.Data.CompletionBody = 2, "succeeded", "Completed legacy runner attempt"
+				hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPost, path, token, event), http.StatusOK)
+			}
 		})
 	}
 }

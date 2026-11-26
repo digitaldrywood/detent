@@ -37,13 +37,13 @@ func (s *Store) runnerUpdateRequest(ctx context.Context, requestID string) (runn
 func (s *Store) RunnerUpdateState(ctx context.Context, runnerID string) (runnerstore.UpdateState, error) {
 	state := runnerstore.UpdateState{OrganizationID: s.organization, RunnerID: runnerID}
 	var desiredID string
-	err := s.db.QueryRow(ctx, `SELECT desired.request_id
+	err := s.db.QueryRow(ctx, `SELECT desired.request_id,`+automaticOfferSQL+`
  FROM runner_update_desired desired
  JOIN runner_update_requests d ON (d.organization_id,d.request_id)=(desired.organization_id,desired.request_id)
  LEFT JOIN runner_update_targets o ON o.organization_id=desired.organization_id AND o.runner_id=''
  LEFT JOIN runner_update_targets t ON t.organization_id=desired.organization_id AND t.runner_id=desired.runner_id
  LEFT JOIN runner_update_observations b ON b.organization_id=desired.organization_id AND b.runner_id=desired.runner_id
- WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND `+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL, s.organization, runnerID).Scan(&desiredID)
+ WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND `+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL, s.organization, runnerID).Scan(&desiredID, &state.DesiredAutomatic)
 	if err == nil {
 		record, err := s.runnerUpdateRequest(ctx, desiredID)
 		if err != nil {
