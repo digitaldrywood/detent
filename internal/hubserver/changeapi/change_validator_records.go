@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/changerules"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimsource"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -44,7 +45,7 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 	if request.SecurityAudit != nil {
 		resultID = request.SecurityAudit.SessionID
 	}
-	if source.ImplementingSessionID < 0 || source.SourceObjectKey == "" || source.ImplementingMachineID == "" {
+	if source.ImplementingSessionID < 0 || source.ImplementingMachineID == "" {
 		return nil, "", hubapi.NativePublicInvalid("worker review requires recorded source and review sessions")
 	}
 	p := &preparedValidatorReview{}
@@ -69,6 +70,15 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 		p.issue, err = r.WorkItem(ctx, scope.Project, change.WorkItemID)
 		if err != nil {
 			return fmt.Errorf("read review issue: %w", err)
+		}
+		if source.SourceObjectKey == "" {
+			found, err := claimsource.VersionPushed(ctx, r, scope.Project, p.issue.ID, source)
+			if err != nil {
+				return fmt.Errorf("read review source receipt: %w", err)
+			}
+			if !found {
+				return hubapi.NativePublicInvalid("worker review requires recorded source and review sessions")
+			}
 		}
 		itemVersion, err = r.CollaborationVersion(ctx, string(change.WorkItemID), p.issue.Revision)
 		if err != nil {

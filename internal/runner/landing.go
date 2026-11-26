@@ -23,7 +23,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner/phaserecovery"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -195,9 +194,8 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 						refused.NativeLanding.Gate = &resolved.Gate
 						refused.NativeLanding.GateFailed = resolved.Gate.ExitCode != 0
 					}
-					if !req.RetainItemWorkspace && errors.Is(resolveErr, workspace.ErrLandingConflictUnresolved) {
-						action := "How should the reviewed change be combined with the current base? " + conflicts + "."
-						refused.FinalMessage = workpad.BlockedDetail(refused.FinalMessage, action)
+					if disposition := NativeDispositionFromMessage(turn.FinalMessage); disposition != nil && disposition.Status == "blocked" && disposition.HumanAction {
+						refused.FinalMessage = turn.FinalMessage
 					}
 					return refused, nil
 				}

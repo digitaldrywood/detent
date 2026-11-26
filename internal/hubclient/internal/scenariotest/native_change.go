@@ -642,7 +642,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 					t.Fatal(err)
 				}
 			}
-			provider := &committingAgent{finalMessage: test.FinalMessage, dependencyOnly: test.DependencyOnly, failedCheck: test.FailedCheck, commit: test.Commit, dirty: test.Dirty, staged: test.Staged || genuinePublication, validator: test.Validator, lowScore: test.LowScore, complete: test.Absorbed || test.Delivered != "" || test.SummaryFailure, hold: test.Hold, inProgress: test.LateConflict}
+			provider := &committingAgent{finalMessage: test.FinalMessage, dependencyOnly: test.DependencyOnly, failedCheck: test.FailedCheck, commit: test.Commit, dirty: test.Dirty, staged: test.Staged || genuinePublication, validator: test.Validator, lowScore: test.LowScore, complete: test.Absorbed || test.Delivered != "" || test.SummaryFailure || test.SourceFixture != "", hold: test.Hold, inProgress: test.LateConflict}
 			if test.SourceFixture != "" {
 				provider.duringTurn = func() {
 					for path, original := range fixtures {
@@ -1439,8 +1439,14 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				resumedOwner := resumedExecution.(*ownedExecution)
 				stored := original.Versions[0]
+				receipts, err := h.admin.ItemPhaseReceipts(t.Context(), item)
+				if err != nil || !slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool {
+					return receipt.Phase == "implement" && receipt.HeadSHA == stored.HeadSHA && receipt.AttemptID == stored.AttemptID && receipt.PolicyID == stored.PolicyID
+				}) {
+					t.Fatalf("completed source has no matching Git phase receipt: %v", err)
+				}
 				review := original.Reviews[0].ImplementationReview
-				if stored.Source == nil || stored.Validation == nil || stored.RunID != owner.CompletionData().RunID || stored.AttemptID != owner.CompletionData().AttemptID || resumedOwner.CompletionData().RunID != stored.RunID || resumedOwner.CompletionData().AttemptID == stored.AttemptID || implementationSession.Load() == 0 || review == nil || review.SessionID == 0 || review.SessionID == implementationSession.Load() {
+				if stored.Validation == nil || stored.RunID != owner.CompletionData().RunID || stored.AttemptID != owner.CompletionData().AttemptID || resumedOwner.CompletionData().RunID != stored.RunID || resumedOwner.CompletionData().AttemptID == stored.AttemptID || implementationSession.Load() == 0 || review == nil || review.SessionID == 0 || review.SessionID == implementationSession.Load() {
 					t.Fatalf("resume lost source, session, or fresh-workspace identity: stored=%+v review=%+v original=%+v resumed=%+v", stored, review, evidence.Attempt, resumedOwner.CompletionData())
 				}
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
@@ -2118,6 +2124,17 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				return
 			}
+			if test.SourceFixture != "" && test.SourceFixture != "synthetic" {
+				change := result.NativeChange
+				if !errors.Is(err, workspace.ErrCheckpointUnsafe) || change == nil || change.Changed || change.VersionID != "" || !strings.Contains(change.VersionError, "checkpoint could not be safely published: possible credential in selected content") || len(h.changes(t, issue.ID)) != 0 {
+					t.Fatalf("unsafe source was published or lost its capture refusal: change=%+v error=%v", change, err)
+				}
+				refs, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(refname)", "refs/heads").Output()
+				if readErr != nil || strings.TrimSpace(string(refs)) != "refs/heads/main" {
+					t.Fatalf("refused source reached the remote: refs=%s error=%v", refs, readErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run: %v (provider calls: %d; writable calls: %d; final message: %s)", err, provider.calls, provider.writableCalls, result.FinalMessage)
 			}
@@ -2197,7 +2214,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				found := false
 				for _, message := range transcript.Messages {
-					if message.Text == "Finished the native work" {
+					if message.Text == "Finished the native work" || test.SourceFixture != "" && strings.HasPrefix(message.Text, "Finished the native work\n") {
 						found = message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && *message.TurnID == "turn-1" && message.Actor.Kind == "runner"
 					}
 				}
@@ -2206,12 +2223,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 			}
 			change := result.NativeChange
-			if test.SourceFixture != "" && test.SourceFixture != "synthetic" {
-				if change == nil || change.Changed || change.VersionID != "" || change.VersionError != "checkpoint could not be safely published: possible credential in selected content" || len(h.changes(t, issue.ID)) != 0 {
-					t.Fatal("unsafe source was published or lost its capture refusal")
-				}
-				return
-			}
 			if test.AdvanceTarget {
 				attempt := api.ExecutionID("attempt", string(execution.Recovery().Lease.ID))
 				var stored tracker.AttemptDiff
@@ -2398,12 +2409,11 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatalf("published version lost finalized attempt/head/policy identity: %+v", version)
 					}
 					if test.SourceFixture == "synthetic" {
-						bundle, err := h.admin.ChangeSource(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID, version.ID)
-						if err != nil || version.Source == nil {
-							t.Fatalf("published synthetic source unavailable: %v", err)
-						}
-						if err := version.Source.Validate(version.BaseSHA, version.HeadSHA, bundle); err != nil {
-							t.Fatal(err)
+						receipts, err := h.admin.ItemPhaseReceipts(t.Context(), tracker.NativeWorkItemID(issue.ID))
+						if err != nil || !slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool {
+							return receipt.Phase == "implement" && receipt.HeadSHA == version.HeadSHA && receipt.AttemptID == version.AttemptID && receipt.PolicyID == version.PolicyID
+						}) {
+							t.Fatalf("published synthetic source has no matching Git phase receipt: %v", err)
 						}
 						var paths []string
 						for _, file := range stored.Files {

@@ -42,3 +42,12 @@ CROSS JOIN LATERAL (
     ORDER BY receipt.position DESC LIMIT 1
 ) matching
 ORDER BY ordinal;
+
+
+-- name: NativeAttemptHasSourceReceipt :one
+SELECT EXISTS (
+    SELECT 1 FROM native_phase_receipts
+    WHERE organization_id = $1 AND project_id = $2 AND issue_id = $3
+      AND attempt_id = $4 AND head_sha = $5 AND policy_id = $6
+      AND phase IN ('implement', 'project_gate', 'review', 'merge')
+);
