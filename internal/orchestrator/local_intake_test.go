@@ -28,7 +28,11 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 		{Name: "Done", Terminal: true}, {Name: "Blocked"}, {Name: "Backlog"},
 	}, reviewed: new(false)}
 	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "local"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework", "Merging"}, TerminalStates: []string{"Done"}, AutoPromote: AutoPromoteConfig{SourceState: "Human Review", ReworkState: "Rework"}})
-	orch := &Orchestrator{cfg: cfg, projectID: "local", connector: tracker}
+	supervisor, err := runpkg.NewSupervisor(FakeRunner{}, runpkg.SupervisorConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orch := &Orchestrator{cfg: cfg, projectID: "local", connector: tracker, supervisor: supervisor, runResults: make(chan runpkg.Completion, 1)}
 	state := newState(cfg)
 	state.localAdmitted[admitted.ID] = struct{}{}
 	state.localAdmitted[blocked.ID] = struct{}{}
@@ -41,7 +45,7 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 	change := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: "head", Files: 1}
 	complete := func(mode string, result runpkg.RunResult) {
 		t.Helper()
-		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: admitted.ID, CompletedAt: now.Add(time.Minute), Request: runpkg.RunRequest{Mode: mode}, Result: result})
+		orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: admitted.ID, CompletedAt: now.Add(time.Minute), Request: runpkg.RunRequest{Mode: mode, Execution: &nativeCompletionPublisher{}}, Result: result})
 	}
 	complete(runpkg.RunModeImplement, runpkg.RunResult{FinalState: FinalStateCompleted, NativeChange: change})
 	if got := tracker.stateIssues[2].State; got != "Human Review" {
@@ -79,6 +83,13 @@ func TestLocalIntakeCohortLifecycle(t *testing.T) {
 				tracker.stateIssues[2].State = "Done"
 			}
 			complete(turn.mode, result)
+			if turn.want == "Merging" {
+				<-orch.runResults
+				<-state.Running[issue.ID].done
+				if cancel := state.Running[issue.ID].cancel; cancel != nil {
+					cancel()
+				}
+			}
 			if got := tracker.stateIssues[2].State; got != turn.want {
 				t.Fatalf("completion lane = %s, want %s", got, turn.want)
 			}

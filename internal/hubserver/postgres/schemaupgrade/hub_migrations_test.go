@@ -26,8 +26,8 @@ func TestHubMigrationVerificationScope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			admin := pgstoretest.Template.Database(t)
-			migrationConnection := roleConnection(t, pgstoretest.Template, admin, "detent_migration_v2")
-			runtimeConnection := roleConnection(t, pgstoretest.Template, admin, "detent_runtime_v2")
+			migrationConnection := roleConnection(t, pgstoretest.Template.Template, admin, "detent_migration_v2")
+			runtimeConnection := roleConnection(t, pgstoretest.Template.Template, admin, "detent_runtime_v2")
 			const seedVersion int64 = 20261005115959
 			const firstVersion int64 = 20261005120000
 			const secondVersion int64 = 20261005120001

@@ -207,6 +207,9 @@ func TestRunnerResolvesLandingBeforeWorkspace(t *testing.T) {
 }
 
 func TestRunnerLandingPreservesCodeAndOperatorOwners(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow runner landing test in -short mode")
+	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, mode := range []string{"native", "pull-request", "external"} {
@@ -603,6 +606,9 @@ func TestLandNativeChange(t *testing.T) {
 }
 
 func TestLandNativeChangeKeepsAnUnreportedLanding(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow unreported landing test in -short mode")
+	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {

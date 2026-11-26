@@ -123,3 +123,39 @@ func TestVerifyPublicationRemoteRepository(t *testing.T) {
 		})
 	}
 }
+
+func TestRemoteArgsUsesConfiguredGitHubCredentialHelper(t *testing.T) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("gh unavailable")
+	}
+	t.Cleanup(func() { SetGitHubCredentialHelper("") })
+	for _, tc := range []struct {
+		name   string
+		helper string
+		want   []string
+	}{
+		{
+			name:   "default helper preserves existing helper chain",
+			helper: "",
+			want:   []string{"-c", "credential.https://github.com.helper=!gh auth git-credential", "push", "origin", "HEAD"},
+		},
+		{
+			name:   "host helper unsetting GH_CONFIG_DIR resets helper chain",
+			helper: "!env -u GH_CONFIG_DIR gh auth git-credential",
+			want:   []string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=!env -u GH_CONFIG_DIR gh auth git-credential", "push", "origin", "HEAD"},
+		},
+		{
+			name:   "host helper with explicit GH_CONFIG_DIR resets helper chain",
+			helper: "!env GH_CONFIG_DIR='/host/gh' gh auth git-credential",
+			want:   []string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=!env GH_CONFIG_DIR='/host/gh' gh auth git-credential", "push", "origin", "HEAD"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetGitHubCredentialHelper(tc.helper)
+			got := RemoteArgs("push", "origin", "HEAD")
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("RemoteArgs() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

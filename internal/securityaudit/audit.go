@@ -152,7 +152,7 @@ type Evaluation struct {
 }
 
 func ReviewerDigest() string {
-	return reviewerDigest(trustedReviewerInstructions+"\x00"+chunkInstructions, trustedToolInstructions)
+	return reviewerDigest(trustedReviewerInstructions+"\x00"+trustedCheckoutInstructions+"\x00"+chunkInstructions, trustedToolInstructions+"\x00"+trustedCheckoutToolInstructions)
 }
 
 func ServiceIdentity(projectID string) string {
@@ -180,6 +180,9 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 
 func EvaluateLandedSource(run Run, key Key) Evaluation {
 	if run.ReviewerVersion == "2" && run.ReviewerDigest == "18feae8d1c5b5a50cbcfdd9feb1280302a3c888881b7facf4200d6af3c3ee761" {
+		return evaluate(run, nil, key, "", []string{"p1", "p2"}, run.ReviewerVersion, run.ReviewerDigest)
+	}
+	if run.ReviewerVersion == "3" && run.ReviewerDigest == "a787e62910e1313879b866070b718f1e472101b1e7694f4345d4cf0a18814c5c" {
 		return evaluate(run, nil, key, "", []string{"p1", "p2"}, run.ReviewerVersion, run.ReviewerDigest)
 	}
 	return Evaluate(run, nil, key, "", []string{"p1", "p2"})

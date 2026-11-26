@@ -52,6 +52,8 @@ func (rd Reader) Hydrate(ctx context.Context, row corestore.WorkItem, version ev
 		if reference := tracker.GitHubIssueSourceReference(source.URL, source.URL); !slices.Contains(issue.ExternalReferences, reference) {
 			issue.ExternalReferences = append(issue.ExternalReferences, reference)
 		}
+	} else {
+		issue.LinkedSource = nil
 	}
 	return rd.IssueResponse(issue), nil
 }

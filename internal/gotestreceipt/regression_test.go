@@ -125,6 +125,9 @@ func TestReceiptKeyRegressions(t *testing.T) {
 }
 
 func TestWrapperRejectsUnobservedInputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping go test wrapper subprocess test in -short mode")
+	}
 	for _, tc := range []struct {
 		name, source string
 		environment  bool

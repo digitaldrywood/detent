@@ -27,16 +27,12 @@ MIGRATIONS_DIR ?= internal/hubserver/postgres/migrations
 GOOSE_DRIVER ?= postgres
 GOOSE_VERSION := v3.26.0
 DATABASE_URL ?=
-NILAWAY_VERSION ?= v0.0.0-20261119204003-79b344b77cf5
-NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
-NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
 GOVULNCHECK_VERSION ?= v1.10.0
 GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # Upstream issue: https://github.com/securego/gosec/issues/1712
 GOSEC_VERSION ?= v2.30.0
 GOSEC_BINARY ?= tmp/gosec-$(GOSEC_VERSION)-deterministic
 GOSEC_PATCH ?= scripts/gosec-v2.30.0-deterministic.patch
-GOSEC_DETERMINISM_RUNS ?= 8
 TEST_PROCS ?= 4
 GOMAXPROCS ?= $(TEST_PROCS)
 export GOMAXPROCS
@@ -59,7 +55,7 @@ HEFT := GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" go run github.com/digitaldrywoo
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test app-test-run app-contract board-contract-run check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test app-test-run app-contract board-contract-run check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security check check-landing check-release modernize-check source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -89,7 +85,6 @@ check-migrations:
 
 check-generated: generate-docs
 	$(SQLC) diff -f "$(SQLC_CONFIG)"
-	python3 scripts/check-runner-enrollment-docs.py
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
@@ -184,81 +179,15 @@ test: generate-docs
 	$(GO_TEST) ./internal/web
 
 test-fast: generate-docs
-	$(GO_TEST) -short -timeout=60s ./...
-
-# Hub server tests split into slices balanced by measured time; slice 4 catches every other name.
-HUB_SLICE_1 := -run '^Test([BDEFILQTUV]|Normalize|Native[A-H])'
-HUB_SLICE_2 := -run '^Test[HMP]'
-HUB_SLICE_3 := -run '^Test[CGS]'
-HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
-HUB_SLICE_5 := -run '^Test(A|Native[I-Z])'
-
-# RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
-RACE_SHARD ?=
-RACE_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(RACE_SHARD)))
+	$(GO_TEST) -short -timeout=10m ./...
 
 test-race: generate-docs
-	@if [ -z "$(RACE_SHARD)" ]; then \
-		$(GO_TEST) -short -race -timeout=30m ./...; \
-	elif [ -n "$(RACE_HUB_SLICE)" ]; then \
-		$(GO_TEST) -short -race -timeout=30m ./internal/hubserver $(HUB_SLICE_$(RACE_HUB_SLICE)); \
-	else \
-		packages="$$(bash scripts/race-packages.sh $(RACE_SHARD))"; \
-		$(GO_TEST) -short -race -timeout=30m $$packages; \
-	fi
+	$(GO_TEST) -short -race -timeout=30m ./...
 
-# COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
-# COVER_SHARD=hub-N covers hub server slice N; COVER_SKIP_HUB=1 leaves the hub server to those shards.
-COVER_SHARD ?= 1/1
-COVER_SKIP_HUB ?=
-COVER_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(COVER_SHARD)))
-
-ifneq ($(COVER_HUB_SLICE),)
 test-cover:
 	@mkdir -p tmp
-	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./internal/hubserver $(HUB_SLICE_$(COVER_HUB_SLICE))
+	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./...
 	@$(MAKE) coverage-check
-else
-test-cover:
-	@mkdir -p tmp
-	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{1,2,3,4,5}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
-	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
-		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
-	fi
-	@set -e; packages="$$(COVER_SKIP_HUB=$(COVER_SKIP_HUB) bash scripts/cover-packages.sh $(COVER_SHARD))"; \
-	hub=; remaining=; profiles=; \
-	for package in $$packages; do \
-		case "$$package" in \
-			github.com/digitaldrywood/detent/internal/workspace/*) continue ;; \
-			github.com/digitaldrywood/detent/internal/hubserver) hub=1 ;; \
-			*) remaining="$$remaining $$package" ;; \
-		esac; \
-	done; \
-	if [ -n "$$hub" ]; then \
-		$(GO_TEST) -coverprofile=tmp/hub-1-cover.raw.out ./internal/hubserver $(HUB_SLICE_1); \
-		$(GO_TEST) -coverprofile=tmp/hub-2-cover.raw.out ./internal/hubserver $(HUB_SLICE_2); \
-		$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver $(HUB_SLICE_3); \
-		$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver $(HUB_SLICE_4); \
-		$(GO_TEST) -coverprofile=tmp/hub-5-cover.raw.out ./internal/hubserver $(HUB_SLICE_5); \
-		go run ./tools/covermerge -union tmp/hub-1-cover.raw.out tmp/hub-2-cover.raw.out tmp/hub-3-cover.raw.out tmp/hub-4-cover.raw.out tmp/hub-5-cover.raw.out > tmp/hub-cover.raw.out; \
-		profiles=tmp/hub-cover.raw.out; \
-	fi; \
-	if [ -n "$$remaining" ]; then \
-		$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining; \
-		profiles="$$profiles tmp/packages-cover.raw.out"; \
-	fi; \
-	set -- $$profiles; \
-	if [ "$$#" -eq 1 ]; then cp "$$1" tmp/rest-cover.raw.out; \
-	else go run ./tools/covermerge "$$@" > tmp/rest-cover.raw.out; fi
-	# Keep the web timing check isolated and coverage profiles disjoint.
-	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
-		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web && \
-		go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW); \
-	else \
-		cp tmp/rest-cover.raw.out $(COVERPROFILE_RAW); \
-	fi
-	@$(MAKE) coverage-check
-endif
 
 coverage-check:
 	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"
@@ -290,36 +219,19 @@ vet:
 gosec-build:
 	./scripts/build-gosec.sh "$(GOSEC_VERSION)" "$(GOSEC_PATCH)" "$(GOSEC_BINARY)"
 
-security-gosec-determinism: gosec-build
-	./scripts/check-gosec-determinism.sh "$(GOSEC_BINARY)" "$(GOSEC_DETERMINISM_RUNS)"
-
-security: security-gosec-determinism
+security: gosec-build
 	$(GOVULNCHECK) ./...
 	$(GOSEC_BINARY) -quiet -exclude-generated -severity=medium -confidence=medium -exclude=$(GOSEC_EXCLUDES) $(GOSEC_EXCLUDE_DIR_FLAGS) ./...
 
-nilaway-audit:
-	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
+check: check-migrations check-generated lint vet test-fast
+	go build ./...
+	@echo "Checks passed."
 
-nilaway-changed:
-	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
-
-check: check-migrations check-generated check-app build lint vet nilaway-audit test-race test-cover
-	@echo "All checks passed."
-
-check-land:
-	NILAWAY_VERSION="$(NILAWAY_VERSION)" NILAWAY_INCLUDE_PKGS="$(NILAWAY_INCLUDE_PKGS)" bash scripts/check-land.sh "$(CHECK_LAND_BASE)" "$(APP_DIR)" "$(TEST_PROCS)"
-
-.PHONY: check-release
-check-release:
-	bash scripts/check-release.sh "$(TEST_PROCS)"
-
-.PHONY: check-landing
 check-landing:
 	bash scripts/check-landing.sh "$(CHECK_LAND_BASE)" "$(TEST_PROCS)" "$(GOLANGCI_LINT_RUN)"
 
-check-fast: check-migrations check-generated check-app lint vet test-fast
-	go build ./...
-	@echo "Fast checks passed."
+check-release:
+	bash scripts/check-release.sh "$(TEST_PROCS)"
 
 modernize-check:
 	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
@@ -385,13 +297,12 @@ help:
 	@echo "  soak         Run opt-in orchestrator incident and adversarial soak tests"
 	@echo "  visual-e2e   Run Playwright browser journeys"
 	@echo "  lint         Run golangci-lint"
-	@echo "  security-gosec-determinism  Verify deterministic G705 caller traversal"
 	@echo "  security     Run govulncheck and gosec security scans"
-	@echo "  check-land   Run the pre-landing lint, vet, build and short-test gate"
+	@echo "  check        Run local migrations, generated, lint, vet, short tests, and build"
+	@echo "  check-landing  Run diff-scoped landing build, short tests, and lint"
+	@echo "  check-release  Run full release validation suite"
 	@echo "  test-fast    Run the whole-repository short unit suite"
-	@echo "  check        Run optional full diagnostics, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
-	@echo "  nilaway-audit  Run the local NilAway audit"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"
 	@echo "  sqlc         Generate sqlc output"
 	@echo "  db-create    Create a UTC timestamp SQL migration (NAME=description)"

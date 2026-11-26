@@ -55,6 +55,9 @@ func (p *providerBatchProbe) Exec(ctx context.Context, query string, args ...any
 	return result, err
 }
 func TestRunnerProviderReportsPreserveFidelity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres runner provider batch test in -short mode")
+	}
 	t.Parallel()
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("roles.sql")

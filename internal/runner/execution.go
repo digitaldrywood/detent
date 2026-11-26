@@ -719,7 +719,7 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	checkpoint.HeadSHA = state.HeadSHA
 	checkpoint.WorkspaceDigest = state.WorkspaceFingerprint
 	checkpoint.WorktreeState = "clean"
-	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.RebaseInProgress {
 		checkpoint.WorktreeState = "dirty"
 	} else if state.UnpushedCommits > 0 {
 		checkpoint.WorktreeState = "unpushed"
@@ -1094,7 +1094,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		return false, errors.Join(completionErr, err)
 	}
 	if err := recordExecutionCheckpoint(checkpointCtx, req.Execution, checkpoint); err != nil {
-		return false, errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
 	cancellation := executionCancellation(req)
 	completionErr = errors.Join(completionErr, cancellation)
