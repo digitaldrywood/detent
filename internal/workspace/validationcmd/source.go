@@ -140,7 +140,7 @@ func verifyPublicationTree(ctx context.Context, path string, read func(...string
 		if fromHead {
 			err = gitexec.WithPublicationCheckoutFromHead(ctx, submodule, "", verifySubmodule)
 		} else {
-			err = gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+			err = gitexec.WithPublicationCheckout(ctx, submodule, "", func(read func(...string) (string, error), _ gitexec.BoundedRead, _ func(string, string, ...string) error) error {
 				return verifySubmodule(read)
 			})
 		}

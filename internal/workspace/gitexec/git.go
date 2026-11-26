@@ -373,13 +373,13 @@ func withinLimitEnvironment(ctx context.Context, workspacePath string, env []str
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", false, fmt.Errorf("git diff stdout pipe: %w", err)
+		return "", false, fmt.Errorf("git stdout pipe: %w", err)
 	}
-	var stderr bytes.Buffer
+	stderr := limitedBuffer{limit: 8192}
 	cmd.Stderr = &stderr
 	wait, err := commandshell.StartCommand(ctx, cmd)
 	if err != nil {
-		return "", false, fmt.Errorf("git diff start: %w", err)
+		return "", false, fmt.Errorf("start git: %w", err)
 	}
 
 	output, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
@@ -391,7 +391,7 @@ func withinLimitEnvironment(ctx context.Context, workspacePath string, env []str
 	waitErr := wait()
 
 	if readErr != nil {
-		return "", false, fmt.Errorf("git diff read: %w", readErr)
+		return "", false, fmt.Errorf("read git output: %w", readErr)
 	}
 	if truncated {
 		if err := gitDiffStopError(killErr, waitErr); err != nil {
@@ -411,7 +411,7 @@ func withinLimitEnvironment(ctx context.Context, workspacePath string, env []str
 	if ctx.Err() != nil {
 		waitErr = ctx.Err()
 	}
-	combined := append(output, stderr.Bytes()...)
+	combined := append(output, stderr.String()...)
 	return "", false, &CommandError{
 		Command:  "git",
 		Args:     gitArgs[1:],
@@ -425,5 +425,5 @@ func gitDiffStopError(killErr error, waitErr error) error {
 	if killErr == nil || errors.Is(killErr, os.ErrProcessDone) || waitErr == nil {
 		return nil
 	}
-	return fmt.Errorf("git diff stop after limit: %w", killErr)
+	return fmt.Errorf("stop git after output limit: %w", killErr)
 }

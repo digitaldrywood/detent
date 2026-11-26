@@ -52,26 +52,64 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if issue.ExpectedPhaseRemoteHead != "" {
 		expected = &issue.ExpectedPhaseRemoteHead
 	}
+	target := issue.ProgressBaseRef
+	if issue.ReleaseDelivery != nil {
+		target = issue.ReleaseDelivery.BaseRef
+	}
 	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
 		return nil
-	}, func(read func(...string) (string, error), head string) error {
-		base, err := l.localProgressBase(ctx, info.Path, issue)
+	}, func(read gitexec.BoundedRead, head, previous string) error {
+		base, err := l.verifiedPhaseTarget(ctx, info.Path, repository, target, read)
 		if err != nil {
-			return fmt.Errorf("resolve phase source base: %w", err)
+			return fmt.Errorf("resolve remote phase target: %w", err)
 		}
-		ancestor, err := read("merge-base", "--", base, head)
-		if err != nil {
-			return fmt.Errorf("resolve phase source merge base: %w", err)
+		published := []string{base}
+		if previous != "" {
+			published = append(published, previous)
 		}
-		return checkpoint.PhaseHistory(ctx, func(_ context.Context, args ...string) (string, error) {
-			return read(args...)
-		}, strings.TrimSpace(ancestor), head)
+		return checkpoint.PhaseHistory(read, head, published...)
 	}, func() error {
 		return refuse(LandRefusalHeadMoved, "the item branch changed during phase publication")
 	})
+}
+
+func (l *LocalGit) verifiedPhaseTarget(ctx context.Context, path, repository, target string, read gitexec.BoundedRead) (string, error) {
+	target = strings.TrimSpace(target)
+	var head string
+	var err error
+	if target == "" {
+		target, head, err = gitexec.PublicationDefaultBranchHead(ctx, repository)
+	} else {
+		if _, _, err := read(0, "check-ref-format", "refs/heads/"+target); err != nil {
+			return "", err
+		}
+		head, _, err = gitexec.PublicationBranchHead(ctx, repository, target)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !gitexec.ValidHead(head) {
+		return "", errors.New("configured remote phase target has no valid commit")
+	}
+	if _, _, err := read(0, "cat-file", "-e", head+"^{commit}"); err == nil {
+		return head, nil
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	fetched, err := gitexec.FetchPublicationBranch(ctx, path, defaultGitRemote, repository, target)
+	if err != nil {
+		return "", err
+	}
+	if fetched != head {
+		return "", errors.New("remote phase target moved during fetch")
+	}
+	return head, nil
 }
 
 func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous PhaseSource, authorize func(context.Context) error) (string, error) {

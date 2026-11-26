@@ -56,7 +56,7 @@ func verifyCheckout(read func(...string) (string, error), expectedHead, expected
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, verifyHistory func(func(...string) (string, error), string) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, verifyHistory func(gitexec.BoundedRead, string, string) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -68,7 +68,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 	}
 	ref := "refs/heads/" + branch
 	var head, tree string
-	err := gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), push func(string, string, ...string) error) error {
+	err := gitexec.WithPublicationCheckout(ctx, path, owner, func(read func(...string) (string, error), readBounded gitexec.BoundedRead, push func(string, string, ...string) error) error {
 		if _, err := read("check-ref-format", ref); err != nil {
 			return fmt.Errorf("validate phase publication branch: %w", err)
 		}
@@ -102,7 +102,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		if previous == head {
 			return authorize(ctx)
 		}
-		if err := verifyHistory(read, head); err != nil {
+		if err := verifyHistory(readBounded, head, previous); err != nil {
 			return err
 		}
 		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
