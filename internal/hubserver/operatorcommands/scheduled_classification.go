@@ -105,20 +105,9 @@ func ScheduledRepository(ctx context.Context, reader tenantstore.Repository, sco
 	return repository, hubapi.ProjectRecordError(err)
 }
 
-func (s ScheduledCIDeps) reserveClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure) error {
-	identity, err := json.Marshal([]string{string(scope.Project), input.Repository, input.RunID, input.RunAttempt, input.JobID})
-	if err != nil {
-		return fmt.Errorf("encode CI classification identity: %w", err)
-	}
-	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := s.Authorize(ctx, w, scope, true); err != nil {
-			return err
-		}
-		return s.Plans.ReserveScheduledClassification(ctx, w, scope.Organization, "scheduled-ci/"+policy.Digest(identity), s.Now().UTC())
-	})
-}
+const scheduledClassificationTimeout = time.Minute
 
-func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, result progresscheck.CIDecision) error {
+func (s ScheduledCIDeps) reserveClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey, receiptID string) error {
 	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.Authorize(ctx, w, scope, true); err != nil {
 			return err
@@ -128,6 +117,42 @@ func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		now := s.Now().UTC()
+		claimed, err := owner.ClaimScheduledClassification(ctx, scope.Project, jobKey, receiptID, now, now.Add(2*scheduledClassificationTimeout))
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
+		switch _, readErr := owner.ReadScheduledDecision(ctx, scope.Project, input); {
+		case readErr == nil:
+			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		case errors.Is(readErr, corestore.ErrRevisionConflict):
+			return hubapi.NativePublicInvalid("CI classification commit differs from retained failure")
+		case !errors.Is(readErr, corestore.ErrNotFound):
+			return readErr
+		}
+		return s.Plans.ChargeScheduledClassification(ctx, w, scope.Organization, scope.Project, receiptID, now)
+	})
+}
+
+func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, result progresscheck.CIDecision, jobKey, receiptID string) error {
+	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+		if err := s.Authorize(ctx, w, scope, true); err != nil {
+			return err
+		}
+		owner, ok := w.(policystore.ScheduledWriter)
+		if !ok {
+			return hubapi.NativeWorkItemStorageUnavailable()
+		}
+		now := s.Now().UTC()
+		released, err := owner.ReleaseScheduledClassification(ctx, scope.Project, jobKey, receiptID, &now)
+		if err != nil {
+			return err
+		}
+		if !released {
+			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
 		limit := int64(math.MaxInt64)
 		if s.Plans.Plans() != nil {
 			entitlement, err := hubapi.FeatureResult(s.Plans.EntitlementRecord(ctx, w, now))
@@ -149,6 +174,39 @@ func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope
 	})
 }
 
+func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey, receiptID string) (err error) {
+	defer func() {
+		if err == nil {
+			return
+		}
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		cleanupErr := s.Repository.WriteTenant(cleanup, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
+			owner, ok := w.(policystore.ScheduledWriter)
+			if !ok {
+				return hubapi.NativeWorkItemStorageUnavailable()
+			}
+			_, releaseErr := owner.ReleaseScheduledClassification(cleanup, scope.Project, jobKey, receiptID, nil)
+			return releaseErr
+		})
+		err = errors.Join(err, cleanupErr)
+	}()
+	if err := s.Verify(ctx, scope, input); err != nil {
+		return err
+	}
+	result, err := (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
+	}
+	if err := s.storeClassification(ctx, scope, input, result, jobKey, receiptID); err != nil {
+		return fmt.Errorf("store CI classification: %w", err)
+	}
+	return nil
+}
+
 func (s ScheduledCIDeps) Classify(c echo.Context) error {
 	scope := hubscope.NativeRequestScope(c)
 	if scope.Credential.HostedRole == "reporter" {
@@ -161,7 +219,7 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 	if err := input.Validate(); err != nil {
 		return s.Error(c, hubapi.NativePublicInvalid("Invalid or oversized CI classification evidence"))
 	}
-	ctx, cancel := context.WithTimeout(c.Request().Context(), time.Minute)
+	ctx, cancel := context.WithTimeout(c.Request().Context(), scheduledClassificationTimeout)
 	defer cancel()
 	repository, err := ScheduledRepository(ctx, s.Repository, scope)
 	if err != nil {
@@ -178,21 +236,16 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	if err := s.Verify(ctx, scope, input); err != nil {
-		return s.Error(c, err)
-	}
-	if err := s.reserveClassification(ctx, scope, input); err != nil {
-		return s.Error(c, err)
-	}
-	result, err = (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
+	identity, err := json.Marshal([]string{input.Repository, input.RunID, input.RunAttempt, input.JobID})
 	if err != nil {
-		if ctx.Err() != nil {
-			return s.Error(c, ctx.Err())
-		}
-		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
+		return s.Error(c, err)
 	}
-	if err := s.storeClassification(ctx, scope, input, result); err != nil {
-		return s.Error(c, fmt.Errorf("store CI classification: %w", err))
+	jobKey, receiptID := policy.Digest(identity), hubapi.NewID("scheduled_ci")
+	if err := s.reserveClassification(ctx, scope, input, jobKey, receiptID); err != nil {
+		return s.Error(c, err)
+	}
+	if err := s.classifyReserved(ctx, scope, input, jobKey, receiptID); err != nil {
+		return s.Error(c, err)
 	}
 	result, _, err = s.readCIClassification(ctx, scope, input)
 	if err != nil {

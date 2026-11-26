@@ -34,7 +34,7 @@ type ciDecisionBackend struct {
 	onCall   func()
 }
 
-func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+func (b *ciDecisionBackend) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if !b.expected {
 		b.t.Fatal("replay or invalid evidence reached the AI backend")
 	}
@@ -43,6 +43,9 @@ func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnR
 	if onCall := b.onCall; onCall != nil {
 		b.onCall = nil
 		onCall()
+	}
+	if err := ctx.Err(); err != nil {
+		return runner.AgentTurnResult{}, err
 	}
 	if !request.TextOnly || !request.ReadOnly || request.MaxTurns != 1 || request.ToolInstructions != progresscheck.CIInstructions || request.SupplementalTools {
 		b.t.Fatal("CI decision backend may only generate text from evidence")
@@ -61,9 +64,10 @@ func (b *ciDecisionBackend) RunTurn(_ context.Context, request runner.AgentTurnR
 	return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: string(raw)})
 }
 
-type scheduledClassificationImporter struct{}
+type scheduledClassificationImporter struct{ calls int }
 
-func (scheduledClassificationImporter) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+func (i *scheduledClassificationImporter) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
+	i.calls++
 	if request.Stage != githubcontract.ScheduledClassificationStage || request.Scheduled == nil || request.Scheduled.RunID != "1" || request.Scheduled.JobID == "999" {
 		return hubserver.GitHubImportPage{}, errors.New("unknown run or job")
 	}
@@ -73,9 +77,10 @@ func (scheduledClassificationImporter) FetchImportPage(_ context.Context, reques
 func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 	t.Parallel()
 	backend := &ciDecisionBackend{}
+	importer := &scheduledClassificationImporter{}
 	hub := hubfixture.Open(t, hubserver.Config{
 		Clock:         func() time.Time { return time.Unix(7200, 0).UTC() },
-		ImportBackend: scheduledClassificationImporter{},
+		ImportBackend: importer,
 		Conversation:  &hubserver.ConversationConfig{Backend: backend, Model: "configured-model"},
 	})
 	storage := hub.Repository
@@ -88,6 +93,7 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 		{"Go test", "--- FAIL: TestExample (0s)", progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "TestExample", Reason: "assertion failed"}, false},
 		{"timeout with location", "internal/client.go:42:3: network timeout", progresscheck.CIDecision{Outcome: progresscheck.CIInfrastructure, Target: "download timeout", Reason: "external network unavailable"}, false},
 		{"unknown", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
+		{"interrupted request", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
 		{"provider unavailable", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -125,7 +131,25 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
 			if test.name == "Go test" {
-				backend.onCall = func() { call(firstProject, input, http.StatusConflict) }
+				backend.onCall = func() {
+					before := importer.calls
+					call(firstProject, input, http.StatusConflict)
+					if importer.calls != before {
+						t.Error("in-flight duplicate reached the importer")
+					}
+				}
+			}
+			if test.name == "interrupted request" {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				path := hubfixture.ProjectBase(org, firstProject) + "/scheduled-ci-decisions"
+				req := hubfixture.NewRequest(t, http.MethodPost, path, actor.Token, input).WithContext(ctx)
+				backend.expected, backend.onCall = true, cancel
+				response := httptest.NewRecorder()
+				hub.Handler().ServeHTTP(response, req)
+				if response.Code == http.StatusOK || backend.calls != 1 {
+					t.Fatalf("interrupted classification status=%d calls=%d", response.Code, backend.calls)
+				}
 			}
 			backend.expected = true
 			var first progresscheck.CIDecision
@@ -162,9 +186,24 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			if test.name == "unknown" {
 				unknownRun, unknownJob := input, input
 				unknownRun.RunID, unknownJob.JobID = "2", "999"
-				for _, unknown := range []progresscheck.CIFailure{unknownRun, unknownJob} {
-					call(firstProject, unknown, http.StatusUnprocessableEntity)
+				call(firstProject, unknownRun, http.StatusUnprocessableEntity)
+				before := importer.calls
+				for n := range 125 {
+					want := http.StatusUnprocessableEntity
+					if n >= 118 {
+						want = http.StatusTooManyRequests
+					}
+					if response := request(firstProject, unknownJob); response.Code != want {
+						t.Errorf("unknown job request %d status=%d want=%d", n, response.Code, want)
+					}
 				}
+				if calls := importer.calls - before; calls != 118 {
+					t.Errorf("unknown job made %d importer calls, want 118", calls)
+				}
+				backend.expected = true
+				anotherJob := input
+				anotherJob.JobID = "3"
+				call(secondProject, anotherJob, http.StatusOK)
 			}
 			if !test.fail {
 				return

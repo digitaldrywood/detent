@@ -16,5 +16,7 @@ type ScheduledReader interface {
 
 type ScheduledWriter interface {
 	ScheduledReader
+	ClaimScheduledClassification(context.Context, tracker.ProjectID, string, string, time.Time, time.Time) (bool, error)
+	ReleaseScheduledClassification(context.Context, tracker.ProjectID, string, string, *time.Time) (bool, error)
 	StoreScheduledDecision(context.Context, tracker.ProjectID, progresscheck.CIFailure, progresscheck.CIDecision, time.Time, int64) (billingstore.UsageResult, error)
 }

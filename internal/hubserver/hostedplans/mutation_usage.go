@@ -2,8 +2,6 @@ package hostedplans
 
 import (
 	"context"
-	"errors"
-	"net/http"
 	"strings"
 	"time"
 
@@ -17,7 +15,9 @@ type mutationUsageWriter interface {
 	ApplyBillingUsage(context.Context, billingstore.UsageReceipt, int64) (billingstore.UsageResult, error)
 }
 
-func (d *Service) ReserveScheduledClassification(ctx context.Context, writer mutationUsageWriter, organization tracker.OrganizationID, receiptID string, now time.Time) error {
+const scheduledClassificationsPerHour = 120
+
+func (d *Service) ChargeScheduledClassification(ctx context.Context, writer mutationUsageWriter, organization tracker.OrganizationID, project tracker.ProjectID, receiptID string, now time.Time) error {
 	plans := d.Plans()
 	var limit int64
 	if plans == nil {
@@ -32,15 +32,23 @@ func (d *Service) ReserveScheduledClassification(ctx context.Context, writer mut
 		limit = entitlement.Allowances["api_mutations"]
 	}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
-	usage, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: receiptID, WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
-	if errors.Is(err, billingstore.ErrUsageReceiptConflict) || err == nil && usage.Allowed && !usage.Applied {
-		return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
-	}
-	if err != nil {
-		return err
-	}
-	if !usage.Allowed {
-		return &LimitError{Resource: "api_mutations", Allowance: limit, Consumption: usage.Used}
+	for _, charge := range []struct {
+		id, metric, resource string
+		limit                int64
+	}{
+		{receiptID + "/project", "scheduled-ci/" + string(project), "scheduled_ci_classifications", scheduledClassificationsPerHour * plans.WindowSeconds / 3600},
+		{receiptID, "api_mutations", "api_mutations", limit},
+	} {
+		usage, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: charge.id, WindowStart: window, Metric: charge.metric, Amount: 1}, charge.limit)
+		if err != nil {
+			return err
+		}
+		if !usage.Allowed {
+			return &LimitError{Resource: charge.resource, Allowance: charge.limit, Consumption: usage.Used}
+		}
+		if !usage.Applied {
+			return billingstore.ErrUsageReceiptConflict
+		}
 	}
 	return nil
 }
