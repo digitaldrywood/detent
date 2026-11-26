@@ -926,14 +926,17 @@ func (s *Scheduler) invalidateNativeClaim(ctx context.Context, issueID string, t
 	s.mu.Lock()
 	if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
 		current.lost = true
+		release := true
+		if execution := current.execution; execution != nil && execution.OwnsWork() {
+			execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
+			release = false
+		}
 		current.signalLeaseChange()
 		s.nativeClaims[issueID] = current
-		if execution := current.execution; execution != nil && execution.OwnsWork() {
-			s.mu.Unlock()
-			execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
+		s.mu.Unlock()
+		if !release {
 			return true
 		}
-		s.mu.Unlock()
 		if err := current.source.NativeClient().ReleaseAttempt(ctx, current.lease, "cancelled", true); err != nil && !nativeLeaseLost(err) {
 			slog.Default().Warn("native claim release unavailable", "work_item_id", issueID, "error", err)
 			return true
