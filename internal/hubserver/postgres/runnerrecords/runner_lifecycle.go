@@ -26,9 +26,9 @@ type runnerLifecycle struct {
 
 func (s *Store) currentLifecycle(ctx context.Context, id string) (*runnerLifecycle, error) {
 	var l runnerLifecycle
-	err := s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,refused_through_sequence,process_generation,accepted_history_slot,last_report_digest FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id).
+	err := s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,rollout_activation_id,refused_through_sequence,process_generation,accepted_history_slot,last_report_digest FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id).
 		Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt,
-			&l.rollout.RequestID, &l.rollout.Version, &l.rollout.OrganizationRevision, &l.refusedThroughSequence, &l.processGeneration, &l.acceptedHistorySlot, &l.lastReportDigest)
+			&l.rollout.RequestID, &l.rollout.Version, &l.rollout.OrganizationRevision, &l.rollout.ActivationID, &l.refusedThroughSequence, &l.processGeneration, &l.acceptedHistorySlot, &l.lastReportDigest)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, corestore.ErrNotFound
 	}
@@ -115,6 +115,7 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 	if old != nil {
 		next.acceptedHistorySlot = old.acceptedHistorySlot
 		next.processGeneration = old.processGeneration
+		next.rollout = old.rollout
 	}
 	if old != nil && old.ProcessID == r.ProcessID {
 		if r.Sequence <= old.Sequence || r.Sequence <= old.refusedThroughSequence || old.Version != r.Version || old.BuildRevision != r.BuildRevision || !lifecycleTransition(old.State, r.State) {
@@ -122,12 +123,16 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 		}
 		next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
 		next.refusedThroughSequence = old.refusedThroughSequence
-		next.rollout = old.rollout
 		if r.State == runnerauth.LifecycleShuttingDown && r.Reason == "update" &&
-			(old.rollout.RequestID == "" || r.TargetVersion != old.rollout.Version) {
+			(old.rollout.RequestID == "" || r.TargetVersion != old.rollout.Version ||
+				old.State != runnerauth.LifecycleUpdating && (old.State != runnerauth.LifecycleShuttingDown || old.Reason != "update")) {
 			return corestore.ErrRevisionConflict
 		}
 		if r.State == runnerauth.LifecycleUpdating {
+			if old.State == runnerauth.LifecycleUpdating && old.rollout.RequestID == rollout.RequestID &&
+				old.rollout.OrganizationRevision == rollout.OrganizationRevision && old.rollout.ActivationID != "" {
+				rollout.ActivationID = old.rollout.ActivationID
+			}
 			next.rollout = rollout
 		}
 		if old.State == runnerauth.LifecycleStarting && r.State == runnerauth.LifecycleStartFailed {
@@ -157,9 +162,6 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 			}
 			next.acceptedHistorySlot = stopped.acceptedHistorySlot
 		}
-		if old != nil && old.rollout.Version == r.Version {
-			next.rollout = old.rollout
-		}
 		if old != nil && old.Version == r.Version {
 			next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
 			if old.State == runnerauth.LifecycleStarting {
@@ -174,7 +176,6 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 	}
 	if r.State == runnerauth.LifecycleReady {
 		next.ConsecutiveFailedStarts = 0
-		next.rollout = runnerstore.Rollout{}
 	}
 	if old != nil && old.ProcessID == r.ProcessID {
 		prior := old.LifecycleReport
@@ -204,29 +205,14 @@ func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next *runne
 	if err != nil {
 		return s.mapError(ctx, err)
 	}
-	args = append(lifecycleArgs(string(s.organization), id, *next), next.rollout.RequestID, next.rollout.Version, next.rollout.OrganizationRevision, next.refusedThroughSequence, next.processGeneration, next.acceptedHistorySlot, next.lastReportDigest)
-	_, err = s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,refused_through_sequence,process_generation,accepted_history_slot,last_report_digest)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+	args = append(lifecycleArgs(string(s.organization), id, *next), next.rollout.RequestID, next.rollout.Version, next.rollout.OrganizationRevision, next.rollout.ActivationID, next.refusedThroughSequence, next.processGeneration, next.acceptedHistorySlot, next.lastReportDigest)
+	_, err = s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,rollout_activation_id,refused_through_sequence,process_generation,accepted_history_slot,last_report_digest)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
  ON CONFLICT(organization_id,runner_id) DO UPDATE SET process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,
  build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,
  consecutive_failed_starts=EXCLUDED.consecutive_failed_starts,last_transition_at=EXCLUDED.last_transition_at,rollout_request_id=EXCLUDED.rollout_request_id,
- rollout_version=EXCLUDED.rollout_version,rollout_revision=EXCLUDED.rollout_revision,refused_through_sequence=EXCLUDED.refused_through_sequence,
+ rollout_version=EXCLUDED.rollout_version,rollout_revision=EXCLUDED.rollout_revision,rollout_activation_id=EXCLUDED.rollout_activation_id,refused_through_sequence=EXCLUDED.refused_through_sequence,
  process_generation=EXCLUDED.process_generation,accepted_history_slot=EXCLUDED.accepted_history_slot,last_report_digest=EXCLUDED.last_report_digest`, args...)
-	if err != nil {
-		return s.mapError(ctx, err)
-	}
-	switch {
-	case next.State == runnerauth.LifecycleReady:
-		_, err = s.db.Exec(ctx, `DELETE FROM runner_update_pauses WHERE organization_id=$1 AND runner_id=$2 AND version=$3`, s.organization, id, next.Version)
-	case next.State == runnerauth.LifecycleStartFailed && next.ConsecutiveFailedStarts >= 3 && next.rollout.RequestID != "" && next.Version == next.rollout.Version:
-		if err := s.LockOrganizationUpdateTarget(ctx, true); err != nil {
-			return err
-		}
-		_, err = s.db.Exec(ctx, `INSERT INTO runner_update_pauses(organization_id,runner_id,version,rollout_revision)
- VALUES($1,$2,$3,$4)
- ON CONFLICT(organization_id,runner_id,version) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision
- WHERE runner_update_pauses.rollout_revision<EXCLUDED.rollout_revision`, s.organization, id, next.Version, next.rollout.OrganizationRevision)
-	}
 	return s.mapError(ctx, err)
 }
 

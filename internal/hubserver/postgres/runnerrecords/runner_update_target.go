@@ -55,7 +55,8 @@ const currentHoldOfferSQL = `(d.hold_revision=0
  OR (NOT d.organization_hold AND d.hold_organization_revision=COALESCE(o.revision,0) AND COALESCE(o.version,'')='' AND d.hold_revision=t.revision AND d.version=t.version))`
 
 const releasePausedSQL = `EXISTS(SELECT 1 FROM runner_update_pauses p
- WHERE p.organization_id=candidate.organization_id AND p.version=candidate.version AND p.rollout_revision=candidate.revision)`
+ WHERE p.organization_id=candidate.organization_id AND p.version=candidate.version AND p.rollout_revision=candidate.revision
+ AND p.supervisor_failed_starts>=3)`
 
 func (s *Store) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
 	var failed bool

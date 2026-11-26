@@ -424,9 +424,38 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			authorizeRollout(0)
 			peer.Sequence, peer.State, peer.TargetVersion = 8, runnerauth.LifecycleDraining, "1.3.0"
 			report(1, lifecycleUpdateCommand{peer, initialOffer.ID}, http.StatusNoContent)
-			authorizedFailure := starts(0, "authorized")
+			var authorizedFailure runnerauth.LifecycleReport
+			if scope == "runner" {
+				authorizedFailure = starts(0, "self-reported")
+				if view := read(1); view.Desired == nil || peerFleet().Desired == nil {
+					t.Fatalf("runner-reported starts paused the peer without supervisor evidence: %+v", view)
+				}
+			}
+			supervisorPath := "/api/v2/organizations/org_startup/runners/" + f.bindings[0].RunnerID + "/update/restart-evidence"
+			grant := performHubAPIRequest(t, f.service, http.MethodGet, supervisorPath, admin.Token, nil)
+			requireNativeStatus(t, grant, http.StatusOK)
+			var supervisedRollout runnerstore.Rollout
+			if err := json.Unmarshal(grant.Body.Bytes(), &supervisedRollout); err != nil || supervisedRollout.ActivationID == "" || supervisedRollout.RequestID == "" || supervisedRollout.Version != "1.3.0" {
+				t.Fatalf("supervisor activation %s, error=%v", grant.Body.String(), err)
+			}
+			failureEvidence := runnerstore.RestartEvidence{ActivationID: supervisedRollout.ActivationID, Version: supervisedRollout.Version, Outcome: runnerauth.LifecycleStartFailed, FailedStarts: 3}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, f.tokens[0], failureEvidence), http.StatusForbidden)
+			otherRunnerPath := "/api/v2/organizations/org_startup/runners/" + f.bindings[1].RunnerID + "/update/restart-evidence"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, otherRunnerPath, admin.Token, failureEvidence), http.StatusConflict)
+			otherVersion := failureEvidence
+			otherVersion.Version = "1.3.1"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, otherVersion), http.StatusConflict)
+			if view := read(1); view.Desired == nil {
+				t.Fatalf("refused supervisor evidence changed peer offers: %+v", view)
+			}
+			for range 2 {
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, failureEvidence), http.StatusNoContent)
+			}
 			if own, peer := read(0), read(1); own.Desired != nil || peer.Desired != nil || peerFleet().Desired != nil {
-				t.Errorf("first runner failure left an offer active: own=%+v peer=%+v", own.Desired, peer.Desired)
+				t.Errorf("supervised runner failure left an offer active: own=%+v peer=%+v", own.Desired, peer.Desired)
+			}
+			if scope == "organization" {
+				authorizedFailure = starts(0, "after-supervisor")
 			}
 			if scope == "organization" {
 				unofferedBuild := build
@@ -493,12 +522,21 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			if scope == "organization" {
 				setTarget(baseTarget, "", 0)
 				organizationRevision = 1
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, failureEvidence), http.StatusConflict)
 			} else {
 				recovery := authorizedFailure
 				recovery.ProcessID = "recovered"
 				report(0, recovery, http.StatusNoContent)
 				recovery.Sequence, recovery.State = 2, runnerauth.LifecycleReady
 				report(0, recovery, http.StatusNoContent)
+				if view := read(1); view.Desired != nil {
+					t.Fatalf("runner-reported readiness cleared the supervisor pause: %+v", view.Desired)
+				}
+				readyEvidence := failureEvidence
+				readyEvidence.Outcome, readyEvidence.FailedStarts = runnerauth.LifecycleReady, 0
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, readyEvidence), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, readyEvidence), http.StatusNoContent)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, supervisorPath, admin.Token, failureEvidence), http.StatusConflict)
 				observe(1, build)
 			}
 			if view := read(1); view.Desired == nil || view.Desired.Version != "1.3.0" {

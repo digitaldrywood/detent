@@ -22,9 +22,25 @@ type LifecycleTransition struct {
 }
 
 type Rollout struct {
-	RequestID            string
-	Version              string
-	OrganizationRevision int64
+	ActivationID         string `json:"activation_id"`
+	RequestID            string `json:"update_request_id"`
+	Version              string `json:"version"`
+	OrganizationRevision int64  `json:"-"`
+}
+
+type RestartEvidence struct {
+	ActivationID string                    `json:"activation_id"`
+	Version      string                    `json:"version"`
+	Outcome      runnerauth.LifecycleState `json:"outcome"`
+	FailedStarts int                       `json:"consecutive_failed_starts"`
+}
+
+type RestartEvidenceReader interface {
+	RunnerRollout(context.Context, string) (Rollout, error)
+}
+
+type RestartEvidenceWriter interface {
+	RecordRunnerRestartEvidence(context.Context, string, string, RestartEvidence, time.Time) error
 }
 
 type LifecycleStartConflict struct {

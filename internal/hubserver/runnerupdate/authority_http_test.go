@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,6 +49,8 @@ func TestHostedRunnerUpdateSelectedKeyAuthority(t *testing.T) {
 						requireNativeStatus(t, h.Request(t, actor, http.MethodPost, path+"/apply", request).Recorder, http.StatusForbidden)
 						urgent := "/api/v2/organizations/" + string(h.Organization) + "/runner-update/urgent"
 						requireNativeStatus(t, h.Request(t, actor, http.MethodPut, urgent, UrgentChange{Version: "1.2.4", Confirm: true, IdempotencyKey: "selected-urgent"}).Recorder, http.StatusForbidden)
+						evidence := runnerstore.RestartEvidence{ActivationID: "example-activation", Version: "1.2.4", Outcome: runnerauth.LifecycleStartFailed, FailedStarts: 3}
+						requireNativeStatus(t, h.Request(t, actor, http.MethodPost, path+"/restart-evidence", evidence).Recorder, http.StatusForbidden)
 					}
 					if access.want == http.StatusOK {
 						var view runnerauth.UpdateView

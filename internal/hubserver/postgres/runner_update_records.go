@@ -48,6 +48,12 @@ func (s *session) RunnerLifecycle(ctx context.Context, id string) (*runnerauth.L
 func (s *session) RunnerLifecycleHistory(ctx context.Context, id string, limit int) ([]runnerstore.LifecycleTransition, error) {
 	return s.runnerRecords().RunnerLifecycleHistory(ctx, id, limit)
 }
+func (s *session) RunnerRollout(ctx context.Context, id string) (runnerstore.Rollout, error) {
+	return s.runnerRecords().RunnerRollout(ctx, id)
+}
+func (s *session) RecordRunnerRestartEvidence(ctx context.Context, id, credential string, evidence runnerstore.RestartEvidence, now time.Time) error {
+	return s.runnerRecords().RecordRunnerRestartEvidence(ctx, id, credential, evidence, now)
+}
 func (s *session) RunnerLifecycleReceipt(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string) (runnerstore.LifecycleRefusal, bool, error) {
 	return s.runnerRecords().RunnerLifecycleReceipt(ctx, id, r, digest)
 }

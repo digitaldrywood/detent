@@ -145,7 +145,7 @@ func (s *Service) authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Wr
 		return runnerstore.Rollout{}, runnerstore.LifecycleRunningBuildChanged, nil
 	}
 	policy, err := readTargetPolicy(ctx, w, "")
-	return runnerstore.Rollout{RequestID: runner.UpdateRequest.ID, Version: runner.UpdateRequest.Version, OrganizationRevision: policy.organization.Revision}, "", err
+	return runnerstore.Rollout{ActivationID: hubapi.NewID("activation"), RequestID: runner.UpdateRequest.ID, Version: runner.UpdateRequest.Version, OrganizationRevision: policy.organization.Revision}, "", err
 }
 
 func (s *httpRoutes) reportRunnerLifecycle(c echo.Context) error {

@@ -1056,12 +1056,31 @@ Administrators read and change the target using GET and PUT on
 hold takes precedence over individual runner holds. Set `version` to the
 empty string to clear a hold.
 
-Repeated startup failures following a Hub-authorized activation pause offers
-of that version within the organization. Recovery clears the pause. An
-administrator can also reset it by submitting the current organization target
-with its current revision, including an empty version when there is no
-organization hold. The update advances the policy revision and keeps past
-failure reports in lifecycle history.
+Runner-reported failures update lifecycle health. To pause offers of a release
+across the organization, the Hub requires independently authenticated outcomes
+for a Hub-authorized activation.
+
+An independent host supervisor can GET the activation from
+`/api/v2/organizations/{org}/runners/{runner}/update/restart-evidence`.
+This returns `activation_id`, `update_request_id` and `version`. After observing
+the installed release and at least three consecutive failed starts using its
+own process supervision, POST to the same endpoint with
+`activation_id`, `version`, `outcome: "start_failed"` and
+`consecutive_failed_starts`. Use `outcome: "ready"` and a count of zero
+after independently observing recovery of that release. The Hub accepts
+replays without changing their effect and refuses superseded activations.
+
+Both requests require an organization administrator credential with access to
+all projects. Keep the supervisor and its credential outside the runner
+process's control. The supervisor must observe process exits or readiness
+deadlines itself. A runner's reported process IDs, failure counts and
+readiness are insufficient for fleet action. Hosts without a separately
+authenticated supervisor still report runner lifecycle health.
+
+An administrator can reset a pause by submitting the current organization
+target with its current revision, including an empty version when there is
+no organization hold. The update advances the policy revision and keeps
+past runner reports in lifecycle history.
 
 ## Runner renewal, rotation and revocation
 

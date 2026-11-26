@@ -5089,6 +5089,7 @@ type RunnerLifecycle struct {
 	ProcessGeneration       int64
 	AcceptedHistorySlot     int16
 	LastReportDigest        string
+	RolloutActivationID     string
 }
 
 type RunnerLifecycleTransition struct {
@@ -5566,10 +5567,14 @@ type RunnerUpdateObservation struct {
 }
 
 type RunnerUpdatePause struct {
-	OrganizationID  tracker.OrganizationID
-	RunnerID        string
-	Version         string
-	RolloutRevision int64
+	OrganizationID         tracker.OrganizationID
+	RunnerID               string
+	Version                string
+	RolloutRevision        int64
+	ActivationID           string
+	SupervisorCredentialID string
+	SupervisorFailedStarts int32
+	SupervisorReportedAt   *time.Time
 }
 
 type RunnerUpdateReceipt struct {

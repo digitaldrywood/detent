@@ -33,6 +33,8 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 	base := "/api/v2/organizations/:organization/runners/:runner/update"
 	urgent := "/api/v2/organizations/:organization/runner-update/urgent"
 	e.POST("/api/v2/organizations/:organization/runners/:runner/lifecycle", s.reportRunnerLifecycle, deps.Worker)
+	e.GET(base+"/restart-evidence", s.getRunnerRollout, deps.Admin)
+	e.POST(base+"/restart-evidence", s.reportRunnerRestartEvidence, deps.Admin)
 	e.GET(base+"/target", s.getRunnerTarget, deps.Admin)
 	e.GET("/api/v2/organizations/:organization/runner-update/target", s.getRunnerTarget, deps.Admin)
 	e.PUT(base+"/target", s.setRunnerTarget, deps.Admin)
@@ -46,7 +48,11 @@ func RegisterRoutes(e *echo.Group, deps HTTPDeps) {
 }
 
 func (s *httpRoutes) scope(c echo.Context, credential hubauth.Credential) hubapi.Scope {
-	scope := s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential})
+	return s.authority(c, credential, false)
+}
+
+func (s *httpRoutes) authority(c echo.Context, credential hubauth.Credential, admin bool) hubapi.Scope {
+	scope := s.deps.Auth().Scope(hubauth.Input{Organization: tracker.OrganizationID(c.Param("organization")), Credential: credential, Admin: admin})
 	if credential.HostedKeyScope != "" && credential.HostedProjectAccess != "all" || credential.EntryKey != nil && (credential.EntryKey.Access != "all" || len(credential.EntryKey.BlockedProjects) > 0) {
 		return hubapi.NewScope(scope.Facts, func(context.Context, accessstore.Reader, bool) error {
 			return &hubapi.Error{Code: "insufficient_scope", Message: "Runner updates require access to all projects", Status: http.StatusForbidden, Public: true}
