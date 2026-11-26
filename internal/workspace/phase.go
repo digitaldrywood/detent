@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -129,11 +130,12 @@ func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issu
 	}
 	defer releaseWorktree()
 	ctx = withHeldWorktreeOperation(ctx, info.Path)
-	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
-		return l.fetchItemPhase(ctx, info, issue, previous)
+	repository := phaseRecoveryRepository(ctx, issue)
+	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, repository, previous, func(ctx context.Context) error {
+		return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), repository, previous, l.acquireSourceOperation)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
 		return l.runCommit(ctx, info.Path, nil, args...)
-	}, remoteBranchHead, refuse(LandRefusalHeadMoved, "the item branch advanced beyond its recorded phase"))
+	}, refuse(LandRefusalHeadMoved, "the item branch advanced beyond its recorded phase"))
 }
 
 func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (string, string, error) {
@@ -248,14 +250,11 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 	}
 	defer release()
 	ref := "refs/heads/" + branch
-	if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-recurse-submodules", defaultGitRemote, ref)...); err != nil {
-		return fmt.Errorf("fetch published item branch: %w", withCommandOutput(err))
-	}
-	fetched, err := phasegit.ResolveFetchedHead(ctx, l.sourceRoot)
+	fetched, err := gitexec.FetchPhaseSource(ctx, l.sourceRoot, repository, ref)
 	if err != nil {
-		return err
+		return fmt.Errorf("fetch published item branch: %w", err)
 	}
-	if strings.TrimSpace(fetched) != head {
+	if fetched != head {
 		return fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
 	}
 	var ancestor string
@@ -312,9 +311,11 @@ func (l *LocalGit) itemPhaseTree(ctx context.Context, head string) (string, erro
 }
 
 func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, source PhaseSource) error {
-	return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), source, func(ctx context.Context) string {
-		return RepositoryURL(ctx, l.sourceRoot)
-	}, issue.PullRequestRepository, l.acquireSourceOperation, l.runGit)
+	return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), phaseRecoveryRepository(ctx, issue), source, l.acquireSourceOperation)
+}
+
+func phaseRecoveryRepository(ctx context.Context, issue Issue) string {
+	return gitexec.PublicationRepository(ctx, "", cmp.Or(issue.PublicationRepository, issue.PullRequestRepository))
 }
 
 type phasePublicationDestinationError struct{ error }

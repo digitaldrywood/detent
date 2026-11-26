@@ -57,6 +57,9 @@ func (l *LocalGit) importWorkspaceChangeSource(ctx context.Context, issue Issue)
 	itemIssue := issue
 	itemIssue.Landing = nil
 	itemIssue.ReviewVersionID = ""
+	if itemIssue.PublicationRepository == "" {
+		itemIssue.PublicationRepository = version.Repository
+	}
 	itemInfo, err := l.infoForIssue(itemIssue)
 	if err != nil {
 		return err
