@@ -112,7 +112,7 @@ func TestVerifyPublicationRemoteRepository(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err := VerifyPublicationRemote(ctx, checkout, "origin", PublicationRepository("", test.destination))
+			err := VerifyPublicationRemote(ctx, checkout, "origin", PublicationRepository(ctx, "", test.destination))
 			if test.refusal == "" {
 				if err != nil {
 					t.Fatal(err)

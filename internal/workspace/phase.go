@@ -46,7 +46,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 			}
 		}
 	}
-	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
+	repository := gitexec.PublicationRepository(ctx, "", issue.PublicationRepository)
 	expected := info.PhaseRemoteHead
 	if issue.ExpectedPhaseRemoteHead != "" {
 		expected = &issue.ExpectedPhaseRemoteHead
@@ -178,7 +178,7 @@ func verifyPublishedChangeAncestry(ctx context.Context, path, published, head st
 
 func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
 	branch := info.PublishBranch()
-	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
+	repository := gitexec.PublicationRepository(ctx, "", issue.PublicationRepository)
 	if err := verifyPublicationRemote(ctx, l.sourceRoot, defaultGitRemote, repository); err != nil {
 		return phasePublicationDestinationError{err}
 	}

@@ -373,13 +373,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
 	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
 	mode := runworkspace.NormalizeRunMode(req.Mode)
-	legacyPublishedSource := false
-	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
-		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
-		if err != nil {
+	phase, hasPhaseExecution := req.Execution.(PhaseReceiptExecution)
+	if hasPhaseExecution && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
+		continuation, err := phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
+		if err != nil && !errors.Is(err, ErrPhaseReceiptsUnavailable) {
 			return RunResult{}, failedStep("publication", err)
 		}
-		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
+		req.phaseContinuation = continuation
+		legacyPublishedSource := mode == RunModeImplement && req.NativeLandingRework == nil &&
 			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
 		if req.phaseReceipts {
@@ -479,14 +480,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		var retries progresscheck.RoundDeadlines
 		for {
 			result, runErr = r.run(guarded, req)
-			if req.phaseContinuation == nil || !errors.Is(runErr, errNativeLandingSetup) || StopProviderSupervision(req.Execution, runErr) ||
+			if !hasPhaseExecution || req.phaseContinuation == nil || !errors.Is(runErr, errNativeLandingSetup) || StopProviderSupervision(req.Execution, runErr) ||
 				errors.Is(runErr, ErrWorkerProcessReap) || errors.Is(runErr, ErrExecutionAuthorityUnavailable) || cooperativeStopError(runErr) {
 				break
 			}
 			r.logWorkerEvent(req.Issue, "worker_native_landing_setup_retry", "error", runErr)
 			err := retries.Wait(guarded, retryDelay)
 			if err == nil {
-				err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(guarded)
+				err = phase.VerifyPhaseAuthority(guarded)
 			}
 			if err != nil {
 				runErr = errors.Join(runErr, err)
@@ -680,7 +681,10 @@ func (r *Runner) existingReviewWorkspace(ctx context.Context, req RunRequest, ba
 	if !ok {
 		return nil, noWorkspace
 	}
-	owner, _ := req.Execution.(runworkspace.AttemptOwner)
+	var owner runworkspace.AttemptOwner
+	if attemptOwner, ok := req.Execution.(runworkspace.AttemptOwner); ok {
+		owner = attemptOwner
+	}
 	attempt, valid := runworkspace.ResolveAttempt(ctx, req.AttemptWorkspace, owner, req.Issue)
 	lease, phase := req.Execution.Recovery().Lease, req.phaseContinuation.LastPushed
 	if !valid || attempt.Key() == "" || phase.AttemptID != attempt.Attempt || phase.LeaseID != lease.ID || phase.FencingToken != lease.FencingToken || phase.PolicyID != lease.PolicyID || phase.HeadSHA != req.NativeReviewContinuation.Source.HeadSHA {
@@ -774,9 +778,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
 	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
+		writer, ok := req.Execution.(spooledArtifactExecution)
+		if !ok {
+			return errors.New("artifact spool requires an execution writer")
+		}
 		artifactCtx, cancel := r.artifactCompletionContext(ctx, req.Execution)
 		defer cancel()
-		if err := req.Execution.(spooledArtifactExecution).FinalizeArtifactsWithSpoolCount(artifactCtx, spool.directory, spool.chunks); err != nil {
+		if err := writer.FinalizeArtifactsWithSpoolCount(artifactCtx, spool.directory, spool.chunks); err != nil {
 			return fmt.Errorf("finalize artifacts: %w", err)
 		}
 		spool.directory = ""
@@ -925,9 +933,13 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 		if previous.HeadSHA != "" && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
-				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
-				publicationIssue.ExpectedPhaseRemoteHead = expected
-				finalizationErr = failedStep("publication", err)
+				if phase, ok := req.Execution.(PhaseReceiptExecution); ok {
+					expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, phase.VerifyPhaseAuthority)
+					publicationIssue.ExpectedPhaseRemoteHead = expected
+					finalizationErr = failedStep("publication", err)
+				} else {
+					finalizationErr = failedStep("publication", ErrPhaseReceiptsUnavailable)
+				}
 			}
 		}
 		if finalizationErr == nil {
