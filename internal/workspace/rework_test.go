@@ -3741,17 +3741,17 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 	t.Parallel()
 	for _, tc := range []struct {
 		name          string
-		featureChmod  bool
 		helperContent string
+		renameHelper  string
 		deleteHelper  bool
-		chmodHelper   bool
+		emptyStage    bool
 		wantErr       bool
 	}{
 		{name: "adapted non-conflicted file", helperContent: "package app\n// adapted to upstream\n"},
-		{name: "dropped non-conflicted file restored to parent", helperContent: "package app\n// base\n", wantErr: true},
-		{name: "dropped non-conflicted file restored to parent with chmod", helperContent: "package app\n// base\n", chmodHelper: true, wantErr: true},
-		{name: "dropped non-conflicted file restored to parent keeping feature chmod", featureChmod: true, helperContent: "package app\n// base\n", chmodHelper: true, wantErr: true},
-		{name: "deleted non-conflicted file", deleteHelper: true, wantErr: true},
+		{name: "reverted non-conflicted file to upstream", helperContent: "package app\n// base\n"},
+		{name: "renamed non-conflicted file", renameHelper: "helper_renamed_test.go"},
+		{name: "deleted non-conflicted file", deleteHelper: true},
+		{name: "empty staged resolution rejected", emptyStage: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -3776,11 +3776,6 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 			}
 			writeCheckpointFile(t, info.Path, "conflict.txt", "feature\n")
 			writeCheckpointFile(t, info.Path, "helper_test.go", "package app\n// feature\n")
-			if tc.featureChmod {
-				if err := os.Chmod(filepath.Join(info.Path, "helper_test.go"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			}
 			runGit(t, info.Path, "add", "conflict.txt", "helper_test.go")
 			runGit(t, info.Path, "commit", "-m", "feature commit")
 
@@ -3797,18 +3792,22 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 				t.Fatalf("PrepareRework() status = %s, want conflict", prepared.Status)
 			}
 
-			writeCheckpointFile(t, info.Path, "conflict.txt", "upstream+feature\n")
-			if tc.deleteHelper {
-				runGit(t, info.Path, "rm", "-f", "helper_test.go")
-				runGit(t, info.Path, "add", "conflict.txt")
-			} else {
-				writeCheckpointFile(t, info.Path, "helper_test.go", tc.helperContent)
-				if tc.chmodHelper {
-					if err := os.Chmod(filepath.Join(info.Path, "helper_test.go"), 0o755); err != nil {
-						t.Fatal(err)
-					}
-				}
+			if tc.emptyStage {
+				runGit(t, info.Path, "checkout", "HEAD", "--", "conflict.txt", "helper_test.go")
 				runGit(t, info.Path, "add", "conflict.txt", "helper_test.go")
+			} else {
+				writeCheckpointFile(t, info.Path, "conflict.txt", "upstream+feature\n")
+				switch {
+				case tc.deleteHelper:
+					runGit(t, info.Path, "rm", "-f", "helper_test.go")
+					runGit(t, info.Path, "add", "conflict.txt")
+				case tc.renameHelper != "":
+					runGit(t, info.Path, "mv", "helper_test.go", tc.renameHelper)
+					runGit(t, info.Path, "add", "conflict.txt", tc.renameHelper)
+				default:
+					writeCheckpointFile(t, info.Path, "helper_test.go", tc.helperContent)
+					runGit(t, info.Path, "add", "conflict.txt", "helper_test.go")
+				}
 			}
 
 			head, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil })
@@ -3824,9 +3823,20 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 			if strings.TrimSpace(head) == "" {
 				t.Fatal("FinalizeNativeWork() returned empty head")
 			}
-			gotHelper, err := os.ReadFile(filepath.Join(info.Path, "helper_test.go"))
-			if err != nil || string(gotHelper) != tc.helperContent {
-				t.Fatalf("helper_test.go = (%q, %v), want %q", string(gotHelper), err, tc.helperContent)
+			switch {
+			case tc.deleteHelper:
+				if _, err := os.Stat(filepath.Join(info.Path, "helper_test.go")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("helper_test.go stat err = %v, want os.ErrNotExist", err)
+				}
+			case tc.renameHelper != "":
+				if _, err := os.Stat(filepath.Join(info.Path, tc.renameHelper)); err != nil {
+					t.Fatalf("%s stat err = %v", tc.renameHelper, err)
+				}
+			default:
+				gotHelper, err := os.ReadFile(filepath.Join(info.Path, "helper_test.go"))
+				if err != nil || string(gotHelper) != tc.helperContent {
+					t.Fatalf("helper_test.go = (%q, %v), want %q", string(gotHelper), err, tc.helperContent)
+				}
 			}
 		})
 	}
