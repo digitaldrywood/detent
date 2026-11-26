@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,25 @@ func runTestGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 	return string(out)
+}
+
+func TestPublicationCheckoutLimitsGitAllocations(t *testing.T) {
+	dir := t.TempDir()
+	runTestGit(t, dir, "init")
+	runTestGit(t, dir, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-m", "Initial commit")
+	if err := WithPublicationCheckout(t.Context(), dir, "", func(read func(...string) (string, error), bounded BoundedRead, _ func(string, string, ...string) error) error {
+		args := []string{"-c", `alias.allocation-limit=!printf '%s' "$GIT_ALLOC_LIMIT"`, "allocation-limit"}
+		want := strconv.Itoa(64 << 20)
+		if got, err := read(args...); err != nil || got != want {
+			t.Errorf("Git checkout allocation limit = %q, %v, want %q", got, err, want)
+		}
+		if got, truncated, err := bounded(32, args...); err != nil || truncated || got != want {
+			t.Errorf("Git bounded checkout allocation limit = %q, truncated=%v, %v, want %q", got, truncated, err, want)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestFetchPublicationBranchIncrementalNegotiation(t *testing.T) {

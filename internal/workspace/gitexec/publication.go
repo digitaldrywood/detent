@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -804,6 +806,8 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 
 type BoundedRead func(maxBytes int, args ...string) (string, bool, error)
 
+const publicationCheckoutAllocationLimit = 64 << 20
+
 func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), readBounded BoundedRead, push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationCheckout(ctx, path, owner, false, use)
 }
@@ -830,8 +834,9 @@ func withPublicationCheckout(ctx context.Context, path, owner string, fromHead b
 		if entry, err := os.Lstat(index); err != nil || !entry.Mode().IsRegular() {
 			return errors.Join(errors.New("publication checkout requires a local Git index"), err)
 		}
+		checkoutEnv := append(IsolatedEnvironment(), "GIT_ALLOC_LIMIT="+strconv.Itoa(publicationCheckoutAllocationLimit))
 		checkoutReader := func(indexPath string) func(...string) (string, error) {
-			env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+indexPath)
+			env := append(slices.Clone(checkoutEnv), "GIT_INDEX_FILE="+indexPath)
 			return func(args ...string) (string, error) {
 				options := []string{"--git-dir=" + scratch, "--work-tree=" + path, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.excludesFile=" + filepath.Join(source.common, "info", "exclude")}
 				return withCommandEnvironment(ctx, path, env, true, "", RunCommand, append(options, args...)...)
@@ -848,7 +853,7 @@ func withPublicationCheckout(ctx context.Context, path, owner string, fromHead b
 			}
 		}
 		readBounded := func(maxBytes int, args ...string) (string, bool, error) {
-			return withinLimitEnvironment(ctx, scratch, IsolatedEnvironment(), maxBytes, args...)
+			return withinLimitEnvironment(ctx, scratch, checkoutEnv, maxBytes, args...)
 		}
 		return use(read, readBounded, func(repository, refspec string, options ...string) error {
 			return pushPublication(ctx, scratch, repository, refspec, options...)

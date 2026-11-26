@@ -132,7 +132,7 @@ func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issu
 	ctx = withHeldWorktreeOperation(ctx, info.Path)
 	repository := phaseRecoveryRepository(ctx, issue)
 	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, repository, previous, func(ctx context.Context) error {
-		return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), repository, previous, l.acquireSourceOperation)
+		return l.fetchVerifiedItemPhase(ctx, info.PublishBranch(), repository, previous)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
 		return l.runCommit(ctx, info.Path, nil, args...)
 	}, refuse(LandRefusalHeadMoved, "the item branch advanced beyond its recorded phase"))
@@ -311,7 +311,14 @@ func (l *LocalGit) itemPhaseTree(ctx context.Context, head string) (string, erro
 }
 
 func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, source PhaseSource) error {
-	return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), phaseRecoveryRepository(ctx, issue), source, l.acquireSourceOperation)
+	return l.fetchVerifiedItemPhase(ctx, info.PublishBranch(), phaseRecoveryRepository(ctx, issue), source)
+}
+
+func (l *LocalGit) fetchVerifiedItemPhase(ctx context.Context, branch, repository string, source PhaseSource) error {
+	if err := verifyPublicationRemote(ctx, l.sourceRoot, defaultGitRemote, repository); err != nil {
+		return phasePublicationDestinationError{err}
+	}
+	return phasegit.Fetch(ctx, l.sourceRoot, branch, repository, source, l.acquireSourceOperation)
 }
 
 func phaseRecoveryRepository(ctx context.Context, issue Issue) string {

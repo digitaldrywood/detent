@@ -213,12 +213,16 @@ func TestItemPhasePushRefusesDivergentRemote(t *testing.T) {
 
 func TestPreserveItemPhaseHistoryVerifiesFetchedSource(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		wrongTree bool
-		rewrite   bool
+		name             string
+		wrongTree        bool
+		remoteOnly       bool
+		wrongDestination bool
+		rewrite          bool
 	}{
 		{name: "Git diagnostics do not change the verified source"},
 		{name: "mismatched tree is rejected", wrongTree: true},
+		{name: "remote-only phase is preserved", remoteOnly: true},
+		{name: "mismatched pull request repository is rejected", wrongDestination: true},
 		{name: "local rewrite cannot redirect phase recovery", rewrite: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,7 +231,7 @@ func TestPreserveItemPhaseHistoryVerifiesFetchedSource(t *testing.T) {
 			runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/"+branch)
 			head := f.head
 			tree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
-			if tc.rewrite {
+			if tc.remoteOnly {
 				replacement := filepath.Join(t.TempDir(), "publisher")
 				runGit(t, f.info.Path, "clone", "--branch", branch, f.remote, replacement)
 				runGit(t, replacement, "-c", "user.name=Example", "-c", "user.email=example@example.test", "commit", "--allow-empty", "-m", "remote-only phase")
@@ -236,27 +240,41 @@ func TestPreserveItemPhaseHistoryVerifiesFetchedSource(t *testing.T) {
 				if _, err := gitexec.ReadPublicationSource(t.Context(), f.source, "cat-file", "-e", head+"^{commit}"); err == nil {
 					t.Fatal("phase source must be absent from the recovery checkout")
 				}
-				const projectRepository = "https://github.com/example-org/example-project"
-				f.issue.PullRequestRepository = projectRepository
-				runGit(t, f.source, "remote", "set-url", "origin", projectRepository)
-				runGit(t, f.source, "config", "url."+filepath.Join(t.TempDir(), "unrelated.git")+".insteadOf", projectRepository)
 			}
 			if tc.wrongTree {
 				tree = strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^{tree}"))
 			}
 			f.issue.PublicationRepository = f.remote
+			if tc.wrongDestination {
+				f.issue.PublicationRepository = ""
+				f.issue.PullRequestRepository = initBareRemote(t)
+			}
+			if tc.rewrite {
+				runGit(t, f.source, "config", "url."+filepath.Join(t.TempDir(), "unrelated.git")+".insteadOf", f.remote)
+			}
 			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "continue the item")
 			runGit(t, f.source, "tag", "FETCH_HEAD", "HEAD")
 
 			previous := PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
+			if tc.wrongDestination {
+				var destinationErr phasePublicationDestinationError
+				if err := f.backend.fetchItemPhase(t.Context(), f.info, f.issue, previous); !errors.As(err, &destinationErr) {
+					t.Errorf("fetch phase error = %v, want publication destination refusal", err)
+				}
+			}
 			expected, err := f.backend.PreserveItemPhaseHistory(t.Context(), f.info, f.issue, previous, func(context.Context) error { return nil })
-			if tc.wrongTree {
+			if tc.wrongDestination || tc.rewrite {
+				var destinationErr phasePublicationDestinationError
+				if !errors.As(err, &destinationErr) {
+					t.Fatalf("preserve phase history error = %v, want publication destination refusal", err)
+				}
+			} else if tc.wrongTree {
 				if err == nil || !strings.Contains(err.Error(), "fetched tree differs from the recorded phase source") {
 					t.Fatalf("preserve phase history error = %v, want recorded tree mismatch", err)
 				}
 			} else {
 				want := ""
-				if tc.rewrite {
+				if tc.remoteOnly {
 					want = head
 				}
 				if err != nil || expected != want {
