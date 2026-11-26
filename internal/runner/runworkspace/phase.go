@@ -8,6 +8,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+var ErrPhaseReceiptsUnavailable = errors.New("item phase receipts are unavailable")
+
 type PhaseReceiptExecution interface {
 	PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error)
 	VerifyPhaseAuthority(context.Context) error

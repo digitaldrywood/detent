@@ -22,17 +22,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
-	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
-	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
-
 	"github.com/google/uuid"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitdiff"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/hookproc"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 const (
@@ -50,7 +51,7 @@ const quarantineAccumulationWarningThreshold = 5
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
-	ErrMissingWorkspace   = errors.New("workspace missing")
+	ErrMissingWorkspace   = gitdiff.ErrMissingWorkspace
 	ErrUnsafePath         = workpath.ErrUnsafePath
 	ErrUnsupportedBackend = errors.New("unsupported workspace backend")
 	ErrWorktreeInvariant  = errors.New("workspace worktree invariant failed")
@@ -456,8 +457,6 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 		uses = previous.uses
 		if next, ok := backend.(*LocalGit); ok {
 			next.createMu = previous.createMu
-			if next.sourceRoot == previous.sourceRoot {
-			}
 			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
 				next.cleanupInventory = previous.cleanupInventory
 			}
@@ -1917,9 +1916,9 @@ func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cau
 			slog.Any("error", err),
 		)
 		if preserved {
-			return fmt.Errorf("%w; workspace quarantined at %q but failed to release its branch: %v", cause, quarantinePath, err)
+			return fmt.Errorf("%w; workspace quarantined at %q but failed to release its branch: %w", cause, quarantinePath, err)
 		}
-		return fmt.Errorf("%w; quarantine failed workspace %q: %v", cause, path, err)
+		return fmt.Errorf("%w; quarantine failed workspace %q: %w", cause, path, err)
 	}
 	if !preserved {
 		return cause
@@ -1997,7 +1996,7 @@ func detachWorktreeHead(ctx context.Context, path string) error {
 	// Quit operations rather than aborting them: quarantine must retain the
 	// working files and conflicted index, but rebase metadata holds the branch
 	// even when HEAD is detached.
-	rebasing, err := rebaseInProgress(ctx, path)
+	rebasing, err := rebase.InProgress(ctx, path)
 	if err != nil {
 		return fmt.Errorf("inspect quarantined worktree rebase: %w", err)
 	}

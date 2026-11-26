@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workspace/gitdiff"
 )
 
 func TestParseDiffStat(t *testing.T) {
@@ -677,11 +679,11 @@ func TestLocalGitDiffStat(t *testing.T) {
 			if relative {
 				want = filepath.Join(info.Path, path)
 			}
-			got, err := gitIndexPath(t.Context(), info.Path)
+			got, err := gitdiff.IndexPath(t.Context(), info.Path)
 			if err != nil || got != want {
 				t.Fatalf("path-only index=%q, %v; want %q", got, err, want)
 			}
-			index, err := gitIndexLookup(t.Context(), info.Path, true)
+			index, err := gitdiff.Index(t.Context(), info.Path, true)
 			if err != nil || index.Path != want || index.HeadSHA != head || index.TreeSHA != committed.TreeSHA || index.HeadObservedAt.IsZero() {
 				t.Fatalf("index observation=%+v, %v", index, err)
 			}
@@ -781,7 +783,7 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 		for _, runtime := range []string{".detent/tmp/tracked", ".detent/tmp/nested/scratch", ".detent/worker-tmp/attempt/scratch"} {
 			writeFileDiffFile(t, path, runtime, "runtime\n")
 		}
-		indexPaths[i], err = gitIndexPath(t.Context(), path)
+		indexPaths[i], err = gitdiff.IndexPath(t.Context(), path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -819,12 +821,12 @@ func TestWorkspaceDiagnosticsPreserveSharedGitMetadata(t *testing.T) {
 			}
 		}},
 		{"recovery paths", func(t *testing.T, path string) {
-			observation, err := observeGitDiff(t.Context(), path, true, nil)
-			if err != nil || !slices.Equal(observation.trackedPaths, []string{".detent/notes.md", "README.md"}) {
-				t.Errorf("tracked paths = %v, %v", observation.trackedPaths, err)
+			observation, err := gitdiff.Observe(t.Context(), path, true, nil)
+			if err != nil || !slices.Equal(observation.TrackedPaths, []string{".detent/notes.md", "README.md"}) {
+				t.Errorf("tracked paths = %v, %v", observation.TrackedPaths, err)
 			}
-			if err != nil || !slices.Equal(observation.untrackedPaths, []string{".detent/lessons.md", "new file.txt"}) {
-				t.Errorf("untracked paths = %v, %v", observation.untrackedPaths, err)
+			if err != nil || !slices.Equal(observation.UntrackedPaths, []string{".detent/lessons.md", "new file.txt"}) {
+				t.Errorf("untracked paths = %v, %v", observation.UntrackedPaths, err)
 			}
 		}},
 	}
@@ -1267,8 +1269,8 @@ func TestLocalGitDiffUsesBaseRefForCleanBranch(t *testing.T) {
 func TestGitRecoveryBaseFingerprintUsesConfiguredBase(t *testing.T) {
 	t.Parallel()
 
-	if got := gitRecoveryBaseFingerprint(t.Context(), "", "base-sha"); got != "base-sha" {
-		t.Fatalf("gitRecoveryBaseFingerprint() = %q, want base-sha", got)
+	if got := gitdiff.RecoveryBaseFingerprint(t.Context(), "", "base-sha"); got != "base-sha" {
+		t.Fatalf("gitdiff.RecoveryBaseFingerprint() = %q, want base-sha", got)
 	}
 }
 
@@ -1285,7 +1287,7 @@ func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 			}
 			if name == "unborn" {
 				runGit(t, path, "init")
-				if _, err := gitIndexPath(t.Context(), path); err != nil {
+				if _, err := gitdiff.IndexPath(t.Context(), path); err != nil {
 					t.Fatalf("path-only lookup in unborn repository: %v", err)
 				}
 			}
