@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubcontent"
@@ -71,10 +73,21 @@ func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
 	s.requestMetricsHTTP().RecordHosted(c, started)
 }
 func (s *Service) expireRequestMetrics(ctx context.Context, now time.Time) error {
-	if s.requestMetrics == nil {
-		return nil
+	var metricsErr error
+	if s.requestMetrics != nil {
+		metricsErr = s.requestMetrics.Retain(ctx, now)
 	}
-	return s.requestMetrics.Retain(ctx, now)
+	d := s.database
+	if d == nil || d.billingRepository == nil || d.hostedOrganization == "" {
+		return metricsErr
+	}
+	owner := d.metricsBillingOwner()
+	if owner.Plans() != nil {
+		return metricsErr
+	}
+	defaults := hostedplans.PilotPlans()
+	plan := &requestmetrics.BillingPlan{WindowSeconds: defaults.WindowSeconds, RetentionWindows: defaults.RetentionWindows}
+	return errors.Join(metricsErr, owner.PruneUsage(ctx, plan, now))
 }
 
 func (s *Service) requestTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
