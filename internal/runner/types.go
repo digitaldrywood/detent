@@ -779,6 +779,7 @@ type SecurityAuditRequest struct {
 	OnUsageUpdate   UsageUpdateHandler
 	Issue           connector.Issue
 	Snapshot        securityaudit.Snapshot
+	WorkspacePath   string
 	StartedAt       time.Time
 	SelectorContext selector.Context
 }

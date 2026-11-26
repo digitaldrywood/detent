@@ -2,15 +2,10 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/issuecontract"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func (o *Orchestrator) issueContractApplies(issue connector.Issue) bool {
@@ -27,59 +22,18 @@ func (o *Orchestrator) issueContractApplies(issue connector.Issue) bool {
 	return at != nil && !o.cfg.IssueContractRolloutAt.IsZero() && !at.Before(o.cfg.IssueContractRolloutAt)
 }
 
-func (o *Orchestrator) enforceIssueContract(ctx context.Context, state *State, issue connector.Issue, returnState string, now time.Time) (bool, error) {
-	if issue.Metadata["hub_profile"] == "native" && strings.EqualFold(issue.State, "Triage") || o.cfg.IssueContract == nil || issue.IssueContract != nil && issue.IssueContract.Exempt {
-		return true, nil
-	}
+func (o *Orchestrator) enforceIssueContract(_ context.Context, _ *State, issue connector.Issue, _ string, _ time.Time) (bool, error) {
 	if strings.Contains(strings.ToLower(issue.Description), "detent:no-dispatch") {
 		return false, nil
 	}
-	evaluation := o.cfg.IssueContract.Evaluate(issue)
-	if evaluation.Satisfied() {
-		return true, nil
-	}
-	if !o.cfg.IssueContract.RequiresHumanConfirmation() {
-		return false, nil
-	}
-	action := o.cfg.IssueContract.HumanAction(issue, evaluation)
-	status := struct {
-		Schema      int               `yaml:"schema"`
-		Status      string            `yaml:"status"`
-		Blockers    []workpad.Blocker `yaml:"blockers"`
-		HumanAction string            `yaml:"human_action"`
-		Fields      map[string]string `yaml:"fields"`
-	}{1, workpad.StatusBlocked, []workpad.Blocker{}, action, map[string]string{"issue_contract_return_state": returnState}}
-	raw, err := yaml.Marshal(status)
-	if err != nil {
-		return false, err
-	}
-	body := "## Codex Workpad\n\n```detent-status\n" + string(raw) + "```"
-	target := firstNonBlank(o.cfg.StopRunTargetState, blockedStatusState)
-	metadata := o.newBlockedRecoveryMetadata(ctx, issue, RunModeImplement, workpadBlockedUnactionedReason, returnState, DiffStats{})
-	metadata.ReasonDetail = body
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, target, now, "state_transition", metadata); err != nil {
-		return false, err
-	}
-	if issue.IssueContract == nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil {
-			return false, fmt.Errorf("publish issue contract human action: %w", err)
-		}
-	}
-	issue.State = target
-	issue.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: action, RecordedAt: &now}
-	issue.IssueContract = &issuecontract.State{HumanAction: action, ReturnState: returnState, RecordedAt: now}
-	if state != nil {
-		state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: workpadBlockedUnactionedReason, BlockedAt: now, NeedsHumanAttention: true, Recovery: metadata.BlockedRecovery, RecoveryTarget: returnState}
-	}
-	return false, nil
+	return true, nil
 }
 
 func (o *Orchestrator) filterIssueContracts(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
 	filtered := make([]connector.Issue, 0, len(issues))
 	for _, issue := range issues {
 		_, running := state.Running[issue.ID]
-		if running || !o.issueContractApplies(issue) || !strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+		if running || !strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
 			filtered = append(filtered, issue)
 			continue
 		}
