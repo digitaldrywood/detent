@@ -41,30 +41,7 @@ func Capture(ctx context.Context, directory, base, head string) (capture tracker
 		return capture, errors.Join(errors.New("change source capture differs from the finalized head"), err)
 	}
 	git := func(ctx context.Context, args ...string) (string, error) { return gitexec.Run(ctx, directory, args...) }
-	commits, err := git(ctx, "rev-list", base+".."+head)
-	if err != nil {
-		return capture, err
-	}
-	var paths []string
-	for _, commit := range strings.Fields(commits) {
-		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", commit)
-		if err != nil {
-			return capture, err
-		}
-		for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
-			if path != "" {
-				paths = append(paths, path)
-			}
-		}
-	}
-	slices.Sort(paths)
-	paths = slices.Compact(paths)
-	for _, path := range paths {
-		if !checkpoint.PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
-			return capture, fmt.Errorf("%w: excluded source path %q", checkpoint.ErrUnsafe, path)
-		}
-	}
-	if err := checkpoint.History(ctx, git, base, head, paths); err != nil {
+	if err := VerifyHistory(ctx, git, base, head); err != nil {
 		return capture, err
 	}
 	objects, err := objects(ctx, directory, base, head)
@@ -100,6 +77,57 @@ func Capture(ctx context.Context, directory, base, head string) (capture tracker
 	if err := os.WriteFile(path, capture.Bundle, 0o600); err != nil {
 		return capture, err
 	}
+	description, err := Describe(ctx, directory, base, head)
+	if err != nil {
+		return capture, err
+	}
+	capture.Patch = description.Patch
+	capture.Source = tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(capture.Bundle), DiffSHA256: description.Source.DiffSHA256, Bytes: int64(len(capture.Bundle))}
+	if err := VerifyBundle(ctx, directory, path); err != nil {
+		return capture, err
+	}
+	return capture, capture.Source.Validate(base, head, capture.Bundle)
+}
+
+func VerifyHistory(ctx context.Context, git checkpoint.GitRunner, base, head string) error {
+	commits, err := git(ctx, "rev-list", base+".."+head)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for _, commit := range strings.Fields(commits) {
+		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", commit)
+		if err != nil {
+			return err
+		}
+		for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
+			if path != "" {
+				paths = append(paths, path)
+			}
+		}
+	}
+	slices.Sort(paths)
+	paths = slices.Compact(paths)
+	for _, path := range paths {
+		if !checkpoint.PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
+			return fmt.Errorf("%w: excluded source path %q", checkpoint.ErrUnsafe, path)
+		}
+	}
+	if err := checkpoint.History(ctx, git, base, head, paths); err != nil {
+		return err
+	}
+	return nil
+}
+
+func Describe(ctx context.Context, directory, base, head string) (tracker.ChangeSourceCapture, error) {
+	var capture tracker.ChangeSourceCapture
+	if !gitexec.ValidHead(base) || !gitexec.ValidHead(head) || base == head {
+		return capture, errors.New("change source description requires immutable base and head")
+	}
+	observed, err := gitexec.ReadPublicationSource(ctx, directory, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(observed) != head {
+		return capture, errors.Join(errors.New("change source description differs from the finalized head"), err)
+	}
 	patch, truncated, err := gitexec.WithinLimit(ctx, directory, nil, tracker.MaxChangeDiffBytes,
 		"diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
 	if err != nil {
@@ -112,11 +140,8 @@ func Capture(ctx context.Context, directory, base, head string) (capture tracker
 	if err != nil {
 		return capture, err
 	}
-	capture.Source = tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, BundleSHA256: tracker.ChangeSourceDigest(capture.Bundle), DiffSHA256: digest, Bytes: int64(len(capture.Bundle))}
-	if err := VerifyBundle(ctx, directory, path); err != nil {
-		return capture, err
-	}
-	return capture, capture.Source.Validate(base, head, capture.Bundle)
+	capture.Source = tracker.ChangeSource{Format: tracker.ChangeSourceGitPhase, BaseSHA: base, HeadSHA: head, DiffSHA256: digest}
+	return capture, nil
 }
 
 func objects(ctx context.Context, directory, base, head string) (string, error) {

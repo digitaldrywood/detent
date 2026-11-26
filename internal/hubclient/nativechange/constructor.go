@@ -42,7 +42,7 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 		scheduler: s, claim: claim, data: state.Data, pending: state.Pending, rejected: state.Rejected,
 		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
-		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
+		phaseSource: state.PhaseSource, sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
 		recoveredSource: state.RecoveredSource, mergeResolution: state.MergeResolution,
 		repository: state.Repository, conversationContinuation: state.ConversationContinuation,
 		preparedOutcome: state.PreparedOutcome,

@@ -14,7 +14,7 @@ func SourceSupersedes(detail tracker.ChangeDetail, selected string, recovery tra
 		}
 	}
 	if previous == nil || current == nil || previous.ChangeID != detail.Change.ID || current.ChangeID != detail.Change.ID ||
-		previous.Number <= 0 || previous.Number >= current.Number || previous.Repository != current.Repository || previous.Source == nil || current.Source == nil {
+		previous.Number <= 0 || previous.Number >= current.Number || previous.Repository != current.Repository || previous.SourceDiffDigest() == "" || current.SourceDiffDigest() == "" {
 		return false
 	}
 	if owner := recovery.SourceAttempt(); owner != nil && owner.Checkpoint.PreservesSource() {

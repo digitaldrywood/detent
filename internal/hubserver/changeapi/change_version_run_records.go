@@ -74,6 +74,22 @@ func (s *VersionPublication) PrepareChangeVersionRun(ctx context.Context, scope 
 		if event.Type != "run.finished" && !publishing || event.AttemptID != request.AttemptID || event.RunID != request.RunID || event.ProjectID != scope.Project || event.WorkItemID != change.WorkItemID {
 			return s.deps.ExecutionConflict("Version source must bind to its persisted run event")
 		}
+		if source := request.GitSource; source != nil {
+			if !publishing || source.Phase.FencingToken > request.FencingToken {
+				return s.deps.ExecutionConflict("Git source requires the current publishing attempt and a recorded phase")
+			}
+			lookup, ok := r.(leasestore.PhaseReceiptLookup)
+			if !ok {
+				return hubapi.NativeRunEventStorageUnavailable()
+			}
+			phase, err := lookup.PhaseReceiptByKey(ctx, scope.Project, prepared.workItem.ID, source.Phase.FencingToken, source.Phase.IdempotencyKey)
+			if errors.Is(err, corestore.ErrNotFound) || err == nil && phase != source.Phase {
+				return s.deps.ExecutionConflict("Git source does not match the recorded phase receipt")
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if publishing {
 			diff, err := r.LatestAttemptDiff(ctx, scope.Project, request.AttemptID, tracker.DiffSourceAttempt)
 			if err != nil {

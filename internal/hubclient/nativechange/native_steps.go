@@ -154,7 +154,13 @@ func (e *nativeExecution) PhaseReceipts(ctx context.Context, command string) (*t
 	}
 	pinned := receipts[0]
 	e.mu.Lock()
-	e.phaseSource, e.phasePlanDigest = &pinned, ""
+	e.phaseSource, e.phasePlanDigest = nil, ""
+	for _, receipt := range receipts {
+		if receipt.HeadSHA == pinned.HeadSHA && receipt.PolicyID == lease.PolicyID && (receipt.Phase == "implement" || receipt.Phase == "project_gate") {
+			e.phaseSource = &receipt
+			break
+		}
+	}
 	if continuation.Plan != nil {
 		e.phasePlanDigest = continuation.Plan.InputDigest
 	}
@@ -289,9 +295,8 @@ func (e *nativeExecution) RecordPhaseReceipt(ctx context.Context, phase, branch,
 	}
 	if err == nil {
 		e.mu.Lock()
-		e.phaseSource = &recorded
-		if phase == "implement" && e.mergeResolution {
-			e.sourceRequired = false
+		if phase == "implement" || phase == "project_gate" {
+			e.phaseSource = &recorded
 		}
 		if phase == "plan" {
 			e.phasePlanDigest = digest

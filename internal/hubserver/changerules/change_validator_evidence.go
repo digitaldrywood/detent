@@ -112,7 +112,7 @@ func ValidateValidatorReviewEvidence(scope hubscope.NativeScope, change tracker.
 		}
 		return "", invalid("validator review must identify the current immutable version and a fresh validator session", field)
 	}
-	if !landingAudit && version.Source != nil && result.DiffDigest != version.Source.DiffSHA256 {
+	if digest := version.SourceDiffDigest(); !landingAudit && digest != "" && result.DiffDigest != digest {
 		return "", invalid("review diff differs from the immutable source", "validator.diff_digest")
 	}
 	issue := evidence.Issue

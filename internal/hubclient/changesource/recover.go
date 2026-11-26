@@ -43,14 +43,14 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 		source := workspace.ChangeSource{Version: version}
 		source.Transferred = version.ID == host.Recovery().SourceVersionID
 		for _, previous := range detail.Versions {
-			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
-				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||
-				previous.Source.Bytes <= 0 || previous.Source.BundleSHA256 == "" || previous.Source.DiffSHA256 == "" {
+			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || !hasRecoverableSource(previous) {
 				continue
 			}
 			source.PreviousHeads = append(source.PreviousHeads, previous.HeadSHA)
 		}
-		if phase != nil && phase.HeadSHA == version.HeadSHA && phase.PolicyID == version.PolicyID {
+		if version.GitSource != nil {
+			source.PushedPhase = &version.GitSource.Phase
+		} else if phase != nil && phase.HeadSHA == version.HeadSHA && phase.PolicyID == version.PolicyID {
 			source.PushedPhase = phase
 		} else if version.Source != nil {
 			source.Bundle, err = reader.ChangeSource(ctx, item, detail.Change.ID, version.ID)
@@ -76,4 +76,13 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 		return source, nil
 	}
 	return workspace.ChangeSource{}, runner.ErrNativeRecoveryRequired
+}
+
+func hasRecoverableSource(version tracker.ChangeVersion) bool {
+	if git := version.GitSource; git != nil {
+		return git.Phase.HeadSHA == version.HeadSHA && git.Phase.PolicyID == version.PolicyID && git.DiffSHA256 != ""
+	}
+	source := version.Source
+	return source != nil && source.Format == "git-bundle" && source.HeadSHA == version.HeadSHA && source.BaseSHA == version.BaseSHA &&
+		source.Bytes > 0 && source.BundleSHA256 != "" && source.DiffSHA256 != ""
 }

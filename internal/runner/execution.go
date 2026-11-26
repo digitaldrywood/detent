@@ -382,7 +382,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
 			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
-		if req.phaseReceipts {
+		if req.phaseContinuation != nil {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
 		}
 	}
@@ -638,6 +638,10 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if result.NativeChange != nil && errors.As(runErr, &reviewErr) {
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
+	}
+	var unsafeSource *stepError
+	if req.phaseReceipts && mode == RunModeImplement && errors.As(runErr, &unsafeSource) && errors.Is(unsafeSource.err, workspace.ErrCheckpointUnsafe) {
+		result.NativeChange = &NativeChange{VersionError: unsafeSource.err.Error()}
 	}
 	var phaseRefusal *workspace.LandRefusal
 	if req.phaseReceipts && mode == RunModeImplement && errors.As(runErr, &phaseRefusal) && phaseRefusal.Kind == workspace.LandRefusalHeadMoved {
@@ -903,7 +907,9 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			}
 		}
 	}
-	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
+	publication := req
+	publication.phaseReceipts = req.phaseContinuation != nil || req.phaseReceipts
+	phaseCompleted := finalizationErr == nil && publication.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
@@ -924,11 +930,11 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				finalizationErr = failedStep("publication", err)
 			}
 		}
-		if finalizationErr == nil {
+		if finalizationErr == nil && req.phaseReceipts {
 			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
 		}
 		if finalizationErr == nil {
-			finalizationErr = publishItemPhase(ctx, req, backend, info, publicationIssue, "implement", "")
+			finalizationErr = publishItemPhase(ctx, publication, backend, info, publicationIssue, "implement", "")
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
@@ -985,7 +991,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 								err = recorder.RecordSourceValidation(ctx, receipt)
 							}
 							if err == nil && phaseCompleted {
-								err = publishItemPhase(ctx, req, backend, info, issue, "project_gate", command)
+								err = publishItemPhase(ctx, publication, backend, info, issue, "project_gate", command)
 							}
 							if err == nil && req.retainedReview != nil {
 								req.retainedReview.validation = &receipt

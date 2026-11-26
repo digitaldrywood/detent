@@ -56,7 +56,7 @@ func verifyCheckout(read func(...string) (string, error), expectedHead, expected
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, verifyHistory func(func(...string) (string, error), string) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -101,6 +101,9 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		}
 		if previous == head {
 			return authorize(ctx)
+		}
+		if err := verifyHistory(read, head); err != nil {
+			return err
 		}
 		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
 		var pushErr error

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/changesource"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
 )
@@ -55,6 +56,18 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 			return phasePublicationDestinationError{err}
 		}
 		return nil
+	}, func(read func(...string) (string, error), head string) error {
+		base, err := l.localProgressBase(ctx, info.Path, issue)
+		if err != nil {
+			return fmt.Errorf("resolve phase source base: %w", err)
+		}
+		ancestor, err := read("merge-base", "--", base, head)
+		if err != nil {
+			return fmt.Errorf("resolve phase source merge base: %w", err)
+		}
+		return changesource.VerifyHistory(ctx, func(_ context.Context, args ...string) (string, error) {
+			return read(args...)
+		}, strings.TrimSpace(ancestor), head)
 	}, func() error {
 		return refuse(LandRefusalHeadMoved, "the item branch changed during phase publication")
 	})
