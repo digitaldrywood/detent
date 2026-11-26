@@ -395,7 +395,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !legacyPublishedSource && (req.phaseContinuation == nil || req.phaseContinuation.PublishedChangeReceipt == nil) {
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil {
 		if req.phaseContinuation == nil {
 			return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
 		}
