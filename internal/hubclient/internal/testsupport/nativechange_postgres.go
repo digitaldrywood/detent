@@ -61,9 +61,6 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 		return err
 	}
-	if _, err := db.ExecContext(ctx, `CREATE ROLE hubclient_test LOGIN; GRANT detent_runtime_v2 TO hubclient_test`); err != nil {
-		return err
-	}
 	if _, err := db.ExecContext(ctx, `SET ROLE detent_migration_v2`); err != nil {
 		return err
 	}
@@ -79,9 +76,10 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 	return err
 })
 
-func ScenarioPostgresDatabase(t *testing.T) *sql.DB {
+func ScenarioPostgresDatabase(t *testing.T) (*sql.DB, pgtransport.Connection) {
 	t.Helper()
-	return scenarioPostgresTemplate.Database(t)
+	admin := scenarioPostgresTemplate.Database(t)
+	return admin, fixtureRuntimeConnection(t, scenarioPostgresTemplate, admin)
 }
 
 func CloseScenarioPostgres(ctx context.Context) error { return scenarioPostgresTemplate.Close(ctx) }
@@ -95,33 +93,12 @@ func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Co
 		return cfg
 	}
 	admin := nativeChangeTemplate.Database(t)
-	connection := pgtransport.Connection{User: "example_" + uuid.NewString()[:8], Password: uuid.NewString(), SSLMode: "disable"}
-	var dataDirectory string
-	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &connection.Host, &dataDirectory); err != nil {
-		t.Fatal(err)
-	}
-	if connection.Host == "." {
-		connection.Host = dataDirectory
-	}
+	connection := fixtureRuntimeConnection(t, nativeChangeTemplate, admin)
 	nativeChangeDatabases.Store(connection.Database, admin)
 	t.Cleanup(func() { nativeChangeDatabases.Delete(connection.Database) })
-	name := pgx.Identifier{connection.User}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(connection.Password)+" IN ROLE detent_runtime_v2"); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 8"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
-		defer cancel()
-		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+name); err != nil {
-			t.Error(err)
-		}
-		if _, err := admin.ExecContext(ctx, "DROP ROLE "+name); err != nil {
-			t.Error(err)
-		}
-	})
 	admin.SetMaxIdleConns(0)
 	cfg.DatabaseBackend = hubserver.DatabasePostgres
 	cfg.Postgres = &postgres.Config{Connection: connection, Pool: postgres.PoolConfig{MaxConnections: 3, ServingConnections: 1, BackgroundConnections: 1}}
@@ -210,6 +187,25 @@ func NativeChangeExpireLease(t *testing.T, cfg hubserver.Config, lease tracker.L
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func fixtureRuntimeConnection(t *testing.T, template *pgtest.Template, admin *sql.DB) pgtransport.Connection {
+	t.Helper()
+	connection := template.Connection(t, admin, "", "")
+	connection.User = "example_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	connection.Password = uuid.NewString()
+	name := pgx.Identifier{connection.User}.Sanitize()
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+name+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(connection.Password)+" IN ROLE detent_runtime_v2"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if _, err := admin.ExecContext(ctx, "DROP OWNED BY "+name+"; DROP ROLE "+name); err != nil {
+			t.Error(err)
+		}
+	})
+	return connection
 }
 
 func nativeChangeRepository(cfg hubserver.Config) (*postgres.Repository, error) {

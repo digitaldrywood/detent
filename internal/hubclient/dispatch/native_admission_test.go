@@ -48,40 +48,40 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		missingIsolation bool
 		refusalBody      string
 	}{
-		{name: "late missing isolation with failed release", slots: 6, budget: 14, preview: true, missingIsolation: true, wantError: true},
-		{name: "late claim unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
-		{name: "late claim forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
-		{name: "late claim badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
-		{name: "late claim unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
-		{name: "late claim forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
-		{name: "late claim badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
-		{name: "late hydration unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
-		{name: "late hydration forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
-		{name: "late hydration badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
-		{name: "late hydration unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
-		{name: "late hydration forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
-		{name: "late hydration badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
-		{name: "six slots", slots: 6, budget: 14, preview: true, want: 6},
-		{name: "oversized recovery preserves both candidates", slots: 2, budget: 2, preview: true, oversized: true, want: 2},
-		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2, wantError: true},
-		{name: "project slots", slots: 2, budget: 10, preview: true, want: 2},
-		{name: "one evaluation budget", slots: 6, budget: 3, preview: true, want: 3},
-		{name: "waiting head", slots: 6, budget: 6, waiting: 4, preview: true, want: 2},
+		{name: "missing isolation with failed release", slots: 6, budget: 14, preview: true, missingIsolation: true, wantError: true},
+		{name: "preview claim unauthorized oversized body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "preview claim forbidden oversized body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "preview claim badrequest oversized body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "preview claim unauthorized failing body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "preview claim forbidden failing body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "preview claim badrequest failing body releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
+		{name: "preview hydration unauthorized oversized body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "preview hydration forbidden oversized body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "preview hydration badrequest oversized body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "preview hydration unauthorized failing body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "preview hydration forbidden failing body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "preview hydration badrequest failing body releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
+		{name: "preview admits one with six slots", slots: 6, budget: 14, preview: true, want: 1},
+		{name: "oversized recovery preserves both candidates", slots: 2, budget: 2, oversized: true, want: 2},
+		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, oversized: true, failAfter: 2, want: 2, wantError: true},
+		{name: "project slots", slots: 2, budget: 10, preview: true, want: 1},
+		{name: "one evaluation budget", slots: 6, budget: 1, preview: true, want: 1},
+		{name: "waiting head", slots: 6, budget: 6, waiting: 4, preview: true, want: 1},
 		{name: "direct claims", slots: 6, budget: 14, want: 6},
-		{name: "hydration retains prefix", slots: 6, budget: 14, preview: true, failAfter: 2, want: 1},
+		{name: "preview hydration failure releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, wantError: true},
 		{name: "direct hydration retains prefix", slots: 6, budget: 14, failAfter: 2, want: 1},
-		{name: "hydration cleanup cancellation releases each lease once", slots: 6, budget: 14, preview: true, failAfter: 2, cancelRelease: true, wantError: true},
-		{name: "claim failure retains partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, want: 2},
+		{name: "hydration cleanup cancellation releases each lease once", slots: 6, budget: 14, preview: true, failAfter: 1, cancelRelease: true, wantError: true},
+		{name: "ambiguous preview claim is returned", slots: 6, budget: 14, preview: true, failClaim: 1, wantError: true},
 		{name: "direct claim failure retains partial batch", slots: 6, budget: 14, failClaim: 3, want: 2},
-		{name: "preview discovery cancellation retains claims", slots: 6, budget: 14, preview: true, cancelDiscovery: true, want: 2},
+		{name: "preview discovery cancellation retains claim", slots: 6, budget: 14, preview: true, cancelDiscovery: true, want: 1},
 		{name: "direct discovery cancellation is unused", slots: 6, budget: 14, cancelDiscovery: true, want: 6},
-		{name: "preview parent cancellation releases batch", slots: 6, budget: 14, preview: true, cancelParent: true, wantError: true},
+		{name: "preview parent cancellation releases claim", slots: 6, budget: 14, preview: true, cancelParent: true, wantError: true},
 		{name: "direct parent cancellation releases batch", slots: 6, budget: 14, cancelParent: true, wantError: true},
 		{name: "direct policy denial releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
 		{name: "direct policy mismatch releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "policy_mismatch", wantError: true},
-		{name: "preview late unauthorized releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "preview unauthorized releases claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
 		{name: "direct late unauthorized releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
-		{name: "preview hydration unauthorized releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "preview hydration unauthorized releases claim", slots: 6, budget: 14, preview: true, failAfter: 1, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
 		{name: "direct hydration unauthorized releases batch", slots: 6, budget: 14, failAfter: 2, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
 		{name: "direct provider full", slots: 6, budget: 14, failClaim: 1, failCode: "provider_capacity"},
 		{name: "direct runner full", slots: 6, budget: 14, failClaim: 1, failCode: "runner_capacity"},
@@ -95,14 +95,12 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "empty provider preview strict provider full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "provider_capacity"},
 		{name: "empty provider preview strict runner full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "runner_capacity"},
 		{name: "empty provider preview strict host full", slots: 6, budget: 14, preview: true, emptyPreview: true, failClaim: 1, failCode: "host_capacity"},
-		{name: "partial provider full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "provider_capacity", want: 2},
-		{name: "partial runner full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "runner_capacity", want: 2},
 		{name: "partial host full", slots: 6, budget: 14, failClaim: 3, failCode: "host_capacity", want: 2},
 		{name: "direct plan full", slots: 6, budget: 14, failClaim: 1, failCode: "plan_capacity"},
-		{name: "partial plan full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "plan_capacity", want: 2},
+		{name: "claim plan full", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "plan_capacity"},
 		{name: "unauthorized", slots: 6, budget: 14, failClaim: 1, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
-		{name: "policy denied releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
-		{name: "unrelated conflict releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "policy_mismatch", wantError: true},
+		{name: "policy denied refuses claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
+		{name: "unrelated conflict refuses claim", slots: 6, budget: 14, preview: true, failClaim: 1, failCode: "policy_mismatch", wantError: true},
 		{name: "draining", slots: 6, budget: 14, preview: true, failPreview: true, failCode: "runner_draining", wantError: true},
 		{name: "disabled", slots: 6, budget: 14, failClaim: 1, failCode: "runner_disabled", wantError: true},
 		{name: "offline", slots: 6, budget: 14, failClaim: 1, failCode: "runner_offline", wantError: true},
@@ -246,7 +244,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					acquired[string(lease.ID)] = lease
-					if test.missingIsolation && claims == 3 {
+					if test.missingIsolation {
 
 						rejectedLease = string(lease.ID)
 						lease.IsolationPolicy = nil
@@ -256,7 +254,11 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						}
 						response.Body = io.NopCloser(strings.NewReader(string(payload)))
 					}
-					if len(acquired) == 2 {
+					cancelAfter := 2
+					if test.preview {
+						cancelAfter = 1
+					}
+					if len(acquired) == cancelAfter {
 						if test.cancelDiscovery {
 							cancelDiscovery()
 						}
@@ -328,7 +330,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 					return
 				}
 				h.failChanges.next = transport
-				readyIDs = nil
+				request.CandidateReady = nil
+				h.scheduler.providerReports = nil
 				issues, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
 				if err != nil || len(issues) != min(6, count) {
 					t.Fatalf("failed batch retained leases: %d issues, %v", len(issues), err)
@@ -390,8 +393,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 					t.Fatalf("batch lost distinct fenced claims: %+v", lease)
 				}
 				seen[issue.ID], sessions[lease.SessionID] = true, true
-				if test.preview && issue.ID != readyIDs[i] {
-					t.Fatalf("queue order = %s at %d, want %s", issue.ID, i, readyIDs[i])
+				if test.preview && !test.wantError && (i >= len(readyIDs) || issue.ID != readyIDs[i]) {
+					t.Fatalf("admitted issue %s at %d was out of evaluation order %v", issue.ID, i, readyIDs)
 				}
 				if _, err := h.scheduler.AdoptClaim(t.Context(), issue, time.Now()); err != nil {
 					t.Fatal(err)
@@ -474,8 +477,8 @@ func TestNativeAdmissionCompetingRunners(t *testing.T) {
 			seen[issue.ID] = true
 		}
 	}
-	if len(seen) != 8 {
-		t.Fatalf("competing batches admitted %d distinct issues, want 8", len(seen))
+	if len(seen) != 2 {
+		t.Fatalf("competing runners admitted %d distinct issues, want 2", len(seen))
 	}
 }
 

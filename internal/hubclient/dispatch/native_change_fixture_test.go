@@ -702,6 +702,18 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 
 var changeRepositories = gitrepo.NewFixtures(func() string { return nativeChangeFixtureRoot })
 var nativeChangeSourceRepo = changeRepositories.Source
+
+func nativeChangePublishedSource(t *testing.T, h *nativeChangeHub) string {
+	t.Helper()
+	source := nativeChangeSourceRepo(t)
+	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, source, "remote", "add", "origin", remote)
+	nativeChangeGit(t, source, "push", "-u", "origin", "main")
+	h.configureCloneURL(remote)
+	return source
+}
+
 var nativeChangeSourceFixture = changeRepositories.Capture
 var nativeChangeFixtureHead = gitrepo.Head
 var nativeChangeTempDir = gitrepo.TempDir

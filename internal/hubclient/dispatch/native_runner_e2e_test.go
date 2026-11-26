@@ -36,13 +36,13 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	t.Parallel()
 
 	ctx := context.Background()
-	sourceRoot := nativeChangeSourceRepo(t)
 	workspacesRoot := filepath.Join(t.TempDir(), "workspaces")
 	hub := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)})
+	sourceRoot := nativeChangePublishedSource(t, hub)
 	created, err := hub.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Record agent output", Body: "Write the requested output file." + issueContractTestSections, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,9 +137,8 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	if retry, ok := state.Retry[issue.ID]; !ok || retry.Attempt != 1 {
 		t.Fatalf("dirty uncommitted result retry = %+v, present = %t", retry, ok)
 	}
-	diffStat := state.DiffStats[issue.ID]
-	if diffStat.FilesChanged != 1 || diffStat.AddedLines != 1 || diffStat.RemovedLines != 0 || diffStat.Status != "changed" {
-		t.Fatalf("DiffStats = %#v, want one added file", diffStat)
+	if !strings.Contains(state.Retry[issue.ID].Error, "uncommitted changes") {
+		t.Fatalf("dirty source retry lost finalization refusal: %s", state.Retry[issue.ID].Error)
 	}
 
 	entries, err := os.ReadDir(workspacesRoot)
@@ -160,6 +159,10 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	}
 	workspaceKey := workspaceKeys[0]
 	workspacePath := filepath.Join(workspacesRoot, workspaceKey)
+	diffStat, err := workspace.GitDiffStat(t.Context(), workspacePath)
+	if err != nil || diffStat.Files != 1 || diffStat.Added != 1 || diffStat.Removed != 0 {
+		t.Fatalf("retained worktree diff = %#v, want one added file: %v", diffStat, err)
+	}
 	wantBranch := "detent/" + strings.ToLower(workspaceKey)
 	branch, err := exec.CommandContext(t.Context(), "git", "-C", workspacePath, "branch", "--show-current").Output()
 	if err != nil {

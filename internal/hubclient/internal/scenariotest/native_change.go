@@ -1971,9 +1971,24 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if test.Expired {
 				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
-				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
-					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
+				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "interrupted" || evidence.Attempt.Checkpoint == nil || evidence.Attempt.Checkpoint.HeadSHA == "" || evidence.Attempt.Runtime == nil || evidence.Attempt.Runtime.Validation != nil {
+					t.Fatalf("expired parent did not preserve an interrupted checkpoint: attempt=%+v error=%v", evidence.Attempt, readErr)
 				}
+				if test.Staged {
+					status, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "status", "--porcelain", "--", "CHANGE.md").Output()
+					if err != nil || strings.TrimSpace(string(status)) != "A  CHANGE.md" {
+						t.Fatalf("expired parent did not preserve the staged change: %q, %v", status, err)
+					}
+				}
+				if test.Rework {
+					retained, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if err != nil || retained.Change.CurrentVersion != expected.Change.CurrentVersion || len(retained.Versions) != len(expected.Versions) || evidence.Attempt.Checkpoint.HeadSHA == expected.Versions[len(expected.Versions)-1].HeadSHA {
+						t.Fatalf("expired Rework changed published source or lost its local head: change=%+v error=%v", retained, err)
+					}
+				} else if changes := h.changes(t, issue.ID); len(changes) != 0 {
+					t.Fatalf("expired run published a Change: %+v", changes)
+				}
+				return
 			}
 			if test.SSH && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()

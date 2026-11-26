@@ -837,6 +837,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
 	closeBeforeFinish := e.landed && !finished && outcome == "succeeded"
+	delivered := outcome == "succeeded" && e.releaseDelivery != nil && e.releaseDelivery.DeliveredSHA != ""
 	interrupted := e.data.Outcome == "interrupted"
 	expectedState := e.Recovery().Issue.State
 	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
@@ -862,6 +863,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 			} else if !strings.EqualFold(expectedState, issue.State) {
 				outcome = "cancelled"
 			}
+		}
+		if finishErr == nil && !closeBeforeFinish && !delivered && !e.claimActive() {
+			finishErr = runner.ErrExecutionAuthorityUnavailable
 		}
 		if finishErr == nil {
 			finishErr = e.Finish(ctx, outcome)

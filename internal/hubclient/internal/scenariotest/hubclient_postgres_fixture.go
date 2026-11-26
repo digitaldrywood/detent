@@ -22,7 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -42,16 +41,7 @@ func ClosePostgres() error {
 
 func hubclientPostgresConfig(t *testing.T, cfg hubserver.Config, states []tracker.NativeState, requireDependencies bool) (hubserver.Config, func(context.Context, string) error, func(context.Context, string) (bool, error)) {
 	t.Helper()
-	admin := testsupport.ScenarioPostgresDatabase(t)
-	connection := pgtransport.Connection{User: "hubclient_test", Password: "test-only", SSLMode: "disable"}
-	var socket, data string
-	if err := admin.QueryRowContext(t.Context(), `SELECT current_database(), current_setting('port')::integer, current_setting('unix_socket_directories'), current_setting('data_directory')`).Scan(&connection.Database, &connection.Port, &socket, &data); err != nil {
-		t.Fatal(err)
-	}
-	connection.Host = socket
-	if socket == "." {
-		connection.Host = data
-	}
+	admin, connection := testsupport.ScenarioPostgresDatabase(t)
 	if _, err := admin.ExecContext(t.Context(), `ALTER DATABASE `+`"`+connection.Database+`" CONNECTION LIMIT 10`); err != nil {
 		t.Fatal(err)
 	}

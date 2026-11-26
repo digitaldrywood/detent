@@ -162,6 +162,7 @@ func RunReleaseDeliveryReconciliation(t *testing.T, factories Constructors) {
 				f.git(t.Context(), "branch", "-f", "develop", frozen)
 			}
 			f.input = tracker.ReleasePickInput{SourceIssueID: "wi_source", SourceChangeID: "change_source", SourceMergeSHA: source, Repository: "https://github.com/example-org/example-project", PRNumber: 7, HeadRef: "pick/repair", HeadSHA: deliveryHead, BaseRef: "release/v1.2", BaseSHA: frozen, FrozenSHA: frozen}
+			f.git(t.Context(), "remote", "add", "origin", f.directory)
 			f.git(t.Context(), "config", "url."+f.directory+".insteadOf", f.input.Repository+".git")
 			h := newPlannerHub(t, "Blocked", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},

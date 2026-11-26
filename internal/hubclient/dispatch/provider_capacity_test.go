@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -550,40 +549,50 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				}
 				return response, err
 			}))
+			retained, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(retained) != 1 {
+				t.Fatalf("first provider admission = %v, %v", retained, err)
+			}
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+			if err == nil || len(issues) != 0 || len(acquired) != 2 || len(recoveryIDs) != 2 {
 				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
 			}
-			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
-				t.Fatal("partial batch did not retain only the successfully hydrated lease")
+			if retained[0].ID != string(acquired[0].WorkItemID) || retained[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
+				t.Fatal("failed hydration affected a previously admitted lease")
 			}
-			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
-				t.Fatal("partial batch retained claims outside the hydrated prefix")
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 1 {
+				t.Fatal("failed hydration retained claims outside the first admission")
 			}
 			for i, lease := range acquired {
-				wantReleased := 1
-				if i == 0 {
-					wantReleased = 0
-				}
-				if lease.ProviderReservation == nil || released[lease.ID] != wantReleased {
-					t.Fatalf("lease %s: reservation=%v releases=%d, want %d", lease.ID, lease.ProviderReservation, released[lease.ID], wantReleased)
+				if lease.ProviderReservation == nil || released[lease.ID] != i {
+					t.Fatalf("lease %s: reservation=%v releases=%d, want %d", lease.ID, lease.ProviderReservation, released[lease.ID], i)
 				}
 				_, cached := fixtureLeaseCached(t, client, native.Scope(), lease.WorkItemID)
 				if cached != (i == 0) {
 					t.Fatalf("lease %s cache retained=%t", lease.ID, cached)
 				}
 			}
-			retained := scheduler.nativeClaims[issues[0].ID]
-			if !reflect.DeepEqual(retained.lease.ProviderReservation, acquired[0].ProviderReservation) || retained.lease.PolicyID != descriptor.ID {
-				t.Fatal("retained lease lost its provider reservation or immutable policy")
+			if first := scheduler.nativeClaims[retained[0].ID].lease; first.ID != acquired[0].ID || first.ProviderReservation == nil || first.PolicyID != descriptor.ID {
+				t.Fatal("retained lease lost its identity, provider reservation or immutable policy")
 			}
 			fixtureClient(client).requests.Store(transport)
-			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+			if err := scheduler.ReleaseClaim(t.Context(), retained[0].ID, "dispatch_deferred"); err != nil {
 				t.Fatal(err)
 			}
-			evaluations = 0
 		}
-		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+		admit := func(count int) []connector.Issue {
+			t.Helper()
+			var issues []connector.Issue
+			for range count {
+				evaluations = 0
+				next, err := scheduler.FetchCandidateIssues(t.Context(), request)
+				if err != nil || len(next) != 1 || evaluations > request.CandidateLimit {
+					t.Fatalf("provider admission = %d, %v, evaluations=%d", len(next), err, evaluations)
+				}
+				issues = append(issues, next[0])
+			}
+			return issues
+		}
 		want := 6
 		if unavailable == "provider slots" {
 			want = 2
@@ -591,8 +600,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		if unavailable == "mixed providers" {
 			want = 3
 		}
-		if err != nil || len(issues) != want || issues[0].State != "Rework" || evaluations > request.CandidateLimit {
-			t.Fatalf("provider batch = %d, %v, want %d with Rework first", len(issues), err, want)
+		issues := admit(want)
+		if issues[0].State != "Rework" {
+			t.Fatalf("first provider admission was %s, want Rework", issues[0].State)
 		}
 		if unavailable == "stage slots" && admittedRework != 1 {
 			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
@@ -640,10 +650,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			t.Fatalf("overcommitted providers: %v", used)
 		}
 		admittedRework = 0
-		evaluations = 0
-		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != want {
-			t.Fatalf("released provider reservations retained slots: %d, %v", len(again), err)
-		}
+		admit(want)
 		return
 	}
 	if unavailable == "bounded" {
@@ -759,10 +766,9 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 1 {
 		t.Fatalf("start retries duplicated or lost the durable attempt: attempts=%#v error=%v", recovery.Attempts, err)
 	}
-	// This attempt already occupies the provider's only slot. An ordinary
-	// empty claim result keeps admission idle without inventing an outage.
 	next, err := scheduler.FetchCandidateIssues(t.Context(), request)
-	if err != nil || len(next) != 0 {
+	var refusal *APIError
+	if len(next) != 0 || err != nil && (!errors.As(err, &refusal) || refusal.Code != "provider_incompatible") {
 		t.Fatalf("exhausted occupied capacity admitted another attempt: candidates=%#v error=%v", next, err)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), candidates[0].ID, "completed"); err != nil {

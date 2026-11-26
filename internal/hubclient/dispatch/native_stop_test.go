@@ -31,8 +31,9 @@ import (
 
 type stoppedFinalizationWorkspace struct {
 	*workspace.LocalGit
-	started chan workspace.Info
-	resume  chan struct{}
+	started   chan workspace.Info
+	resume    chan struct{}
+	cancelled chan struct{}
 }
 
 func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, info workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
@@ -41,6 +42,8 @@ func (w *stoppedFinalizationWorkspace) RunReviewCommand(ctx context.Context, inf
 	case <-w.resume:
 		return w.LocalGit.RunReviewCommand(ctx, info, issue, command)
 	case <-ctx.Done():
+		close(w.cancelled)
+		<-w.resume
 		return gate.CommandResult{}, ctx.Err()
 	}
 }
@@ -267,7 +270,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{})}
+	backend := &stoppedFinalizationWorkspace{LocalGit: local, started: make(chan workspace.Info, 1), resume: make(chan struct{}), cancelled: make(chan struct{})}
 	agent, err := runner.NewRunner(runner.Dependencies{Store: api.NewRunnerSessions(h.native), ProcessSource: emptyProcessSource, ProjectID: "local", Workspace: backend, AgentBackend: &committingAgent{staged: true}, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true"}}, Prompt: "Complete the issue"}})
 	if err != nil {
 		t.Fatal(err)
@@ -440,6 +443,11 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			t.Fatalf("stop acknowledgement = %+v, %v", result, err)
 		}
 	}
+	select {
+	case <-backend.cancelled:
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("stop did not cancel the in-flight validation")
+	}
 	close(backend.resume)
 	testenv.WaitUntil(t, t.Context(), func() error {
 		state, err = orch.State(t.Context())
@@ -453,7 +461,7 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 			t.Fatalf("stop transition failed: %+v", blocked)
 		}
 		if active || pending {
-			return fmt.Errorf("stop did not settle after host check success: running=%+v blocked=%+v", state.Running, state.Blocked)
+			return fmt.Errorf("stop did not settle after host check cancellation: running=%+v blocked=%+v", state.Running, state.Blocked)
 		}
 		return nil
 	})
@@ -493,8 +501,8 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
-	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
-		t.Fatalf("in-flight successful validation receipt was lost: %+v", runtime)
+	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation != nil {
+		t.Fatalf("cancelled validation must not produce a receipt: %+v", runtime)
 	}
 	h.scheduler.mu.Lock()
 	_, claimed := h.scheduler.nativeClaims[issue.ID]

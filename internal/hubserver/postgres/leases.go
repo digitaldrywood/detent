@@ -14,7 +14,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
-	"github.com/digitaldrywood/detent/internal/hubserver/postgres/boardviewsql"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgquery"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -66,8 +65,11 @@ func (s *session) LockMachine(ctx context.Context, id string) (leasestore.Machin
 	return machine, mapError(ctx, err)
 }
 
+const observedLeaseUnexpired = `l.released_at IS NULL AND l.expires_at>clock.observed_at`
+
 const observedLeaseSQL = `SELECT l.organization_id,l.lease_id,l.fencing_token,l.issue_id,l.machine_id,l.session_id,l.work_item_revision,l.landing_capacity,l.acquired_at,l.renewed_at,l.expires_at,l.released_at,l.release_reason,l.project_id,l.runner_id,l.isolation_tier,
- transaction_timestamp(),(` + boardviewsql.UnexpiredLease + `) FROM leases l WHERE l.organization_id=$1 AND `
+ clock.observed_at,(` + observedLeaseUnexpired + `) FROM leases l
+ CROSS JOIN (SELECT COALESCE($3::timestamptz,transaction_timestamp()) AS observed_at) clock WHERE l.organization_id=$1 AND `
 
 func scanObservedLease(row interface{ Scan(...any) error }) (leasestore.ObservedLease, error) {
 	var lease leasestore.ObservedLease
@@ -83,7 +85,7 @@ func (s *session) Lease(ctx context.Context, id string) (leasestore.Lease, error
 }
 
 func (s *session) LeaseSnapshot(ctx context.Context, id string) (leasestore.ObservedLease, error) {
-	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.lease_id=$2", s.organization, id))
+	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.lease_id=$2", s.organization, id, s.leaseClockValue()))
 	return lease, mapError(ctx, err)
 }
 
@@ -120,7 +122,7 @@ func (s *session) ActiveLeaseForIssue(ctx context.Context, issueID int64) (lease
 }
 
 func (s *session) ActiveLeaseForIssueSnapshot(ctx context.Context, issueID int64) (leasestore.ObservedLease, error) {
-	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.issue_id=$2 AND "+boardviewsql.UnexpiredLease, s.organization, issueID))
+	lease, err := scanObservedLease(s.db.QueryRow(ctx, observedLeaseSQL+"l.issue_id=$2 AND "+observedLeaseUnexpired, s.organization, issueID, s.leaseClockValue()))
 	return lease, mapError(ctx, err)
 }
 

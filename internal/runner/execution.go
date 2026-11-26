@@ -375,12 +375,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	mode := runworkspace.NormalizeRunMode(req.Mode)
 	legacyPublishedSource := false
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
-		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
+		gateCommand := gate.Effective(workflow.Config.Gate).Run
+		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gateCommand)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
 		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
-			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
+			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation, gateCommand)
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
 		if req.phaseReceipts {
 			req.publishedPhaseSource = &workspace.PhaseSource{}

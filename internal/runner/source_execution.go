@@ -74,7 +74,7 @@ func (e *sourceRepair) Unwrap() error { return e.err }
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
-func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuation *tracker.NativePhaseContinuation) bool {
+func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuation *tracker.NativePhaseContinuation, gateCommand string) bool {
 	if continuation == nil {
 		return false
 	}
@@ -84,6 +84,9 @@ func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuati
 	change := recovery.Change
 	if change == nil {
 		return false
+	}
+	if continuation.NextPhase == RunModeImplement && (continuation.Plan == nil || continuation.Plan.Accepted) && nativeReviewResumeAttempt(recovery, gateCommand) != nil {
+		return true
 	}
 	for _, receipt := range []*tracker.NativePhaseReceipt{continuation.LastPushed, continuation.PublishedChangeReceipt} {
 		if receipt != nil && receipt.HeadSHA == change.HeadSHA && !tracker.IsPlanPhase(receipt.Phase) {
