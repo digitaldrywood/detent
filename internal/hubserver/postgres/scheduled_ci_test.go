@@ -236,6 +236,12 @@ func TestScheduledDecisionProjectDeletionReleasesStorage(t *testing.T) {
 					t.Fatalf("repeat project deletion = %v, want not found", err)
 				}
 			}
+			var subtotalExists bool
+			if err := admin.QueryRowContext(ctx, `SELECT EXISTS (
+				SELECT 1 FROM scheduled_ci_project_storage WHERE organization_id='org_first' AND project_id='prj_first'
+			)`).Scan(&subtotalExists); err != nil || subtotalExists != step.rollback {
+				t.Fatalf("project storage subtotal exists = %t, want %t: %v", subtotalExists, step.rollback, err)
+			}
 			for _, tenant := range []struct {
 				org     tracker.OrganizationID
 				want    int64
