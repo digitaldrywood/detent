@@ -173,7 +173,7 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous mode
 	return remote, nil
 }
 
-func Fetch(ctx context.Context, branch string, source model.PhaseSource, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
+func Fetch(ctx context.Context, path, branch string, source model.PhaseSource, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
 	if !gitexec.ValidHead(source.HeadSHA) || !gitexec.ValidHead(source.TreeSHA) || source.Branch == "" || source.Branch != branch {
 		return errors.New("recorded phase does not name the item branch and immutable source")
 	}
@@ -187,16 +187,20 @@ func Fetch(ctx context.Context, branch string, source model.PhaseSource, reposit
 		return err
 	}
 	defer release()
-	if _, err := git(ctx, "fetch", "--no-tags", gitexec.DefaultRemote, source.HeadSHA); err != nil {
+	if _, err := git(ctx, "fetch", "--no-tags", "--no-recurse-submodules", "--write-fetch-head", gitexec.DefaultRemote, source.HeadSHA); err != nil {
 		return fmt.Errorf("fetch recorded phase commit: %w", err)
 	}
-	head, err := git(ctx, "rev-parse", "FETCH_HEAD^{commit}")
+	head, err := ResolveFetchedHead(ctx, path)
 	if err != nil || strings.TrimSpace(head) != source.HeadSHA {
 		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
 	}
-	tree, err := git(ctx, "rev-parse", source.HeadSHA+"^{tree}")
+	tree, err := gitexec.ReadPublicationSource(ctx, path, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", source.HeadSHA+"^{tree}")
 	if err != nil || strings.TrimSpace(tree) != source.TreeSHA {
 		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
 	}
 	return nil
+}
+
+func ResolveFetchedHead(ctx context.Context, path string) (string, error) {
+	return gitexec.ReadPublicationSource(ctx, path, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
 }

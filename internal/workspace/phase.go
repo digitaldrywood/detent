@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/digitaldrywood/detent/internal/workspace/changesource"
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
 	"github.com/digitaldrywood/detent/internal/workspace/rebase"
@@ -66,7 +66,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		if err != nil {
 			return fmt.Errorf("resolve phase source merge base: %w", err)
 		}
-		return changesource.VerifyHistory(ctx, func(_ context.Context, args ...string) (string, error) {
+		return checkpoint.PhaseHistory(ctx, func(_ context.Context, args ...string) (string, error) {
 			return read(args...)
 		}, strings.TrimSpace(ancestor), head)
 	}, func() error {
@@ -207,7 +207,7 @@ func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue
 	if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-recurse-submodules", defaultGitRemote, ref)...); err != nil {
 		return fmt.Errorf("fetch published item branch: %w", withCommandOutput(err))
 	}
-	fetched, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	fetched, err := phasegit.ResolveFetchedHead(ctx, l.sourceRoot)
 	if err != nil {
 		return err
 	}
@@ -268,7 +268,7 @@ func (l *LocalGit) itemPhaseTree(ctx context.Context, head string) (string, erro
 }
 
 func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, source PhaseSource) error {
-	return phasegit.Fetch(ctx, info.PublishBranch(), source, func(ctx context.Context) string {
+	return phasegit.Fetch(ctx, l.sourceRoot, info.PublishBranch(), source, func(ctx context.Context) string {
 		return RepositoryURL(ctx, l.sourceRoot)
 	}, issue.PullRequestRepository, l.acquireSourceOperation, l.runGit)
 }

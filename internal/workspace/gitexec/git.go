@@ -358,13 +358,18 @@ var HandoffDiffExcludes = []string{
 // the per-file attempt diff pins --find-renames -- gets the
 // same bounded read instead of a second copy of it.
 func WithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
+	if len(env) > 0 {
+		env = append(os.Environ(), env...)
+	}
+	return withinLimitEnvironment(ctx, workspacePath, env, maxBytes, args...)
+}
+
+func withinLimitEnvironment(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
 	gitArgs := append([]string{"git", "-C", workspacePath}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
 	cmd.WaitDelay = WaitDelay
-	if len(env) > 0 {
-		cmd.Env = append(os.Environ(), env...)
-	}
+	cmd.Env = env
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
