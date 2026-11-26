@@ -175,10 +175,10 @@ func Blob(ctx context.Context, git GitRunner, prefix, path string) error {
 	if err != nil {
 		return err
 	}
-	return screenCredentials(blob)
+	return ScreenCredentials(blob)
 }
 
-func screenCredentials(blob string) error {
+func ScreenCredentials(blob string) error {
 	for {
 		match := secretPattern.FindStringIndex(blob)
 		if match == nil {

@@ -45,7 +45,7 @@ func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) err
 		if !strings.Contains(raw, "\n\n") {
 			return fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
 		}
-		if err := screenCredentials(raw); err != nil {
+		if err := ScreenCredentials(raw); err != nil {
 			return err
 		}
 		changed, err := readPhaseOutput(git, min(remaining, phaseMetadataBytes), "changed paths",
@@ -77,7 +77,7 @@ func screenPhasePaths(git gitexec.BoundedRead, changed string, pathsRemaining, r
 		if !PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
 			return fmt.Errorf("%w: commit contains an unapproved path", ErrUnsafe)
 		}
-		if err := screenCredentials(path); err != nil {
+		if err := ScreenCredentials(path); err != nil {
 			return err
 		}
 		switch fields[1] {
@@ -118,7 +118,7 @@ func screenPhaseBlob(git gitexec.BoundedRead, object string, remaining *int) err
 	if err != nil {
 		return err
 	}
-	return screenCredentials(blob)
+	return ScreenCredentials(blob)
 }
 
 func readPhaseOutput(git gitexec.BoundedRead, limit int, step string, args ...string) (string, error) {

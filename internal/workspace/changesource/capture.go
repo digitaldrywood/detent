@@ -29,13 +29,16 @@ type Source struct {
 
 func Diff(ctx context.Context, directory, base, head string) (digest string, err error) {
 	err = gitexec.WithPublicationObjects(ctx, directory, func(scratch string) error {
-		digest, err = diffDigest(ctx, scratch, base, head)
+		metadata, err := diffMetadata(ctx, scratch, base, head)
+		if err == nil {
+			digest = tracker.ChangeSourceDigest([]byte(metadata))
+		}
 		return err
 	})
 	return digest, err
 }
 
-func diffDigest(ctx context.Context, scratch, base, head string) (string, error) {
+func diffMetadata(ctx context.Context, scratch, base, head string) (string, error) {
 	diff, truncated, err := gitexec.PublicationDiffWithinLimit(ctx, scratch, tracker.MaxChangeDiffBytes,
 		"--raw", "--no-abbrev", "--no-renames", "--no-ext-diff", "--no-textconv", "-z", base, head, "--")
 	if err != nil {
@@ -44,7 +47,7 @@ func diffDigest(ctx context.Context, scratch, base, head string) (string, error)
 	if truncated {
 		return "", errors.New("change source diff metadata exceeds the publication limit")
 	}
-	return tracker.ChangeSourceDigest([]byte(diff)), nil
+	return diff, nil
 }
 
 func Capture(ctx context.Context, directory, base, head string) (capture tracker.ChangeSourceCapture, err error) {
@@ -144,6 +147,22 @@ func Describe(ctx context.Context, directory, base, head string) (tracker.Change
 		return capture, errors.Join(errors.New("change source description differs from the finalized head"), err)
 	}
 	err = gitexec.WithPublicationObjects(ctx, directory, func(scratch string) error {
+		metadata, err := diffMetadata(ctx, scratch, base, head)
+		if err != nil {
+			return err
+		}
+		capture.Source = tracker.ChangeSource{Format: tracker.ChangeSourceGitPhase, BaseSHA: base, HeadSHA: head, DiffSHA256: tracker.ChangeSourceDigest([]byte(metadata))}
+		for metadata != "" {
+			_, rest, hasHeader := strings.Cut(metadata, "\x00")
+			path, next, hasPath := strings.Cut(rest, "\x00")
+			if !hasHeader || !hasPath || path == "" {
+				return errors.New("invalid change source diff path record")
+			}
+			if tracker.DiffPathDenied(path) {
+				return nil
+			}
+			metadata = next
+		}
 		if _, err := gitexec.ReadPublicationSource(ctx, scratch, "read-tree", head); err != nil {
 			return fmt.Errorf("prepare review attributes from the finalized tree: %w", err)
 		}
@@ -155,11 +174,6 @@ func Describe(ctx context.Context, directory, base, head string) (tracker.Change
 		if !truncated {
 			capture.Patch = patch
 		}
-		digest, err := diffDigest(ctx, scratch, base, head)
-		if err != nil {
-			return err
-		}
-		capture.Source = tracker.ChangeSource{Format: tracker.ChangeSourceGitPhase, BaseSHA: base, HeadSHA: head, DiffSHA256: digest}
 		return nil
 	})
 	return capture, err

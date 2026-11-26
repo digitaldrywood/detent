@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 )
 
 type VersionReader interface {
@@ -96,12 +98,17 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 		}
 		var patch strings.Builder
 		complete := true
+		denied := false
 		for _, file := range state.Diff.Files {
 			diff.Files = append(diff.Files, file.Path)
 			patch.WriteString(file.Patch)
-			complete = complete && !file.Truncated && !file.Denied
+			complete = complete && !file.Truncated
+			denied = denied || tracker.FilterDiffFile(file).Denied
 		}
-		if complete {
+		if stage == "security_audit" && denied {
+			return runner.NativeValidation{}, errors.New("security audit source patch contains a denied file")
+		}
+		if complete && !denied {
 			diff.Patch = patch.String()
 		}
 		if digest := version.SourceDiffDigest(); (state.SourceRequired || version.GitSource != nil) && digest != "" {
@@ -112,11 +119,16 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 			if capture == nil || capture.Source.BaseSHA != version.BaseSHA || capture.Source.HeadSHA != version.HeadSHA || capture.Source.DiffSHA256 != digest {
 				return runner.NativeValidation{}, errors.New("retained review source differs from the immutable version")
 			}
-			diff.Patch = capture.Patch
+			if !denied {
+				diff.Patch = capture.Patch
+			}
 			diff.Digest = capture.Source.DiffSHA256
 			if stage == "security_audit" && capture.Patch == "" && capture.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) {
 				return runner.NativeValidation{}, errors.New("security audit retained source patch is unavailable")
 			}
+		}
+		if err := checkpoint.ScreenCredentials(diff.Patch); err != nil {
+			return runner.NativeValidation{}, fmt.Errorf("screen native review patch: %w", err)
 		}
 		runtime, err := reader.ValidatorEvidence(ctx, state.Lease.WorkItemID, state.Data.AttemptID)
 		if err != nil {

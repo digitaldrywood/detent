@@ -102,4 +102,27 @@ func TestDescribeUsesPublishedGitObjects(t *testing.T) {
 	}
 }
 
+func TestDescribeWithholdsPatchForDeniedSourcePaths(t *testing.T) {
+	for _, test := range []struct{ before, after string }{
+		{before: ".env.example", after: "released example"},
+		{before: "released example", after: ".env.example"},
+	} {
+		t.Run(test.before+" to "+test.after, func(t *testing.T) {
+			source := gitfixture.SourceRepo(t)
+			gitfixture.WriteFile(t, source, test.before, "fixture\n")
+			gitfixture.Git(t, source, "add", "--", test.before)
+			gitfixture.Git(t, source, "commit", "-m", "add fixture")
+			base := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+			gitfixture.Git(t, source, "mv", "--", test.before, test.after)
+			gitfixture.Git(t, source, "commit", "-m", "rename fixture")
+			head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+			got, err := Describe(t.Context(), source, base, head)
+			digest, digestErr := Diff(t.Context(), source, base, head)
+			if err != nil || digestErr != nil || digest == "" || got.Source.DiffSHA256 != digest || got.Patch != "" {
+				t.Fatalf("denied source: patch present=%t digest=%q expected=%q description=%v digest error=%v", got.Patch != "", got.Source.DiffSHA256, digest, err, digestErr)
+			}
+		})
+	}
+}
+
 func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }

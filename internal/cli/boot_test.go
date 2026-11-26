@@ -161,6 +161,15 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 var fixtureBuildCache string
 
 func TestMain(m *testing.M) {
+	if os.Getenv("DETENT_TEST_WORKSPACE_SESSION_ID") == "1" {
+		id, err := workspaceSessionIDs("machine_1")()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stdout, id)
+		os.Exit(0)
+	}
 	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}

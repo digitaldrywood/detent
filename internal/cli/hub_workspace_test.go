@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,32 @@ func TestWorkspaceSessionIDsAreUniqueAndDistinct(t *testing.T) {
 			}
 		})
 	}
+	t.Run("separate processes without local state", func(t *testing.T) {
+		executable, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		previous := ""
+		for range 2 {
+			child := exec.CommandContext(t.Context(), executable, "-test.run=^$")
+			child.Dir = dir
+			child.Env = append(os.Environ(), "DETENT_TEST_WORKSPACE_SESSION_ID=1", "GOCOVERDIR="+t.TempDir())
+			out, err := child.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := strings.TrimSpace(string(out))
+			if !strings.HasPrefix(id, "machine_1-workspace-") || id == previous {
+				t.Fatalf("separate process returned unexpected workspace session %q (previous %q)", id, previous)
+			}
+			previous = id
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("workspace session generation wrote %d entries, read error %v", len(entries), err)
+		}
+	})
 }
 
 func newWorkspaceLaneTestScheduler(t *testing.T, projects map[string]string) orchestrator.SchedulingSource {

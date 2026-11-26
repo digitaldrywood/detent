@@ -39,11 +39,16 @@ func TestAuditRequiresCompleteRetainedPatch(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		patch    string
+		files    []tracker.AttemptDiffFile
 		empty    bool
 		disabled bool
 		refused  bool
 	}{
 		{name: "complete changed source", patch: "diff --git a/example b/example"},
+		{name: "credential removed from published source", patch: "diff --git a/example b/example\n@@ -1 +1 @@\n-token=ghp_" + strings.Repeat("aB0cD1", 6) + "\n+token=\n", refused: true},
+		{name: "stored denial takes precedence", patch: "diff --git a/example b/example\n+withheld\n", files: []tracker.AttemptDiffFile{{Path: "example", Denied: true}}, refused: true},
+		{name: "rename from denied path", patch: "diff --git a/.env b/example\n+withheld\n", files: []tracker.AttemptDiffFile{{Path: "example", OldPath: ".env"}}, refused: true},
+		{name: "truncated stored diff can use retained patch", patch: "diff --git a/example b/example\n+reviewable\n", files: []tracker.AttemptDiffFile{{Path: "example", Truncated: true}}},
 		{name: "incomplete changed source", refused: true},
 		{name: "verified empty source", empty: true},
 		{name: "disabled audit does not read patch", disabled: true},
@@ -60,10 +65,10 @@ func TestAuditRequiresCompleteRetainedPatch(t *testing.T) {
 				runtime: tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org", ProjectID: "project", WorkItemID: "item"}}, Attempt: &tracker.NativeAttempt{NativeRunData: data}},
 			}
 			authority := retainedVersionAuthority{capture: &tracker.ChangeSourceCapture{Source: source, Patch: test.patch}}
-			state := VersionState{Change: &runner.NativeChange{ChangeID: "change", VersionID: version.ID}, Diff: &tracker.AttemptDiffRequest{BaseSHA: source.BaseSHA, HeadSHA: source.HeadSHA}, Data: data, Lease: tracker.NativeLease{ID: "lease", FencingToken: 1, WorkItemID: "item"}, Organization: "org", Project: "project", SourceRequired: true}
+			state := VersionState{Change: &runner.NativeChange{ChangeID: "change", VersionID: version.ID}, Diff: &tracker.AttemptDiffRequest{BaseSHA: source.BaseSHA, HeadSHA: source.HeadSHA, Files: test.files}, Data: data, Lease: tracker.NativeLease{ID: "lease", FencingToken: 1, WorkItemID: "item"}, Organization: "org", Project: "project", SourceRequired: true}
 			input, err := PrepareVersion(t.Context(), reader, authority, state, "security_audit")
 			if (err != nil) != test.refused || test.refused && input.Diff != nil {
-				t.Fatalf("audit source completeness: diff=%+v error=%v, want refusal %t", input.Diff, err, test.refused)
+				t.Fatalf("audit source completeness: diff present=%t error=%v, want refusal %t", input.Diff != nil, err, test.refused)
 			}
 			if !test.disabled && !test.refused && (input.Diff == nil || input.Diff.Patch != test.patch) {
 				t.Fatal("audit lost its complete retained source")
