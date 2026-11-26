@@ -235,8 +235,12 @@ func TestImportScheduledOccurrence(t *testing.T) {
 					if test.valid && test.jobPage == 1 {
 						firstID = 456
 					}
+					firstPage := make([]map[string]any, 100)
+					for index := range firstPage {
+						firstPage[index] = map[string]any{"id": firstID + index}
+					}
 					secondPath := jobsPath + "&page=2"
-					steps = append(steps, restStep{method: http.MethodGet, path: jobsPath, response: map[string]any{"jobs": []map[string]any{{"id": firstID}}}, next: secondPath})
+					steps = append(steps, restStep{method: http.MethodGet, path: jobsPath, response: map[string]any{"jobs": firstPage}, next: secondPath})
 					if test.jobPage == 2 {
 						steps = append(steps, restStep{method: http.MethodGet, path: secondPath, response: map[string]any{"jobs": []map[string]any{{"id": 456}}}})
 					}
