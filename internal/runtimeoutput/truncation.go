@@ -69,6 +69,7 @@ var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:` +
 var diagnosticSummary = regexp.MustCompile(`^[\t ]*(?:--- FAIL|FAIL\t|panic:|fatal error:|test timed out|[^\s:]+:[0-9]+:[0-9]+:)`)
 
 var goTestFailure = regexp.MustCompile(`^[\t ]*(?:--- FAIL:|FAIL(?:[\t ]|$)|panic:|fatal error:|WARNING: DATA RACE|test timed out)`)
+var goTestAssertion = regexp.MustCompile(`^[\t ]+[^\s:]+\.go:[0-9]+:`)
 
 func Diagnostic(value string, maxBytes int) (string, bool) {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
@@ -80,6 +81,7 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 	selected := make([]bool, len(lines))
 	goFailure := make([]bool, len(lines))
 	timeout, running := false, false
+	inFailedTest := false
 	previouslyDropped := 0
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -97,13 +99,19 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			running = true
 			timeout = false
 		}
-		if diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running {
+		if strings.HasPrefix(trimmed, "--- FAIL:") {
+			inFailedTest = true
+		} else if trimmed == "" || trimmed[0] == line[0] {
+			inFailedTest = false
+		}
+		assertion := inFailedTest && goTestAssertion.MatchString(line)
+		if diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running || assertion {
 			if !strings.HasSuffix(line, "\n") {
 				lines[i] += "\n"
 			}
 			failures = append(failures, i)
 			selected[i] = true
-			goFailure[i] = running || goTestFailure.MatchString(line)
+			goFailure[i] = running || assertion || goTestFailure.MatchString(line)
 		}
 		if strings.Contains(line, "test timed out") {
 			timeout = true
