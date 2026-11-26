@@ -20,6 +20,7 @@ type State struct {
 	WorktreeState            string                         `json:"worktree_state"`
 	WorktreeHead             string                         `json:"worktree_head"`
 	Repository               string                         `json:"repository"`
+	PhaseSource              *tracker.NativePhaseReceipt    `json:"phase_source,omitempty"`
 	SourceRequired           bool                           `json:"source_required,omitempty"`
 	RetainedSource           *tracker.ChangeSourceCapture   `json:"retained_source,omitempty"`
 	RecoveredSource          *tracker.NativeChangeReference `json:"recovered_source,omitempty"`

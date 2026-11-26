@@ -1783,10 +1783,19 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
-		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
-		})
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
+		var capture func(context.Context, string, string, string) (tracker.ChangeSourceCapture, error)
+		switch {
+		case !req.phaseReceipts:
+			capture = workspace.CaptureChangeSource
+		case req.phaseContinuation != nil && req.phaseContinuation.LastPushed != nil:
+			capture = workspace.DescribeChangeSource
+		}
+		if capture != nil {
+			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return capture(ctx, info.Path, base, head)
+			})
+		}
 	}
 	if source, ok := req.Execution.(IntegrationSourceExecution); ok {
 		if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {

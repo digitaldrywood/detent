@@ -138,6 +138,14 @@ func LandingClaimable(state string, detail *tracker.ChangeDetail) bool {
 }
 
 func ValidateVersion(input tracker.ChangeVersionInput) error {
+	if source := input.GitSource; source != nil {
+		phase := source.Phase
+		if input.Source != nil || input.AttemptID == "" || phase.HeadSHA != input.HeadSHA || phase.PolicyID != input.PolicyID ||
+			(phase.Phase != "implement" && phase.Phase != "project_gate") ||
+			!changerequest.ValidHash(source.DiffSHA256, 64) || (input.Validation != nil && phase.TreeSHA != input.Validation.TreeSHA) {
+			return hubapi.PublicInvalid("Git source must identify the published phase, policy, head, tree and diff")
+		}
+	}
 	if len(input.ReviewDispositions) > 100 {
 		return hubapi.PublicInvalid("Review dispositions must contain at most 100 threads")
 	}

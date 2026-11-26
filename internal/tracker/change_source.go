@@ -13,6 +13,8 @@ const (
 	MaxChangeDiffBytes   = 128 << 20
 )
 
+const ChangeSourceGitPhase = "git-phase"
+
 type ChangeSource struct {
 	Format       string `json:"format"`
 	BaseSHA      string `json:"base_sha"`

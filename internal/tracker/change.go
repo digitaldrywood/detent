@@ -101,7 +101,13 @@ type ReviewDisposition struct {
 	Evidence    string `json:"evidence"`
 }
 
+type ChangeGitSource struct {
+	Phase      NativePhaseReceipt `json:"phase"`
+	DiffSHA256 string             `json:"diff_sha256"`
+}
+
 type ChangeVersionInput struct {
+	GitSource          *ChangeGitSource         `json:"git_source,omitempty"`
 	ReviewDispositions []ReviewDisposition      `json:"review_dispositions,omitempty"`
 	Validation         *gate.CommandResult      `json:"validation,omitempty"`
 	BaseSHA            string                   `json:"base_sha"`
@@ -115,6 +121,16 @@ type ChangeVersionInput struct {
 	PolicyID           string                   `json:"policy_id"`
 	External           *ChangeExternalReference `json:"external,omitempty"`
 	Source             *ChangeSource            `json:"source,omitempty"`
+}
+
+func (v ChangeVersionInput) SourceDiffDigest() string {
+	if v.GitSource != nil {
+		return v.GitSource.DiffSHA256
+	}
+	if v.Source != nil {
+		return v.Source.DiffSHA256
+	}
+	return ""
 }
 
 type ChangeCheckExpectation struct {

@@ -44,7 +44,7 @@ func (s *validator) prepareValidatorReviewRecord(ctx context.Context, scope hubs
 	if request.SecurityAudit != nil {
 		resultID = request.SecurityAudit.SessionID
 	}
-	if source.ImplementingSessionID < 0 || source.SourceObjectKey == "" || source.ImplementingMachineID == "" {
+	if source.ImplementingSessionID < 0 || (source.SourceObjectKey == "" && version.GitSource == nil) || source.ImplementingMachineID == "" {
 		return nil, "", hubapi.NativePublicInvalid("worker review requires recorded source and review sessions")
 	}
 	p := &preparedValidatorReview{}

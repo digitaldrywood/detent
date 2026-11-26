@@ -37,6 +37,11 @@ func verifyPhasePublication(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{name: "unsafe intermediate history", wantError: "possible credential in selected content", configure: func(t *testing.T, f landingFixture) {
+			writeFileDiffFile(t, f.info.Path, "feature.txt", "ghp_"+strings.Repeat("aB0cD1", 6)+"\n")
+			runGit(t, f.info.Path, "commit", "-am", "add fixture content")
+			runGit(t, f.info.Path, "revert", "--no-edit", "HEAD")
+		}},
 		{name: "local changes", wantError: "review workspace has local changes", configure: func(t *testing.T, f landingFixture) {
 			writeFileDiffFile(t, f.info.Path, "feature.txt", "dirty\n")
 		}},

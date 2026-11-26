@@ -136,6 +136,13 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
 	}
 	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	if err == nil && phase == "implement" {
+		if execution, ok := req.Execution.(ChangeSourceExecution); ok {
+			execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+				return workspace.DescribeChangeSource(ctx, info.Path, base, head)
+			})
+		}
+	}
 	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
 		*req.publishedPhaseSource = source
 	}

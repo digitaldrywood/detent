@@ -311,10 +311,8 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			break
 		}
 
-		// Imported versions have no implementing attempt. Native reviews need
-		// that recorded session, so publish this execution's validated source
-		// rather than repeatedly auditing an unreviewable imported version.
-		if version.AttemptID == "" && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
+		unboundPhase := e.phaseSource != nil && e.phaseSource.HeadSHA == diff.HeadSHA && version.SourceDiffDigest() == ""
+		if (version.AttemptID == "" || unboundPhase) && detail.Summary.NativeReview != "changes_requested" && (version.Policy.Gates.SecurityAudit || version.Policy.Gates.Validator || version.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired) {
 			break
 		}
 		e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
@@ -328,12 +326,22 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 	}
 	digest := sha256.Sum256([]byte(diff.HeadSHA))
 	var source *tracker.ChangeSource
+	var gitSource *tracker.ChangeGitSource
 	var bundle []byte
 	if err := e.retainChangeSource(ctx, diff); err != nil {
 		return "", false, fmt.Errorf("retain finalized Change source: %w", err)
 	}
 	if e.sourceRequired {
-		source, bundle = &e.retainedSource.Source, e.retainedSource.Bundle
+		capture := e.retainedSource
+		phase := e.phaseSource
+		if phase != nil && phase.HeadSHA == diff.HeadSHA && phase.PolicyID == e.data.PolicyID &&
+			(phase.Phase == "implement" || phase.Phase == "project_gate") {
+			gitSource = &tracker.ChangeGitSource{Phase: *phase, DiffSHA256: capture.Source.DiffSHA256}
+		} else if capture.Source.Format == tracker.ChangeSourceGitPhase {
+			return "", false, errors.New("finalized Change source has no matching Git phase receipt")
+		} else {
+			source, bundle = &capture.Source, capture.Bundle
+		}
 	}
 	if err := api.MutationEffectError(ctx); err != nil {
 		return "", false, err
@@ -358,7 +366,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			Code:       tracker.ChangeArtifact{Kind: "code", URI: e.repository + "/commit/" + diff.HeadSHA, SHA256: hex.EncodeToString(digest[:]), Availability: "unverified"},
 			Artifacts:  []tracker.ChangeArtifact{},
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
-			Source: source,
+			Source: source, GitSource: gitSource,
 		},
 	}
 	if signal, ok := workpad.SignalFromComment(e.preparedMessage, "", ""); ok && signal.Invalid == nil && signal.Status == workpad.StatusComplete && signal.HumanAction == "" && len(signal.Blockers) == 0 {

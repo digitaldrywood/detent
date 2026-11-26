@@ -1440,7 +1440,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				resumedOwner := resumedExecution.(*ownedExecution)
 				stored := original.Versions[0]
 				review := original.Reviews[0].ImplementationReview
-				if stored.Source == nil || stored.Validation == nil || stored.RunID != owner.CompletionData().RunID || stored.AttemptID != owner.CompletionData().AttemptID || resumedOwner.CompletionData().RunID != stored.RunID || resumedOwner.CompletionData().AttemptID == stored.AttemptID || implementationSession.Load() == 0 || review == nil || review.SessionID == 0 || review.SessionID == implementationSession.Load() {
+				if stored.GitSource == nil || stored.Validation == nil || stored.RunID != owner.CompletionData().RunID || stored.AttemptID != owner.CompletionData().AttemptID || resumedOwner.CompletionData().RunID != stored.RunID || resumedOwner.CompletionData().AttemptID == stored.AttemptID || implementationSession.Load() == 0 || review == nil || review.SessionID == 0 || review.SessionID == implementationSession.Load() {
 					t.Fatalf("resume lost source, session, or fresh-workspace identity: stored=%+v review=%+v original=%+v resumed=%+v", stored, review, evidence.Attempt, resumedOwner.CompletionData())
 				}
 				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
