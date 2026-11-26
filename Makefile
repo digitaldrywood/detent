@@ -43,10 +43,10 @@ GOLANGCI_LINT_VERSION := $(shell cat $(GOLANGCI_LINT_VERSION_FILE))
 GOLANGCI_LINT_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2 }' go.mod)
 GOLANGCI_LINT_DIR := $(CURDIR)/tmp/tools/golangci-lint/$(GOLANGCI_LINT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)
 GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
-HEFT_VERSION := $(shell awk '/digitaldrywood\/heft$$/ { found = 1 } found && $$1 == "version:" { print $$2; exit }' .custom-gcl.yml 2>/dev/null)
+HEFT_VERSION := v0.1.0
 GOLANGCI_LINT_CUSTOM_DIR := $(CURDIR)/tmp/tools/golangci-lint-custom/$(GOLANGCI_LINT_VERSION)-heft-$(HEFT_VERSION)/$(GOLANGCI_LINT_TOOLCHAIN)
 GOLANGCI_LINT_CUSTOM := $(GOLANGCI_LINT_CUSTOM_DIR)/golangci-lint-custom
-GOLANGCI_LINT_RUN := $(if $(wildcard .custom-gcl.yml),$(GOLANGCI_LINT_CUSTOM),$(GOLANGCI_LINT))
+GOLANGCI_LINT_RUN := $(GOLANGCI_LINT_CUSTOM)
 HEFT := GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" go run github.com/digitaldrywood/heft/cmd/heft@$(HEFT_VERSION)
 # G115: existing conversions are bounded or intentionally preserve platform/API widths.
 # G301: shared runtime, service, and artifact directories intentionally require traversal access.
@@ -202,13 +202,10 @@ visual-e2e: build
 
 lint: $(GOLANGCI_LINT_RUN)
 	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT_RUN)" run --allow-parallel-runners --concurrency=$(TEST_PROCS) --timeout=15m
-ifneq ($(wildcard .custom-gcl.yml),)
 	$(HEFT) check ./...
-endif
 
-$(GOLANGCI_LINT_CUSTOM): $(GOLANGCI_LINT) .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
-	@grep -q '^version: $(GOLANGCI_LINT_VERSION)$$' .custom-gcl.yml || { echo ".custom-gcl.yml version must match $(GOLANGCI_LINT_VERSION_FILE) ($(GOLANGCI_LINT_VERSION))"; exit 1; }
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" custom --destination "$(GOLANGCI_LINT_CUSTOM_DIR)" --name golangci-lint-custom
+$(GOLANGCI_LINT_CUSTOM): scripts/build-custom-linter.sh Makefile $(GOLANGCI_LINT_VERSION_FILE)
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" bash scripts/build-custom-linter.sh "$(GOLANGCI_LINT_VERSION)" "$(HEFT_VERSION)" "$@" "$(TEST_PROCS)"
 
 $(GOLANGCI_LINT):
 	@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"
