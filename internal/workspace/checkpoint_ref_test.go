@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 func publishLegacyCheckpointFixture(t *testing.T, info Info, issue Issue) CheckpointRef {
@@ -122,7 +123,7 @@ func TestLegacyPausedRebaseCheckpointRestoresOnReplacement(t *testing.T) {
 	if _, err := replacement.FinalizeNativeWork(ctx, info, issue, authorize); err != nil {
 		t.Fatalf("continue restored rebase: %v", err)
 	}
-	if paused, err := rebaseInProgress(ctx, info.Path); err != nil || paused {
+	if paused, err := rebase.InProgress(ctx, info.Path); err != nil || paused {
 		t.Fatalf("continued rebase paused=%t, error=%v", paused, err)
 	}
 }

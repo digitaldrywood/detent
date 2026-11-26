@@ -36,7 +36,7 @@ func validateCapture(diff tracker.AttemptDiffRequest, capture tracker.ChangeSour
 		return source.Validate(diff.BaseSHA, diff.HeadSHA, capture.Bundle)
 	}
 	if source.BaseSHA != diff.BaseSHA || source.HeadSHA != diff.HeadSHA || source.DiffSHA256 == "" || len(capture.Bundle) != 0 {
-		return errors.New("Git phase description differs from the finalized source")
+		return errors.New("git phase description differs from the finalized source")
 	}
 	return nil
 }

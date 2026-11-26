@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/changesource"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/phasegit"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 var ErrItemPhaseSource = errors.New("item phase source requires recovery")
@@ -25,7 +26,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	}
 	defer releaseWorktree()
 	ctx = withHeldWorktreeOperation(ctx, info.Path)
-	paused, pausedErr := rebaseInProgress(ctx, info.Path)
+	paused, pausedErr := rebase.InProgress(ctx, info.Path)
 	if pausedErr != nil {
 		return "", "", "", pausedErr
 	}
@@ -46,7 +47,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 			}
 		}
 	}
-	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
+	repository := gitexec.PublicationRepository(ctx, "", issue.PublicationRepository)
 	expected := info.PhaseRemoteHead
 	if issue.ExpectedPhaseRemoteHead != "" {
 		expected = &issue.ExpectedPhaseRemoteHead
@@ -178,7 +179,7 @@ func verifyPublishedChangeAncestry(ctx context.Context, path, published, head st
 
 func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
 	branch := info.PublishBranch()
-	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
+	repository := gitexec.PublicationRepository(ctx, "", issue.PublicationRepository)
 	if err := verifyPublicationRemote(ctx, l.sourceRoot, defaultGitRemote, repository); err != nil {
 		return phasePublicationDestinationError{err}
 	}

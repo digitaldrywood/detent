@@ -71,6 +71,8 @@ type sourceRepair struct {
 func (e *sourceRepair) Error() string { return e.err.Error() }
 func (e *sourceRepair) Unwrap() error { return e.err }
 
+var ErrPhaseReceiptsUnavailable = runworkspace.ErrPhaseReceiptsUnavailable
+
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
@@ -128,6 +130,14 @@ func verifyItemPhaseCheckout(ctx context.Context, backend workspace.Backend, inf
 	return nil
 }
 
+func verifyPhaseAuthority(ctx context.Context, execution Execution) error {
+	phase, ok := execution.(PhaseReceiptExecution)
+	if !ok {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return phase.VerifyPhaseAuthority(ctx)
+}
+
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
 	if !req.phaseReceipts {
 		return nil
@@ -135,7 +145,11 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if issue.ExpectedPhaseRemoteHead == "" && req.publishedPhaseSource != nil {
 		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
 	}
-	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	phaseExecution, ok := req.Execution.(PhaseReceiptExecution)
+	if !ok {
+		return failedStep("publication", ErrExecutionAuthorityUnavailable)
+	}
+	source, err := runworkspace.PublishPhase(ctx, phaseExecution, backend, info, issue, req.phaseContinuation, phase, input)
 	if err == nil && phase == "implement" {
 		if execution, ok := req.Execution.(ChangeSourceExecution); ok {
 			execution.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/workspace/gitdiff"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
@@ -286,7 +287,7 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 	defer cancel()
 	args := []string{"-C", path, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--no-relative", "--diff-algorithm=myers", "--binary", "--full-index", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/"}
 	args = append(args, revisions...)
-	args = gitDiagnosticArgs(args...)
+	args = gitdiff.DiagnosticArgs(args...)
 	diff := exec.CommandContext(ctx, "git")
 	diff.Args = append(diff.Args, args...)
 	diff.WaitDelay = workspaceCommandWaitDelay

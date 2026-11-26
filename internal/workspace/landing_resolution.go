@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
 const maxLandingConflictBytes = 16 << 20
@@ -344,7 +345,7 @@ func readLandingConflictSource(ctx context.Context, root *os.Root, name string, 
 	if !info.Mode().IsRegular() || info.Size() > int64(limit) {
 		return "", false, fmt.Errorf("%w: conflict source is not a bounded regular file", ErrMergeResolutionInvalid)
 	}
-	file, err := root.OpenFile(name, os.O_RDONLY|landingConflictOpenFlags, 0)
+	file, err := root.OpenFile(name, os.O_RDONLY|workpath.InspectFileOpenFlags, 0)
 	if err != nil {
 		return "", false, fmt.Errorf("open conflict source: %w", err)
 	}

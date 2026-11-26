@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,10 +15,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/mergeintent"
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
-var ErrMergeResolutionInvalid = errors.New("merge resolution is invalid")
+var ErrMergeResolutionInvalid = rebase.ErrInvalidResolution
 
 func (l *LocalGit) PrepareMerge(
 	ctx context.Context,
@@ -116,7 +117,7 @@ func (l *LocalGit) PrepareMerge(
 				abortErr,
 			)
 		}
-		subjects, subjectErr := mergeTargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
+		subjects, subjectErr := mergeintent.TargetCommitSubjects(ctx, normalized.Path, originalHead, targetRef, conflictPaths)
 		if subjectErr != nil {
 			subjects = nil
 		}
@@ -208,7 +209,7 @@ func (l *LocalGit) restoreAfterFailedGate(ctx context.Context, info Info, origin
 }
 
 func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
-	inProgress, err := rebaseInProgress(ctx, workspacePath)
+	inProgress, err := rebase.InProgress(ctx, workspacePath)
 	if err != nil {
 		return err
 	}
@@ -219,21 +220,6 @@ func abortRebaseIfInProgress(ctx context.Context, workspacePath string) error {
 		return fmt.Errorf("git rebase --abort: %w", err)
 	}
 	return nil
-}
-
-func rebaseInProgress(ctx context.Context, workspacePath string) (bool, error) {
-	for _, gitPath := range []string{"rebase-merge", "rebase-apply"} {
-		path, err := gitPathFor(ctx, workspacePath, gitPath)
-		if err != nil {
-			return false, err
-		}
-		if _, err := os.Stat(path); err == nil {
-			return true, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return false, err
-		}
-	}
-	return false, nil
 }
 
 func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions) (MergePrepareResult, error) {
@@ -266,7 +252,7 @@ func (l *LocalGit) prepareResolvedMerge(ctx context.Context, info Info, issue Is
 	if prHead == "" {
 		prHead = remoteHead
 	}
-	findings, err := missingMergeGoDeclarations(ctx, info.Path, head, base, prHead, opts.IssueDescription)
+	findings, err := mergeintent.MissingGoDeclarations(ctx, info.Path, head, base, prHead, opts.IssueDescription)
 	if err != nil {
 		return MergePrepareResult{}, err
 	}
@@ -302,7 +288,7 @@ func (l *LocalGit) resolvedMergeHeads(ctx context.Context, info Info, issue Issu
 	if strings.TrimSpace(info.Branch) == "" || strings.TrimSpace(branch) != info.Branch {
 		return "", "", "", fmt.Errorf("%w: merge resolution is not on the owned workspace branch", ErrMergeResolutionInvalid)
 	}
-	inProgress, err := rebaseInProgress(ctx, info.Path)
+	inProgress, err := rebase.InProgress(ctx, info.Path)
 	if err != nil {
 		return "", "", "", err
 	}

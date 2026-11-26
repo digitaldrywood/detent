@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/workspace/rebase"
 )
 
 func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
@@ -137,7 +139,7 @@ func TestLocalGitMergePreservesRemoteHistory(t *testing.T) {
 				t.Errorf("missing restoration diagnostic: %q", result.Message)
 			}
 			if tt.interrupted {
-				if inProgress, err := rebaseInProgress(t.Context(), info.Path); err != nil || inProgress {
+				if inProgress, err := rebase.InProgress(t.Context(), info.Path); err != nil || inProgress {
 					t.Fatalf("rebase remains in progress: %t, %v", inProgress, err)
 				}
 			}
