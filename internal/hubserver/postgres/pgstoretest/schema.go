@@ -15,7 +15,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 )
 
-var Template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
+type ShortSkippingTemplate struct{ *pgtest.Template }
+
+func (p ShortSkippingTemplate) Database(t *testing.T) *sql.DB {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres store test in -short mode")
+	}
+	return p.Template.Database(t)
+}
+
+var Template = ShortSkippingTemplate{pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 		return fmt.Errorf("provision PostgreSQL test roles: %w", err)
 	}
@@ -31,7 +41,7 @@ var Template = pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("apply PostgreSQL core migrations: %w", err)
 	}
 	return nil
-})
+})}
 
 func MigrationProvider(db *sql.DB) (*goose.Provider, error) {
 	migrations, err := postgres.MigrationFiles()
@@ -44,6 +54,9 @@ func MigrationProvider(db *sql.DB) (*goose.Provider, error) {
 
 func MigrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.Template) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres migration test in -short mode")
+	}
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
 			return err

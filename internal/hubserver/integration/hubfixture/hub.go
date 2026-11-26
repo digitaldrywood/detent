@@ -109,6 +109,9 @@ func Open(t *testing.T, cfg hubserver.Config) *Hub {
 
 func OpenPool(t *testing.T, cfg hubserver.Config, configure func(*pgxpool.Config)) *Hub {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres hubserver integration test in -short mode")
+	}
 	if cfg.Hosted != nil {
 		t.Fatal("hubfixture.Open opens a local Hub; use OpenHosted")
 	}

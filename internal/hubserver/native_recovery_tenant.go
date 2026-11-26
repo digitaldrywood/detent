@@ -107,7 +107,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	var attemptPage leasestore.AttemptPage
 	var progressAttempts []leasestore.Attempt
 	var checkpointCandidates []checkpointAttemptCandidate
-	var checkpointPageTruncated bool
+	var nextSourceCursor leasestore.AttemptCursor
 	var landingReceipt eventstore.LandingReceipt
 	var latestAttemptID string
 	var events []eventstore.Event
@@ -256,27 +256,33 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 		if !ok {
 			return corestore.ErrInvalidPage
 		}
-		checkpointCursor := leasestore.AttemptCursor{}
-		for len(checkpointCandidates) < claimPreparationLimit {
-			remaining := claimPreparationLimit - len(checkpointCandidates)
-			limit := min(corestore.MaxPageSize, remaining)
-			page, err := checkpointReader.CheckpointAttemptPage(ctx, row.ID, checkpointCursor, limit)
-			if err != nil {
-				return err
+		latestPage, err := checkpointReader.CheckpointAttemptPage(ctx, row.ID, leasestore.AttemptCursor{}, 1)
+		if err != nil {
+			return err
+		}
+		sourcePage, err := checkpointReader.SourceCheckpointAttemptPage(ctx, row.ID, leasestore.AttemptCursor{}, corestore.MaxPageSize)
+		if err != nil {
+			return err
+		}
+		nextSourceCursor = sourcePage.Next
+		orderedAttempts := make([]leasestore.Attempt, 0, len(latestPage.Items)+len(sourcePage.Items))
+		if len(latestPage.Items) > 0 {
+			orderedAttempts = append(orderedAttempts, latestPage.Items[0])
+		}
+		for _, attempt := range sourcePage.Items {
+			if len(orderedAttempts) > 0 && orderedAttempts[0].ID == attempt.ID {
+				continue
 			}
-			attemptIDs := make([]string, 0, len(page.Items))
-			for _, attempt := range page.Items {
+			orderedAttempts = append(orderedAttempts, attempt)
+		}
+		for start := 0; start < len(orderedAttempts); start += corestore.MaxPageSize {
+			batch := orderedAttempts[start:min(start+corestore.MaxPageSize, len(orderedAttempts))]
+			attemptIDs := make([]string, 0, len(batch))
+			for _, attempt := range batch {
 				if attempt.IssueID != row.ID || attempt.CheckpointObjectKey == nil {
 					return corestore.ErrNotFound
 				}
 				attemptIDs = append(attemptIDs, attempt.ID)
-			}
-			if len(attemptIDs) == 0 {
-				if page.Next == (leasestore.AttemptCursor{}) {
-					break
-				}
-				checkpointCursor = page.Next
-				continue
 			}
 			events, err := r.LatestCheckpointEvents(ctx, scope.Project, row.NativeID, attemptIDs)
 			if err != nil {
@@ -286,7 +292,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 			for _, event := range events {
 				eventsByAttempt[event.AttemptID] = event
 			}
-			for _, attempt := range page.Items {
+			for _, attempt := range batch {
 				event, ok := eventsByAttempt[attempt.ID]
 				if !ok {
 					return corestore.ErrNotFound
@@ -295,13 +301,6 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 					return corestore.ErrNotFound
 				}
 				checkpointCandidates = append(checkpointCandidates, checkpointAttemptCandidate{attempt: attempt, event: event})
-			}
-			if page.Next == (leasestore.AttemptCursor{}) {
-				break
-			}
-			checkpointCursor = page.Next
-			if len(checkpointCandidates) == claimPreparationLimit {
-				checkpointPageTruncated = true
 			}
 		}
 		ensureAttempt := func(id string) error {
@@ -472,7 +471,7 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	result.Read.DetailPath = "/api/v2/organizations/" + url.PathEscape(string(scope.Organization)) + "/projects/" + url.PathEscape(string(scope.Project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"
 	var sourceAttemptID, changeAttemptID, landingAttemptID, checkpointAttemptID string
 	var hydrated = make(map[string]tracker.NativeAttempt, len(snapshots))
-	checkpointsByAttempt := make(map[string]tracker.NativeCheckpoint, len(checkpointCandidates))
+	checkpointsByAttempt := make(map[string]tracker.NativeCheckpoint, 2)
 	var landingValue *tracker.NativeLandingReceipt
 	if landingReceipt.AttemptID != "" {
 		landingAttemptID = landingReceipt.AttemptID
@@ -485,28 +484,83 @@ func (s *Service) readNativeRecoveryFactsTenant(ctx context.Context, scope hubsc
 	if len(checkpointCandidates) > 0 {
 		checkpointAttemptID = checkpointCandidates[0].attempt.ID
 	}
-	for _, candidate := range checkpointCandidates {
-		value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, candidate.event)
-		if err != nil {
-			return result, fmt.Errorf("read recovery checkpoint event: %w", err)
+	inspectCandidates := func(candidates []checkpointAttemptCandidate) error {
+		for _, candidate := range candidates {
+			value, err := eventstore.NewContent(s.runDetailStore()).Event(ctx, candidate.event)
+			if err != nil {
+				return fmt.Errorf("read recovery checkpoint event: %w", err)
+			}
+			if value.Data.Run == nil {
+				return artifact.ErrIntegrity
+			}
+			if value.Data.Run.AttemptID != candidate.attempt.ID || value.Data.Run.RunID != candidate.attempt.RunID || value.Data.Run.Sequence < 1 || value.Data.Run.Sequence > candidate.attempt.Sequence || value.Data.Run.FencingToken != tracker.FencingToken(candidate.attempt.FencingToken) {
+				return artifact.ErrIntegrity
+			}
+			if value.Data.Run.Handoff == nil {
+				return artifact.ErrIntegrity
+			}
+			if candidate.attempt.ID == checkpointAttemptID {
+				checkpointsByAttempt[candidate.attempt.ID] = *value.Data.Run.Handoff
+			}
+			if sourceAttemptID == "" && value.Data.Run.Handoff.PreservesSource() {
+				sourceAttemptID = candidate.attempt.ID
+				checkpointsByAttempt[candidate.attempt.ID] = *value.Data.Run.Handoff
+				break
+			}
 		}
-		if value.Data.Run == nil {
-			return result, artifact.ErrIntegrity
-		}
-		if value.Data.Run.AttemptID != candidate.attempt.ID || value.Data.Run.RunID != candidate.attempt.RunID || value.Data.Run.Sequence < 1 || value.Data.Run.Sequence > candidate.attempt.Sequence || value.Data.Run.FencingToken != tracker.FencingToken(candidate.attempt.FencingToken) {
-			return result, artifact.ErrIntegrity
-		}
-		if value.Data.Run.Handoff == nil {
-			return result, artifact.ErrIntegrity
-		}
-		checkpointsByAttempt[candidate.attempt.ID] = *value.Data.Run.Handoff
-		if sourceAttemptID == "" && value.Data.Run.Handoff.PreservesSource() {
-			sourceAttemptID = candidate.attempt.ID
-			break
-		}
+		return nil
 	}
-	if checkpointPageTruncated && sourceAttemptID == "" {
-		return result, fmt.Errorf("read recovery checkpoints: source checkpoint was not found within the bounded history: %w", corestore.ErrInvalidPage)
+	if err := inspectCandidates(checkpointCandidates); err != nil {
+		return result, err
+	}
+	for sourceAttemptID == "" && nextSourceCursor != (leasestore.AttemptCursor{}) {
+		var extra []checkpointAttemptCandidate
+		err = s.config.TenantRepository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+			checkpointReader, ok := r.(leasestore.CheckpointAttemptReader)
+			if !ok {
+				return corestore.ErrInvalidPage
+			}
+			page, err := checkpointReader.SourceCheckpointAttemptPage(ctx, row.ID, nextSourceCursor, corestore.MaxPageSize)
+			if err != nil {
+				return err
+			}
+			nextSourceCursor = page.Next
+			if len(page.Items) == 0 {
+				return nil
+			}
+			attemptIDs := make([]string, 0, len(page.Items))
+			for _, attempt := range page.Items {
+				if attempt.IssueID != row.ID || attempt.CheckpointObjectKey == nil {
+					return corestore.ErrNotFound
+				}
+				attemptIDs = append(attemptIDs, attempt.ID)
+			}
+			events, err := r.LatestCheckpointEvents(ctx, scope.Project, row.NativeID, attemptIDs)
+			if err != nil {
+				return err
+			}
+			eventsByAttempt := make(map[string]eventstore.Event, len(events))
+			for _, event := range events {
+				eventsByAttempt[event.AttemptID] = event
+			}
+			for _, attempt := range page.Items {
+				event, ok := eventsByAttempt[attempt.ID]
+				if !ok {
+					return corestore.ErrNotFound
+				}
+				if event.OrganizationID != scope.Organization || event.ProjectID != scope.Project || event.WorkItemID != row.NativeID || event.AttemptID != attempt.ID || event.Type != "run.checkpointed" {
+					return corestore.ErrNotFound
+				}
+				extra = append(extra, checkpointAttemptCandidate{attempt: attempt, event: event})
+			}
+			return nil
+		})
+		if err != nil {
+			return result, fmt.Errorf("read PostgreSQL recovery checkpoints: %w", hubapi.ProjectRecordError(err))
+		}
+		if err := inspectCandidates(extra); err != nil {
+			return result, err
+		}
 	}
 	if result.ChangeDetail != nil && len(result.ChangeDetail.Versions) == 1 {
 		changeAttemptID = result.ChangeDetail.Versions[0].AttemptID

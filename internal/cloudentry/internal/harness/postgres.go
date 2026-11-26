@@ -84,6 +84,9 @@ func SharedPostgresDatabase(t *testing.T) *sql.DB {
 
 func postgresDatabase(t *testing.T, connections int) *sql.DB {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres cloudentry integration test in -short mode")
+	}
 	admin := Postgres.Database(t)
 	var name string
 	if err := admin.QueryRowContext(t.Context(), "SELECT current_database()").Scan(&name); err != nil {

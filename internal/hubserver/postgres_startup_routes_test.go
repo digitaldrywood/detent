@@ -1325,6 +1325,10 @@ func (r postgresSourceRecoveryReader) RunnerRecoveryEligibility(ctx context.Cont
 	}).RunnerRecoveryEligibility(ctx, project, item)
 }
 
+func (r postgresSourceRecoveryReader) SourceCheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).SourceCheckpointAttemptPage(ctx, issue, cursor, limit)
+}
+
 func (r postgresSourceRecoveryReader) CheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
 	return r.Reader.(leasestore.CheckpointAttemptReader).CheckpointAttemptPage(ctx, issue, cursor, limit)
 }
@@ -1400,6 +1404,10 @@ func (r postgresProgressReceiptReader) Receipt(ctx context.Context, actor, opera
 		}
 	}
 	return r.Reader.Receipt(ctx, actor, operation, key)
+}
+
+func (r postgresProgressReceiptReader) SourceCheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {
+	return r.Reader.(leasestore.CheckpointAttemptReader).SourceCheckpointAttemptPage(ctx, issue, cursor, limit)
 }
 
 func (r postgresProgressReceiptReader) CheckpointAttemptPage(ctx context.Context, issue int64, cursor leasestore.AttemptCursor, limit int) (leasestore.AttemptPage, error) {

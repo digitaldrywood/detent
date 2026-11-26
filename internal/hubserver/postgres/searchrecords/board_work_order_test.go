@@ -23,6 +23,9 @@ import (
 )
 
 func TestBoardWorkOrderPreservesProjectionAndLaneTotals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping 1024-row Postgres work-order test in -short mode")
+	}
 	t.Parallel()
 	admin := pgstoretest.Template.Database(t)
 	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())

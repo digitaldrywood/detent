@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func TestSourceGitCredentialsUseGitHubHostForNativeTracker(t *testing.T) {
@@ -91,6 +92,64 @@ func TestWorkerGitCredentialHelperFollowsTokenHandoff(t *testing.T) {
 			}
 			if askpass, ok := got["GIT_ASKPASS"]; !ok || askpass != "" || got["GIT_TERMINAL_PROMPT"] != "0" {
 				t.Fatalf("interactive authentication enabled: %#v", got)
+			}
+		})
+	}
+}
+
+func TestPrepareSSHSourceConfiguresGitExecCredentialHelper(t *testing.T) {
+	t.Cleanup(func() { gitexec.SetGitHubCredentialHelper("") })
+	for _, tc := range []struct {
+		name           string
+		workerToken    string
+		hostConfigured bool
+		hostDir        string
+		wantHelper     string
+	}{
+		{name: "empty worker token unsets GH_CONFIG_DIR", wantHelper: "!env -u GH_CONFIG_DIR gh auth git-credential"},
+		{name: "empty worker token preserves host GH_CONFIG_DIR", hostConfigured: true, hostDir: "/host/gh-config", wantHelper: "!env GH_CONFIG_DIR='/host/gh-config' gh auth git-credential"},
+		{name: "worker token uses isolated GH_CONFIG_DIR", workerToken: "worker-token", wantHelper: "!gh auth git-credential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"} {
+				t.Setenv(key, os.Getenv(key))
+			}
+			hostGitHubCLI.mu.Lock()
+			captured, values := hostGitHubCLI.captured, hostGitHubCLI.values
+			hostGitHubCLI.captured = true
+			hostGitHubCLI.values = map[string]*string{"GH_CONFIG_DIR": nil}
+			if tc.hostConfigured {
+				hostGitHubCLI.values["GH_CONFIG_DIR"] = &tc.hostDir
+			}
+			hostGitHubCLI.mu.Unlock()
+			t.Cleanup(func() {
+				hostGitHubCLI.mu.Lock()
+				hostGitHubCLI.captured, hostGitHubCLI.values = captured, values
+				hostGitHubCLI.mu.Unlock()
+			})
+
+			cfg := config.Default()
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Worker.GitHubToken = tc.workerToken
+			cfg.Workspace.Kind = workspace.KindLocalGit
+			cfg.Workspace.SourceRoot = t.TempDir()
+			if err := os.Mkdir(filepath.Join(cfg.Workspace.SourceRoot, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := PrepareSSHSource(t.Context(), cfg, cfg.Workspace.SourceRoot, "", t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			args := gitexec.RemoteArgs("push")
+			found := false
+			wantConfig := "credential.https://github.com.helper=" + tc.wantHelper
+			for _, arg := range args {
+				if arg == wantConfig {
+					found = true
+					break
+				}
+			}
+			if len(args) > 1 && !found {
+				t.Fatalf("gitexec.RemoteArgs() = %q, want config %q", args, wantConfig)
 			}
 		})
 	}

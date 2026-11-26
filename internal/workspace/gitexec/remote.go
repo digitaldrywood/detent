@@ -9,12 +9,30 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
+
+var remoteGitHubCredentialHelperState struct {
+	mu     sync.RWMutex
+	helper string
+}
+
+func SetGitHubCredentialHelper(helper string) {
+	remoteGitHubCredentialHelperState.mu.Lock()
+	remoteGitHubCredentialHelperState.helper = strings.TrimSpace(helper)
+	remoteGitHubCredentialHelperState.mu.Unlock()
+}
 
 func RemoteArgs(args ...string) []string {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return args
+	}
+	remoteGitHubCredentialHelperState.mu.RLock()
+	helper := remoteGitHubCredentialHelperState.helper
+	remoteGitHubCredentialHelperState.mu.RUnlock()
+	if helper != "" {
+		return append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=" + helper}, args...)
 	}
 	return append([]string{"-c", "credential.https://github.com.helper=!gh auth git-credential"}, args...)
 }

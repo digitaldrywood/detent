@@ -256,7 +256,9 @@ func (d SessionDeps) MutateRunnerSession(c echo.Context) error {
 			count++
 		}
 	}
-	processStart := count == 2 && request.Start != nil && request.Worker != nil && request.Worker.PID > 0 && request.Finalization == nil
+	workerReserved := request.Worker != nil && request.Worker.PID == 0 && request.Worker.GroupID == 0 && request.Worker.StartedAt.IsZero() && request.Worker.CleanupRoot != "" && request.Worker.CleanupPath != ""
+	workerStarted := request.Worker != nil && request.Worker.PID > 0 && request.Worker.GroupID > 0 && !request.Worker.StartedAt.IsZero()
+	processStart := count == 2 && request.Start != nil && (workerStarted || workerReserved) && request.Finalization == nil
 	processFinish := count == 2 && request.Finish != nil && request.Reaped != nil && request.Finalization == nil
 	finalize := count == 3 && request.Finalization != nil && request.Finish != nil && request.Usage != nil && request.Phase != nil
 	if count != 1 && !processStart && !processFinish && !finalize || request.Progress != nil && request.Progress.LastProgressAt.IsZero() {

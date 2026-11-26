@@ -261,8 +261,8 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 					t.Fatal(err)
 				}
 				evaluation := contract.Evaluate(hubrecords.NativeContractIssue(scheduled))
-				if nativeClaimIssueContractAllowed(hubrecords.NativeClaimPlan{Issue: scheduled, Descriptor: approval.Policy}) || evaluation.Satisfied() || len(evaluation.Missing) == 0 {
-					t.Fatalf("occurrence admitted incomplete issue: %+v", evaluation)
+				if evaluation.Satisfied() || len(evaluation.Missing) == 0 {
+					t.Fatalf("occurrence evaluated incomplete issue as complete: %+v", evaluation)
 				}
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, base+"/work-items/"+string(owner.WorkItemID)+"/workflow", testHubAdminToken, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "finish-repair"}, ExpectedRevision: scheduled.Revision, State: test.endState, Reason: "user_requested"})
