@@ -219,6 +219,14 @@ func TestScheduledDecisionProjectDeletionReleasesStorage(t *testing.T) {
 			if step.rollback && !errors.Is(err, rollback) || !step.rollback && err != nil {
 				t.Fatalf("delete project: %v", err)
 			}
+			if !step.rollback {
+				err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+					return w.DeleteProject(ctx, "prj_first")
+				})
+				if !errors.Is(err, corestore.ErrNotFound) {
+					t.Fatalf("repeat project deletion = %v, want not found", err)
+				}
+			}
 			for _, tenant := range []struct {
 				org     tracker.OrganizationID
 				want    int64
