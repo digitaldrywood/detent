@@ -35,7 +35,11 @@ func (e *nativeExecution) ownsIssueCompletion() bool {
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return (e.ownsIssueCompletion() || e.mergeResolution || e.change != nil && e.change.NoChange != nil) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+	if e.preparedDisposition != nil && (e.preparedDisposition.Status == "blocked" ||
+		e.preparedDisposition.Status == "in_progress" && e.phaseSource != nil) {
+		return false
+	}
+	return (e.ownsIssueCompletion() || e.mergeResolution || e.change != nil && e.change.NoChange != nil) && e.worktreeState != "dirty"
 }
 
 func (e *nativeExecution) PrepareMergeResolution(context.Context) error {
