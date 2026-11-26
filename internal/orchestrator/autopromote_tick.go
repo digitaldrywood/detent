@@ -92,14 +92,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if issueID == "" {
 			continue
 		}
-		if _, operational := operationalCompletionFromIssue(issue); !operational {
-			if handled, transitioned := o.parkRepeatedMergeRevocations(ctx, state, issue, now); handled {
-				if transitioned {
-					result.transitioned[issueID] = struct{}{}
-				}
-				continue
-			}
-		}
 		// Unfinished ready PRs need the existing repair lane before a worker can
 		// publish corrections. They do not gain eligibility for promotion.
 		repairOnly := autoPromoteInProgressRepairIssue(issue, cfg) &&
@@ -180,7 +172,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			decision = autoPromoteDecision(autoPromoteActionFromGate(auditDecision.Action), autoPromoteReasonFromGate(auditDecision.Reason))
 			decision.Findings = autoPromoteFindingsFromGate(auditDecision.Findings)
 		} else {
-			summary.NativeQueueEligibleHeadSHA = o.nativeMergeQueuePromotionHead(ctx, state, issue, now)
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 			if repairOnly && (decision.Action != AutoPromoteActionRework ||
 				(decision.Reason != AutoPromoteReasonUnresolvedReviewThreads && decision.Reason != AutoPromoteReasonCINotGreen)) {
@@ -1599,7 +1590,7 @@ func consumeActiveMergeWorkerRepository(repositories map[string]struct{}, issue 
 	if !mergeWorkerIssue(issue) {
 		return repositories
 	}
-	return consumeMergeWorkerRepository(repositories, nativeMergeQueueRepositoryKey(issue))
+	return consumeMergeWorkerRepository(repositories, mergeWorkerRepositoryKey(issue))
 }
 
 func consumeMergeWorkerRepository(repositories map[string]struct{}, repository string) map[string]struct{} {
@@ -1637,17 +1628,11 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	out := make([]connector.Issue, 0, len(candidates))
 	selectedByState := map[string]int{}
 	for _, issue := range candidates {
-		if nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
-			continue
-		}
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
-			continue
-		}
-		if _, deferred := state.nativeMergeQueueDeferred[issueID]; deferred {
 			continue
 		}
 		stateKey := normalizeState(issue.State)
@@ -1790,17 +1775,11 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue, cfg Config) bool {
 	if strings.TrimSpace(issue.ID) == "" || issue.Closed || issue.PullRequest == nil {
 		return false
 	}
-	if _, revoked := mergeApprovalLabelRevoked(issue, cfg); revoked {
-		return false
-	}
 	pullRequest := issue.PullRequest
 	if pullRequest.MergeQueueEntry != nil && strings.TrimSpace(pullRequest.MergeQueueEntry.ID) != "" {
 		return false
 	}
 	if pullRequestHydrationBlocksProgress(pullRequest) {
-		return false
-	}
-	if _, revoked := mergeCITriggerLabelRevoked(issue, cfg); revoked {
 		return false
 	}
 	if normalizePullRequestState(pullRequest.State) != "open" {

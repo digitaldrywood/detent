@@ -3,10 +3,13 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -169,11 +172,51 @@ func TestSourceTurnBudget(t *testing.T) {
 type phaseCheckoutExecution struct {
 	*testExecution
 	PhaseReceiptExecution
-	continuation tracker.NativePhaseContinuation
+	continuation    tracker.NativePhaseContinuation
+	publishedSource workspace.ChangeSource
+	recoveryCalls   int
+}
+
+func (*phaseCheckoutExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *phaseCheckoutExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	e.recoveryCalls++
+	return e.publishedSource, nil
 }
 
 func (e *phaseCheckoutExecution) PhaseReceipts(context.Context, string) (*tracker.NativePhaseContinuation, error) {
 	return &e.continuation, nil
+}
+
+type phaseCompletionExecution struct {
+	phaseCheckoutExecution
+	publication tracker.NativePhaseReceipt
+}
+
+type phaseCompletionWorkspace struct {
+	*workspace.LocalGit
+	beforePreservation func()
+	afterPreservation  func()
+}
+
+func (w *phaseCompletionWorkspace) PreserveItemPhaseHistory(ctx context.Context, info workspace.Info, issue workspace.Issue, source workspace.PhaseSource, authorize func(context.Context) error) (string, error) {
+	w.beforePreservation()
+	expected, err := w.LocalGit.PreserveItemPhaseHistory(ctx, info, issue, source, authorize)
+	if err != nil {
+		return "", err
+	}
+	w.afterPreservation()
+	return expected, nil
+}
+
+func (e *phaseCompletionExecution) VerifyPhaseAuthority(ctx context.Context) error {
+	return e.Validate(ctx)
+}
+
+func (e *phaseCompletionExecution) RecordPhaseReceipt(_ context.Context, phase, branch, head, tree, _ string) error {
+	e.publication = tracker.NativePhaseReceipt{Phase: phase, Branch: branch, HeadSHA: head, TreeSHA: tree}
+	return nil
 }
 
 type phaseCheckoutWorkspace struct {
@@ -188,44 +231,121 @@ func (w *phaseCheckoutWorkspace) Create(_ context.Context, issue workspace.Issue
 	return workspace.Info{}, w.stop
 }
 
-func TestReplacementImplementationSelectsPushedPhaseOverOlderChange(t *testing.T) {
-	head := strings.Repeat("a", 40)
-	change := &tracker.NativeChangeReference{VersionID: "older-version", HeadSHA: strings.Repeat("b", 40)}
-	receipt := tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
-	execution := &phaseCheckoutExecution{
-		testExecution: &testExecution{recovery: tracker.NativeRecovery{
-			Lease: tracker.NativeLease{ID: "replacement-lease"}, Change: change, SourceVersionID: change.VersionID,
-		}},
-		continuation: tracker.NativePhaseContinuation{LastPushed: &receipt, NextPhase: "project_gate"},
-	}
-	backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
-	r, err := NewRunner(Dependencies{
-		Workflow:  config.Workflow{Config: config.Default(), Prompt: "Complete the issue"},
-		Workspace: backend, AgentBackend: &releaseDeliveryAgent{}, ProcessSource: emptyProcessSource, Logger: slog.New(slog.DiscardHandler),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"}})
-	if !errors.Is(err, backend.stop) {
-		t.Fatalf("run did not reach checkout: %v", err)
-	}
-	if backend.issue.PhaseSource == nil || backend.issue.PhaseSource.HeadSHA != head {
-		t.Fatalf("checkout phase = %+v, want %s", backend.issue.PhaseSource, head)
-	}
-	if !backend.issue.VerifyPhaseBranch || backend.issue.PhaseChangeHeadSHA != change.HeadSHA {
-		t.Fatalf("checkout must verify the branch and the current Change ancestry: %+v", backend.issue)
+func TestReplacementImplementationSelectsAuthorizedSource(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                                                   string
+		change, selected, phase, matching, live, currentAttempt, released, staleFence, missing bool
+	}{
+		{name: "lease loss discards local work"},
+		{name: "live lease keeps work before first receipt", live: true},
+		{name: "current phase execution retains work when history omits its attempt", currentAttempt: true},
+		{name: "released attempt cannot keep work", live: true, released: true},
+		{name: "stale fence cannot keep work", live: true, staleFence: true},
+		{name: "resume newer receipt over an older receipted Change", change: true, phase: true, matching: true},
+		{name: "pre-upgrade published Change without a receipt", change: true},
+		{name: "merge resolution newer than the receipt", change: true, phase: true},
+		{name: "explicit published version without a current reference", selected: true},
+		{name: "unavailable published Change refuses checkout", change: true, missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scope := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_22222222222222222222222222222222"}
+			head := strings.Repeat("a", 40)
+			change := tracker.NativeChangeReference{VersionID: "published-version", HeadSHA: strings.Repeat("b", 40)}
+			lease := tracker.NativeLease{ID: "replacement-lease", MachineID: "same-runner", FencingToken: 2}
+			attempt := tracker.NativeAttempt{
+				NativeRunData: tracker.NativeRunData{AttemptID: scope.Attempt, LeaseID: "old-lease", MachineID: lease.MachineID, FencingToken: 1},
+				Checkpoint:    &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: change.HeadSHA},
+			}
+			if tc.live {
+				attempt.LeaseID = lease.ID
+				if !tc.staleFence {
+					attempt.FencingToken = lease.FencingToken
+				}
+				if tc.released {
+					now := time.Now()
+					attempt.ClaimReleasedAt = &now
+				}
+			}
+			recovery := tracker.NativeRecovery{Lease: lease, Attempts: []tracker.NativeAttempt{attempt}}
+			if tc.change {
+				recovery.Change = &change
+			}
+			if tc.selected {
+				recovery.SourceVersionID = change.VersionID
+			}
+			execution := &phaseCheckoutExecution{testExecution: &testExecution{recovery: recovery}}
+			if tc.currentAttempt {
+				execution.recovery.Attempts = nil
+				execution.continuation.ActiveAttemptID = scope.Attempt
+			}
+			if tc.phase {
+				execution.continuation.LastPushed = &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, HeadSHA: head, Phase: "implement"}
+				execution.continuation.NextPhase = "project_gate"
+			}
+			if tc.matching {
+				execution.continuation.PublishedChangeReceipt = &tracker.NativePhaseReceipt{HeadSHA: change.HeadSHA, Phase: "implement"}
+			}
+			if !tc.missing {
+				execution.publishedSource.Version = tracker.ChangeVersion{ID: change.VersionID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: change.HeadSHA}}
+			}
+			backend := &phaseCheckoutWorkspace{stop: errors.New("stop at checkout")}
+			r, err := NewRunner(Dependencies{
+				Workflow:  config.Workflow{Config: config.Default(), Prompt: "Complete the issue"},
+				Workspace: backend, AgentBackend: &releaseDeliveryAgent{}, ProcessSource: emptyProcessSource, Logger: slog.New(slog.DiscardHandler),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Execution: execution, Issue: connector.Issue{ID: "1", Identifier: "EX-1"}, AttemptWorkspace: scope})
+			issue := backend.issue
+			if tc.missing {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || issue.ID != "" || execution.recoveryCalls != 1 {
+					t.Fatalf("missing published source reached checkout: issue=%+v calls=%d error=%v", issue, execution.recoveryCalls, err)
+				}
+				return
+			}
+			if !errors.Is(err, backend.stop) {
+				t.Fatalf("run did not reach checkout: %v", err)
+			}
+			if (tc.change || tc.selected) && !tc.matching {
+				if issue.Source == nil || issue.Source.Version.HeadSHA != change.HeadSHA || issue.PhaseSource != nil ||
+					issue.VerifyPhaseBranch || !issue.FreshCheckout || execution.recoveryCalls != 1 {
+					t.Fatalf("published Change was not recovered: issue=%+v calls=%d", issue, execution.recoveryCalls)
+				}
+			} else {
+				wantLive := tc.currentAttempt || tc.live && !tc.released && !tc.staleFence
+				if issue.PhaseSource != execution.continuation.LastPushed || !issue.VerifyPhaseBranch || issue.FreshCheckout == wantLive ||
+					issue.RetainPhaseCheckout != wantLive || issue.Source != nil || execution.recoveryCalls != 0 {
+					t.Fatalf("checkout did not select the live lease or receipt: issue=%+v calls=%d", issue, execution.recoveryCalls)
+				}
+			}
+			if tc.matching && issue.PublishedChangeHeadSHA != change.HeadSHA {
+				t.Fatalf("phase checkout omitted published Change head: %+v", issue)
+			}
+			if issue.Checkpoint != nil || issue.RetainedCheckpoint != nil || issue.LocalCheckpoint != nil {
+				t.Fatalf("checkout selected a local recovery source: %+v", issue)
+			}
+		})
 	}
 }
 
 func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow checkout hook verification test in -short mode")
+	}
 	for _, tc := range []struct {
 		name      string
 		hook      string
 		movesHead bool
+		advanced  bool
 		wantStart bool
+		live      bool
 	}{
 		{name: "unchanged", wantStart: true},
+		{name: "advance without a receipt", advanced: true, wantStart: true},
+		{name: "hook edited the recovered source", advanced: true, hook: "printf 'changed\\n' >> README.md"},
+		{name: "live lease retains staged and unstaged work", live: true, wantStart: true},
+		{name: "live lease hook removed the published Change from ancestry", live: true, hook: "git update-ref HEAD ", movesHead: true},
 		{name: "unchanged with index flags", hook: "git update-index --assume-unchanged README.md && git update-index --skip-worktree README.md", wantStart: true},
 		{name: "hook changed HEAD", hook: "git switch --detach ", movesHead: true},
 		{name: "hook detached the same HEAD", hook: "git switch --detach HEAD"},
@@ -264,6 +384,12 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			tree := strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD^{tree}"))
 			branch := seed.PublishBranch()
 			runRunnerGit(t, seed.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+			wantHead := head
+			if tc.advanced {
+				runRunnerGit(t, seed.Path, "commit", "--allow-empty", "-m", "push before recording receipt")
+				wantHead = strings.TrimSpace(runRunnerGit(t, seed.Path, "rev-parse", "HEAD"))
+				runRunnerGit(t, seed.Path, "push", "origin", "HEAD:refs/heads/"+branch)
+			}
 
 			execution := &phaseCheckoutExecution{
 				testExecution: &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "replacement-lease"}}},
@@ -271,6 +397,20 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 					RepositoryURL: remote, NextPhase: "implement",
 					LastPushed: &tracker.NativePhaseReceipt{Mutation: tracker.Mutation{LeaseID: "old-lease"}, Branch: branch, HeadSHA: head, TreeSHA: tree, Phase: "implement"},
 				},
+			}
+			if tc.live {
+				replacement = prior
+				execution.recovery.Lease = tracker.NativeLease{ID: "old-lease", FencingToken: 1}
+				execution.recovery.Change = &tracker.NativeChangeReference{VersionID: "version_published", HeadSHA: head}
+				execution.continuation.ActiveAttemptID = prior.Attempt
+				path := filepath.Join(seed.Path, "retry.txt")
+				if err := os.WriteFile(path, []byte("staged work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, seed.Path, "add", "retry.txt")
+				if err := os.WriteFile(path, []byte("unstaged work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			agent := &fakeCodexClient{
 				updates: []AgentUpdate{{Type: AgentUpdateTurnStarted, TurnID: "implementation-turn"}},
@@ -299,12 +439,205 @@ func TestReplacementImplementationVerifiesCheckoutAfterHook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantHead := head
 			if tc.movesHead {
 				wantHead = base
 			}
 			if observed, err := backend.Head(t.Context(), info, target); err != nil || observed != wantHead {
 				t.Fatalf("hook checkout = %s, error = %v, want %s", observed, err, wantHead)
+			}
+			if tc.live && tc.wantStart {
+				if staged := strings.TrimSpace(runRunnerGit(t, info.Path, "show", ":retry.txt")); staged != "staged work" {
+					t.Fatalf("retained index = %q", staged)
+				}
+				got, err := os.ReadFile(filepath.Join(info.Path, "retry.txt"))
+				if err != nil || string(got) != "unstaged work\n" {
+					t.Fatalf("retained worktree = %q, error=%v", got, err)
+				}
+			}
+		})
+	}
+}
+
+func TestResumedPhaseFinalizationPreservesPublishedHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow resumed phase finalization test in -short mode")
+	}
+	for _, tc := range []struct {
+		name                 string
+		advanceBase          bool
+		moveItem             bool
+		remoteMatchesRebased bool
+		secondRound          bool
+		recoverAdvanced      bool
+		afterPreservation    string
+	}{
+		{name: "already published"},
+		{name: "base advances", advanceBase: true},
+		{name: "next rework round uses newly receipted head", advanceBase: true, secondRound: true},
+		{name: "recovered checkout advances its publication expectation", advanceBase: true, secondRound: true, recoverAdvanced: true},
+		{name: "item ref moves", advanceBase: true, moveItem: true},
+		{name: "remote matches rebased head without published history", advanceBase: true, remoteMatchesRebased: true},
+		{name: "item ref rewinds after preservation", advanceBase: true, afterPreservation: "rewind"},
+		{name: "intended head arrives after preservation", advanceBase: true, afterPreservation: "publish"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			source := initRunnerSourceRepo(t)
+			remote := gitfixture.AddOrigin(t, source, runRunnerGit)
+			git := func(path string, args ...string) string {
+				t.Helper()
+				return strings.TrimSpace(runRunnerGit(t, path, args...))
+			}
+			const repository = "https://github.com/example-org/example-project"
+			git(source, "config", "url."+remote+".insteadOf", repository)
+			git(source, "remote", "set-url", "origin", repository)
+			commitFile := func(path, name string) string {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(path, name), []byte(name+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git(path, "add", name)
+				git(path, "commit", "-m", "add "+name)
+				return git(path, "rev-parse", "HEAD")
+			}
+			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+				Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dispatch := workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			item := connector.Issue{ID: "wi_example", Identifier: "prj_example#1", State: "In Progress"}
+			issue := runworkspace.Issue(dispatch.Project, item)
+			issue.AttemptWorkspace, issue.ProgressBaseRef, issue.PublicationRepository = dispatch, "main", remote
+			prior, err := backend.Create(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstCommit := commitFile(prior.Path, "item.txt")
+			published := commitFile(prior.Path, "item-extra.txt")
+			branch := prior.PublishBranch()
+			ref := "refs/heads/" + branch
+			git(prior.Path, "push", "origin", "HEAD:"+ref)
+			receipt := tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: published, TreeSHA: git(prior.Path, "rev-parse", "HEAD^{tree}")}
+			checkoutHead := published
+			if tc.recoverAdvanced {
+				git(prior.Path, "commit", "--allow-empty", "-m", "push before recording receipt")
+				git(prior.Path, "push", "origin", "HEAD:"+ref)
+				checkoutHead = git(prior.Path, "rev-parse", "HEAD")
+			}
+			if tc.advanceBase {
+				commitFile(source, "base.txt")
+				if tc.remoteMatchesRebased {
+					commitFile(source, "item.txt")
+					commitFile(source, "item-extra.txt")
+				}
+				git(source, "push", "origin", "main")
+			}
+			base := git(source, "rev-parse", "HEAD")
+			issue.AttemptWorkspace.Attempt = "attempt_22222222222222222222222222222222"
+			issue.PhaseSource, issue.VerifyPhaseBranch, issue.NoChangeNeeded = &receipt, true, true
+			info, err := backend.Create(ctx, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if head := git(info.Path, "rev-parse", "HEAD"); head != checkoutHead {
+				t.Fatalf("replacement checkout starts at %s, want published %s", head, checkoutHead)
+			}
+			remoteHead := checkoutHead
+			if tc.moveItem {
+				remoteHead = commitFile(prior.Path, "other.txt")
+				git(prior.Path, "push", "origin", "HEAD:"+ref)
+			}
+			publication := &phaseCompletionWorkspace{
+				LocalGit: backend,
+				beforePreservation: func() {
+					if !tc.remoteMatchesRebased {
+						return
+					}
+					if head := git(info.Path, "rev-parse", "HEAD"); head != base {
+						t.Fatalf("rebased checkout = %s, want base %s", head, base)
+					}
+					git(remote, "update-ref", ref, base, published)
+					remoteHead = base
+				},
+				afterPreservation: func() {
+					switch tc.afterPreservation {
+					case "rewind":
+						git(info.Path, "merge-base", "--is-ancestor", firstCommit, "HEAD")
+						git(remote, "update-ref", ref, firstCommit, published)
+						remoteHead = firstCommit
+					case "publish":
+						git(info.Path, "push", "origin", "HEAD:"+ref)
+					}
+				},
+			}
+			execution := &phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
+				testExecution: &testExecution{}, continuation: tracker.NativePhaseContinuation{LastPushed: &receipt},
+			}}
+			r, err := NewRunner(Dependencies{Workspace: publication, AgentBackend: &fakeCodexClient{}, ProcessSource: emptyProcessSource})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := fmt.Sprintf("```detent-status\nschema: 1\nstatus: no_change_needed\nfields:\n  completion_verified_sha: %s\n  completion_evidence: Verified the published source\n```", checkoutHead)
+			phaseSource := info.RecoveredPhase
+			req := RunRequest{
+				Issue: item, Execution: execution, finalizeNativeWork: true, phaseReceipts: true, phaseContinuation: &execution.continuation,
+				publishedPhaseSource: &phaseSource,
+				retainedReview:       &retainedReviewWorkspace{backend: publication, info: info, issue: issue, message: message},
+			}
+			_, err = r.prepareExecutionCompletion(ctx, req, publication, info, issue, AgentResume{}, true)
+			if tc.secondRound {
+				if err != nil || execution.publication.HeadSHA == "" || execution.publication.HeadSHA == checkoutHead {
+					t.Fatalf("first round receipt = %+v, error = %v", execution.publication, err)
+				}
+				firstRound := execution.publication
+				issue.NoChangeNeeded, issue.NativeRework = false, !tc.recoverAdvanced
+				writePath := filepath.Join(info.Path, "repair.txt")
+				if err := os.WriteFile(writePath, []byte("rework\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				git(info.Path, "add", "repair.txt")
+				req.retainedReview.message = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				_, err = r.prepareExecutionCompletion(ctx, req, publication, info, issue, AgentResume{}, true)
+				if err != nil {
+					t.Fatalf("second round publication: %v", err)
+				}
+				if execution.publication.HeadSHA == firstRound.HeadSHA {
+					t.Fatalf("second round reused the earlier receipt: %+v", execution.publication)
+				}
+				git(info.Path, "merge-base", "--is-ancestor", firstRound.HeadSHA, "HEAD")
+			}
+			actualRemote := git(remote, "rev-parse", ref)
+			head := git(info.Path, "rev-parse", "HEAD")
+			if execution.checkpoint == nil || execution.checkpoint.HeadSHA != head {
+				t.Fatalf("checkpoint = %+v, want finalized checkout %s", execution.checkpoint, head)
+			}
+			if tc.moveItem || tc.remoteMatchesRebased || tc.afterPreservation == "rewind" {
+				var refusal *workspace.LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved || actualRemote != remoteHead || execution.publication.HeadSHA != "" {
+					t.Fatalf("moved item ref = %s, receipt = %+v, error = %v", actualRemote, execution.publication, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := git(info.Path, "rev-parse", "HEAD^{tree}")
+			if actualRemote != head || execution.publication != (tracker.NativePhaseReceipt{Phase: "implement", Branch: branch, HeadSHA: head, TreeSHA: tree}) {
+				t.Fatalf("remote = %s, checkout = %s, receipt = %+v", actualRemote, head, execution.publication)
+			}
+			if !tc.advanceBase && head != published {
+				t.Fatalf("already published source was rewritten: %s, want %s", head, published)
+			}
+			git(info.Path, "merge-base", "--is-ancestor", published, head)
+			git(info.Path, "merge-base", "--is-ancestor", base, head)
+			wantFiles := "item-extra.txt\nitem.txt"
+			if tc.secondRound {
+				wantFiles += "\nrepair.txt"
+			}
+			if changed := git(info.Path, "diff", "--name-only", base, head); changed != wantFiles {
+				t.Fatalf("finalized source changes %q, want %q", changed, wantFiles)
 			}
 		})
 	}

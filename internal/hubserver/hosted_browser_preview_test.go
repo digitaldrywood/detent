@@ -103,7 +103,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 		cfg.Plans = &plans
 		cfg.Billing = &hostedplans.HostedBillingConfig{AccountID: "acct_fixture", CustomerID: "cus_fixture", PortalConfigurationID: "bpc_fixture", WebhookSecret: []byte("whsec_fixture_credits_browser"), GraceSeconds: 3600, ReconcileSeconds: 60, Provider: base, Prices: []hostedplans.HostedBillingPrice{{PriceID: "price_fixture", Label: "Extended pilot", Plan: plans.Plans[1].PlanReference}}}
 		configureTestCredits(t, f, base, billingstore.CreditAccount{PaymentMethod: "pm_credit", Failure: "automatic payment failed; update the saved payment method"})
-		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: "fixture-purchase", AmountMicros: 1250000, Kind: "purchase", RecordedAt: f.service.config.now()})
+		postAICreditFixture(t, f.service.database, billingstore.CreditTransaction{Mode: billing.ModeTest, Source: "fixture-purchase", AmountMicros: 1250000, Kind: "purchase", RecordedAt: f.service.config.Clock().UTC()})
 		done := make(chan struct{})
 		close(done)
 		f.service.billing = &hostedBillingWorker{service: f.service, cancel: func() {}, done: done}
@@ -149,9 +149,9 @@ func TestHostedBrowserPreview(t *testing.T) {
 				var routing runnerauth.Runner
 				decodeHubResponse(t, stored, &routing)
 				f.api(t, "owner", http.MethodPut, base+"/machines/"+string(binding.MachineID)+"/routing", runnerauth.HostChange{ExpectedRevision: routing.HostRevision, DisplayName: name, Capacity: 8}, http.StatusOK)
-				provider := capacityReport(f.service.config.now())
+				provider := capacityReport(f.service.config.Clock().UTC())
 				provider.MaxConcurrent = 8
-				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "provider_reports": []any{provider}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.now()}}
+				heartbeat := map[string]any{"display_name": name, "capacity": 2, "version": "test", "backend_isolation": redemption.BackendIsolation, "provider_reports": []any{provider}, "capacity_configuration": runnerauth.CapacityConfig{Revision: strings.Repeat("a", 64), LocalLimit: 2, ClientLimit: 2, RuntimeLimit: 2, Manageable: true, ObservedAt: f.service.config.Clock().UTC()}}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, base+"/projects/"+f.project+"/machines/"+string(binding.MachineID)+"/heartbeat", credential, heartbeat), http.StatusOK)
 			}
 			if name == "Settings runner" && os.Getenv("DETENT_HOSTED_BROWSER_RUNNER_PROBLEMS") != "" {
@@ -277,7 +277,7 @@ func TestHostedBrowserPreview(t *testing.T) {
 
 func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 	t.Helper()
-	now := f.service.config.now()
+	now := f.service.config.Clock().UTC()
 	states := []tracker.NativeState{
 		{Name: "Backlog", Transitions: []string{"Todo"}},
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},

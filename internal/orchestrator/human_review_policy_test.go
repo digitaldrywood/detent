@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
@@ -38,21 +37,5 @@ func TestHumanReviewDisabledRouting(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestHumanReviewDisabledDraftMerge(t *testing.T) {
-	t.Parallel()
-	for _, human := range []bool{false, true} {
-		issue := connector.Issue{PullRequest: &connector.PullRequest{State: "OPEN", Draft: true}}
-		cfg := Config{AutoPromote: AutoPromoteConfig{HumanReview: &human}}
-		got := draftMergingPullRequestDecision(issue, cfg)
-		want := "Human Review"
-		if !human {
-			want = "Rework"
-		}
-		if got.targetState != want || got.reason != mergeRevocationDraftPullRequest {
-			t.Fatalf("human=%t: decision = %#v, want %s/draft_pull_request", human, got, want)
-		}
 	}
 }

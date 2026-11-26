@@ -298,10 +298,7 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 				holder = filepath.Join(t.TempDir(), "checkpoint")
 				runGit(t, source, "worktree", "add", holder, branch)
 				writeCheckpointFile(t, holder, "retained.txt", "keep\n")
-				checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), Info{Path: holder, Branch: branch}, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
-				if err != nil || !pushed {
-					t.Fatalf("PushCheckpointRef() = %v, pushed=%v", err, pushed)
-				}
+				checkpoint := publishLegacyCheckpointFixture(t, Info{Path: holder, Branch: branch}, issue)
 				issue.Checkpoint = &checkpoint
 				runGit(t, source, "worktree", "remove", "--force", holder)
 			}

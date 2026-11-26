@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
@@ -25,6 +27,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
@@ -191,7 +194,8 @@ type ArtifactSourceExecution interface {
 // It fills the base, the head and the files; the
 // execution owns the producer tuple and the generation, because only the
 // execution knows the lease it is fenced by and the event sequence the diff
-// belongs to. It reports false when there is nothing to post.
+// belongs to. A false result with a head reports that a captured diff was
+// superseded by the observed head. A false result without a head is unavailable.
 type AttemptDiffSource func(context.Context) (tracker.AttemptDiffRequest, bool)
 
 // DiffExecution is an Execution that also stores the attempt's diff before
@@ -254,31 +258,45 @@ type ChangeSourceExecution interface {
 // A run with no pull request base is diffed against the base resolved when
 // the source is made, so every generation of one run shares a base.
 func (r *Runner) attemptDiffSource(ctx context.Context, info workspace.Info, issue workspace.Issue) AttemptDiffSource {
+	return r.worktreeDiffSource(info, issue, attemptDiffBase(ctx, info, issue))
+}
+
+func attemptDiffBase(ctx context.Context, info workspace.Info, issue workspace.Issue) string {
 	base := strings.TrimSpace(issue.BaseRef)
 	if base == "" {
 		base = workspace.AttemptBase(ctx, info.Path)
 	}
+	return base
+}
+
+func (r *Runner) setAttemptDiffSource(ctx context.Context, req *RunRequest, execution DiffExecution, info workspace.Info, issue workspace.Issue) {
+	req.attemptDiffBase = attemptDiffBase(ctx, info, issue)
+	execution.SetDiffSource(r.worktreeDiffSource(info, issue, req.attemptDiffBase))
+}
+
+func (r *Runner) worktreeDiffSource(info workspace.Info, issue workspace.Issue, base string) AttemptDiffSource {
 	return func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 		diffs, err := workspace.GitFileDiffs(ctx, info.Path, base, tracker.MaxDiffBytes)
 		if err != nil {
 			r.logger.Warn("attempt diff unavailable", "issue_id", issue.ID, "workspace_path", info.Path, "error", err)
 			return tracker.AttemptDiffRequest{}, false
 		}
-		request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
-		for _, file := range diffs.Files {
-			request.Files = append(request.Files, tracker.AttemptDiffFile{
-				Path: file.Path, OldPath: file.OldPath, Status: file.Status,
-				Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
-			})
-		}
-		if diffs.Truncated {
-			// The whole patch output exceeded the bound, so the counts are
-			// posted without patches rather than with a patch set that stops
-			// partway through the change.
-			request.Files = tracker.StripDiffPatches(request.Files)
-		}
-		return request, true
+		return attemptDiffRequest(diffs), true
 	}
+}
+
+func attemptDiffRequest(diffs workspace.FileDiffs) tracker.AttemptDiffRequest {
+	request := tracker.AttemptDiffRequest{BaseSHA: diffs.BaseSHA, HeadSHA: diffs.HeadSHA, Files: make([]tracker.AttemptDiffFile, 0, len(diffs.Files))}
+	for _, file := range diffs.Files {
+		request.Files = append(request.Files, tracker.AttemptDiffFile{
+			Path: file.Path, OldPath: file.OldPath, Status: file.Status,
+			Additions: file.Additions, Deletions: file.Deletions, Binary: file.Binary, Patch: file.Patch,
+		})
+	}
+	if diffs.Truncated {
+		request.Files = tracker.StripDiffPatches(request.Files)
+	}
+	return request
 }
 
 func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -355,12 +373,18 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	workflow, _, _, _, phaseWorkspace := r.runtimeSnapshotWithWorkspace()
 	_, gitPhases := phaseWorkspace.(itemPhaseWorkspace)
 	mode := runworkspace.NormalizeRunMode(req.Mode)
+	legacyPublishedSource := false
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
 		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
 		if err != nil {
 			return RunResult{}, failedStep("publication", err)
 		}
-		req.phaseReceipts = req.phaseContinuation != nil && (mode == RunModeImplement || req.RetainItemWorkspace)
+		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
+			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
+		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
+		if req.phaseReceipts {
+			req.publishedPhaseSource = &workspace.PhaseSource{}
+		}
 	}
 	if expected := req.NativeLandingRework; expected != nil {
 		source, ok := req.Execution.(NativeSourceIterationExecution)
@@ -371,8 +395,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !req.phaseReceipts {
-		return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil {
+		if req.phaseContinuation == nil {
+			return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
+		}
+		if gate.EffectivePlan(workflow.Config.Plan).Review != gate.PlanReviewAutomated && req.phaseContinuation.Plan == nil {
+			return RunResult{}, failedStep("publication", errors.New("native human plan approval is unavailable"))
+		}
 	}
 	sourceReviewed := false
 	if runworkspace.NormalizeRunMode(req.Mode) == RunModeImplement {
@@ -390,9 +419,11 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 				sourceReviewed = true
 				reviewRequest := req
 				reviewRequest.retainedReview = retained
-				reviewErr := r.validateNativeChange(ctx, reviewRequest)
+				reviewErr := r.validateNativeChange(guarded, reviewRequest)
 				if source, ok := req.Execution.(NativeSourceIterationExecution); ok {
-					change, err := source.SourceReview(ctx)
+					sourceReviewCtx, cancelSourceReview := r.finalizationContext(guarded, r.afterRunTimeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+					change, err := source.SourceReview(sourceReviewCtx)
+					cancelSourceReview()
 					if err != nil {
 						return "", errors.Join(reviewErr, err)
 					}
@@ -514,7 +545,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		prepareCtx, prepareCancel := finishCtx, func() {}
 		if outcome == "succeeded" {
 			workflow, runtime, _, _ := r.runtimeSnapshot()
-			role := runtime.effectiveRunRole(runworkspace.RunRole(req.Mode, req.Issue))
+			role := runtime.effectiveRunRole(req.executionRole())
 			_, _, backend, routeErr := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), role)
 			if routeErr != nil {
 				runErr = errors.Join(runErr, routeErr)
@@ -536,7 +567,8 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if err != nil {
 			runErr = errors.Join(runErr, failedStep("publication", err))
 			outcome = "failed"
-		} else if outcome == "succeeded" && !sourceReviewed && result.Output != RunOutputPlanApprovalWait {
+		} else if outcome == "succeeded" && !sourceReviewed && !result.sourceReviewed &&
+			!result.planApprovalWait && result.NativeLanding == nil {
 			if err := r.validateNativeChange(guarded, req); err != nil {
 				runErr = errors.Join(runErr, err)
 				sourceUnavailable = errors.Is(err, ErrNativeRecoveryRequired) && errors.Is(err, connector.ErrTrackerUnavailable)
@@ -607,6 +639,13 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			result.NativeChange.ImplementationReviewError = reviewErr.Error()
 		}
 	}
+	var phaseRefusal *workspace.LandRefusal
+	if req.phaseReceipts && mode == RunModeImplement && errors.As(runErr, &phaseRefusal) && phaseRefusal.Kind == workspace.LandRefusalHeadMoved {
+		if result.NativeChange == nil {
+			result.NativeChange = &NativeChange{}
+		}
+		result.NativeChange.VersionCode, result.NativeChange.VersionError = phaseRefusal.Kind, phaseRefusal.Reason
+	}
 	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
 		result.FinalMessage = change.SecurityAudit.Run.CompletionMessage(result.FinalMessage)
 	}
@@ -672,12 +711,16 @@ func executionCheckpoint(state *workspace.RecoveryState) tracker.NativeCheckpoin
 	checkpoint.HeadSHA = state.HeadSHA
 	checkpoint.WorkspaceDigest = state.WorkspaceFingerprint
 	checkpoint.WorktreeState = "clean"
-	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+	if len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 || state.RebaseInProgress {
 		checkpoint.WorktreeState = "dirty"
 	} else if state.UnpushedCommits > 0 {
 		checkpoint.WorktreeState = "unpushed"
 	}
 	return checkpoint
+}
+
+func recordExecutionCheckpoint(ctx context.Context, execution Execution, checkpoint tracker.NativeCheckpoint) error {
+	return preserveCancellation(ctx, execution.Checkpoint(ctx, checkpoint), "runner.checkpoint")
 }
 
 func executionCheckpointPreservingPublication(execution Execution, state *workspace.RecoveryState) tracker.NativeCheckpoint {
@@ -690,7 +733,7 @@ func executionCheckpointPreservingPublication(execution Execution, state *worksp
 }
 
 func (req RunRequest) publicationRecovery(mode string) bool {
-	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runworkspace.RunRole(mode, req.Issue)) {
+	if req.Execution != nil && mode == RunModeImplement && isImplementationRole(req.executionRole()) {
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
 			return previous.Checkpoint.UncertainForgeEffect()
 		}
@@ -698,13 +741,9 @@ func (req RunRequest) publicationRecovery(mode string) bool {
 	return false
 }
 
-func publicationRecoveryRole(role string) bool {
-	return role == RoleCode || role == RoleRework
-}
-
 func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace.RecoveryState, identity tracker.NativeExecutionIdentity, current *workspace.ChangeSource) bool {
 	previous := recovery.SourceAttempt()
-	if !publicationRecoveryRole(identity.Role) || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
+	if !isImplementationRole(identity.Role) || previous == nil || previous.Checkpoint == nil || !previous.Checkpoint.UncertainForgeEffect() || current == nil || local == nil {
 		return false
 	}
 	checkpoint, version := previous.Checkpoint, current.Version
@@ -728,7 +767,6 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 }
 
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
-	req.checkpointRefs.halt()
 	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
 		artifactCtx, cancel := r.artifactCompletionContext(ctx, req.Execution)
 		defer cancel()
@@ -753,29 +791,24 @@ func (r *Runner) artifactCompletionContext(ctx context.Context, execution Execut
 	if availabilityStopped(execution, context.Cause(ctx), time.Now()) {
 		return context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	}
-	return ctx, func() {}
+	return context.WithTimeout(ctx, r.afterRunTimeout)
 }
 
-func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, finalize bool) (workspace.Info, workspace.Issue, error) {
-	if finalize && req.phaseReceipts && req.checkpointRefs == nil {
-		req.checkpointRefs = newCheckpointRefs(backend, req.Execution, info, issue, nil)
-	}
-	req.checkpointRefs.halt()
+func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume) error {
 	captureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 	defer cancel()
 	preserver, ok := backend.(workspace.IssuePreserver)
 	if ok {
 		if _, err := preserver.PreserveIssue(captureCtx, issue); err != nil {
-			return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
+			return errors.Join(ErrWorkerProcessReap, err)
 		}
 	}
-	if req.Execution == nil {
-		return workspace.Info{}, issue, nil
+	if req.Execution == nil || req.phaseReceipts {
+		return nil
 	}
 	if !ok {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, ErrWorkspacePreservationUnavailable)
+		return errors.Join(ErrWorkerProcessReap, ErrWorkspacePreservationUnavailable)
 	}
-	r.pushCheckpointRef(captureCtx, req.checkpointRefs, req, "stage_finished")
 	state := r.workspaceRecoveryState(backend, captureCtx, info, issue, "native_checkpoint")
 	checkpoint := executionCheckpointPreservingPublication(req.Execution, state)
 	if !agentResumeEmpty(resume) {
@@ -783,38 +816,13 @@ func (r *Runner) prepareReapedExecution(ctx context.Context, req RunRequest, bac
 	} else {
 		checkpoint.Resume = "fresh_checkout"
 	}
-	req.checkpointRefs.apply(&checkpoint)
-	if refs := req.checkpointRefs; refs != nil && !refs.lastPushFailed() && refs.last.CommitSHA != "" {
-		checkpoint.Storage, checkpoint.Availability = "git_ref", "available"
-		checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = refs.last.Ref, refs.last.CommitSHA, refs.last.BaseSHA, refs.last.TreeSHA
-		checkpoint.HeadSHA = refs.last.HeadSHA
-	}
-	if err := recordCheckpointRef(captureCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
-	}
-	if !finalize {
-		return workspace.Info{}, issue, nil
-	}
-	if req.checkpointRefs == nil || !checkpoint.GitRef() || checkpoint.UncertainForgeEffect() || req.checkpointRefs.lastPushFailed() {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired)
-	}
-	restorer, ok := backend.(workspace.CheckpointWorktree)
-	if !ok {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired)
-	}
-	ref := workspace.CheckpointRef{Ref: checkpoint.Ref, CommitSHA: checkpoint.CommitSHA, HeadSHA: checkpoint.HeadSHA, BaseSHA: checkpoint.BaseSHA, TreeSHA: checkpoint.TreeSHA}
-	restored, restoredIssue, err := restorer.RestoreCheckpointForFinalization(ctx, info, issue, ref)
-	if err != nil {
-		return workspace.Info{}, issue, errors.Join(ErrWorkerProcessReap, ErrNativeRecoveryRequired, err)
-	}
-	return restored, restoredIssue, nil
+	return recordExecutionCheckpoint(captureCtx, req.Execution, checkpoint)
 }
 
 func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) (_ bool, resultErr error) {
 	if req.artifactSpool != nil {
 		req.artifactSpool.directory = ""
 	}
-	req.checkpointRefs.halt()
 	if req.finalizeNativeWork && !req.retainCheckpoint {
 		if execution, ok := req.Execution.(PublicationSourceExecution); ok {
 			publicationOptions := func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.LandOptions, error) {
@@ -874,6 +882,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}()
 	}
 	finalizationErr := executionCancellation(req)
+	var incomplete *workspace.SourceFinalizationIncomplete
 	if req.finalizeNativeWork && !req.reviewOnly && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
 		if finalizer, ok := backend.(workspace.NativeWorkFinalizer); ok {
 			if err := req.Execution.Validate(ctx); err != nil {
@@ -882,32 +891,44 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				base, err := r.finalizeNativeCommit(ctx, req, backend, info, issue, finalizer)
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
+					if errors.As(err, &incomplete) {
+						finalizationErr = errors.Join(ErrNativeRecoveryRequired, finalizationErr)
+					}
 				} else if base != "" {
 					issue.BaseRef = base
 					if diffs, ok := req.Execution.(DiffExecution); ok {
-						req.attemptDiffSource = r.attemptDiffSource(ctx, info, issue)
-						diffs.SetDiffSource(req.attemptDiffSource)
+						r.setAttemptDiffSource(ctx, &req, diffs, info, issue)
 					}
 				}
 			}
 		}
 	}
-	phaseCompleted := req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
+	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
 		phaseCompleted = ok && verifier.VerifyReviewTree(ctx, info, issue) == nil
 	}
 	if phaseCompleted && req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
-		if continuation := req.phaseContinuation; continuation != nil && continuation.LastPushed != nil && (issue.NativeRework || req.Execution.Recovery().SourceVersionID != "") {
+		publicationIssue := issue
+		var previous workspace.PhaseSource
+		if latest := req.publishedPhaseSource; latest != nil && latest.HeadSHA != "" {
+			previous = *latest
+		} else if carry := req.phaseContinuation; carry != nil && carry.LastPushed != nil {
+			receipt := carry.LastPushed
+			previous = workspace.PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}
+		}
+		if previous.HeadSHA != "" && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
-				finalizationErr = failedStep("publication", publisher.PreserveItemPhaseHistory(ctx, info, issue, *continuation.LastPushed, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority))
+				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
+				publicationIssue.ExpectedPhaseRemoteHead = expected
+				finalizationErr = failedStep("publication", err)
 			}
 		}
 		if finalizationErr == nil {
 			finalizationErr = r.recordAgentStep(ctx, req, backend, info, issue, req.retainedReview.message)
 		}
 		if finalizationErr == nil {
-			finalizationErr = publishItemPhase(ctx, req, backend, info, issue, "implement", "")
+			finalizationErr = publishItemPhase(ctx, req, backend, info, publicationIssue, "implement", "")
 		}
 	}
 	if req.finalizeNativeWork && finalizationErr == nil && ctx.Err() == nil && !req.retainCheckpoint {
@@ -955,7 +976,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 							if recordErr := recorder.RecordSourceValidation(ctx, receipt); recordErr != nil {
 								err = errors.Join(err, recordErr)
 							} else if req.reviewSource != nil && (!agentResumeEmpty(resume) || issue.PhaseSource != nil && req.retainedReview != nil) && sourceBudgetRemaining(ctx) > 0 {
-								return false, &sourceGateRepair{err: failedStep("validation", err), output: receipt.Output}
+								return false, &sourceRepair{err: failedStep("validation", err), output: receipt.Output}
 							}
 						} else {
 							binding.Validation = &receipt
@@ -977,9 +998,6 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	finalizationErr = errors.Join(finalizationErr, executionCancellation(req))
-	finalPushCtx, finalPushCancel := r.finalizationContext(context.WithoutCancel(ctx), checkpointTimeout, context.DeadlineExceeded)
-	r.finishCheckpointRef(finalPushCtx, req.checkpointRefs, req)
-	finalPushCancel()
 	recoveryCtx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.afterRunTimeout, context.DeadlineExceeded)
 	state := r.workspaceRecoveryState(backend, recoveryCtx, info, issue, "native_checkpoint")
 	cancel()
@@ -989,7 +1007,6 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	} else if turnStarted {
 		checkpoint.Resume = "fresh_checkout"
 	}
-	req.checkpointRefs.apply(&checkpoint)
 	artifactCtx, cancelArtifacts := r.artifactCompletionContext(ctx, req.Execution)
 	defer cancelArtifacts()
 	var artifactErr error
@@ -1012,20 +1029,35 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 	}
 	var diffErr error
-	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
-		source := req.attemptDiffSource
-		if source == nil {
-			source = r.attemptDiffSource(ctx, info, issue)
+	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && state != nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
+		base := req.attemptDiffBase
+		if base == "" {
+			base = attemptDiffBase(ctx, info, issue)
 		}
-		finalDiff, available := source(ctx)
-		if !available || checkpoint.HeadSHA == "" || finalDiff.HeadSHA != checkpoint.HeadSHA {
-			diffErr = failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+		finalDiff, err := workspace.GitCommitFileDiffs(ctx, info.Path, base, state.HeadSHA, tracker.MaxDiffBytes)
+		if err != nil {
+			diffErr = failedStep("publication", fmt.Errorf("capture finalized diff: %w", err))
 		} else {
+			request := attemptDiffRequest(finalDiff)
+			var superseded atomic.Pointer[string]
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				if current, available := source(ctx); available {
-					return current, true
+				if head := superseded.Load(); head != nil {
+					return tracker.AttemptDiffRequest{HeadSHA: *head}, false
 				}
-				return finalDiff, true
+				output, err := gitexec.Run(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+				if err == nil {
+					head := strings.TrimSpace(output)
+					if head != request.HeadSHA {
+						superseded.Store(&head)
+						return tracker.AttemptDiffRequest{HeadSHA: head}, false
+					}
+					return request, true
+				}
+				_, statErr := os.Stat(info.Path)
+				if errors.Is(statErr, os.ErrNotExist) {
+					return request, true
+				}
+				return tracker.AttemptDiffRequest{}, false
 			})
 		}
 	}
@@ -1033,11 +1065,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
-		_, err := preserveWorkspace(preserveCtx, backend, issue)
+		preservation, err := preserveWorkspace(preserveCtx, backend, issue)
 		cancel()
 		if err != nil && (issue.AttemptWorkspace.Key() != "" || !errors.Is(err, workspace.ErrMissingWorkspace)) {
 			r.logger.Warn("preserve native workspace failed", "issue_id", req.Issue.ID, "error", err)
-			return false, errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
+			completionErr = errors.Join(completionErr, ErrWorkspacePreparation, ErrNativeRecoveryRequired, err)
+			if incomplete == nil || !preservation.Preserved || !errors.Is(err, context.DeadlineExceeded) {
+				return false, completionErr
+			}
 		}
 	}
 	checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
@@ -1045,10 +1080,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	if err := req.Execution.Validate(checkpointCtx); err != nil {
 		return false, errors.Join(completionErr, err)
 	}
-	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
+	if err := recordExecutionCheckpoint(checkpointCtx, req.Execution, checkpoint); err != nil {
 		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
-	completionErr = errors.Join(completionErr, executionCancellation(req))
+	cancellation := executionCancellation(req)
+	completionErr = errors.Join(completionErr, cancellation)
+	if incomplete != nil && cancellation == nil && ctx.Err() == nil {
+		return false, &sourceRepair{err: completionErr, incomplete: incomplete}
+	}
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
 		return false, errors.Join(completionErr, context.Cause(ctx))
 	}
@@ -1079,6 +1118,28 @@ func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, r
 	}
 	state, err := r.lookupNativeResumeState(ctx, req, runtime, previous)
 	return state, err
+}
+
+func (r *Runner) resumeRestoredTurnCorrection(ctx context.Context, req *RunRequest, attemptID string, runtime agentRuntime, backend AgentBackend, process AgentProcessRequest, identity tracker.NativeExecutionIdentity, restored *workspace.RecoveryState, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
+	recovery := req.Execution.Recovery()
+	previous := recovery.SourceAttempt()
+	if req.operatorFreshRetry() || previous == nil || previous.AttemptID != attemptID || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" {
+		return store.AgentResumeState{}, nil
+	}
+	if !phaserecovery.TurnMatches(previous, restored) {
+		return store.AgentResumeState{}, nil
+	}
+	state, err := r.nativeSessionResumeState(ctx, *req, runtime)
+	if err != nil || agentResumeStateEmpty(state) {
+		return state, err
+	}
+	action, _ := nativeRecoveryAction(recovery, restored, true, state, identity, false, nil, issue.AttemptWorkspace.Attempt, info.StartHeadSHA)
+	if action != "resume_session" {
+		return store.AgentResumeState{}, nil
+	}
+	verifiedCheckout := issue
+	verifiedCheckout.Source = nil
+	return r.nativeResume(ctx, req, backend, process, restored, state, identity, true, source, info, verifiedCheckout)
 }
 
 func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
@@ -1234,6 +1295,10 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 	if req.Execution == nil {
 		return state, nil
 	}
+	if req.phaseReceipts {
+		req.ResumeState, req.RetryMode = store.AgentResumeState{}, RetryModeFresh
+		return req.ResumeState, nil
+	}
 	if state.DetentSessionID == 0 && req.ResumeState.DetentSessionID > 0 {
 		state = req.ResumeState
 	}
@@ -1244,14 +1309,8 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 		}
 	}
 	startHead := info.StartHeadSHA
-	if issue.PhaseSource != nil {
-		startHead = issue.PhaseSource.HeadSHA
-	}
 	recovery := req.Execution.Recovery()
-	action, reason := "fresh_checkout", "verified_pushed_phase"
-	if !issue.VerifyPhaseBranch || !itemPhaseFromPriorLease(issue.PhaseSource, recovery.Lease.ID) {
-		action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
-	}
+	action, reason := nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source, issue.AttemptWorkspace.Attempt, startHead)
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
@@ -1408,7 +1467,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 		return nil
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleValidator)
-	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(ctx, r.nativeWorkTimeout(workflow.Config, backend, durationFromMillis(cfg.TurnTimeoutMS)), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ValidatorVersion(ctx)
 	if err != nil || input.Version == nil {
@@ -1477,7 +1536,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 		return false, errors.New("required native implementation review producer is unavailable")
 	}
 	_, _, backend, routeErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), RoleCode)
-	ctx, cancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+	ctx, cancel := r.finalizationContext(ctx, r.nativeWorkTimeout(workflow.Config, backend, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
 	defer cancel()
 	input, err := execution.ReviewVersion(ctx)
 	if err != nil || input.Version == nil {
@@ -1557,4 +1616,30 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 		landing := phaserecovery.Landing(recovery)
 		return landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework()
 	}, completedSourceDisposition)
+}
+
+func sameMachineWorkspaceRetained(backend workspace.Backend, recovery tracker.NativeRecovery, issue workspace.Issue) bool {
+	previous := recovery.SourceAttempt()
+	if previous == nil || previous.MachineID == "" || previous.MachineID != recovery.Lease.MachineID {
+		return false
+	}
+	local, ok := backend.(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+	})
+	if !ok {
+		return false
+	}
+	if issue.AttemptWorkspace.Key() == "" || issue.AttemptWorkspace.Attempt != previous.AttemptID {
+		return false
+	}
+	_, err := local.Existing(issue)
+	return err == nil
+}
+
+func cleanLocalCheckpoint(checkpoint *tracker.NativeCheckpoint) bool {
+	return checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "clean" && checkpoint.HeadSHA != "" && checkpoint.ExternalEffect == "none" && checkpoint.EffectState == "none"
+}
+
+func checkpointRefCoversChangeSource(err error, checkpoint *workspace.CheckpointRef, landing, fresh bool) bool {
+	return !landing && !fresh && errors.Is(err, ErrNativeRecoveryRequired) && checkpoint != nil
 }

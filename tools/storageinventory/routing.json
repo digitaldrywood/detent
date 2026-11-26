@@ -20730,22 +20730,6 @@
         "tables": []
       }
     },
-    "internal/sqlstmt/cache.go": {
-      "disposition": "serving",
-      "families": [
-        "lifecycle"
-      ],
-      "inventory": {
-        "operations": {
-          "Cache.ExecContext:ExecContext": 3,
-          "Cache.QueryContext:QueryContext": 3,
-          "Cache.prepare:Prepare": 1,
-          "Cache.prepare:PrepareContext": 1,
-          "Cache.prepare:Stmt": 1
-        },
-        "tables": []
-      }
-    },
     "internal/tenantauth/authority.go": {
       "disposition": "target-adapter",
       "families": [

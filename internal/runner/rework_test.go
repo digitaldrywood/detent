@@ -86,6 +86,7 @@ type resolvingReworkAgent struct {
 	reviewVerdict string
 	beforeStage   func()
 	afterStage    func()
+	correctSource func(context.Context, AgentTurnRequest, int) error
 	t             *testing.T
 }
 
@@ -96,6 +97,12 @@ func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest
 		return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Current source reviewed","criteria_evidence":[]}`, a.reviewVerdict)})
 	}
 	a.calls++
+	if a.calls > 1 && a.correctSource != nil {
+		if err := a.correctSource(ctx, req, a.calls-2); err != nil {
+			return AgentTurnResult{}, err
+		}
+		return AgentTurnResult{ThreadID: "native-rework", TurnID: fmt.Sprint(a.calls)}, nil
+	}
 	if a.beforeStage != nil {
 		a.beforeStage()
 	}
@@ -344,16 +351,20 @@ func newReworkWorkspace(t *testing.T, source, root string) *workspace.LocalGit {
 
 func publishReworkCheckpoint(t *testing.T, backend *workspace.LocalGit, info workspace.Info, issue workspace.Issue) tracker.NativeCheckpoint {
 	t.Helper()
-	ref, pushed, err := backend.PushCheckpointRef(t.Context(), info, issue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
-	if err != nil || !pushed {
-		t.Fatalf("publish fixture: %+v, %v", ref, err)
-	}
+	head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+	base := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", "HEAD", "origin/main"))
+	runRunnerGit(t, info.Path, "add", "-A")
+	tree := strings.TrimSpace(runRunnerGit(t, info.Path, "write-tree"))
+	runRunnerGit(t, info.Path, "reset", "-q", "HEAD")
+	commit := strings.TrimSpace(runRunnerGit(t, info.Path, "commit-tree", tree, "-p", head, "-m", "legacy checkpoint"))
+	ref := workspace.CheckpointRefName(issue)
+	runRunnerGit(t, info.Path, "push", "origin", commit+":"+ref)
 	state, err := backend.RecoveryState(t.Context(), info, issue)
 	if err != nil {
 		t.Fatal(err)
 	}
 	checkpoint := executionCheckpoint(&state)
-	checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+	checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref, commit, base, tree
 	return checkpoint
 }
 
@@ -493,6 +504,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		failedFinalGate          bool
 		lateConflict             bool
 		followOnConflict         bool
+		lateUnstagedEdit         bool
 		refusal                  string
 		baseRefresh              bool
 		historical               bool
@@ -555,6 +567,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "latest landing supersedes conflict", normal: true, staged: true, refusal: workspace.LandRefusalConflict, laterRefusal: workspace.LandRefusalBaseMoved, resume: true},
 		{name: "unresolved source", unresolved: true},
 		{name: "unpaused staged repair", staged: true},
+		{name: "late unstaged edit", staged: true, normal: true, lateUnstagedEdit: true},
 		{name: "preserved staged work with late host conflict", staged: true, lateConflict: true},
 		{name: "resolved pause with next host replay conflict", staged: true, lateConflict: true, followOnConflict: true},
 		{name: "host signs staged native code", staged: true, normal: true, signed: true},
@@ -669,6 +682,34 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
+			var corrections []string
+			switch {
+			case test.followOnConflict:
+				corrections = []string{"README.md", "repair.md"}
+			case test.lateConflict:
+				corrections = []string{"README.md"}
+			case test.lateUnstagedEdit:
+				corrections = []string{"repair.md"}
+				agent.afterStage = func() {
+					writeLocalProgressFile(t, info.Path, "repair.md", "resolved with late edit\n")
+				}
+			}
+			if len(corrections) != 0 {
+				agent.correctSource = func(ctx context.Context, req AgentTurnRequest, index int) error {
+					if index >= len(corrections) || req.Resume.ThreadID != "native-rework" || req.ReadOnly || req.Workspace != info.Path || execution.finish != "" || execution.head != "" {
+						t.Fatalf("source correction lost the held session or published unfinished work: call=%d resume=%+v finish=%s head=%s", index, req.Resume, execution.finish, execution.head)
+					}
+					path := corrections[index]
+					if test.lateConflict {
+						if got := strings.TrimSpace(runRunnerGit(t, req.Workspace, "diff", "--name-only", "--diff-filter=U")); got != path {
+							t.Fatalf("unfinished replay paths = %q, want %q", got, path)
+						}
+						writeLocalProgressFile(t, req.Workspace, path, "resolved\n")
+					}
+					return runAgentGit(ctx, req.Workspace, "add", path)
+				}
+			}
+
 			var retryBackend workspace.Backend = backend
 			var saved tracker.NativeCheckpoint
 			if test.checkpointRetry != "" {
@@ -989,6 +1030,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			cfg := config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}
+			if test.unresolved || test.pausedLaterConflict {
+				cfg.Agent.MaxTurns = 1
+			}
 			freshRetry := test.checkpointRetry != "" && test.checkpointRetry != "Rework"
 			if freshRetry && test.missingBundleBackend == "" {
 				cfg.Gate.Run = "test -f target-fix.md"
@@ -1046,8 +1090,8 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			}
 			if test.resolvedPause {
 				if test.pausedLaterConflict {
-					if err != nil || execution.head != "" || execution.validation != nil || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
-						t.Fatalf("later conflict published unfinished source: %v, %+v", err, execution)
+					if !errors.Is(err, ErrNativeRecoveryRequired) || execution.finish != "interrupted" || execution.head != "" || execution.validation != nil || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
+						t.Fatalf("later conflict lost recoverable source or published it: %v, %+v", err, execution)
 					}
 					if got := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); got != "later-one.md" {
 						t.Fatalf("replay did not advance to the later conflict: %q", got)
@@ -1111,7 +1155,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				return
 			}
 			if test.unresolved {
-				if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || errors.Is(err, ErrWorkspacePreparation) || execution.finish != "failed" || execution.head != "" {
+				if !errors.Is(err, workspace.ErrMergeResolutionInvalid) || !errors.Is(err, ErrNativeRecoveryRequired) || errors.Is(err, ErrWorkspacePreparation) || execution.finish != "interrupted" || execution.head != "" {
 					t.Fatalf("source conflict published evidence or became infrastructure: %v, %#v", err, execution)
 				}
 				return
@@ -1119,37 +1163,16 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.lateConflict {
-				if execution.finish != "succeeded" || execution.head != "" || execution.diffHead != "" || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
-					t.Fatalf("late host conflict failed or captured unfinished work: %#v", execution)
+			if len(corrections) != 0 {
+				if want := 1 + len(corrections); agent.calls != want {
+					t.Fatalf("implementation used %d turns, want %d in the same run", agent.calls, want)
 				}
-				if paths := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); paths != "README.md" {
-					t.Fatalf("late conflict not preserved: %s", paths)
+				if status := runRunnerGit(t, info.Path, "status", "--porcelain"); status != "" {
+					t.Fatalf("finalized source is dirty: %s", status)
 				}
-				if diff, ok := execution.diffSource(t.Context()); ok {
-					t.Fatalf("paused index was captured: %#v", diff)
-				}
-				branchHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "refs/heads/"+info.Branch))
-				if branchHead == original || !strings.Contains(runRunnerGit(t, info.Path, "show", branchHead+":repair.md"), "resolved") {
-					t.Fatal("host did not preserve the successful staged repair")
-				}
-				agent.staged = false
-				result, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution})
-				if err != nil {
-					t.Fatal(err)
-				}
-				if test.followOnConflict {
-					if result.FinalState != FinalStateCompleted || result.DiffStats.UnpushedCommits != 1 || execution.finish != "succeeded" || execution.head != "" || execution.checkpoint.WorktreeState != "dirty" {
-						t.Fatalf("next host replay conflict erased resolved progress: result=%+v execution=%+v", result, execution)
-					}
-					if paths := strings.TrimSpace(runRunnerGit(t, info.Path, "diff", "--name-only", "--diff-filter=U")); paths != "repair.md" {
-						t.Fatalf("next host replay conflict not preserved: %s", paths)
-					}
-					agent.staged = true
-					if _, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}); err != nil {
-						t.Fatal(err)
-					}
-				}
+			}
+			if test.lateUnstagedEdit && runRunnerGit(t, info.Path, "show", "HEAD:repair.md") != "resolved with late edit\n" {
+				t.Fatal("finalized source lost the late edit")
 			}
 			head := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
 			if prepareConflict {

@@ -260,8 +260,10 @@ func (s *Scheduler) PrepareProject(ctx context.Context, project string) error {
 func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ time.Time) (orchestrator.Claimed, error) {
 	s.mu.Lock()
 	lease, ok := s.claims[strings.TrimSpace(issue.ID)]
+	var localDeadline time.Time
 	if native, exists := s.nativeClaims[strings.TrimSpace(issue.ID)]; exists {
 		issue.IsolationPolicy = native.lease.IsolationPolicy
+		localDeadline = native.deadline
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -270,7 +272,9 @@ func (s *Scheduler) AdoptClaim(ctx context.Context, issue connector.Issue, _ tim
 	if err := s.checkClaimPolicy(ctx, issue.ID, lease.PolicyID); err != nil {
 		return orchestrator.Claimed{}, err
 	}
-	return claimedIssue(issue, lease), nil
+	claimed := claimedIssue(issue, lease)
+	claimed.LocalLeaseDeadline = localDeadline
+	return claimed, nil
 }
 
 func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time) (orchestrator.Claimed, error) {
@@ -313,27 +317,10 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	}
 	started := s.now()
 	lease, err := claim.source.NativeClient().RenewHeartbeat(ctx, claim.lease, int64(s.leaseTTL/time.Second))
-	s.mu.Lock()
-	current, found := s.nativeClaims[issueID]
-	if found && !current.lost && current.lease.FencingToken != claim.lease.FencingToken {
-		s.mu.Unlock()
-		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
-	}
-	if err == nil && found && !current.lost && current.lease.ID == lease.ID && current.lease.FencingToken == lease.FencingToken {
-		if current.lease.RenewedAt.After(lease.RenewedAt) {
-			s.mu.Unlock()
-			return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
-		}
-		current.signalLeaseChange()
-		current.lease = lease
-		current.deadline = nativeLeaseDeadline(started, lease)
-		s.nativeClaims[issueID] = current
-		s.claims[issueID] = nativeTrackerLease(lease)
-		s.mu.Unlock()
-		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
-	}
-	s.mu.Unlock()
 	if err == nil {
+		if renewed, ok := s.applyNativeLeaseRenewal(issueID, started, claim.lease, lease, true); ok {
+			return renewed, nil
+		}
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
 	s.signalExpiredLease(claim.lease)
@@ -344,10 +331,12 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 		defer claim.lifecycle.Unlock()
 	}
 	s.mu.Lock()
-	current, found = s.nativeClaims[issueID]
+	current, found := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if found && !current.lost && current.lease.FencingToken != claim.lease.FencingToken {
-		return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease)), nil
+		claimed := claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(current.lease))
+		claimed.LocalLeaseDeadline = current.deadline
+		return claimed, nil
 	}
 	return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 }

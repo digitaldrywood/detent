@@ -88,17 +88,11 @@ func (r *Runner) recordAgentStep(ctx context.Context, req RunRequest, backend wo
 	if _, ok := stepExecution(req.Execution); !ok {
 		return nil
 	}
-	req.checkpointRefs.halt()
-	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
 	state := r.workspaceRecoveryState(backend, ctx, info, issue, "agent_turn_receipt")
 	if state == nil {
-		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+		return failedStep("agent_turn", ErrNativeRecoveryRequired)
 	}
 	source := executionCheckpoint(state)
-	req.checkpointRefs.apply(&source)
-	if source.HeadSHA != state.HeadSHA || source.WorkspaceDigest != state.WorkspaceFingerprint {
-		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
-	}
 	receipt := stepBinding(req.Execution, "agent_turn", source, tracker.NativeChangeReference{})
 	receipt.CompletedAt, receipt.CompletionBody = r.now(), message
 	return recordStep(ctx, req.Execution, receipt)
@@ -126,7 +120,7 @@ func (r *Runner) finalizeNativeCommit(ctx context.Context, req RunRequest, backe
 		return "", err
 	}
 	previous, err := loadStep(ctx, req.Execution, binding)
-	if err != nil || previous.Step != "" && !req.repairResume && !issue.NoChangeNeeded {
+	if err != nil || previous.Step != "" && previous.Source.WorktreeState != "dirty" && binding.Source.WorktreeState != "dirty" && !req.repairResume && !issue.NoChangeNeeded {
 		return previous.FinalizedBaseSHA, err
 	}
 	agentBinding := binding
@@ -139,15 +133,9 @@ func (r *Runner) finalizeNativeCommit(ctx context.Context, req RunRequest, backe
 	if err != nil {
 		return "", failedStep("commit", err)
 	}
-	r.finishCheckpointRef(ctx, req.checkpointRefs, req)
 	receipt, err := r.sourceStep(ctx, req, backend, info, issue, "commit")
 	if err != nil {
-		return "", failedStep("checkpoint_recovery", err)
-	}
-	observed := receipt.Source
-	req.checkpointRefs.apply(&receipt.Source)
-	if receipt.Source.HeadSHA != observed.HeadSHA || receipt.Source.WorkspaceDigest != observed.WorkspaceDigest {
-		return "", failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+		return "", failedStep("commit", err)
 	}
 	receipt.FinalizedBaseSHA = base
 	if agent.Step != "" {

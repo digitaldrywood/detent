@@ -25,7 +25,7 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 	for _, kind := range []string{"waiting", "retrying", "unready", "running", "running other base", "running case-distinct base", "ready"} {
 		t.Run(kind, func(t *testing.T) {
 			t.Parallel()
-			for _, path := range []string{"planner", "fresh", "native"} {
+			for _, path := range []string{"planner", "fresh"} {
 				t.Run(path, func(t *testing.T) {
 					t.Parallel()
 					now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -53,8 +53,7 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 						}
 						state.Running[head.ID] = Running{Issue: head, Mode: runpkg.RunModeMerge}
 					}
-					tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}}
-					orch := Orchestrator{cfg: cfg, connector: tracker}
+					orch := Orchestrator{cfg: cfg}
 					issues := []connector.Issue{other, head}
 					var got []string
 					switch path {
@@ -66,16 +65,10 @@ func TestMergeIdleHeadDoesNotReserveSlot(t *testing.T) {
 						for _, issue := range orch.mergeWorkerDispatchCandidates(&state, issues, now) {
 							got = append(got, issue.ID)
 						}
-					case "native":
-						orch.delegateNativeMergeQueueIssues(t.Context(), &state, issues, now)
-						got = tracker.enqueued
 					}
 					want := []string{other.ID}
 					if kind == "ready" {
 						want = []string{head.ID, other.ID}
-					}
-					if kind == "running" && path == "native" {
-						want = nil
 					}
 					if !reflect.DeepEqual(got, want) {
 						t.Fatalf("started = %v, want %v", got, want)

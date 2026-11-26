@@ -83,7 +83,9 @@ func RestoreCompletion(factory Factory, host Authority, ctx context.Context, req
 		if err := claim.Execution.Validate(ctx); err != nil {
 			return orchestrator.Claimed{}, err
 		}
-		return api.ClaimedIssue(issue, api.NativeTrackerLease(claim.Lease)), nil
+		claimed := api.ClaimedIssue(issue, api.NativeTrackerLease(claim.Lease))
+		claimed.LocalLeaseDeadline = claim.Deadline
+		return claimed, nil
 	}
 	if err := host.CheckProjectPolicy(ctx, request.ProjectID, request.Repository, request.Policy); err != nil {
 		return orchestrator.Claimed{}, completionRestoreError(err)
@@ -152,7 +154,9 @@ func RestoreCompletion(factory Factory, host Authority, ctx context.Context, req
 	if err := host.RegisterExecution(ctx, request, issue, executioncontract.ExecutionClaim{Source: source, Lease: renewed, Recovery: recovery, Deadline: claim.Deadline}, execution); err != nil {
 		return orchestrator.Claimed{}, err
 	}
-	return api.ClaimedIssue(issue, api.NativeTrackerLease(renewed)), nil
+	claimed := api.ClaimedIssue(issue, api.NativeTrackerLease(renewed))
+	claimed.LocalLeaseDeadline = claim.Deadline
+	return claimed, nil
 }
 
 func SameLease(current, original tracker.NativeLease) bool {

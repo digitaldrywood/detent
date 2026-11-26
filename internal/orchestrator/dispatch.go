@@ -607,9 +607,6 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if grant != nil {
 		defer func() { o.releaseGlobalDispatchSlot(grant.Slot) }()
 	}
-	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
-		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "waiting for native merge queue"}
-	}
 	if err := o.checkDispatchPolicy(ctx); err != nil {
 		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
 	}
@@ -1074,10 +1071,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
 	}
+	o.trackRunningHeartbeat(state, running, claim, now)
 	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
 	state.Running[issue.ID] = running
 	durationLimitTransferred = true
-	o.trackRunningHeartbeat(state, running, claim, now)
 	return dispatchIssueOutcome{dispatched: true}
 }
 

@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
+	"github.com/digitaldrywood/detent/internal/workspace/internal/model"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -32,31 +32,31 @@ func readHead(read func(...string) (string, error)) (string, string, error) {
 	return head, strings.TrimSpace(tree), nil
 }
 
-func VerifyCheckout(ctx context.Context, path string, receipt tracker.NativePhaseReceipt) error {
-	return verifyCheckout(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) }, receipt)
+func VerifyCheckout(ctx context.Context, path, head, tree string) error {
+	return verifyCheckout(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) }, head, tree)
 }
 
-func VerifyCleanCheckout(ctx context.Context, path, owner string, receipt tracker.NativePhaseReceipt) error {
+func VerifyCleanCheckout(ctx context.Context, path, owner, head, tree string) error {
 	return gitexec.WithPublicationCheckoutFromHead(ctx, path, owner, func(read func(...string) (string, error)) error {
-		if err := verifyCheckout(read, receipt); err != nil {
+		if err := verifyCheckout(read, head, tree); err != nil {
 			return err
 		}
 		return validationcmd.VerifyPublicationTreeFromHead(ctx, path, read)
 	})
 }
 
-func verifyCheckout(read func(...string) (string, error), receipt tracker.NativePhaseReceipt) error {
+func verifyCheckout(read func(...string) (string, error), expectedHead, expectedTree string) error {
 	head, tree, err := readHead(read)
 	if err != nil {
 		return err
 	}
-	if head != receipt.HeadSHA || tree != receipt.TreeSHA {
-		return errors.New("replacement worktree differs from the recorded phase source")
+	if head != expectedHead || tree != expectedTree {
+		return errors.New("replacement worktree differs from the verified phase source")
 	}
 	return nil
 }
 
-func Push(ctx context.Context, path, owner, branch, repository string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
+func Push(ctx context.Context, path, owner, branch, repository string, expectedRemoteHead *string, authorize, verifyDestination func(context.Context) error, moved func() error) (string, string, string, error) {
 	if branch == "" {
 		return "", "", "", errors.New("phase publication requires an item branch")
 	}
@@ -84,18 +84,25 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 		if err != nil {
 			return err
 		}
-		if previous == head {
-			return authorize(ctx)
+		expected := previous
+		if expectedRemoteHead != nil {
+			expected = *expectedRemoteHead
 		}
-		if previous != "" {
-			if _, err := read("merge-base", "--is-ancestor", previous, head); err != nil {
+		if previous != expected && previous != head {
+			return moved()
+		}
+		if expected != "" && expected != head {
+			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}
 				return errors.Join(moved(), err)
 			}
 		}
-		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+previous
+		if previous == head {
+			return authorize(ctx)
+		}
+		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
 		var pushErr error
 		for range 2 {
 			if err := authorize(ctx); err != nil {
@@ -112,7 +119,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 			if current == head {
 				return nil
 			}
-			if current != previous {
+			if current != expected {
 				return errors.Join(moved(), pushErr)
 			}
 		}
@@ -124,44 +131,47 @@ func Push(ctx context.Context, path, owner, branch, repository string, authorize
 	return branch, head, tree, nil
 }
 
-func PreserveHistory(ctx context.Context, path, identifier string, previous tracker.NativePhaseReceipt, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) error {
+func PreserveHistory(ctx context.Context, path, identifier string, previous model.PhaseSource, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
 	head, tree, err := Head(ctx, path)
 	if err != nil || head == previous.HeadSHA {
-		return err
+		return "", err
 	}
 	if err := fetch(ctx); err != nil {
-		return err
+		return "", err
 	}
-	if _, err := gitexec.Run(ctx, path, "merge-base", "--is-ancestor", previous.HeadSHA, head); err == nil {
-		return nil
+	if err := gitexec.VerifyPublicationAncestry(ctx, path, previous.HeadSHA, head); err == nil {
+		return "", nil
 	} else {
 		var commandErr *gitexec.CommandError
 		if !errors.As(err, &commandErr) || commandErr.ExitCode != 1 {
-			return err
+			return "", err
 		}
 	}
 	remote, exists, err := remoteHead(ctx, path, gitexec.DefaultRemote, previous.Branch)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !exists || remote != previous.HeadSHA {
-		return moved
+		return "", moved
 	}
 	if err := authorize(ctx); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := commit(ctx, "-c", "core.hooksPath="+os.DevNull, "merge", "--no-ff", "-s", "ours", "-m", "fix: retain phase history for "+identifier, previous.HeadSHA); err != nil {
-		return err
+		return "", err
 	}
 	_, observedTree, err := Head(ctx, path)
-	if err == nil && observedTree != tree {
-		return errors.New("preserving the item branch changed the completed source tree")
+	if err != nil {
+		return "", err
 	}
-	return err
+	if observedTree != tree {
+		return "", errors.New("preserving the item branch changed the completed source tree")
+	}
+	return remote, nil
 }
 
-func Fetch(ctx context.Context, branch string, receipt tracker.NativePhaseReceipt, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
-	if !gitexec.ValidHead(receipt.HeadSHA) || !gitexec.ValidHead(receipt.TreeSHA) || receipt.Branch == "" || receipt.Branch != branch {
+func Fetch(ctx context.Context, branch string, source model.PhaseSource, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
+	if !gitexec.ValidHead(source.HeadSHA) || !gitexec.ValidHead(source.TreeSHA) || source.Branch == "" || source.Branch != branch {
 		return errors.New("recorded phase does not name the item branch and immutable source")
 	}
 	repo := repository(ctx)
@@ -174,15 +184,15 @@ func Fetch(ctx context.Context, branch string, receipt tracker.NativePhaseReceip
 		return err
 	}
 	defer release()
-	if _, err := git(ctx, "fetch", "--no-tags", gitexec.DefaultRemote, receipt.HeadSHA); err != nil {
+	if _, err := git(ctx, "fetch", "--no-tags", gitexec.DefaultRemote, source.HeadSHA); err != nil {
 		return fmt.Errorf("fetch recorded phase commit: %w", err)
 	}
 	head, err := git(ctx, "rev-parse", "FETCH_HEAD^{commit}")
-	if err != nil || strings.TrimSpace(head) != receipt.HeadSHA {
+	if err != nil || strings.TrimSpace(head) != source.HeadSHA {
 		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
 	}
-	tree, err := git(ctx, "rev-parse", receipt.HeadSHA+"^{tree}")
-	if err != nil || strings.TrimSpace(tree) != receipt.TreeSHA {
+	tree, err := git(ctx, "rev-parse", source.HeadSHA+"^{tree}")
+	if err != nil || strings.TrimSpace(tree) != source.TreeSHA {
 		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
 	}
 	return nil

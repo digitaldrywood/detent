@@ -336,7 +336,8 @@ it("keeps Ask visible but unavailable when the viewer cannot write project chat"
 
 
 it("shares one findings read per project and detector tick between Diagnostics and the sidebar", async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ now: new Date(health.last_tick_at) });
+  vi.spyOn(Math, "random").mockReturnValue(0);
   const projects = ["prj_first", "prj_second", "prj_third", "prj_fourth"].map((id) => ({ id, name: `Project ${id}`, profile: "native", can_write: true }));
   mocks.bootstrap.projects = projects;
   const finding = { ...original, id: "shared_finding", severity: "attention", summary: "Shared project finding", subject: { kind: "project", id: "prj_first" }, resolved_at: null as string | null };
@@ -401,12 +402,18 @@ it("shares one findings read per project and detector tick between Diagnostics a
   expectReads(4);
   expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
   at = "2026-10-07T10:04:00Z";
-  await act(async () => emit(at));
+  await act(async () => {
+    emit(at);
+    await vi.advanceTimersByTimeAsync(500);
+  });
   expectReads(5);
   expect(screen.getByText(/Unable to refresh findings/)).toBeTruthy();
   unavailable = false;
   at = "2026-10-07T10:05:00Z";
-  await act(async () => emit(at));
+  await act(async () => {
+    emit(at);
+    await vi.advanceTimersByTimeAsync(1_000);
+  });
   expectReads(6);
   expect(screen.queryByText(/Unable to refresh findings/)).toBeNull();
   expect(screen.queryByText("Resolved")).toBeNull();

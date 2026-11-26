@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -820,7 +821,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 		{name: "unresolved tool at deadline", blocking: true, hang: true},
 		{name: "unresolved tool at parent deadline", blocking: true, hang: true, parent: true},
 		{name: "recovered refusal then stream stall", blocking: true, stall: true},
-		{name: "unresolved tool at stall deadline", blocking: true, stall: true, hang: true},
+		{name: "unresolved tool at its own deadline", blocking: true, stall: true, hang: true},
 		{name: "tool exceeds retirement bound", blocking: true, stall: true, hang: true, stubborn: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -829,7 +830,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
 					responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
 					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
-					serverRequestMessage(t, 99, "item/tool/call", `{"tool":"get_change","arguments":{}}`),
+					serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-1","tool":"get_change","arguments":{}}`),
 				}
 				if !test.hang && !test.stall {
 					status := "completed"
@@ -842,7 +843,11 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				if test.blocking {
 					transport = newBlockingAppServerTransport(messages)
 				}
-				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Minute))
+				turnTimeout := time.Minute
+				if test.hang && test.stall {
+					turnTimeout = time.Hour
+				}
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(turnTimeout))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -877,8 +882,14 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 					defer cancel()
 				}
 				_, err = server.RunTurn(callCtx, request, nil)
+				if test.hang && test.stall {
+					var deadline *sessiontimeout.Error
+					if !errors.As(err, &deadline) || deadline.Kind != sessiontimeout.CommandDeadline || deadline.Limit != dynamicToolTimeout {
+						t.Fatalf("tool deadline = %v, want command deadline after %s", err, dynamicToolTimeout)
+					}
+				}
 				if test.stubborn {
-					if !errors.Is(err, runner.ErrWorkerProcessReap) || !errors.Is(err, ErrStreamStalled) {
+					if !errors.Is(err, runner.ErrWorkerProcessReap) {
 						t.Fatalf("unretired tool error = %v", err)
 					}
 					return
@@ -893,11 +904,7 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				}
 				if test.hang {
 					failure := tool.NativeTerminalFailure().Public()
-					cause := error(context.DeadlineExceeded)
-					if test.stall {
-						cause = ErrStreamStalled
-					}
-					if !errors.Is(err, cause) || failure.ErrorClass != "tool_error" || failure.Attribution != "instance" {
+					if !errors.Is(err, context.DeadlineExceeded) || failure.ErrorClass != "tool_error" || failure.Attribution != "instance" {
 						t.Fatalf("unresolved failure = %+v, %v", failure, err)
 					}
 				} else if test.stall {
@@ -922,6 +929,196 @@ func TestAppServerPreservesToolFailure(t *testing.T) {
 				}
 				if err != nil && strings.Contains(err.Error(), "private") {
 					t.Fatalf("private refusal retained: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestAppServerDynamicToolIdleLifetime(t *testing.T) {
+	const idle = 5 * time.Minute
+	for _, test := range []struct {
+		name      string
+		completes bool
+		followup  bool
+	}{
+		{name: "provider completes after tool returns", completes: true},
+		{name: "idle timer resumes after tool returns"},
+		{name: "a new turn can reuse an earlier RPC ID", completes: true, followup: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				messages := []Message{
+					responseMessage(t, 1, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+					responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+					serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-1","tool":"detent_run_validation","arguments":{}}`),
+				}
+				activeTurnID := "turn-1"
+				if test.followup {
+					activeTurnID = "turn-2"
+					messages = append(messages,
+						notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+						responseMessage(t, finalTurnStartRequestID, `{"turn":{"id":"turn-2"}}`),
+						serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-2","tool":"detent_run_validation","arguments":{}}`))
+				}
+				if test.completes {
+					messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"`+activeTurnID+`","status":"completed"}}`))
+				}
+				transport := newBlockingAppServerTransport(messages)
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithTurnTimeout(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				started := time.Now()
+				toolDuration := idle + time.Minute
+				handled := 0
+				request := RunTurnRequest{
+					Model:        "example-model",
+					StallTimeout: idle,
+					ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
+						handled++
+						if test.followup && handled == 1 {
+							return DynamicToolResult{Success: true}, nil
+						}
+						timer := time.NewTimer(toolDuration)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return DynamicToolResult{}, ctx.Err()
+						case <-timer.C:
+							return DynamicToolResult{Content: "passed", Success: true}, nil
+						}
+					},
+				}
+				if test.followup {
+					request.FinalPrompt = func() string { return "Finish" }
+				}
+				result, err := server.RunTurn(t.Context(), request, nil)
+				if test.completes {
+					if err != nil || result.TurnID != activeTurnID || time.Since(started) != toolDuration {
+						t.Fatalf("turn = %q, %v after %s, want %q to complete after %s", result.TurnID, err, time.Since(started), activeTurnID, toolDuration)
+					}
+				} else if !errors.Is(err, ErrStreamStalled) || time.Since(started) != toolDuration+idle {
+					t.Fatalf("turn ended after %s with %v, want idle after %s", time.Since(started), err, toolDuration+idle)
+				}
+			})
+		})
+	}
+}
+
+func TestAppServerUnownedToolDoesNotAffectActiveTurn(t *testing.T) {
+	const idle = 5 * time.Minute
+	for _, test := range []struct {
+		name      string
+		threadID  string
+		turnID    string
+		followup  bool
+		crosses   bool
+		replay    bool
+		beforeAck bool
+		deadline  bool
+	}{
+		{name: "previous turn cannot stop idle", threadID: "thread-1", turnID: "turn-1", followup: true},
+		{name: "tool still running from the previous turn cannot stop idle", threadID: "thread-1", turnID: "turn-1", followup: true, crosses: true},
+		{name: "another thread cannot stop idle", threadID: "thread-2", turnID: "turn-1"},
+		{name: "replay cannot stop idle", threadID: "thread-1", turnID: "turn-1", replay: true},
+		{name: "replay of a call answered before startup cannot stop idle", threadID: "thread-1", turnID: "turn-1", replay: true, beforeAck: true},
+		{name: "previous turn deadline cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", followup: true, deadline: true},
+		{name: "replay deadline cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", replay: true, deadline: true},
+		{name: "replay of a call answered before startup cannot cancel the active turn", threadID: "thread-1", turnID: "turn-1", replay: true, beforeAck: true, deadline: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				messages := []Message{
+					responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
+					responseMessage(t, threadStartRequestID, `{"thread":{"id":"thread-1"}}`),
+				}
+				ack := responseMessage(t, turnStartRequestID, `{"turn":{"id":"turn-1"}}`)
+				if !test.beforeAck {
+					messages = append(messages, ack)
+				}
+				activeTurnID := "turn-1"
+				call := serverRequestMessage(t, 99, "item/tool/call", `{"threadId":"`+test.threadID+`","turnId":"`+test.turnID+`","tool":"detent_run_validation","arguments":{}}`)
+				if test.crosses {
+					messages = append(messages, call)
+				}
+				if test.followup {
+					activeTurnID = "turn-2"
+					messages = append(messages,
+						notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+						responseMessage(t, finalTurnStartRequestID, `{"turn":{"id":"turn-2"}}`))
+				}
+				if test.replay {
+					call.ID = json.RawMessage(`"review-call"`)
+					messages = append(messages, call, notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"answer","delta":"ready"}`))
+					call.ID = json.RawMessage(`"review-\u0063all"`)
+					if test.beforeAck {
+						messages = append(messages, ack)
+					}
+				}
+				if !test.crosses {
+					messages = append(messages, call)
+				}
+				if test.deadline {
+					messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"`+activeTurnID+`","status":"completed"}}`))
+				}
+				transport := newBlockingAppServerTransport(messages)
+				transport.allowPendingTools = test.crosses
+				server, err := NewAppServer(staticTransportFactory{transport: transport}, WithTurnTimeout(time.Hour))
+				if err != nil {
+					t.Fatal(err)
+				}
+				handled := 0
+				toolErr := make(chan error, 1)
+				request := RunTurnRequest{Model: "example-model", StallTimeout: idle, ToolHandler: func(ctx context.Context, _ DynamicToolCall) (DynamicToolResult, error) {
+					handled++
+					if test.replay && handled == 1 {
+						return DynamicToolResult{Success: true}, nil
+					}
+					complete := sessiontimeout.ObserveOwnedCommand(ctx, "example-child-process")
+					defer complete()
+					<-ctx.Done()
+					toolErr <- ctx.Err()
+					return DynamicToolResult{}, ctx.Err()
+				}}
+				if test.followup {
+					request.FinalPrompt = func() string { return "Finish" }
+				}
+				if test.deadline {
+					request.StallTimeout = 0
+				}
+				started := time.Now()
+				result, err := server.RunTurn(t.Context(), request, func(update Update) error {
+					if test.replay && update.Type == UpdateAgentMessageDelta {
+						synctest.Wait()
+						if test.beforeAck && !slices.ContainsFunc(transport.sentMessages(), func(msg Message) bool {
+							return msg.Method == "" && string(msg.ID) == `"review-call"`
+						}) {
+							return errors.New("tool response was not sent before turn/start acknowledgement")
+						}
+						if !test.deadline && !test.beforeAck {
+							<-time.After(idle / 2)
+						}
+					}
+					if test.crosses && update.Type == UpdateTurnCompleted {
+						synctest.Wait()
+					}
+					return nil
+				})
+				elapsed := time.Since(started)
+				if test.deadline {
+					if err != nil || result.TurnID != activeTurnID || elapsed != dynamicToolTimeout {
+						t.Fatalf("turn = %q, %v after %s, want %q to complete after tool deadline", result.TurnID, err, elapsed, activeTurnID)
+					}
+					if !errors.Is(<-toolErr, context.DeadlineExceeded) {
+						t.Fatal("tool did not receive its own deadline")
+					}
+				} else {
+					var toolFailure *ToolError
+					if !errors.Is(err, ErrStreamStalled) || errors.As(err, &toolFailure) || elapsed != idle {
+						t.Fatalf("turn ended with %v after %s, want idle after %s", err, elapsed, idle)
+					}
 				}
 			})
 		})

@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"io"
 	"log/slog"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
@@ -127,6 +128,7 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 	}
 	needsResolution := target.MergeResolution && !target.GitHubPullRequest
 	resolutionOptions := options
+	resolutionOptions.PreserveSourceHistory = req.phaseContinuation != nil && info.PublicationBranch != ""
 	attemptedLanding := !target.GitHubPullRequest && !needsResolution
 	if attemptedLanding {
 		land()
@@ -336,8 +338,10 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 							return RunResult{}, err
 						}
 						if eligible {
-							err := r.validateNativeChange(ctx, req)
-							completion := RunResult{FinalState: FinalStateCompleted, FinalMessage: message}
+							reviewReq := req
+							reviewReq.retainedReview = &retainedReviewWorkspace{backend: backend, info: info, issue: issue, message: message}
+							err := r.validateNativeChange(ctx, reviewReq)
+							completion := RunResult{FinalState: FinalStateCompleted, FinalMessage: message, sourceReviewed: true}
 							if changes, ok := req.Execution.(ChangeExecution); ok {
 								completion.NativeChange = changes.NativeChange()
 							}
@@ -494,7 +498,7 @@ func (r *Runner) nativeLandingGitHubClient(ctx context.Context, req RunRequest, 
 func (r *Runner) nativeReviewThreadTools(req RunRequest) ([]AgentTool, AgentToolHandler) {
 	landing, ok := req.Execution.(LandingExecution)
 	workflow, _, _, _ := r.runtimeSnapshot()
-	if workflow.Config.Tracker.Kind != config.TrackerHubNative || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || runworkspace.RunRole(req.Mode, req.Issue) != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
+	if workflow.Config.Tracker.Kind != config.TrackerHubNative || runworkspace.NormalizeRunMode(req.Mode) != RunModeImplement || !ok || req.Execution == nil || req.executionRole() != RoleRework && !phaserecovery.LandingNeedsRework(req.Execution.Recovery()) {
 		return nil, nil
 	}
 	tools := []AgentTool{

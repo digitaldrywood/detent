@@ -145,6 +145,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		state.Running[event.IssueID] = running
 	}
 	_, nativeCompletion := o.connector.(connector.WorkflowStateReader)
+	_, operatorStopping := o.pendingStops[event.IssueID]
+	if nativeCompletion && !operatorStopping && runpkg.UnretiredProviderSession(event.Err) {
+		o.rejectUnavailableCompletion(ctx, state, event, running, event.Err, false)
+		return
+	}
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
 		if err != nil {
@@ -260,10 +265,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if o.handleWorkerGitHubTokenResolutionCompletion(ctx, state, event, running) {
 		return
 	}
-	if mergeWorkerIssue(running.Issue) && nativeMergeQueueOwnsIssue(state, running.Issue, o.cfg) {
-		o.completeNativeMergeQueueWorker(ctx, state, event, running, running.Issue)
-		return
-	}
 	o.refreshEfficiencyReceipt(ctx, running.Issue, event.CompletedAt)
 	if o.handleModelPermitDeferred(ctx, state, event, running) {
 		return
@@ -339,9 +340,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	if o.handleTrackerUnavailableCompletion(ctx, state, event, running) {
-		return
-	}
-	if o.handleMergeRevocationCompletion(ctx, state, event, running) {
 		return
 	}
 	if errors.Is(event.Err, runpkg.ErrMergeWorkerStartupTimeout) && o.handlePreTurnFailure(ctx, state, event, running) {
@@ -942,10 +940,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if state != nil && state.Draining {
 		return false
 	}
-	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
-		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
-		return true
-	}
 	if !mergeWorkerTurnSucceeded(event) {
 		return false
 	}
@@ -969,10 +963,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
 		return true
 	}
-	if mergeWorkerIssue(running.Issue) && mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
-		o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
-		return true
-	}
 	if event.Result.Output == runpkg.RunOutputMergeFallbackResolved &&
 		event.Result.MergePrecheck != nil && event.Result.MergePrecheck.HeadSHA != "" &&
 		(issue.PullRequest == nil || issue.PullRequest.HeadSHA != event.Result.MergePrecheck.HeadSHA) {
@@ -991,16 +981,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.waitForMergeWorkerPullRequestHydration(ctx, state, event, running, issue)
 			return true
 		}
-	}
-	if revocation, revoked := mergeRevocationForIssue(
-		issue,
-		o.cfg,
-		true,
-		autoPromoteOperationalCompletionAccepted(state, issue),
-	); revoked &&
-		mergeRevocationRequiresImmediateStop(revocation, event.Result) {
-		o.finishMergeRevocation(ctx, state, event, running, revocation)
-		return true
 	}
 	if event.Result.Output == mergeControlCheckedHeadOutput && !sameMergeControlRevision(event.Request.Issue, issue) {
 		running.Issue = issue
@@ -1130,13 +1110,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
-		if errors.Is(err, connector.ErrPullRequestMergeQueueRequired) {
-			// The provider has established queue ownership even if the policy
-			// refresh fails. Never charge this routing correction as a retry.
-			state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)] = nativeMergeQueueRepository{Available: true}
-			o.completeNativeMergeQueueWorker(ctx, state, event, running, issue)
-			return true
-		}
 		if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
 			o.refreshMergeWorkerBase(ctx, state, event, running, issue, "merge_api_rejected_out_of_date_base")
 			return true
@@ -2323,19 +2296,6 @@ func (o *Orchestrator) releaseRunningSlots(state *State) {
 		running.globalSlot = scheduler.Slot{}
 		state.Running[issueID] = running
 	}
-}
-
-func (o *Orchestrator) completeNativeMergeQueueWorker(ctx context.Context, state *State, event runpkg.Completion, running Running, issue connector.Issue) {
-	running.Issue = issue
-	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "waiting", "waiting for native merge queue")
-	o.releaseTerminalAttemptClaim(ctx, state, issue, event.CompletedAt)
-	delete(state.Running, issue.ID)
-	delete(state.Retry, issue.ID)
-	if reservation := state.mergeReservations[issue.ID]; reservation.IssueID == issue.ID {
-		delete(state.mergeReservations, issue.ID)
-	}
-	queued := o.delegateNativeMergeQueueIssues(ctx, state, mergeIssueSlices([]connector.Issue{issue}, state.Pipeline), event.CompletedAt)
-	state.Pipeline = overlayNativeMergeQueueIssues(state.Pipeline, queued)
 }
 
 // recordCompletionUsage preserves final usage for ordinary and instance-blocked completions.

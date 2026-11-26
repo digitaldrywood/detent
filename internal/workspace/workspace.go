@@ -141,6 +141,7 @@ type RecoveryState struct {
 	UntrackedPaths                 []string
 	CommitsNotInPullRequest        []string
 	PullRequestComparisonAvailable bool
+	RebaseInProgress               bool
 }
 
 type ArtifactEvidence struct {
@@ -256,8 +257,9 @@ type Issue struct {
 	RetainedLanding         bool
 	finalizationBranch      string
 	PhaseSource             *tracker.NativePhaseReceipt
-	PhaseChangeHeadSHA      string
 	VerifyPhaseBranch       bool
+	RetainPhaseCheckout     bool
+	PublishedChangeHeadSHA  string
 	PinStartHead            bool
 	Landing                 *LandOptions
 	NoChangeNeeded          bool
@@ -274,6 +276,7 @@ type Issue struct {
 	ProgressBaseRef         string
 	PullRequestHeadSHA      string
 	PublicationRepository   string
+	ExpectedPhaseRemoteHead string
 	PullRequestRepository   string
 	PullRequestNumber       int
 	PullRequestBranch       string
@@ -611,6 +614,104 @@ func (l *LocalGit) acquireSourceOperation(ctx context.Context) (func(), error) {
 	return sourceOperationLockFor(key).acquire(ctx)
 }
 
+type worktreeOperationLock struct {
+	permit chan struct{}
+	refs   int
+}
+
+var worktreeOperationLocks = struct {
+	sync.Mutex
+	byPath map[string]*worktreeOperationLock
+}{byPath: map[string]*worktreeOperationLock{}}
+
+type worktreeOperationHeldKey string
+
+func withHeldWorktreeOperation(ctx context.Context, path string) context.Context {
+	return context.WithValue(ctx, worktreeOperationHeldKey(worktreeOperationKey(path)), struct{}{})
+}
+
+func worktreeOperationHeld(ctx context.Context, path string) bool {
+	return ctx != nil && ctx.Value(worktreeOperationHeldKey(worktreeOperationKey(path))) != nil
+}
+
+func worktreeOperationKey(path string) string {
+	cleaned := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
+		return filepath.Clean(resolved)
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(cleaned)); err == nil {
+		return filepath.Join(filepath.Clean(parent), filepath.Base(cleaned))
+	}
+	return cleaned
+}
+
+func acquireWorktreeOperation(ctx context.Context, path string) (func(), error) {
+	key := worktreeOperationKey(path)
+	worktreeOperationLocks.Lock()
+	lock, ok := worktreeOperationLocks.byPath[key]
+	if !ok {
+		lock = &worktreeOperationLock{permit: make(chan struct{}, 1)}
+		lock.permit <- struct{}{}
+		worktreeOperationLocks.byPath[key] = lock
+	}
+	lock.refs++
+	worktreeOperationLocks.Unlock()
+
+	releaseRef := func() {
+		worktreeOperationLocks.Lock()
+		lock.refs--
+		if lock.refs == 0 && worktreeOperationLocks.byPath[key] == lock {
+			delete(worktreeOperationLocks.byPath, key)
+		}
+		worktreeOperationLocks.Unlock()
+	}
+
+	select {
+	case <-ctx.Done():
+		releaseRef()
+		return nil, ctx.Err()
+	case <-lock.permit:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				lock.permit <- struct{}{}
+				releaseRef()
+			})
+		}, nil
+	}
+}
+
+func tryAcquireWorktreeOperation(path string) (func(), bool) {
+	key := worktreeOperationKey(path)
+	worktreeOperationLocks.Lock()
+	lock, ok := worktreeOperationLocks.byPath[key]
+	if !ok {
+		lock = &worktreeOperationLock{permit: make(chan struct{}, 1)}
+		lock.permit <- struct{}{}
+		worktreeOperationLocks.byPath[key] = lock
+	}
+	select {
+	case <-lock.permit:
+		lock.refs++
+		worktreeOperationLocks.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				lock.permit <- struct{}{}
+				worktreeOperationLocks.Lock()
+				lock.refs--
+				if lock.refs == 0 && worktreeOperationLocks.byPath[key] == lock {
+					delete(worktreeOperationLocks.byPath, key)
+				}
+				worktreeOperationLocks.Unlock()
+			})
+		}, true
+	default:
+		worktreeOperationLocks.Unlock()
+		return nil, false
+	}
+}
+
 func SafeKey(identifier string) string {
 	key := unsafeKeyPattern.ReplaceAllString(strings.TrimSpace(identifier), "_")
 	if key == "" || key == "." || key == ".." || key == ".detent" {
@@ -660,6 +761,18 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return Info{}, err
+	}
+	worktreeReleased := false
+	releaseWorktreeNow := func() {
+		if !worktreeReleased {
+			worktreeReleased = true
+			releaseWorktree()
+		}
+	}
+	defer releaseWorktreeNow()
 	if retry, err := l.uses.CheckWorkspaceSetup(l.root, info.Path); err != nil {
 		if retry {
 			err = l.preserveFailedWorkspace(ctx, info.Path, err)
@@ -684,10 +797,30 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return info, nil
 	}
 	if issue.VerifyPhaseBranch {
-		if err := l.verifyItemPhaseBranch(ctx, info, issue); err != nil {
+		if issue.RetainPhaseCheckout {
+			_, err := l.Existing(issue)
+			switch {
+			case err == nil:
+				if err := l.verifyRetainedItemPhaseCheckout(ctx, info, issue); err != nil {
+					return Info{}, err
+				}
+				if receipt := issue.PhaseSource; receipt != nil {
+					if !validItemPhaseReceipt(info, receipt) {
+						return Info{}, ErrItemPhaseSource
+					}
+					info.PhaseRemoteHead = &receipt.HeadSHA
+				}
+				return info, l.recordCleanupOwnership(ctx, info, issue, true)
+			case !errors.Is(err, ErrMissingWorkspace):
+				return Info{}, err
+			}
+		}
+		if err := l.recoverItemPhaseBranch(ctx, &info, issue); err != nil {
 			return Info{}, err
 		}
+		issue.FreshCheckout = true
 	}
+
 	localHead, err := l.verifiedLocalCheckpointHead(ctx, info, issue)
 	if err != nil {
 		return Info{}, err
@@ -714,13 +847,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if issue.AttemptWorkspace.Key() != "" && !ownsCheckpointRef(issue, checkpoint.Ref) {
 			return Info{}, fmt.Errorf("%w: checkpoint belongs to another attempt", ErrCheckpointUnsafe)
 		}
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return Info{}, err
-		}
-		err = l.fetchCheckpointRef(ctx, &checkpoint)
-		release()
-		if err != nil {
+		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
 			return Info{}, err
 		}
 		retainProgress := issue.Checkpoint == nil && checkpoint.Transaction == nil
@@ -764,6 +891,7 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			if err != nil {
 				return Info{}, err
 			}
+			releaseWorktreeNow()
 			created, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 			if err != nil {
 				return Info{}, err
@@ -800,12 +928,13 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		}
 		if receipt := issue.PhaseSource; receipt != nil {
 			if !issue.VerifyPhaseBranch {
-				if err := l.fetchItemPhase(ctx, info, issue, *receipt); err != nil {
+				if err := l.fetchItemPhase(ctx, info, issue, PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}); err != nil {
 					return Info{}, err
 				}
 			}
 			head = receipt.HeadSHA
 		}
+		head = cmp.Or(info.RecoveredPhase.HeadSHA, head)
 		created, err = l.createWorktree(ctx, &info, issue, head)
 	}
 	preservationAttempted := false
@@ -825,8 +954,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		return Info{}, err
 	}
 	info.Created = created
-	if receipt := issue.PhaseSource; receipt != nil {
-		if err := phasegit.VerifyCheckout(ctx, info.Path, *receipt); err != nil {
+	if source := itemPhaseCheckoutSource(info, issue.PhaseSource); source.HeadSHA != "" {
+		if err := phasegit.VerifyCheckout(ctx, info.Path, source.HeadSHA, source.TreeSHA); err != nil {
 			return Info{}, err
 		}
 	}
@@ -844,7 +973,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		if err := restoreCheckpointTree(ctx, info.Path, issue.Checkpoint); err != nil {
 			return Info{}, err
 		}
+		releaseWorktreeNow()
 	} else {
+		releaseWorktreeNow()
 		restored, err := l.prepareChangeSourceWorktree(ctx, info, issue)
 		if err != nil {
 			return Info{}, err
@@ -1468,16 +1599,26 @@ func (l *LocalGit) releaseBranchHolders(ctx context.Context, branch string, targ
 		}
 	}
 	for _, h := range holders {
+		if !h.rebasing && !h.attached {
+			continue
+		}
+		releaseHolder, ok := tryAcquireWorktreeOperation(h.path)
+		if !ok {
+			return fmt.Errorf("%w: branch %s is actively in use at %s", ErrMergeResolutionInvalid, branch, h.path)
+		}
 		if h.rebasing {
 			if _, err := runGitAt(ctx, h.path, "rebase", "--quit"); err != nil {
+				releaseHolder()
 				return fmt.Errorf("release %s from interrupted rebase at %s: %w", branch, h.path, withCommandOutput(err))
 			}
 		}
 		if h.attached {
 			if _, err := runGitAt(ctx, h.path, "checkout", "--detach", "--quiet"); err != nil {
+				releaseHolder()
 				return fmt.Errorf("release %s from worktree %s: %w", branch, h.path, withCommandOutput(err))
 			}
 		}
+		releaseHolder()
 	}
 	return nil
 }
@@ -2851,3 +2992,4 @@ func validateWorkspacePath(root string, path string) (string, error) {
 }
 
 type Info = model.Info
+type PhaseSource = model.PhaseSource

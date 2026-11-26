@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -107,6 +107,198 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			if test.check != nil && !test.check(got) {
 				t.Fatalf("lost structured error: %T %v", got, got)
 			}
+		})
+	}
+}
+
+type sshTestWriter func([]byte) (int, error)
+
+func (write sshTestWriter) Write(data []byte) (int, error) { return write(data) }
+
+type sshDeadlineObservedContext struct {
+	context.Context
+	observed chan struct{}
+}
+
+func (ctx sshDeadlineObservedContext) Deadline() (time.Time, bool) {
+	select {
+	case ctx.observed <- struct{}{}:
+	default:
+	}
+	return ctx.Context.Deadline()
+}
+
+func TestSSHCheckpointLeavesWriterQueueOnCancellation(t *testing.T) {
+	t.Parallel()
+	a, b := net.Pipe()
+	defer a.Close()
+	defer b.Close()
+	writing, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
+	var writes atomic.Int32
+	writer := sshTestWriter(func(data []byte) (int, error) {
+		if writes.Add(1) == 1 {
+			close(writing)
+			<-release
+		}
+		return a.Write(data)
+	})
+	central := NewSSHPeer(t.Context(), a, writer, nil)
+	defer central.Close()
+	worker := NewSSHPeer(t.Context(), b, b, func(context.Context, string, []json.RawMessage) (any, error) {
+		return nil, nil
+	})
+	defer worker.Close()
+
+	first := make(chan error, 1)
+	go func() { first <- central.Call(t.Context(), "hold_writer", nil) }()
+	<-writing
+
+	budget, stop := context.WithTimeout(t.Context(), time.Minute)
+	defer stop()
+	ctx, cancel := context.WithCancelCause(budget)
+	defer cancel(nil)
+	queued := make(chan error, 1)
+	observed := make(chan struct{}, 1)
+	go func() {
+		queued <- (&sshExecution{peer: central}).Checkpoint(sshDeadlineObservedContext{ctx, observed}, tracker.NativeCheckpoint{})
+	}()
+	<-observed
+	want := errors.New("checkpoint cancelled while queued")
+	cancel(want)
+
+	select {
+	case err := <-queued:
+		if !errors.Is(err, want) {
+			t.Errorf("queued checkpoint error = %v, want %v", err, want)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("checkpoint remained queued after its context ended")
+		unblock()
+		<-queued
+	}
+	unblock()
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if got := writes.Load(); got != 1 {
+		t.Fatalf("SSH writer received %d frames, want the original frame only", got)
+	}
+}
+
+func TestSSHCheckpointReceiverRejectsExpiredRequest(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{"execution.Validate", "execution.Checkpoint"} {
+		t.Run(method, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, b := net.Pipe()
+				defer a.Close()
+				defer b.Close()
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+				defer cancel()
+				writer := sshTestWriter(func(data []byte) (int, error) {
+					<-ctx.Done()
+					return a.Write(data)
+				})
+				received := make(chan string, 1)
+				worker := NewSSHPeer(t.Context(), a, writer, nil)
+				defer worker.Close()
+				owner := NewSSHPeer(t.Context(), b, b, func(_ context.Context, method string, _ []json.RawMessage) (any, error) {
+					received <- method
+					return nil, nil
+				})
+				defer owner.Close()
+
+				if err := worker.Call(ctx, method, nil); !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("expired request error = %v, want deadline exceeded", err)
+				}
+				synctest.Wait()
+				select {
+				case method := <-received:
+					t.Errorf("receiver handled expired %q", method)
+				default:
+				}
+			})
+		})
+	}
+}
+
+func TestSSHCheckpointDeadlineReachesSource(t *testing.T) {
+	t.Parallel()
+	for _, sourceMethod := range []string{"source.diff", "source.change"} {
+		t.Run(sourceMethod, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				a, b := net.Pipe()
+				defer a.Close()
+				defer b.Close()
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				wantDeadline, _ := ctx.Deadline()
+				sourceDone := make(chan error, 1)
+				delayed := func(conn net.Conn) sshTestWriter {
+					return func(data []byte) (int, error) {
+						var frame sshMessage
+						if err := json.Unmarshal(data, &frame); err != nil {
+							return 0, err
+						}
+						if frame.Method != "" {
+							<-time.After(time.Second)
+						}
+						return conn.Write(data)
+					}
+				}
+				var owner *SSHPeer
+				owner = NewSSHPeer(t.Context(), a, delayed(a), func(ctx context.Context, method string, _ []json.RawMessage) (any, error) {
+					if got, _ := ctx.Deadline(); !got.Equal(wantDeadline) {
+						return nil, fmt.Errorf("%s deadline = %v, want %v", method, got, wantDeadline)
+					}
+					switch method {
+					case "execution.Validate":
+						return nil, nil
+					case "execution.Checkpoint":
+						return nil, owner.Call(ctx, sourceMethod, nil)
+					default:
+						return nil, fmt.Errorf("unexpected owner method %q", method)
+					}
+				})
+				defer owner.Close()
+				child := NewSSHPeer(t.Context(), b, delayed(b), func(ctx context.Context, method string, _ []json.RawMessage) (any, error) {
+					if method != sourceMethod {
+						return nil, fmt.Errorf("unexpected source method %q", method)
+					}
+					if got, _ := ctx.Deadline(); !got.Equal(wantDeadline) {
+						return nil, fmt.Errorf("checkpoint source deadline = %v, want %v", got, wantDeadline)
+					}
+					<-ctx.Done()
+					sourceDone <- context.Cause(ctx)
+					return nil, context.Cause(ctx)
+				})
+				defer child.Close()
+
+				execution := &sshExecution{peer: child}
+				if err := execution.Validate(ctx); err != nil {
+					t.Errorf("checkpoint validation: %v", err)
+				}
+				if err := recordExecutionCheckpoint(ctx, execution, tracker.NativeCheckpoint{}); !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("checkpoint error = %v, want deadline exceeded", err)
+				} else {
+					wireErr := NewSSHRunResponse(RunResult{}, err).Err()
+					var cause *CancellationCause
+					if !errors.Is(wireErr, context.DeadlineExceeded) || !errors.As(wireErr, &cause) || cause.Source != "runner.checkpoint" {
+						t.Fatalf("worker response lost checkpoint cancellation: %v", wireErr)
+					}
+				}
+				synctest.Wait()
+				select {
+				case err := <-sourceDone:
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("checkpoint source error = %v, want deadline exceeded", err)
+					}
+				default:
+					t.Fatal("checkpoint source outlived its deadline")
+				}
+			})
 		})
 	}
 }

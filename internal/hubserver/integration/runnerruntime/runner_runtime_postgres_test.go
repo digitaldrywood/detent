@@ -790,6 +790,79 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 				if archived.Profile == nil || archived.Profile.Profile.SessionID != id {
 					t.Fatalf("activity profile was not retained in Hub history: %+v", archived)
 				}
+				scratchStart := store.SessionStart{
+					IssueID:   start.IssueID,
+					StartedAt: start.StartedAt,
+					AgentRole: store.WorkerProcessRoleHostValidation,
+					Worker: &store.WorkerProcessRegistration{
+						CleanupRoot: "/tmp/example-root",
+						CleanupPath: "/tmp/example-root/preflight",
+					},
+				}
+				scratchID, err := restarted.StartSession(restartedCtx, scratchStart)
+				if err != nil || scratchID < 1 {
+					t.Fatalf("scratch-only process start: id=%d error=%v", scratchID, err)
+				}
+				if err := restarted.FinishSession(restartedCtx, scratchID, store.SessionFinish{
+					CompletedAt: start.StartedAt.Add(time.Second),
+					FinalState:  "completed",
+					Reap: &store.WorkerProcessReap{
+						ReapedAt: start.StartedAt.Add(time.Second),
+						Outcome:  "already_exited",
+						Reason:   store.WorkerProcessRoleHostValidation,
+					},
+				}); err != nil {
+					t.Fatalf("scratch-only process finish: %v", err)
+				}
+				unreapedScratchID, err := restarted.StartSession(restartedCtx, scratchStart)
+				if err != nil || unreapedScratchID < 1 {
+					t.Fatalf("unreaped scratch-only process start: id=%d error=%v", unreapedScratchID, err)
+				}
+				activeScratch, err := restarted.ListActiveWorkerProcesses(restartedCtx)
+				if err != nil {
+					t.Fatalf("list active scratch processes: %v", err)
+				}
+				foundUnreaped, foundReaped := false, false
+				for _, proc := range activeScratch {
+					if proc.SessionID == unreapedScratchID {
+						foundUnreaped = true
+					}
+					if proc.SessionID == scratchID {
+						foundReaped = true
+					}
+				}
+				if !foundUnreaped || foundReaped {
+					t.Fatalf("active scratch processes after failed cleanup = %+v, want unreaped=%d present and reaped=%d absent", activeScratch, unreapedScratchID, scratchID)
+				}
+				if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+					records, err := r.(runnersession.Reader).RunnerSessionProcesses(t.Context(), "prj_runner", string(f.Bindings[index].MachineID), f.Data[index].AttemptID, 50)
+					if err != nil {
+						return err
+					}
+					found := false
+					for _, rec := range records {
+						if rec.ID == unreapedScratchID {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("RunnerSessionProcesses missed unreaped scratch session %d: %+v", unreapedScratchID, records)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if err := restarted.FinishSession(restartedCtx, unreapedScratchID, store.SessionFinish{
+					CompletedAt: start.StartedAt.Add(2 * time.Second),
+					FinalState:  "completed",
+					Reap: &store.WorkerProcessReap{
+						ReapedAt: start.StartedAt.Add(2 * time.Second),
+						Outcome:  "already_exited",
+						Reason:   store.WorkerProcessRoleHostValidation,
+					},
+				}); err != nil {
+					t.Fatalf("unreaped scratch-only process finish: %v", err)
+				}
 				if err := f.Hub.Config.TenantRepository.WriteTenant(t.Context(), f.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 					_, err := w.Release(t.Context(), leasestore.Fence{LeaseID: string(f.Leases[index].ID), FencingToken: int64(f.Leases[index].FencingToken)}, "released")
 					return err

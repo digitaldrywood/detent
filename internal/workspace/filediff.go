@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 // Per-file diffs. GitDiffFrom answers one patch blob,
@@ -36,8 +38,9 @@ type FileDiffs struct {
 	// requested base ref and HEAD when there is one, else HEAD itself.
 	BaseSHA string
 	// HeadSHA is the worktree's HEAD at the time of the diff.
-	HeadSHA string
-	Files   []FileDiff
+	HeadSHA       string
+	WorkspacePath string
+	Files         []FileDiff
 	// Truncated reports that the patch output exceeded maxBytes. The file
 	// list and its counts are still complete; the patches are absent.
 	Truncated bool
@@ -88,11 +91,42 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	}
 	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
 	result := FileDiffs{BaseSHA: gitResolve(ctx, workspacePath, diffBase), HeadSHA: gitResolve(ctx, workspacePath, "HEAD")}
+	return gitFileDiffs(ctx, workspacePath, env, result, maxBytes, diffBase)
+}
 
+func GitCommitFileDiffs(ctx context.Context, workspacePath, baseRef, head string, maxBytes int) (FileDiffs, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return FileDiffs{}, errors.New("workspace path is required")
+	}
+	if maxBytes < 0 {
+		return FileDiffs{}, errors.New("max bytes must be greater than or equal to 0")
+	}
+	if !gitexec.ValidHead(head) {
+		return FileDiffs{}, errors.New("finalized diff requires an immutable commit")
+	}
+	observed, err := runGitAt(ctx, workspacePath, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return FileDiffs{}, fmt.Errorf("read finalized worktree head: %w", err)
+	}
+	if strings.TrimSpace(observed) != head {
+		return FileDiffs{}, errors.New("worktree HEAD differs from the finalized commit")
+	}
+	base := gitResolve(ctx, workspacePath, gitDiffBaseAt(ctx, workspacePath, baseRef, head))
+	if base == "" {
+		return FileDiffs{}, errors.New("finalized diff base is unavailable")
+	}
+	return gitFileDiffs(ctx, workspacePath, nil, FileDiffs{BaseSHA: base, HeadSHA: head}, maxBytes, base, head)
+}
+
+func gitFileDiffs(ctx context.Context, workspacePath string, env []string, result FileDiffs, maxBytes int, revisions ...string) (FileDiffs, error) {
 	// --find-renames is passed explicitly on every command below so the file
 	// list, the counts and the patch agree even where diff.renames is off in
 	// the repository's configuration.
-	numstat, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", "--numstat", "-z", diffBase)...)
+	diffArgs := func(flags ...string) []string {
+		args := append([]string{"diff", "--no-ext-diff", "--find-renames"}, flags...)
+		return gitDiagnosticArgs(append(args, revisions...)...)
+	}
+	numstat, err := runGitAtWithEnv(ctx, workspacePath, env, diffArgs("--numstat", "-z")...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff numstat: %w", err)
 	}
@@ -100,7 +134,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 	if err != nil {
 		return FileDiffs{}, err
 	}
-	statuses, err := runGitAtWithEnv(ctx, workspacePath, env, gitDiagnosticArgs("diff", "--no-ext-diff", "--find-renames", "--name-status", "-z", diffBase)...)
+	statuses, err := runGitAtWithEnv(ctx, workspacePath, env, diffArgs("--name-status", "-z")...)
 	if err != nil {
 		return FileDiffs{}, fmt.Errorf("git diff name-status: %w", err)
 	}
@@ -110,8 +144,7 @@ func GitFileDiffs(ctx context.Context, workspacePath string, baseRef string, max
 		result.Truncated = maxBytes == 0 && len(files) != 0
 		return result, nil
 	}
-	patch, truncated, err := gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes,
-		gitDiagnosticArgs("diff", "--no-ext-diff", "--no-textconv", "--find-renames", diffBase)...)
+	patch, truncated, err := gitDiffArgsWithinLimit(ctx, workspacePath, env, maxBytes, diffArgs("--no-textconv")...)
 	if err != nil {
 		return FileDiffs{}, err
 	}

@@ -3,11 +3,14 @@ package runner
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,6 +29,110 @@ func (*planLimitsExecution) StartPhased(context.Context, tracker.NativeExecution
 func (e *planLimitsExecution) SetPhaseProvider(_ context.Context, requirement providercapacity.Requirement) error {
 	e.requirement = requirement
 	return nil
+}
+
+type publishedChangePlanExecution struct {
+	phaseCompletionExecution
+	step tracker.NativeStepReceipt
+}
+
+func (e *publishedChangePlanExecution) StartPhased(ctx context.Context, identity tracker.NativeExecutionIdentity) error {
+	return e.Start(ctx, identity)
+}
+
+func (*publishedChangePlanExecution) SetPhaseProvider(context.Context, providercapacity.Requirement) error {
+	return errors.New("provider requested before human plan approval")
+}
+
+func (e *publishedChangePlanExecution) RecordStep(_ context.Context, step tracker.NativeStepReceipt) error {
+	e.step = step
+	return nil
+}
+
+type publishedChangePlanWorkspace struct {
+	*fakeWorkspaceBackend
+	itemPhaseWorkspace
+	head, tree string
+}
+
+func (w *publishedChangePlanWorkspace) ItemPhaseHead(context.Context, workspace.Info, workspace.Issue) (string, string, error) {
+	return w.head, w.tree, nil
+}
+
+func (w *publishedChangePlanWorkspace) PushItemPhase(ctx context.Context, info workspace.Info, _ workspace.Issue, authorize func(context.Context) error) (string, string, string, error) {
+	return info.PublishBranch(), w.head, w.tree, authorize(ctx)
+}
+
+func TestPublishedChangeRecoveryRequiresHumanPlanApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		plan                 *tracker.NativePlanState
+		uncertainPublication bool
+	}{
+		{name: "unapproved draft", plan: &tracker.NativePlanState{Draft: "Implement the requested change."}},
+		{name: "pending publication cannot skip approval", plan: &tracker.NativePlanState{Draft: "Implement the requested change."}, uncertainPublication: true},
+		{name: "missing plan decision fails closed"},
+		{name: "approval does not bypass uncertain publication", uncertainPublication: true, plan: &tracker.NativePlanState{
+			Draft: "Implement the requested change.", Answer: "Approve plan", AnswerID: "answer_approved", AnswerAttemptID: "attempt_prior",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head, tree := strings.Repeat("a", 40), strings.Repeat("b", 40)
+			change := tracker.NativeChangeReference{VersionID: "version_published", HeadSHA: head}
+			recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "lease_replacement", FencingToken: 2}, Change: &change}
+			if tc.uncertainPublication {
+				recovery.Attempts = []tracker.NativeAttempt{{
+					NativeRunData: tracker.NativeRunData{AttemptID: "attempt_prior"},
+					Checkpoint:    &tracker.NativeCheckpoint{ExternalEffect: "pr_create", EffectState: "pending", HeadSHA: head},
+				}}
+			}
+			execution := &publishedChangePlanExecution{phaseCompletionExecution: phaseCompletionExecution{phaseCheckoutExecution: phaseCheckoutExecution{
+				testExecution: &testExecution{recovery: recovery},
+				continuation:  tracker.NativePhaseContinuation{Plan: tc.plan},
+				publishedSource: workspace.ChangeSource{Version: tracker.ChangeVersion{
+					ID: change.VersionID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head},
+				}},
+			}}}
+			workspaceBackend := &publishedChangePlanWorkspace{
+				fakeWorkspaceBackend: &fakeWorkspaceBackend{
+					info:           workspace.Info{Path: t.TempDir(), Branch: "detent/example"},
+					recoveryStates: []workspace.RecoveryState{{HeadSHA: head}},
+				},
+				head: head, tree: tree,
+			}
+			agent := &fakeCodexClient{}
+			cfg := config.Default()
+			cfg.Plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewHuman}
+			r, err := NewRunner(Dependencies{
+				Workspace: workspaceBackend, ProcessSource: emptyProcessSource, AgentBackend: agent,
+				Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Run(t.Context(), RunRequest{Mode: RunModeImplement, Issue: connector.Issue{ID: "example", Identifier: "EX-1"}, Execution: execution})
+			if agent.calls != 0 || result.TurnStarted {
+				t.Fatalf("implementation started without approval: calls=%d result=%+v", agent.calls, result)
+			}
+			if tc.plan == nil {
+				if err == nil || !strings.Contains(err.Error(), "human plan approval is unavailable") || workspaceBackend.created {
+					t.Fatalf("missing plan decision reached checkout: created=%t error=%v", workspaceBackend.created, err)
+				}
+				return
+			}
+			if tc.plan.AnswerID != "" {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || execution.publication.Phase != "plan" {
+					t.Fatalf("approval skipped source reconciliation: receipt=%s error=%v", execution.publication.Phase, err)
+				}
+				return
+			}
+			if err != nil || result.Output != RunOutputPlanApprovalWait || !strings.Contains(result.FinalMessage, tracker.PlanApprovalQuestion) ||
+				execution.step.Step != "plan" || execution.publication.Phase != "plan_draft" || execution.publication.HeadSHA != head ||
+				workspaceBackend.createIssue.Source == nil || workspaceBackend.createIssue.Source.Version.ID != change.VersionID {
+				t.Fatalf("published Change did not wait for approval: output=%s plan=%+v receipt=%+v error=%v", result.Output, execution.step, execution.publication, err)
+			}
+		})
+	}
 }
 
 func TestPlanPhaseAgentEnforcesSessionLimits(t *testing.T) {

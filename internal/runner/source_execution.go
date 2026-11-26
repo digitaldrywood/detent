@@ -13,7 +13,7 @@ import (
 )
 
 func (r *Runner) sourceFinalizationContext(ctx context.Context, req RunRequest, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if req.Execution == nil || req.observationPeer == nil {
+	if req.Execution == nil {
 		ctx = context.WithoutCancel(ctx)
 	}
 	return r.finalizationContext(ctx, timeout, NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
@@ -55,24 +55,66 @@ func nativeSourceRework(change *NativeChange, message string) string {
 	return phaserecovery.ReworkFindings(version, change.HeadSHA, change.SecurityAudit, change.ImplementationReview, change.Validator)
 }
 
-type sourceGateRepair struct {
-	err    error
-	output string
+func sourceFinalizationPrompt(status workspace.MergePrepareStatus) string {
+	if status == workspace.MergePrepareStatusConflict {
+		return "The runner paused the rebase at unresolved conflicts. Inspect git status, resolve the conflicts, and stage the resolutions for host finalization. The runner owns native rebase continuation and commit signing."
+	}
+	return "The workspace has uncommitted changes. Inspect git status, stage any remaining issue changes for host finalization, and discard unintended changes you produced. The runner owns native rebase continuation and commit signing."
 }
 
-func (e *sourceGateRepair) Error() string { return e.err.Error() }
-func (e *sourceGateRepair) Unwrap() error { return e.err }
+type sourceRepair struct {
+	err        error
+	output     string
+	incomplete *workspace.SourceFinalizationIncomplete
+}
+
+func (e *sourceRepair) Error() string { return e.err.Error() }
+func (e *sourceRepair) Unwrap() error { return e.err }
 
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
-func itemPhaseFromPriorLease(phase *tracker.NativePhaseReceipt, leaseID tracker.LeaseID) bool {
-	return phase != nil && phase.LeaseID != "" && leaseID != "" && phase.LeaseID != leaseID
+func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuation *tracker.NativePhaseContinuation) bool {
+	if continuation == nil {
+		return false
+	}
+	if recovery.SourceVersionID != "" && (recovery.Change == nil || recovery.Change.VersionID != recovery.SourceVersionID) {
+		return true
+	}
+	change := recovery.Change
+	if change == nil {
+		return false
+	}
+	for _, receipt := range []*tracker.NativePhaseReceipt{continuation.LastPushed, continuation.PublishedChangeReceipt} {
+		if receipt != nil && receipt.HeadSHA == change.HeadSHA && !tracker.IsPlanPhase(receipt.Phase) {
+			return false
+		}
+	}
+	return true
 }
 
-func verifyReplacementItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
-	if state == nil || state.HeadSHA != issue.PhaseSource.HeadSHA {
-		return fmt.Errorf("%w: checkout after setup differs from the recorded phase head or is unavailable", ErrNativeRecoveryRequired)
+func retainsPhaseCheckout(recovery tracker.NativeRecovery, scope workspace.AttemptWorkspace, activeAttemptID string) bool {
+	lease := recovery.Lease
+	if scope.Key() == "" || lease.ID == "" || lease.FencingToken == 0 {
+		return false
+	}
+	for _, attempt := range recovery.Attempts {
+		if attempt.AttemptID == scope.Attempt {
+			return attempt.LeaseID == lease.ID && attempt.FencingToken == lease.FencingToken && attempt.ClaimReleasedAt == nil
+		}
+	}
+	return scope.Attempt == activeAttemptID
+}
+
+func verifyItemPhaseCheckout(ctx context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue, state *workspace.RecoveryState) error {
+	if info.Created {
+		head := info.RecoveredPhase.HeadSHA
+		if head == "" && issue.PhaseSource != nil {
+			head = issue.PhaseSource.HeadSHA
+		}
+		if head == "" || state == nil || state.HeadSHA != head {
+			return fmt.Errorf("%w: checkout after setup differs from the verified phase head or is unavailable", ErrNativeRecoveryRequired)
+		}
 	}
 	verifier, ok := backend.(interface {
 		VerifyItemPhaseCheckout(context.Context, workspace.Info, workspace.Issue) error
@@ -90,7 +132,14 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if !req.phaseReceipts {
 		return nil
 	}
-	return failedStep("publication", runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input))
+	if issue.ExpectedPhaseRemoteHead == "" && req.publishedPhaseSource != nil {
+		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
+	}
+	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
+		*req.publishedPhaseSource = source
+	}
+	return failedStep("publication", err)
 }
 
 func publishReviewedPhase(ctx context.Context, req RunRequest, phase string, version *tracker.ChangeVersion) error {

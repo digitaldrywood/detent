@@ -5,14 +5,34 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+var remoteGitHubCredentialHelperState struct {
+	mu     sync.RWMutex
+	helper string
+}
+
+func SetGitHubCredentialHelper(helper string) {
+	remoteGitHubCredentialHelperState.mu.Lock()
+	remoteGitHubCredentialHelperState.helper = strings.TrimSpace(helper)
+	remoteGitHubCredentialHelperState.mu.Unlock()
+}
 
 func RemoteArgs(args ...string) []string {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return args
+	}
+	remoteGitHubCredentialHelperState.mu.RLock()
+	helper := remoteGitHubCredentialHelperState.helper
+	remoteGitHubCredentialHelperState.mu.RUnlock()
+	if helper != "" {
+		return append([]string{"-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=" + helper}, args...)
 	}
 	return append([]string{"-c", "credential.https://github.com.helper=!gh auth git-credential"}, args...)
 }
@@ -106,11 +126,59 @@ func PublicationRepository(path, remote string) string {
 		}
 		remote = path + string(filepath.Separator) + remote
 	}
-	absolute, err := filepath.EvalSymlinks(remote)
-	if err != nil {
-		return ""
+	trimmed := strings.TrimRight(remote, string(filepath.Separator))
+	candidates := []string{remote}
+	if trimmed != "" {
+		candidates = append(candidates, trimmed+".git")
 	}
-	return absolute
+	var firstExisting string
+	for _, candidate := range candidates {
+		absolute, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		if firstExisting == "" {
+			firstExisting = absolute
+		}
+		if isLocalGitRepository(absolute) {
+			return absolute
+		}
+	}
+	return firstExisting
+}
+
+func isLocalGitRepository(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || (!info.IsDir() && !info.Mode().IsRegular()) {
+		return false
+	}
+	if info.Mode().IsRegular() && isGitBundleFile(path) {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, candidate := range []string{path, filepath.Join(path, ".git")} {
+		if _, err := ReadPublicationSource(ctx, filepath.Dir(path), "rev-parse", "--resolve-git-dir", candidate); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func isGitBundleFile(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 16)
+	n, _ := f.Read(buf)
+	header := string(buf[:n])
+	return strings.HasPrefix(header, "# v2 git bundle\n") || strings.HasPrefix(header, "# v3 git bundle\n")
 }
 
 func SamePublicationRepository(expected, actual string) bool {
@@ -143,16 +211,49 @@ func foldASCIILetter(letter byte) byte {
 	return letter
 }
 
-func VerifyPublicationRemote(ctx context.Context, path, remote, repository string) error {
-	fetchURL, err := Run(ctx, path, "remote", "get-url", "--all", remote)
+func VerifyPublicationRemoteFetchURL(ctx context.Context, path, remote, repository string) (string, error) {
+	fetchURL, err := RunRemoteFetch(ctx, path, "remote", "get-url", "--all", remote)
 	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, fetchURL)) {
-		return errors.New("the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
+		return "", errors.New("the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
 	}
-	pushURL, err := Run(ctx, path, "remote", "get-url", "--push", "--all", remote)
+	pushURL, err := RunRemoteFetch(ctx, path, "remote", "get-url", "--push", "--all", remote)
 	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, pushURL)) {
-		return errors.New("the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
+		return "", errors.New("the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
+	}
+	verifiedFetch := strings.TrimSuffix(fetchURL, "\n")
+	if err := VerifyRemoteFetchDestination(ctx, path, verifiedFetch); err != nil {
+		return "", errors.New("the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
+	}
+	return verifiedFetch, nil
+}
+
+func VerifyRemoteFetchDestination(ctx context.Context, path, fetchRepo string) error {
+	var effectiveFetch string
+	if err := withPublicationGit(ctx, "", "", func(scratch string, _ publicationSource) error {
+		if _, cfgErr := withCommandEnvironment(ctx, scratch, IsolatedEnvironment(), true, "", RunCommand, "--git-dir="+scratch, "config", "remote.verify.url", fetchRepo); cfgErr != nil {
+			return redactRemoteError(cfgErr, fetchRepo)
+		}
+		out, resolveErr := withCommandEnvironment(ctx, scratch, RemoteFetchEnvironment(), true, "", RunCommand, "--git-dir="+scratch, "remote", "get-url", "verify")
+		if resolveErr != nil {
+			return redactRemoteError(resolveErr, fetchRepo)
+		}
+		effectiveFetch = strings.TrimSuffix(out, "\n")
+		return nil
+	}); err != nil {
+		return err
+	}
+	if strings.TrimSpace(effectiveFetch) != effectiveFetch || strings.ContainsAny(effectiveFetch, "\r\n") {
+		return errors.New("fetch remote resolved to an unexpected whitespace destination")
+	}
+	if effectiveFetch != fetchRepo && !SamePublicationRepository(PublicationRepository(path, fetchRepo), PublicationRepository(path, effectiveFetch)) {
+		return errors.New("fetch remote was redirected to a different repository")
 	}
 	return nil
+}
+
+func VerifyPublicationRemote(ctx context.Context, path, remote, repository string) error {
+	_, err := VerifyPublicationRemoteFetchURL(ctx, path, remote, repository)
+	return err
 }
 
 func RemoteDefaultBranch(ctx context.Context, workspacePath string, remote string) (string, error) {
@@ -195,6 +296,11 @@ func RemoteDefaultBranchHead(ctx context.Context, workspacePath string, remote s
 func PublicationDefaultBranch(ctx context.Context, repository string) (string, error) {
 	output, err := ReadPublicationRefs(ctx, repository, true, "HEAD")
 	return parseRemoteDefaultBranch(output, repository, err)
+}
+
+func IsolatedRemoteDefaultBranch(ctx context.Context, path, repository string) (string, error) {
+	output, err := ReadRemoteRefs(ctx, path, repository, true, "HEAD")
+	return parseRemoteDefaultBranch(output, "<redacted-remote>", err)
 }
 
 func VerifyMergedBranch(ctx context.Context, path, remote, base, baseRef, mergeSHA string) error {

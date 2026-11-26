@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +13,177 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestSSHCheckpointRefusesCachedDiffAfterHeadMoves(t *testing.T) {
+	for _, staged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "checkpoint diff", true: "already stored finish diff"}[staged], func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Use the live source head")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			ctx := t.Context()
+			base, final, moved := nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b"), nativeChangeFixtureHead("c")
+			source := nativeChangeSourceFixture(ctx, t, base, final)
+			worker, closePeers := nativeSSHExecution(t, ctx, e, t.TempDir())
+			worker.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
+			worker.(runner.ChangeSourceExecution).SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error) {
+				return source, nil
+			})
+			var headMoved atomic.Bool
+			finalDiff := nativeChangeDiff(final, "README.md")
+			worker.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				if headMoved.Load() {
+					return tracker.AttemptDiffRequest{HeadSHA: moved}, false
+				}
+				return finalDiff(ctx)
+			})
+			if err := worker.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: final, ExternalEffect: "none", EffectState: "none"}
+			if err := worker.Checkpoint(ctx, checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.RecordSourceValidation(ctx, gate.CommandResult{Command: "go test ./internal/example", HeadSHA: final, TreeSHA: strings.Repeat("b", 40), DurationNS: 1, StartedAt: time.Now().UTC().Add(-time.Second), FinishedAt: time.Now().UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			if staged {
+				if err := e.postDiff(ctx, e.data.Sequence+1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if e.lastDiff == nil || e.lastDiff.HeadSHA != final || e.retainedSource == nil || e.retainedSource.Source.HeadSHA != final {
+				t.Fatal("checkpoint did not retain the finalized diff and bundle")
+			}
+			stored := e.storedSeq
+			assertUnpublished := func() {
+				t.Helper()
+				detail, err := h.admin.CurrentChange(ctx, tracker.NativeWorkItemID(issue.ID))
+				if err != nil || detail.Change.CurrentVersion != "" || e.storedSeq != stored {
+					t.Fatalf("moved head reused cached source: sequence=%d (was %d), version=%s, error=%v", e.storedSeq, stored, detail.Change.CurrentVersion, err)
+				}
+			}
+			headMoved.Store(true)
+			if err := e.PrepareFinish(ctx, "succeeded", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			assertUnpublished()
+			if change := e.NativeChange(); change == nil || change.VersionError == "" || e.lastDiff != nil {
+				t.Fatalf("the moved checkout did not invalidate the cached diff: change=%+v diff=%+v", change, e.lastDiff)
+			}
+			if err := worker.Checkpoint(ctx, checkpoint); err != nil {
+				t.Fatalf("a moved diff head blocked checkpoint publication: %v", err)
+			}
+			closePeers()
+			if err := e.postDiff(ctx, stored+1); err == nil {
+				t.Fatal("disconnect allowed the superseded diff to be uploaded")
+			}
+			assertUnpublished()
+		})
+	}
+}
+
+func TestCheckpointDoesNotCaptureAnOlderDiffHead(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Resume after publishing the next phase")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	old, current := nativeChangeFixtureHead("c"), nativeChangeFixtureHead("d")
+	e.SetDiffSource(nativeChangeDiff(old, "README.md"))
+	checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", HeadSHA: old, WorkspaceDigest: strings.Repeat("a", 64), ExternalEffect: "none", EffectState: "none"}
+	if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if e.lastDiff == nil || e.lastDiff.HeadSHA != old {
+		t.Fatal("the first checkpoint did not cache the earlier diff")
+	}
+	e.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+		return tracker.AttemptDiffRequest{}, false
+	})
+	var captured []string
+	e.SetChangeSource(func(_ context.Context, _, head string) (tracker.ChangeSourceCapture, error) {
+		captured = append(captured, head)
+		return tracker.ChangeSourceCapture{}, io.ErrUnexpectedEOF
+	})
+	checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = current, strings.Repeat("b", 64), "unpushed"
+	for range 2 {
+		if err := e.Checkpoint(t.Context(), checkpoint); err != nil {
+			t.Fatalf("checkpoint should survive an unavailable diagnostic diff: %v", err)
+		}
+	}
+	if len(captured) != 0 || e.data.Handoff.HeadSHA != current || e.storedSeq == e.data.Sequence {
+		t.Fatalf("stale diff was used for the new checkpoint: captured=%v checkpoint=%s diff sequence=%d run sequence=%d", captured, e.data.Handoff.HeadSHA, e.storedSeq, e.data.Sequence)
+	}
+}
+
+func TestCaptureDiffRejectsPreviousHead(t *testing.T) {
+	oldHead, finalizedHead := nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b")
+	for _, available := range []bool{false, true} {
+		t.Run(map[bool]string{false: "capture unavailable", true: "merge advanced the head"}[available], func(t *testing.T) {
+			execution := &nativeExecution{
+				lastDiff:      &tracker.AttemptDiffRequest{HeadSHA: oldHead},
+				worktreeHead:  oldHead,
+				worktreeState: "clean",
+				diffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					if !available {
+						return tracker.AttemptDiffRequest{}, false
+					}
+					return tracker.AttemptDiffRequest{HeadSHA: finalizedHead}, true
+				},
+			}
+			err := execution.captureDiff(t.Context())
+			if available {
+				if err != nil || execution.lastDiff.HeadSHA != finalizedHead {
+					t.Fatalf("finalized diff = %+v, error = %v", execution.lastDiff, err)
+				}
+			} else if err == nil {
+				t.Fatal("accepted a previous diff after fresh capture failed")
+			}
+		})
+	}
+}
+
+func TestEmptyReworkRequiresMatchingPhaseReceiptOrBundle(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase string
+		sameHead    bool
+		want        bool
+	}{
+		{name: "implementation receipt", phase: "implement", sameHead: true, want: true},
+		{name: "project gate receipt", phase: "project_gate", sameHead: true, want: true},
+		{name: "plan receipt", phase: "plan", sameHead: true},
+		{name: "different head", phase: "implement"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head := nativeChangeFixtureHead("b")
+			receiptHead := nativeChangeFixtureHead("c")
+			if tc.sameHead {
+				receiptHead = head
+			}
+			execution := &nativeExecution{
+				claim: nativeClaim{
+					lease:    tracker.NativeLease{ID: "lease_current", FencingToken: 2},
+					recovery: tracker.NativeRecovery{Change: &tracker.NativeChangeReference{VersionID: "version_prior"}},
+				},
+				data: tracker.NativeRunData{
+					AttemptID: "attempt_current", PolicyID: "policy_current",
+					Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleRework},
+				},
+				phaseSource: &tracker.NativePhaseReceipt{
+					Mutation: tracker.Mutation{LeaseID: "lease_prior", FencingToken: 1},
+					Phase:    tc.phase, AttemptID: "attempt_prior", PolicyID: "policy_current", HeadSHA: receiptHead,
+				},
+			}
+			diff := tracker.AttemptDiffRequest{BaseSHA: nativeChangeFixtureHead("a"), HeadSHA: head}
+			if got := execution.verifiedEmptyRework(diff); got != tc.want {
+				t.Fatalf("verified empty rework = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestNativePublicationRetainsSourceAfterRunProgress(t *testing.T) {
 	for _, progress := range []bool{false, true} {

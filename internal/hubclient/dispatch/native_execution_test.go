@@ -654,7 +654,7 @@ func TestNativeProgressStartupRecoverySnapshot(t *testing.T) {
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage", "renewal outage 502", "renewal outage 503", "renew during native finish", "guard during native finish", "budget wait", "budget wait loses lease"} {
+	for _, name := range []string{"expire", "renew", "multi-ttl heartbeat without guard fallback", "renewal outage", "renewal outage 502", "renewal outage 503", "renew during native finish", "guard during native finish", "budget wait", "budget wait loses lease"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -686,6 +686,12 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 								body, err := json.Marshal(lease)
 								return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
 							}
+						}
+						if name == "multi-ttl heartbeat without guard fallback" {
+							budgetRenewals.Add(1)
+							lease := tracker.NativeLease{ID: "lease", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), RenewedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+							body, err := json.Marshal(lease)
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
 						}
 						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
 					}
@@ -737,6 +743,34 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					}
 					defer stop()
 				}
+				if name == "multi-ttl heartbeat without guard fallback" {
+					var regularRenewals atomic.Int32
+					fixtureClient(client).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if strings.HasSuffix(request.URL.Path, "/renew") {
+							regularRenewals.Add(1)
+						}
+						return transport.RoundTrip(request)
+					}))
+					for range 9 {
+						time.Sleep(20 * time.Second)
+						if _, err := scheduler.RenewClaimHeartbeat(t.Context(), id, time.Now()); err != nil {
+							t.Fatalf("heartbeat renewal failed: %v", err)
+						}
+						synctest.Wait()
+						if guarded.Err() != nil {
+							t.Fatalf("active guard stopped while heartbeat was healthy: %v", context.Cause(guarded))
+						}
+					}
+					if regularRenewals.Load() != 0 || budgetRenewals.Load() != 9 {
+						t.Fatalf("renewals: fallback=%d heartbeat=%d, want 0 and 9", regularRenewals.Load(), budgetRenewals.Load())
+					}
+					time.Sleep(time.Minute)
+					synctest.Wait()
+					if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("guard did not stop at confirmed deadline: %v", context.Cause(guarded))
+					}
+					return
+				}
 				if strings.HasPrefix(name, "budget wait") {
 					scheduler.heartbeatInterval = 2 * time.Minute
 					scheduler.nativeHeartbeats[native.ProjectID()] = time.Now()
@@ -745,6 +779,18 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					}
 					budgetWait.Store(true)
 					start := time.Now()
+					heartbeatDone := make(chan struct{})
+					go func() {
+						defer close(heartbeatDone)
+						timer := time.NewTimer(20 * time.Second)
+						defer timer.Stop()
+						select {
+						case <-guarded.Done():
+							return
+						case <-timer.C:
+							_, _ = scheduler.RenewClaimHeartbeat(guarded, id, time.Now())
+						}
+					}()
 					execution.(fixtureLifecycle).HostOperation("policy.read", start, nil, true)
 					_, err := native.ProjectPolicy(guarded)
 					execution.(fixtureLifecycle).HostOperation("policy.read", time.Now(), err, false)
@@ -752,11 +798,13 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 						t.Fatalf("budget wait blocked lease renewal: renewals=%d reads=%d elapsed=%s error=%v cause=%v", budgetRenewals.Load(), budgetReads.Load(), time.Since(start), err, context.Cause(guarded))
 					}
 					if name == "budget wait loses lease" {
-						if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) || budgetReads.Load() != 1 || time.Since(start) != 55*time.Second {
+						<-heartbeatDone
+						if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) || budgetReads.Load() != 1 || time.Since(start) != 20*time.Second {
 							t.Fatalf("wait outlived lease: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
 						}
 						return
 					}
+					<-heartbeatDone
 					if err != nil || guarded.Err() != nil || budgetReads.Load() != 2 || time.Since(start) != time.Minute {
 						t.Fatalf("budget retry: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
 					}
@@ -793,7 +841,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					}()
 					original := fixtureClient(client).requests.Load()
 					finishedEvents := 0
-					fixtureClient(client).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					mockTransport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 						if strings.HasSuffix(request.URL.Path, "/renew") {
 							lease := claim.lease
 							lease.ServerTime, lease.RenewedAt = time.Now(), time.Now()
@@ -816,7 +864,9 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 							}
 						}
 						return original.RoundTrip(request)
-					}))
+					})
+					fixtureClient(client).requests.Store(mockTransport)
+					fixtureClient(client).renewals.Store(mockTransport)
 					if name == "guard during native finish" {
 						guarded, stopGuard, err = execution.Guard(t.Context())
 						if err != nil {
@@ -830,11 +880,14 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 					for range 7 {
 						time.Sleep(20 * time.Second)
 						if name == "guard during native finish" {
+							if _, err := scheduler.RenewClaimHeartbeat(guarded, id, time.Now()); err != nil {
+								t.Fatalf("production heartbeat during blocked finish failed: %v", err)
+							}
 							synctest.Wait()
 							scheduler.mu.Lock()
 							deadline := scheduler.nativeClaims[id].deadline
 							scheduler.mu.Unlock()
-							if deadline.Before(time.Now()) {
+							if guarded.Err() != nil || deadline.Before(time.Now()) {
 								t.Fatal("completion publication blocked the worker lease guard")
 							}
 							continue
@@ -877,37 +930,34 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 				time.Sleep(30 * time.Second)
 				if strings.HasPrefix(name, "renewal outage") {
 					offline.Store(true)
-					_, err := scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
+					_, err := scheduler.RenewClaimHeartbeat(t.Context(), id, time.Now())
 					if err == nil || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 						t.Fatalf("transient renewal revoked current lease: %v", err)
 					}
 					if err := execution.Validate(guarded); err != nil || guarded.Err() != nil {
 						t.Fatalf("outage ended valid worker: %v", err)
 					}
+					time.Sleep(30 * time.Second)
+					synctest.Wait()
+					if !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("expired outage did not stop worker at confirmed deadline: %v", context.Cause(guarded))
+					}
+					return
 				}
 				if renew {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
+					claim.signalLeaseChange()
 					claim.deadline = time.Now().Add(time.Minute)
 					scheduler.nativeClaims[id] = claim
 					scheduler.mu.Unlock()
 				}
-				time.Sleep(25 * time.Second)
+				time.Sleep(30 * time.Second)
 				synctest.Wait()
 				if renew {
 					if guarded.Err() != nil {
 						t.Fatal("renewed owner stopped at old deadline")
 					}
-					time.Sleep(30 * time.Second)
-					synctest.Wait()
-				}
-				if strings.HasPrefix(name, "renewal outage") {
-					time.Sleep(4 * time.Minute)
-					synctest.Wait()
-					if guarded.Err() != nil {
-						t.Fatalf("outage canceled worker: %v", context.Cause(guarded))
-					}
-					offline.Store(false)
 					time.Sleep(30 * time.Second)
 					synctest.Wait()
 				}
@@ -920,7 +970,7 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 }
 
 func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
-	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "revoked", "expired runtime"} {
+	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "capacity renewal after replacement", "revoked", "expired runtime"} {
 		t.Run(outcome, func(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
 			issue := h.createInProgress(t, "Fenced renewal")
@@ -942,22 +992,61 @@ func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
 				defer claim.lifecycle.Unlock()
 			}
 			var successor tracker.NativeLease
+			replaceWithSuccessor := func() {
+				successor = claim.lease
+				if outcome != "acknowledged after newer renewal" {
+					successor.ID = "lease_successor"
+					successor.FencingToken++
+				}
+				successor.RenewedAt = time.Now().Add(time.Second)
+				successor.ExpiresAt = time.Now().Add(2 * time.Minute)
+				h.scheduler.mu.Lock()
+				current := h.scheduler.nativeClaims[issue.ID]
+				current.lease = successor
+				if outcome == "capacity renewal after replacement" {
+					current.execution = nil
+				}
+				h.scheduler.nativeClaims[issue.ID] = current
+				h.scheduler.claims[issue.ID] = nativeTrackerLease(successor)
+				h.scheduler.mu.Unlock()
+			}
+			if outcome == "capacity renewal after replacement" {
+				requests := fixtureClient(h.native.Transport()).requests.Load()
+				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(r.URL.Path, "/leases/"+string(claim.lease.ID)+"/renew") {
+						if err := h.native.Release(t.Context(), claim.lease, "released"); err != nil {
+							return nil, err
+						}
+						h.claim(t, issue.ID)
+						successor = h.scheduler.nativeClaims[issue.ID].lease
+						body, err := json.Marshal(claim.lease)
+						if err != nil {
+							return nil, err
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: r}, nil
+					}
+					return requests.RoundTrip(r)
+				}))
+				err := h.scheduler.RenewExecution(t.Context(), claim.lease, 1)
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("stale capacity renewal succeeded after replacement: %v", err)
+				}
+				current := h.scheduler.nativeClaims[issue.ID]
+				if current.lost || current.lease.ID != successor.ID || current.lease.FencingToken != successor.FencingToken {
+					t.Fatalf("stale capacity renewal damaged replacement claim: %+v", current.lease)
+				}
+				if err := h.scheduler.RunExecution(issue.ID).Validate(t.Context()); err != nil {
+					t.Fatalf("replacement claim is not usable after stale capacity renewal: %v", err)
+				}
+				if err := h.scheduler.RenewExecution(t.Context(), successor, 0); err != nil {
+					t.Fatalf("replacement claim renewal failed: %v", err)
+				}
+				return
+			}
 			transport := fixtureClient(h.native.Transport()).renewals.Load()
 			fixtureClient(h.native.Transport()).renewals.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				if strings.Contains(outcome, "after replacement") || outcome == "acknowledged after newer renewal" {
-					successor = claim.lease
-					if outcome != "acknowledged after newer renewal" {
-						successor.ID = "lease_successor"
-						successor.FencingToken++
-					}
-					successor.RenewedAt = time.Now().Add(time.Second)
-					successor.ExpiresAt = time.Now().Add(2 * time.Minute)
-					h.scheduler.mu.Lock()
-					current := h.scheduler.nativeClaims[issue.ID]
-					current.lease = successor
-					h.scheduler.nativeClaims[issue.ID] = current
-					h.scheduler.claims[issue.ID] = nativeTrackerLease(successor)
-					h.scheduler.mu.Unlock()
+					replaceWithSuccessor()
 				}
 				if strings.HasPrefix(outcome, "rejected") {
 					return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: r}, nil

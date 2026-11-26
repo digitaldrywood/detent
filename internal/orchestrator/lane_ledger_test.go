@@ -350,8 +350,8 @@ func TestHumanMoveToMergingDoesNotChangeWorkerMode(t *testing.T) {
 			for index := range 2 {
 				orch.reconcileRunningIssues(t.Context(), &state, at.Add(time.Duration(index)*time.Hour))
 			}
-			if context.Cause(runCtx) != nil || len(orch.pendingMergeRevocations) != 0 {
-				t.Fatalf("lane move invoked merge-worker cancellation: cause=%v pending=%v", context.Cause(runCtx), orch.pendingMergeRevocations)
+			if context.Cause(runCtx) != nil {
+				t.Fatalf("lane move invoked merge-worker cancellation: cause=%v", context.Cause(runCtx))
 			}
 			if running := state.Running[issue.ID]; running.Mode != mode || running.CompletionLane != "Merging" {
 				t.Fatalf("worker mode=%q completion lane=%q", running.Mode, running.CompletionLane)

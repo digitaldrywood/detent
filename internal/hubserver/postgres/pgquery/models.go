@@ -3071,6 +3071,60 @@ type NativeDuplicateChallenge struct {
 	ExpiresAt          time.Time
 }
 
+type NativeExecutionCheck struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Revision       string
+	Ordinal        int32
+	Kind           string
+	SourceText     string
+	CheckDigest    string
+	Status         string
+	HeadSHA        string
+	TreeSha        string
+	ReceiptID      string
+	CheckedAt      *time.Time
+}
+
+type NativeExecutionCheckTransition struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Revision       string
+	Ordinal        int32
+	RoundID        string
+	Status         string
+	HeadSHA        string
+	TreeSha        string
+	ReceiptID      string
+	CheckedAt      time.Time
+}
+
+type NativeExecutionChecklist struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Revision       string
+	PolicyID       string
+	FrozenAt       time.Time
+}
+
+type NativeExecutionLoopIntervention struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	AttemptID      string
+	Revision       string
+	ThreadID       string
+	TurnID         string
+	Action         string
+	Fingerprint    string
+	Period         int32
+	Repeats        int32
+	Sequence       int64
+	ObservedAt     time.Time
+}
+
 type NativePhaseReceipt struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID

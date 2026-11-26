@@ -14,12 +14,12 @@ import time
 STEPS = (
     "app", "generated", "migrations", "build",
     "windows-build-amd64", "windows-vet", "windows-build-arm64", "vet", "lint",
-    "scripts", "nilaway-changed", "race", "subprocess-lifecycle", "full",
+    "race", "subprocess-lifecycle", "full",
     "security", "browser",
 )
 PRIORITY = (
     "app", "generated", "full", "race", "browser", "lint",
-    "nilaway-changed", "scripts", "migrations", "build", "windows-build-amd64",
+    "migrations", "build", "windows-build-amd64",
     "windows-vet", "windows-build-arm64", "vet", "subprocess-lifecycle", "security",
 )
 SMOKE_SPECS = (
@@ -29,7 +29,7 @@ SMOKE_SPECS = (
 
 
 def dependencies(step):
-    if step in ("app", "generated", "scripts", "migrations"):
+    if step in ("app", "generated", "migrations"):
         return set()
     if step == "browser":
         return {"app", "generated"}

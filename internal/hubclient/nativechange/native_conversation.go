@@ -28,7 +28,7 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 
 // leaseCheck reports whether the attempt's lease is still current locally.
 func (e *nativeExecution) leaseCheck(context.Context) error {
-	if e.remaining() <= 0 {
+	if !e.claimActive() {
 		return fmt.Errorf("%w: %w", runner.ErrStaleConversationControl, runner.ErrExecutionAuthorityUnavailable)
 	}
 	return nil

@@ -63,10 +63,8 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	if e.claim.source == nil || e.claim.source.NativeClient() == nil {
 		return runner.ErrExecutionAuthorityUnavailable
 	}
-	if e.remaining() <= 0 {
-		if err := e.renew(ctx, 0); err != nil {
-			return err
-		}
+	if !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
 		return e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
@@ -158,7 +156,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			e.settled = true
 			return nil
 		}
-		if e.remaining() <= 0 || nativeLeaseLost(err) {
+		if !e.claimActive() || nativeLeaseLost(err) {
 			break
 		}
 	}
@@ -263,10 +261,8 @@ type publicationAuthority struct{ execution *nativeExecution }
 
 func (a publicationAuthority) Authorize(ctx context.Context) error {
 	e := a.execution
-	if e.remaining() <= 0 {
-		if err := e.renew(ctx, 0); err != nil {
-			return e.executionError(ctx, err)
-		}
+	if !e.claimActive() {
+		return e.executionError(ctx, runner.ErrExecutionAuthorityUnavailable)
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
 		return e.executionError(ctx, e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))

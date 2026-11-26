@@ -129,19 +129,34 @@ func TestItemPhasePushRefusesDivergentRemote(t *testing.T) {
 
 func TestReplacementItemPhaseCheckout(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		receipted bool
-		unrelated bool
-		override  string
-		advance   bool
-		want      string
+		name       string
+		receipted  bool
+		override   string
+		advance    bool
+		dirty      bool
+		sameTree   bool
+		diverges   bool
+		wrongTree  bool
+		published  string
+		beforePush string
+		want       string
 	}{
-		{name: "receipted descendant of the current Change", receipted: true},
-		{name: "existing ref without a receipt", want: "no matching phase receipt"},
-		{name: "receipt from unrelated Change", receipted: true, unrelated: true, want: "does not descend"},
-		{name: "replacement object forges ancestry", receipted: true, unrelated: true, override: "replace", want: "does not descend"},
-		{name: "graft forges ancestry", receipted: true, unrelated: true, override: "graft", want: "does not descend"},
-		{name: "newer Git tip without a receipt", receipted: true, advance: true, want: "differs from its latest phase receipt"},
+		{name: "remote matches the receipt", receipted: true},
+		{name: "replacement runner discards work from a lease lost mid-implement", receipted: true, dirty: true},
+		{name: "lease lost after first push before receipt"},
+		{name: "unrelated branch before first receipt", diverges: true, want: "does not descend from the item base"},
+		{name: "replacement object forges ancestry", receipted: true, diverges: true, override: "replace", want: "does not descend"},
+		{name: "graft forges ancestry", receipted: true, diverges: true, override: "graft", want: "does not descend"},
+		{name: "lease lost after a later push before receipt", receipted: true, advance: true},
+		{name: "refuse a replay that would drop the remote tip", receipted: true, advance: true, beforePush: "diverge"},
+		{name: "merge-advanced head preserves the receipted tree", receipted: true, advance: true, sameTree: true},
+		{name: "recovered ref rewound before publication", receipted: true, advance: true, beforePush: "rewind"},
+		{name: "recovered ref deleted before publication", receipted: true, advance: true, beforePush: "delete"},
+		{name: "intended commit published after recovery", receipted: true, advance: true, beforePush: "publish"},
+		{name: "divergent Git tip without a receipt", receipted: true, diverges: true, want: "does not descend from its latest phase receipt"},
+		{name: "latest receipt contains the older published Change", receipted: true, advance: true, published: "ancestor"},
+		{name: "latest receipt omits the older published Change", receipted: true, advance: true, published: "side", want: "selected item history does not contain the published Change"},
+		{name: "newer Git tip with mismatched receipt tree", receipted: true, advance: true, wrongTree: true, want: "tree differs from its latest phase receipt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLandingFixture(t)
@@ -153,9 +168,43 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 				Branch: branch, HeadSHA: f.head,
 				TreeSHA: strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}")),
 			}
+			wantHead, remoteHead := receipt.HeadSHA, receipt.HeadSHA
 			if tc.advance {
-				runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "unreceipted phase")
+				if tc.sameTree {
+					runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "preserve phase history")
+				} else {
+					writeFileDiffFile(t, f.info.Path, "unreceipted.txt", "pushed before lease loss\n")
+					runGit(t, f.info.Path, "add", "unreceipted.txt")
+					runGit(t, f.info.Path, "commit", "-m", "unreceipted phase")
+				}
 				runGit(t, f.info.Path, "push", "origin", "HEAD:"+ref)
+				remoteHead = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+				wantHead = remoteHead
+			}
+			published := receipt.HeadSHA
+			if tc.published != "" {
+				receipt.HeadSHA = remoteHead
+				receipt.TreeSHA = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
+				if tc.published == "side" {
+					published = strings.TrimSpace(runGit(t, f.info.Path, "commit-tree", receipt.TreeSHA, "-p", base, "-m", "previously published Change"))
+					runGit(t, f.info.Path, "push", "origin", published+":refs/heads/published-change")
+				}
+			}
+			if tc.dirty {
+				writeFileDiffFile(t, f.info.Path, "interrupted.txt", "staged before lease loss\n")
+				runGit(t, f.info.Path, "add", "interrupted.txt")
+				writeFileDiffFile(t, f.info.Path, "interrupted.txt", "uncommitted work\n")
+			}
+			if tc.diverges {
+				remoteHead = base
+				if !tc.receipted {
+					remoteHead = strings.TrimSpace(runGit(t, f.info.Path, "commit-tree", receipt.TreeSHA, "-m", "unrelated published history"))
+					runGit(t, f.info.Path, "push", "origin", remoteHead+":refs/heads/unrelated")
+				}
+				runGit(t, f.remote, "update-ref", ref, remoteHead, receipt.HeadSHA)
+			}
+			if tc.wrongTree {
+				receipt.TreeSHA = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
 			}
 			source := initSourceRepo(t)
 			runGit(t, source, "remote", "add", "origin", f.remote)
@@ -166,29 +215,29 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 			issue := f.issue
 			issue.PublicationRepository = f.remote
 			issue.VerifyPhaseBranch = true
-			if tc.receipted {
-				issue.PhaseSource, issue.PhaseChangeHeadSHA = &receipt, base
+			if tc.published != "" {
+				issue.PublishedChangeHeadSHA = published
+				if tc.published == "side" {
+					runGit(t, source, "fetch", "origin", "refs/heads/published-change")
+				}
 			}
-			if tc.unrelated {
-				writeFileDiffFile(t, source, "unrelated.txt", "unrelated work\n")
-				runGit(t, source, "add", "unrelated.txt")
-				runGit(t, source, "commit", "-m", "publish different Change source")
-				issue.PhaseChangeHeadSHA = strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			if tc.receipted {
+				issue.PhaseSource = &receipt
 			}
 			if tc.override != "" {
-				runGit(t, source, "fetch", "origin", ref)
+				runGit(t, source, "fetch", "origin", ref, receipt.HeadSHA)
 				switch tc.override {
 				case "replace":
-					forged := strings.TrimSpace(runGit(t, source, "commit-tree", receipt.TreeSHA, "-p", issue.PhaseChangeHeadSHA, "-m", "forge parent"))
-					runGit(t, source, "replace", receipt.HeadSHA, forged)
+					forged := strings.TrimSpace(runGit(t, source, "commit-tree", receipt.TreeSHA, "-p", receipt.HeadSHA, "-m", "forge parent"))
+					runGit(t, source, "replace", remoteHead, forged)
 				case "graft":
 					runGit(t, source, "config", "advice.graftFileDeprecated", "false")
 					grafts := filepath.Join(source, ".git", "info", "grafts")
-					if err := os.WriteFile(grafts, []byte(receipt.HeadSHA+" "+issue.PhaseChangeHeadSHA+"\n"), 0o600); err != nil {
+					if err := os.WriteFile(grafts, []byte(remoteHead+" "+receipt.HeadSHA+"\n"), 0o600); err != nil {
 						t.Fatal(err)
 					}
 				}
-				runGit(t, source, "merge-base", "--is-ancestor", issue.PhaseChangeHeadSHA, receipt.HeadSHA)
+				runGit(t, source, "merge-base", "--is-ancestor", receipt.HeadSHA, remoteHead)
 			}
 			issue.FreshCheckout, issue.BaseRef = true, base
 			info, err := replacement.Create(t.Context(), issue)
@@ -201,13 +250,128 @@ func TestReplacementItemPhaseCheckout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if head, err := replacement.Head(t.Context(), info, issue); err != nil || head != receipt.HeadSHA {
-				t.Fatalf("replacement head = %s, error = %v, want %s", head, err, receipt.HeadSHA)
+			if head, err := replacement.Head(t.Context(), info, issue); err != nil || head != wantHead {
+				t.Fatalf("replacement head = %s, error = %v, want %s", head, err, wantHead)
+			}
+			if tc.dirty {
+				if _, err := os.Stat(filepath.Join(info.Path, "interrupted.txt")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("replacement retained uncommitted work: %v", err)
+				}
+			}
+			if err := replacement.VerifyItemPhaseCheckout(t.Context(), info, issue); err != nil {
+				t.Fatalf("verify replacement checkout: %v", err)
 			}
 			runGit(t, info.Path, "commit", "--allow-empty", "-m", "complete next phase")
+			switch tc.beforePush {
+			case "rewind":
+				runGit(t, f.remote, "update-ref", ref, receipt.HeadSHA, remoteHead)
+			case "delete":
+				runGit(t, f.remote, "update-ref", "-d", ref, remoteHead)
+			case "publish":
+				runGit(t, info.Path, "push", "origin", "HEAD:"+ref)
+			case "diverge":
+				tree := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD^{tree}"))
+				newHead := strings.TrimSpace(runGit(t, info.Path, "commit-tree", tree, "-p", receipt.HeadSHA, "-m", "replay from the old receipt"))
+				runGit(t, info.Path, "update-ref", "HEAD", newHead)
+			}
 			_, head, _, err := replacement.PushItemPhase(t.Context(), info, issue, func(context.Context) error { return nil })
+			if tc.beforePush == "rewind" || tc.beforePush == "delete" || tc.beforePush == "diverge" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Errorf("push head = %s, error = %v, want head_moved", head, err)
+				}
+				remote, exists, readErr := gitexec.PublicationBranchHead(t.Context(), f.remote, branch)
+				wantRemote := remoteHead
+				if tc.beforePush == "rewind" {
+					wantRemote = receipt.HeadSHA
+				}
+				wantExists := tc.beforePush != "delete"
+				if readErr != nil || exists != wantExists || wantExists && remote != wantRemote {
+					t.Fatalf("remote head = %s, exists = %t, error = %v after %s", remote, exists, readErr, tc.beforePush)
+				}
+				return
+			}
 			if remote := strings.TrimSpace(runGit(t, f.remote, "rev-parse", ref)); err != nil || remote != head {
 				t.Fatalf("push head = %s, remote = %s, error = %v", head, remote, err)
+			}
+			runGit(t, f.remote, "merge-base", "--is-ancestor", remoteHead, head)
+		})
+	}
+}
+
+func TestLivePhaseRetryKeepsCheckoutAndPublicationFence(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		receipted bool
+		move      string
+	}{
+		{name: "before first receipt"},
+		{name: "remote still matches receipt", receipted: true},
+		{name: "remote deleted before retry checkout", receipted: true, move: "delete"},
+		{name: "remote rewound after retry checkout", receipted: true, move: "rewind"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLandingFixture(t)
+			issue := f.issue
+			issue.PublicationRepository, issue.VerifyPhaseBranch, issue.RetainPhaseCheckout = f.remote, true, true
+			branch := f.info.PublishBranch()
+			ref := "refs/heads/" + branch
+			if tc.receipted {
+				issue.PhaseSource = &tracker.NativePhaseReceipt{
+					Branch: branch, HeadSHA: f.head,
+					TreeSHA: strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}")),
+				}
+				runGit(t, f.info.Path, "push", "origin", f.head+":"+ref)
+				if tc.move == "delete" {
+					runGit(t, f.remote, "update-ref", "-d", ref, f.head)
+				}
+			}
+			file := filepath.Join(f.info.Path, "retry.txt")
+			writeFileDiffFile(t, f.info.Path, "retry.txt", "staged work\n")
+			runGit(t, f.info.Path, "add", "retry.txt")
+			writeFileDiffFile(t, f.info.Path, "retry.txt", "unstaged work\n")
+
+			info, err := f.backend.Create(t.Context(), issue)
+			if err != nil || info.Path != f.info.Path || info.Created {
+				t.Fatalf("live retry checkout = %+v, error = %v", info, err)
+			}
+			if got := strings.TrimSpace(runGit(t, info.Path, "show", ":retry.txt")); got != "staged work" {
+				t.Fatalf("retry index = %q", got)
+			}
+			if got := readFile(t, file); got != "unstaged work\n" {
+				t.Fatalf("retry worktree = %q", got)
+			}
+			if tc.receipted {
+				if info.PhaseRemoteHead == nil || *info.PhaseRemoteHead != f.head {
+					t.Fatalf("retry omitted the receipted publication fence: %+v", info)
+				}
+			} else if info.PhaseRemoteHead != nil {
+				t.Fatalf("unreceipted retry unexpectedly has a publication fence: %+v", info)
+			}
+			runGit(t, info.Path, "add", "retry.txt")
+			runGit(t, info.Path, "commit", "-m", "continue implementation")
+			intended := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+			base := f.remoteMain(t)
+			if tc.move == "rewind" {
+				runGit(t, f.remote, "update-ref", ref, base, f.head)
+			}
+			_, _, _, err = f.backend.PushItemPhase(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() })
+			wantRemote := intended
+			if tc.move != "" {
+				var refusal *LandRefusal
+				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalHeadMoved {
+					t.Fatalf("push after remote %s = %v, want head_moved", tc.move, err)
+				}
+				wantRemote = ""
+				if tc.move == "rewind" {
+					wantRemote = base
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			actual, _, err := gitexec.PublicationBranchHead(t.Context(), f.remote, branch)
+			if err != nil || actual != wantRemote {
+				t.Fatalf("remote after retry push = %q, error = %v, want %q", actual, err, wantRemote)
 			}
 		})
 	}

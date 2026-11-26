@@ -17,6 +17,9 @@ import (
 )
 
 func TestValidateCommandReusesGoTestReceiptsAcrossCheckouts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping cross-checkout go test receipt subprocess test in -short mode")
+	}
 
 	var mu sync.Mutex
 	var receipts []gotestreceipt.Receipt

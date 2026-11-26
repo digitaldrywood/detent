@@ -7,6 +7,8 @@ type Info struct {
 	ReviewBranch      string
 	PublicationBranch string
 	StartHeadSHA      string
+	RecoveredPhase    PhaseSource
+	PhaseRemoteHead   *string
 	Created           bool
 }
 
@@ -15,4 +17,10 @@ func (i Info) PublishBranch() string {
 		return i.PublicationBranch
 	}
 	return i.Branch
+}
+
+type PhaseSource struct {
+	Branch  string
+	HeadSHA string
+	TreeSHA string
 }

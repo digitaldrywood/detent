@@ -677,14 +677,14 @@ type RunRequest struct {
 	finalizeNativeWork        bool
 	reviewOnly                bool
 	repairResume              bool
-	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
-	attemptDiffSource         AttemptDiffSource
+	attemptDiffBase           string
 	validationEvidenceSource  AttemptDiffSource
 	reviewSource              func(context.Context, *RunResult, *retainedReviewWorkspace) (string, error)
 	retainedReview            *retainedReviewWorkspace
 	phaseReceipts             bool
 	phaseContinuation         *tracker.NativePhaseContinuation
+	publishedPhaseSource      *workspace.PhaseSource
 }
 
 type NativeReviewContinuation struct {
@@ -779,6 +779,7 @@ type SecurityAuditRequest struct {
 	OnUsageUpdate   UsageUpdateHandler
 	Issue           connector.Issue
 	Snapshot        securityaudit.Snapshot
+	WorkspacePath   string
 	StartedAt       time.Time
 	SelectorContext selector.Context
 }
@@ -800,6 +801,8 @@ type SecurityAuditExecution struct {
 
 type RunResult struct {
 	retainedReview             *retainedReviewWorkspace
+	sourceReviewed             bool
+	planApprovalWait           bool
 	BillingMode                string
 	ReportedCostMicros         *int64
 	CostSource                 string

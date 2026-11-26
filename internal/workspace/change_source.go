@@ -7,10 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-
-	"github.com/digitaldrywood/detent/internal/workspace/changesource"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/changesource"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func (l *LocalGit) CaptureRecoveryChangeSource(ctx context.Context, issue Issue, base, head string) (tracker.ChangeSourceCapture, error) {
@@ -59,7 +60,8 @@ func (l *LocalGit) importWorkspaceChangeSource(ctx context.Context, issue Issue)
 	if err != nil {
 		return err
 	}
-	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, *source.PushedPhase); err != nil {
+	phase := source.PushedPhase
+	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, PhaseSource{Branch: phase.Branch, HeadSHA: phase.HeadSHA, TreeSHA: phase.TreeSHA}); err != nil {
 		return err
 	}
 	if version.Source != nil {
@@ -116,21 +118,26 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if issue.Source == nil || issue.Landing != nil {
 		return false, nil
 	}
-	l.createMu.Lock()
-	defer l.createMu.Unlock()
-	release, err := l.acquireSourceOperation(ctx)
+	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return false, err
 	}
-	defer release()
-	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	paused, err := l.verifyReworkBranch(ctx, normalized, issue)
 	if err == nil && paused && issue.Source.Transferred {
 		return false, refuse(LandRefusalHeadMoved, "the transferred version has unresolved paused-rebase custody; preserve and reconcile the assigned worktree through source recovery before retrying transfer")
 	}
 	if err != nil || paused {
 		return false, err
 	}
-	state, err := l.RecoveryState(ctx, info, issue)
+	progressBase, excludedRemoteRefs, extraPublished, verifiedRemote, baseErr := l.localProgressBaseWithSource(ctx, normalized.Path, issue)
+	if baseErr != nil {
+		return false, fmt.Errorf("resolve recovery base: %w", baseErr)
+	}
+	indexBefore, err := gitIndexChecksum(ctx, normalized.Path)
+	if err != nil {
+		return false, err
+	}
+	state, err := l.recoveryStateWithBase(ctx, normalized, issue, progressBase, excludedRemoteRefs, extraPublished, verifiedRemote)
 	if err != nil {
 		return false, err
 	}
@@ -149,8 +156,58 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		if state.UnpushedCommits > 0 && !previous {
 			return false, nil
 		}
-		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous && !l.headIntegrated(ctx, info.Path, issue, state.HeadSHA) {
-			return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the existing clean worktree head %s differs from the recorded source base and head of version %s; preserve its current head and reconcile the Change before recovery", state.HeadSHA, issue.Source.Version.ID))
+		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous {
+			if !headIntegratedWithBase(ctx, normalized.Path, progressBase, state.HeadSHA) {
+				return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the existing clean worktree head %s differs from the recorded source base and head of version %s; preserve its current head and reconcile the Change before recovery", state.HeadSHA, issue.Source.Version.ID))
+			}
+			if gitexec.ValidHead(issue.Source.Version.HeadSHA) && gitexec.ValidHead(state.HeadSHA) {
+				isAncestor, ancErr := gitexec.VerifyPublicationAncestryComplete(ctx, normalized.Path, issue.Source.Version.HeadSHA, state.HeadSHA)
+				if ancErr != nil {
+					return false, fmt.Errorf("verify retained change source ancestry: %w", ancErr)
+				}
+				if isAncestor {
+					return false, nil
+				}
+			}
+		}
+	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, normalized.Path)
+	if err != nil {
+		return false, err
+	}
+	defer releaseWorktree()
+	l.createMu.Lock()
+	defer l.createMu.Unlock()
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	pausedNow, err := l.verifyReworkBranch(ctx, normalized, issue)
+	if err == nil && pausedNow && issue.Source.Transferred {
+		return false, refuse(LandRefusalHeadMoved, "the transferred version has unresolved paused-rebase custody; preserve and reconcile the assigned worktree through source recovery before retrying transfer")
+	}
+	if err != nil || pausedNow {
+		return false, err
+	}
+	headNow, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	indexNow, err := gitIndexChecksum(ctx, normalized.Path)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(headNow) != state.HeadSHA || indexNow != indexBefore {
+		return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the worktree head or index changed during source recovery for version %s; preserve its current state and retry recovery", issue.Source.Version.ID))
+	}
+	if len(state.TrackedPaths) == 0 && len(state.UntrackedPaths) == 0 {
+		dirtyNow, dirtyErr := reworkWorktreeDirty(ctx, normalized.Path)
+		if dirtyErr != nil {
+			return false, dirtyErr
+		}
+		if dirtyNow {
+			return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the worktree became dirty during source recovery for version %s; preserve its current state and retry recovery", issue.Source.Version.ID))
 		}
 	}
 	if restore || state.HeadSHA != issue.Source.Version.BaseSHA {
@@ -172,16 +229,23 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		}
 		return created, nil
 	}
-	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--hard", issue.Source.Version.HeadSHA)
+	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--merge", issue.Source.Version.HeadSHA)
 	return false, err
 }
 
 func (l *LocalGit) headIntegrated(ctx context.Context, path string, issue Issue, head string) bool {
 	base, err := l.localProgressBase(ctx, path, issue)
-	if err != nil || !validLandingHead(base) {
+	if err != nil {
 		return false
 	}
-	_, err = runGitAt(ctx, path, "merge-base", "--is-ancestor", head, base)
+	return headIntegratedWithBase(ctx, path, base, head)
+}
+
+func headIntegratedWithBase(ctx context.Context, path, base, head string) bool {
+	if !validLandingHead(base) {
+		return false
+	}
+	_, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", head, base)
 	return err == nil
 }
 

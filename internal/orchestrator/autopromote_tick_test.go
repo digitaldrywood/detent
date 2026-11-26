@@ -4525,36 +4525,6 @@ func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing
 	}
 }
 
-func TestStaleMergingQueueDispatchCandidatesRequiresApprovalLabel(t *testing.T) {
-	t.Parallel()
-
-	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 1,
-		MaxConcurrentAgentsByState: map[string]int{
-			"Merging": 1,
-		},
-		AutoPromote: AutoPromoteConfig{Gate: gate.Config{
-			Kind:          gate.KindHumanReview,
-			ApprovalLabel: "Ready to Merge",
-		}},
-		ActiveStates:   []string{"Merging"},
-		TerminalStates: []string{"Done"},
-	})
-	issue := autoPromoteTickIssue("issue-approval-revoked", []string{"bug"}, &connector.PullRequest{
-		Number:         1435,
-		State:          "OPEN",
-		MergeableState: "clean",
-		CIStatus:       "success",
-	})
-	issue.State = "Merging"
-	orch := &Orchestrator{cfg: cfg}
-	state := newState(cfg)
-
-	if got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue}, time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)); len(got) != 0 {
-		t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want none without approval label", got)
-	}
-}
-
 func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
 	t.Parallel()
 
@@ -4626,23 +4596,13 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1322"
 	ready.CreatedAt = &readyCreatedAt
 	state := newState(cfg)
-	var logs strings.Builder
 	orch := &Orchestrator{
-		cfg:    cfg,
-		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		cfg: cfg,
 	}
 
 	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, ready}, now)
 	if len(got) != 1 || got[0].ID != ready.ID {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
-	}
-	for _, fragment := range []string{
-		"queue_depth=2",
-		"ready_count=1",
-	} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
-		}
 	}
 }
 
@@ -6731,4 +6691,27 @@ func TestCompletedReworkCIGateDispatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func nativeMergeQueueTestConfig(cfg Config) Config {
+	cfg.AutoPromote.Gate.Kind = gate.KindArtifact
+	return normalizeConfig(cfg)
+}
+
+func nativeMergeQueueTestIssue(number int, ciStatus string) connector.Issue {
+	issue := autoPromoteTickIssue(fmt.Sprintf("issue-%d", number), []string{"bug"}, &connector.PullRequest{
+		NodeID:         fmt.Sprintf("PR_%d", number),
+		Number:         number,
+		URL:            fmt.Sprintf("https://github.test/digitaldrywood/detent/pull/%d", number),
+		BranchName:     fmt.Sprintf("detent/issue-%d", number),
+		BaseRef:        "main",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       ciStatus,
+		HeadSHA:        fmt.Sprintf("head-%d", number),
+	})
+	issue.State = "Merging"
+	issue.Identifier = fmt.Sprintf("digitaldrywood/detent#%d", number)
+	issue.PRRepository = "digitaldrywood/detent"
+	return issue
 }

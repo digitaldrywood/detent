@@ -13,6 +13,9 @@ const (
 	DefaultTurn = time.Hour
 	DefaultIdle = 5 * time.Minute
 	maxEvents   = 64 * 1024
+
+	ownedCommandPrefix = "host/"
+	commandEndPrefix   = "command/end/"
 )
 
 var (
@@ -133,14 +136,25 @@ func (s *Session) Event(identity string) bool {
 	return true
 }
 
+func WithoutCommandObservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sessionKey{}, (*Session)(nil))
+}
+
 func ObserveOwnedCommand(ctx context.Context, id string) func() {
 	s, _ := ctx.Value(sessionKey{}).(*Session)
-	deadline, bounded := ctx.Deadline()
-	if s == nil || !bounded || ctx.Err() != nil {
+	if s == nil {
 		return func() {}
 	}
-	id = "host/" + id
-	s.StartCommand(id)
+	finish, _ := s.BeginOwnedCommand(ctx, id)
+	return finish
+}
+
+func (s *Session) BeginOwnedCommand(ctx context.Context, id string) (func(), bool) {
+	deadline, bounded := ctx.Deadline()
+	id = ownedCommandPrefix + id
+	if !bounded || ctx.Err() != nil || !s.StartCommand(id) {
+		return func() {}, false
+	}
 	limit := max(time.Nanosecond, time.Until(deadline))
 	onDeadline := func() {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -152,7 +166,13 @@ func ObserveOwnedCommand(ctx context.Context, id string) func() {
 		stop()
 		onDeadline()
 		s.EndCommand(id)
-	}
+	}, true
+}
+
+func (s *Session) RememberOwnedCommandCompletion(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.newEvent(commandEndPrefix + ownedCommandPrefix + id)
 }
 
 func (s *Session) StartCommand(id string) bool {
@@ -161,7 +181,7 @@ func (s *Session) StartCommand(id string) bool {
 	if _, running := s.commands[id]; running || s.ctx.Err() != nil {
 		return false
 	}
-	if _, finished := s.seen[sha256.Sum256([]byte("command/end/"+id))]; finished {
+	if _, finished := s.seen[sha256.Sum256([]byte(commandEndPrefix+id))]; finished {
 		return false
 	}
 	if s.commands == nil {
@@ -181,7 +201,7 @@ func (s *Session) EndCommand(id string) bool {
 		return false
 	}
 	_, running := s.commands[id]
-	if !s.newEvent("command/end/"+id) && !running {
+	if !s.newEvent(commandEndPrefix+id) && !running {
 		return false
 	}
 	delete(s.commands, id)

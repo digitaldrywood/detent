@@ -14,13 +14,13 @@ import { getRenderablePatch } from "../src/lib/diffRendering.ts";
 
 function servedPolicy(): Map<string, string[]> {
   const source = readFileSync(
-    new URL("../../../internal/cloudentry/service.go", import.meta.url),
+    new URL("../../../internal/cloudentry/origin/hosted_origin.go", import.meta.url),
     "utf8",
   );
-  const match = /contentSecurity\s*=\s*"([^"]+)"/.exec(source);
+  const match = /const ContentSecurity\s*=\s*"([^"]+)"/.exec(source);
   if (match === null)
     throw new Error(
-      "contentSecurity not found in internal/cloudentry/service.go",
+      "ContentSecurity not found in internal/cloudentry/origin/hosted_origin.go",
     );
   const directives = new Map<string, string[]>();
   for (const directive of match[1]!.split(";")) {

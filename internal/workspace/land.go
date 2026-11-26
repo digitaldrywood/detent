@@ -79,6 +79,7 @@ type GitHubRESTClient interface {
 
 type LandOptions struct {
 	NoChangeNeeded        bool
+	PreserveSourceHistory bool
 	Resolution            *LandingResolution
 	ChangeID              string
 	ReviewDispositions    []tracker.ReviewDisposition

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,22 +125,34 @@ func TestNativeUnresponsiveRetirementStopsRenewal(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		providerFailure bool
+		expireLease     bool
+		overlap         bool
 	}{
 		{name: "worker close deadline"},
 		{name: "unretired tool after protocol failure", providerFailure: true},
+		{name: "overlapping worker retires during earlier close", providerFailure: true, overlap: true},
+		{name: "Hub lease expires during provider retirement", providerFailure: true, expireLease: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure)
+			testNativeUnresponsiveRetirementStopsRenewal(t, tc.providerFailure, tc.expireLease, tc.overlap)
 		})
 	}
 }
 
-func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure bool) {
+func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure, expireLease, overlap bool) {
 	t.Helper()
 	h := newNativeChangeHub(t, true)
 	issue := h.createInProgress(t, "Retire the old worker")
 	h.claim(t, issue.ID)
 	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if providerFailure {
+		if err := e.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "validation", HeartbeatAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	guarded, stop, err := e.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -157,20 +170,45 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure 
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- e.CloseWorkers(cleanup) }()
-	defer func() {
+	retireWorker := sync.OnceValue(func() error {
 		close(retired)
-		if err := <-done; err != nil {
+		return <-done
+	})
+	defer func() {
+		if err := retireWorker(); err != nil {
 			t.Error(err)
 		}
 	}()
+	assertRetirementFence := func(t *testing.T) {
+		t.Helper()
+		if _, stopNext, err := e.Guard(t.Context()); !errors.Is(err, runner.ErrProviderSessionUnretired) {
+			stopNext()
+			t.Errorf("unretired tool allowed another worker: %v", err)
+		}
+		if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("heartbeat did not preserve the retirement fence: %v", err)
+		}
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, runner.ErrProviderSessionUnretired) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Errorf("renewal did not preserve the retirement fence: %v", err)
+		}
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrProviderSessionUnretired) {
+			t.Fatalf("unretired tool allowed claim completion: %v", err)
+		}
+	}
 	<-entered
+	overlappingWorkerClosed := false
+	if overlap {
+		if err := e.KeepWorker(func(context.Context) error {
+			overlappingWorkerClosed = true
+			return nil
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if providerFailure {
 		cause := errors.Join(errors.New("provider protocol failed"), runner.ErrProviderSessionUnretired)
 		if !runner.StopProviderSupervision(e, cause) {
 			t.Fatal("unretired tool did not stop supervision")
-		}
-		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-			t.Fatalf("unretired tool allowed claim completion: %v", err)
 		}
 	} else {
 		cancel()
@@ -182,16 +220,61 @@ func testNativeUnresponsiveRetirementStopsRenewal(t *testing.T, providerFailure 
 	case <-watch.Done():
 		t.Fatal("expired cleanup left the supervisor active")
 	}
-	if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-		t.Fatalf("unretired worker retained renewal: %v", err)
+	if providerFailure {
+		assertRetirementFence(t)
+	} else if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Errorf("unretired worker retained renewal: %v", err)
 	}
 	testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
 		lease, err := w.Lease(t.Context(), string(e.claim.lease.ID))
-		if err == nil && lease.ReleasedAt != nil {
-			t.Fatal("the lease was released before its worker was retired")
+		if err == nil && (lease.ReleasedAt != nil || !lease.ExpiresAt.Equal(e.claim.lease.ExpiresAt)) {
+			t.Fatal("pending worker retirement changed the Hub lease")
 		}
 		return err
 	})
+	if expireLease {
+		stop()
+		testsupport.NativeChangeExpireLease(t, h.config, e.claim.lease.ID)
+		fixtureSetNow(h.scheduler, e.claim.lease.ExpiresAt.Add(time.Second))
+		if _, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+			t.Fatalf("Hub expiry did not end the claim: %v", err)
+		}
+		return
+	}
+	if providerFailure {
+		stop()
+		if err := retireWorker(); err != nil {
+			t.Fatal(err)
+		}
+		if overlap {
+			if overlappingWorkerClosed {
+				t.Fatal("first close included the worker registered during cleanup")
+			}
+			assertRetirementFence(t)
+			if err := e.CloseWorkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if !overlappingWorkerClosed {
+				t.Fatal("second close did not retire the overlapping worker")
+			}
+		}
+		renewed, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
+		if err != nil || !renewed.LeaseRenewedAt.After(e.claim.lease.RenewedAt) {
+			t.Fatalf("renew after retirement: %+v, %v", renewed, err)
+		}
+		_, stopNext, err := e.Guard(t.Context())
+		if err != nil {
+			t.Fatalf("next worker could not start under the current lease: %v", err)
+		}
+		defer stopNext()
+		testsupport.NativeChangeWrite(t, h.config, func(w tenantstore.Writer) error {
+			lease, err := w.Lease(t.Context(), string(e.claim.lease.ID))
+			if err == nil && (lease.ReleasedAt != nil || lease.FencingToken != int64(e.claim.lease.FencingToken)) {
+				t.Fatal("resumed worker changed the Hub lease fence")
+			}
+			return err
+		})
+	}
 }
 
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
@@ -847,7 +930,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					wantReleases = 1
 				}
 				wantRenewals := 0
-				if test.exhausted || !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
+				if !test.staleProcess && test.age < 90*time.Second && (test.terminal || test.lane != "" || test.dependency) {
 					wantRenewals = 1
 				}
 				if renewals != wantRenewals || releases != wantReleases {

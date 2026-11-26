@@ -21,11 +21,13 @@ type NativePhaseReceipt struct {
 const PlanApprovalQuestion = "Do you approve the implementation plan? Reply with Approve plan or describe the changes needed."
 
 type NativePhaseContinuation struct {
-	Plan          *NativePlanState     `json:"plan,omitempty"`
-	RepositoryURL string               `json:"repository_url,omitempty"`
-	LastPushed    *NativePhaseReceipt  `json:"last_pushed,omitempty"`
-	NextPhase     string               `json:"next_phase,omitempty"`
-	Receipts      []NativePhaseReceipt `json:"receipts"`
+	ActiveAttemptID        string               `json:"active_attempt_id,omitempty"`
+	Plan                   *NativePlanState     `json:"plan,omitempty"`
+	RepositoryURL          string               `json:"repository_url,omitempty"`
+	PublishedChangeReceipt *NativePhaseReceipt  `json:"published_change_receipt,omitempty"`
+	LastPushed             *NativePhaseReceipt  `json:"last_pushed,omitempty"`
+	NextPhase              string               `json:"next_phase,omitempty"`
+	Receipts               []NativePhaseReceipt `json:"receipts"`
 }
 
 type NativePlanState struct {

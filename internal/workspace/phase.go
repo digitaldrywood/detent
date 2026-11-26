@@ -18,8 +18,39 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if err != nil {
 		return "", "", "", err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer releaseWorktree()
+	ctx = withHeldWorktreeOperation(ctx, info.Path)
+	paused, pausedErr := rebaseInProgress(ctx, info.Path)
+	if pausedErr != nil {
+		return "", "", "", pausedErr
+	}
+	if paused {
+		return "", "", "", refuse(LandRefusalHeadMoved, "cannot publish an item phase while a rebase is in progress")
+	}
+	if !issue.NoChangeNeeded && issue.Source != nil {
+		headNow, headErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+		if headErr != nil {
+			return "", "", "", headErr
+		}
+		headNow = strings.TrimSpace(headNow)
+		if headNow != issue.Source.Version.HeadSHA {
+			for _, recordedRef := range []string{worktreeReworkBranchRef(issue.ProgressBaseRef), worktreeReworkPendingRef} {
+				if rawBase, recErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "--quiet", recordedRef+"^{commit}"); recErr == nil && strings.TrimSpace(rawBase) == headNow {
+					return "", "", "", refuse(LandRefusalHeadMoved, "reconciled item branch requires a reconciliation commit before publication")
+				}
+			}
+		}
+	}
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
-	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, authorize, func(ctx context.Context) error {
+	expected := info.PhaseRemoteHead
+	if issue.ExpectedPhaseRemoteHead != "" {
+		expected = &issue.ExpectedPhaseRemoteHead
+	}
+	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
@@ -29,11 +60,17 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	})
 }
 
-func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous tracker.NativePhaseReceipt, authorize func(context.Context) error) error {
+func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous PhaseSource, authorize func(context.Context) error) (string, error) {
 	info, err := l.normalizeInfo(info, issue)
 	if err != nil {
-		return err
+		return "", err
 	}
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return "", err
+	}
+	defer releaseWorktree()
+	ctx = withHeldWorktreeOperation(ctx, info.Path)
 	return phasegit.PreserveHistory(ctx, info.Path, issue.Identifier, previous, func(ctx context.Context) error {
 		return l.fetchItemPhase(ctx, info, issue, previous)
 	}, authorize, func(ctx context.Context, args ...string) (string, error) {
@@ -46,6 +83,13 @@ func (l *LocalGit) ItemPhaseHead(ctx context.Context, info Info, issue Issue) (s
 	if err != nil {
 		return "", "", err
 	}
+	if !worktreeOperationHeld(ctx, info.Path) {
+		releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+		if err != nil {
+			return "", "", err
+		}
+		defer releaseWorktree()
+	}
 	return phasegit.Head(ctx, info.Path)
 }
 
@@ -54,7 +98,16 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 	if err != nil {
 		return err
 	}
-	if issue.PhaseSource == nil {
+	releaseWorktree, err := acquireWorktreeOperation(ctx, info.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseWorktree()
+	if issue.RetainPhaseCheckout && !info.Created {
+		return l.verifyRetainedItemPhaseCheckout(ctx, info, issue)
+	}
+	source := itemPhaseCheckoutSource(info, issue.PhaseSource)
+	if source.HeadSHA == "" {
 		return ErrItemPhaseSource
 	}
 	if l.autoBranch {
@@ -63,10 +116,54 @@ func (l *LocalGit) VerifyItemPhaseCheckout(ctx context.Context, info Info, issue
 			return errors.Join(errors.New("checkout is no longer on the assigned item branch"), err)
 		}
 	}
-	return phasegit.VerifyCleanCheckout(ctx, info.Path, l.sourceRoot, *issue.PhaseSource)
+	return phasegit.VerifyCleanCheckout(ctx, info.Path, l.sourceRoot, source.HeadSHA, source.TreeSHA)
 }
 
-func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue Issue) error {
+func itemPhaseCheckoutSource(info Info, receipt *tracker.NativePhaseReceipt) PhaseSource {
+	if info.RecoveredPhase.HeadSHA != "" {
+		return info.RecoveredPhase
+	}
+	if receipt == nil {
+		return PhaseSource{}
+	}
+	return PhaseSource{Branch: receipt.Branch, HeadSHA: receipt.HeadSHA, TreeSHA: receipt.TreeSHA}
+}
+
+func (l *LocalGit) verifyRetainedItemPhaseCheckout(ctx context.Context, info Info, issue Issue) error {
+	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err != nil {
+		return err
+	}
+	if paused {
+		if _, err := l.verifyPausedRebaseState(ctx, info.Path, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}); err != nil {
+			return err
+		}
+	}
+	if issue.PublishedChangeHeadSHA == "" {
+		return nil
+	}
+	head, err := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "refs/heads/"+info.Branch+"^{commit}")
+	if err != nil {
+		return err
+	}
+	return verifyPublishedChangeAncestry(ctx, info.Path, issue.PublishedChangeHeadSHA, strings.TrimSpace(head))
+}
+
+func validItemPhaseReceipt(info Info, receipt *tracker.NativePhaseReceipt) bool {
+	return receipt.Branch == info.PublishBranch() && gitexec.ValidHead(receipt.HeadSHA) && gitexec.ValidHead(receipt.TreeSHA)
+}
+
+func verifyPublishedChangeAncestry(ctx context.Context, path, published, head string) error {
+	if published == "" || published == head {
+		return nil
+	}
+	if err := gitexec.VerifyPublicationAncestry(ctx, path, published, head); err != nil {
+		return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, "selected item history does not contain the published Change"), err)
+	}
+	return nil
+}
+
+func (l *LocalGit) recoverItemPhaseBranch(ctx context.Context, info *Info, issue Issue) error {
 	branch := info.PublishBranch()
 	repository := gitexec.PublicationRepository("", issue.PublicationRepository)
 	if err := verifyPublicationRemote(ctx, l.sourceRoot, defaultGitRemote, repository); err != nil {
@@ -77,13 +174,14 @@ func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue I
 		return fmt.Errorf("read published item branch: %w", err)
 	}
 	receipt := issue.PhaseSource
-	if receipt == nil {
-		if !exists || issue.Source != nil && issue.Source.Version.HeadSHA == head {
-			return nil
+	if !exists && receipt == nil {
+		if issue.PublishedChangeHeadSHA != "" {
+			return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, "published Change has no item branch"))
 		}
-		return fmt.Errorf("%w: published item head has no matching phase receipt or Change source", ErrItemPhaseSource)
+		info.PhaseRemoteHead = &head
+		return nil
 	}
-	if !exists || receipt.Branch != branch || head != receipt.HeadSHA || !gitexec.ValidHead(head) || !gitexec.ValidHead(receipt.TreeSHA) {
+	if !exists || !gitexec.ValidHead(head) || receipt != nil && !validItemPhaseReceipt(*info, receipt) {
 		return fmt.Errorf("%w: published item branch differs from its latest phase receipt", ErrItemPhaseSource)
 	}
 	release, err := l.acquireSourceOperation(ctx)
@@ -102,23 +200,61 @@ func (l *LocalGit) verifyItemPhaseBranch(ctx context.Context, info Info, issue I
 	if strings.TrimSpace(fetched) != head {
 		return fmt.Errorf("%w: published item branch changed during fetch", ErrItemPhaseSource)
 	}
-	tree, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", head+"^{tree}")
-	if err != nil {
-		return fmt.Errorf("read published phase tree: %w", err)
-	}
-	if strings.TrimSpace(tree) != receipt.TreeSHA {
-		return fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource)
-	}
-	if changeHead := issue.PhaseChangeHeadSHA; changeHead != "" {
-		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, changeHead, head); err != nil {
-			return fmt.Errorf("%w: published item phase does not descend from the current Change head: %w", ErrItemPhaseSource, err)
+	var ancestor string
+	if receipt != nil {
+		ancestor = receipt.HeadSHA
+	} else {
+		base := issue.BaseRef
+		if base == "" {
+			base, err = l.newBranchBaseRef(ctx)
+			if err != nil {
+				return err
+			}
 		}
+		ancestor, err = l.resolveWorktreeStartHead(ctx, base)
+		if err != nil {
+			return err
+		}
+	}
+	if head != ancestor {
+		if err := gitexec.VerifyPublicationAncestry(ctx, l.sourceRoot, ancestor, head); err != nil {
+			reason := "published item branch does not descend from its latest phase receipt"
+			if receipt == nil {
+				reason = "published item branch does not descend from the item base"
+			}
+			return errors.Join(ErrItemPhaseSource, refuse(LandRefusalHeadMoved, reason), err)
+		}
+	}
+	if receipt != nil {
+		tree, err := l.itemPhaseTree(ctx, ancestor)
+		if err != nil || tree != receipt.TreeSHA {
+			return errors.Join(fmt.Errorf("%w: published item tree differs from its latest phase receipt", ErrItemPhaseSource), err)
+		}
+	}
+	if err := verifyPublishedChangeAncestry(ctx, l.sourceRoot, issue.PublishedChangeHeadSHA, head); err != nil {
+		return err
+	}
+	info.PhaseRemoteHead = &head
+	if receipt == nil || head != receipt.HeadSHA {
+		tree, err := l.itemPhaseTree(ctx, head)
+		if err != nil {
+			return err
+		}
+		info.RecoveredPhase = PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
 	}
 	return nil
 }
 
-func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, receipt tracker.NativePhaseReceipt) error {
-	return phasegit.Fetch(ctx, info.PublishBranch(), receipt, func(ctx context.Context) string {
+func (l *LocalGit) itemPhaseTree(ctx context.Context, head string) (string, error) {
+	tree, err := gitexec.ReadPublicationSource(ctx, l.sourceRoot, "-c", "advice.graftFileDeprecated=false", "rev-parse", head+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("read published phase tree: %w", err)
+	}
+	return strings.TrimSpace(tree), nil
+}
+
+func (l *LocalGit) fetchItemPhase(ctx context.Context, info Info, issue Issue, source PhaseSource) error {
+	return phasegit.Fetch(ctx, info.PublishBranch(), source, func(ctx context.Context) string {
 		return RepositoryURL(ctx, l.sourceRoot)
 	}, issue.PullRequestRepository, l.acquireSourceOperation, l.runGit)
 }

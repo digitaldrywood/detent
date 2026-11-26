@@ -400,12 +400,8 @@ func NativeRuntimeIssueContractEvaluation(releaseDeliveryCurrent func(hubrecords
 	if strings.Contains(strings.ToLower(plan.Issue.Body), "detent:no-dispatch") {
 		return ContractEvaluation{ReasonCode: "no_claimable_work", Reason: "The issue contains detent:no-dispatch; remove the marker to permit dispatch"}, nil
 	}
-	if plan.Issue.LinkedSource != nil && plan.Issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.Issue.State, "Triage") || plan.Issue.IssueContract != nil && plan.Issue.IssueContract.Exempt {
+	if plan.Issue.LinkedSource != nil && plan.Issue.LinkedSource.Status != "complete" || strings.EqualFold(plan.Issue.State, "Triage") || plan.Issue.IssueContract == nil || plan.Issue.IssueContract.Exempt || plan.Issue.IssueContract.ReleaseDelivery == nil {
 		return allowed, nil
-	}
-	contract, err := config.ResolvePolicyIssueContract(plan.Descriptor)
-	if err != nil {
-		return ContractEvaluation{}, err
 	}
 	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, plan.Descriptor)
 	if err != nil {
@@ -418,21 +414,14 @@ func NativeRuntimeIssueContractEvaluation(releaseDeliveryCurrent func(hubrecords
 	if !strings.EqualFold(plan.Issue.State, target) {
 		return allowed, nil
 	}
-	if plan.Issue.IssueContract != nil && plan.Issue.IssueContract.ReleaseDelivery != nil && !releaseDeliveryCurrent(plan, contract) {
+	contract, err := config.ResolvePolicyIssueContract(plan.Descriptor)
+	if err != nil {
+		return ContractEvaluation{}, err
+	}
+	if !releaseDeliveryCurrent(plan, contract) {
 		return ContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: "The verified release delivery contract changed; current approved policy and exact associated delivery are required"}, nil
 	}
-	evaluation := contract.Evaluate(hubrecords.NativeContractIssue(plan.Issue))
-	if evaluation.Satisfied() {
-		return allowed, nil
-	}
-	var reasons []string
-	if len(evaluation.Missing) > 0 {
-		reasons = append(reasons, "Add or complete these required issue sections: "+strings.Join(evaluation.Missing, ", "))
-	}
-	if evaluation.NeedsConfirmation {
-		reasons = append(reasons, "A human must confirm the success criteria by editing or saving the issue body")
-	}
-	return ContractEvaluation{ReasonCode: "issue_contract_unsatisfied", Reason: strings.Join(reasons, "; "), Missing: evaluation.Missing}, nil
+	return allowed, nil
 }
 
 func (d AdmissionDeps) ReadRuntimeUnresolvedDependencies(ctx context.Context, r tenantstore.Reader, scope hubscope.NativeScope, issue tracker.NativeIssue, project projectstore.Record) ([]tracker.NativeDependency, bool, error) {

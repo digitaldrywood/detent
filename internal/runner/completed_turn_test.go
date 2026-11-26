@@ -95,15 +95,19 @@ func (e *finalizingDiffExecution) SetDiffSource(source AttemptDiffSource) {
 
 func TestCompletedNativeFinalizationDiff(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		commit       bool
-		newBase      bool
-		implicitBase bool
+		name          string
+		commit        bool
+		newBase       bool
+		implicitBase  bool
+		missingIndex  bool
+		mergeAdvanced bool
 	}{
 		{name: "host commit replaces the precommit diff", commit: true},
 		{name: "implicit base survives the host commit", commit: true, implicitBase: true},
 		{name: "no commit rework replaces an older diff"},
 		{name: "finalized base survives workspace cleanup", commit: true, newBase: true},
+		{name: "finalized diff does not need the worktree index", commit: true, missingIndex: true},
+		{name: "merge advances the finalized phase head", mergeAdvanced: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			directory := initRunnerSourceRepo(t)
@@ -114,6 +118,15 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			commit := func() {
 				runRunnerGit(t, directory, "commit", "-m", "implement")
 				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				if test.missingIndex {
+					index := filepath.Join(directory, ".git", "index")
+					if err := os.Rename(index, index+".saved"); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(index, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			if test.commit {
 				backend.onFinalize = commit
@@ -133,20 +146,44 @@ func TestCompletedNativeFinalizationDiff(t *testing.T) {
 			defer cancel()
 			request := RunRequest{Execution: execution, finalizeNativeWork: true}
 			issue := workspace.Issue{BaseRef: base}
+			if test.mergeAdvanced {
+				previous := tracker.NativeCheckpoint{HeadSHA: backend.recoveryStates[0].HeadSHA, WorktreeState: "unpushed"}
+				remoteCheckpoint(&previous)
+				execution.recovery.Attempts = []tracker.NativeAttempt{{Checkpoint: &previous}}
+				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "retain phase history")
+				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				backend.recoveryStates[0].UnpushedCommits = 1
+				request.phaseReceipts = true
+				request.publishedPhaseSource = &workspace.PhaseSource{HeadSHA: backend.recoveryStates[0].HeadSHA}
+
+			}
 			if test.implicitBase {
 				issue.BaseRef = ""
-				request.attemptDiffSource = r.attemptDiffSource(ctx, backend.info, issue)
+				r.setAttemptDiffSource(ctx, &request, execution, backend.info, issue)
 			}
 			if err := r.afterExecution(ctx, request, backend, backend.info, issue, AgentResume{}, true); err != nil {
 				t.Fatal(err)
 			}
-			if !backend.afterRun || execution.checkpoint == nil {
+			if backend.afterRun == test.mergeAdvanced || execution.checkpoint == nil {
 				t.Fatal("finalization did not checkpoint and clean up")
+			}
+			if test.mergeAdvanced {
+				runRunnerGit(t, directory, "commit", "--allow-empty", "-m", "move after finalization")
+				moved := strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+				if diff, available := execution.diffSource(ctx); available || diff.HeadSHA != moved {
+					t.Fatalf("a moved checkout must report the observed head without a diff: head=%s available=%t", diff.HeadSHA, available)
+				}
 			}
 			if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
 				t.Fatal(err)
 			}
 			diff, ok := execution.diffSource(ctx)
+			if test.mergeAdvanced {
+				if ok {
+					t.Fatal("cleanup restored the superseded diff")
+				}
+				return
+			}
 			if !ok || diff.HeadSHA != execution.checkpoint.HeadSHA || diff.HeadSHA == base || diff.BaseSHA != base || len(diff.Files) != 1 || diff.Files[0].Path != "implementation.go" {
 				t.Fatalf("final diff did not survive cleanup at the verified checkpoint: diff=%+v available=%t checkpoint=%+v", diff, ok, execution.checkpoint)
 			}
@@ -446,6 +483,167 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 	}
 }
 
+type restoredRebaseWorkspace struct {
+	*completedExecutionWorkspace
+	lostInspection       bool
+	retainedAfterTimeout bool
+}
+
+func (w *restoredRebaseWorkspace) FinalizeNativeWork(ctx context.Context, info workspace.Info, issue workspace.Issue, validate func(context.Context) error) (string, error) {
+	if w.finalizationCalls == 1 {
+		w.recoveryStates[0].HeadSHA = "rebase-base"
+		w.recoveryStates[0].WorkspaceFingerprint = "conflict-digest"
+		w.finalizationErr = &workspace.SourceFinalizationIncomplete{Status: workspace.MergePrepareStatusConflict}
+	}
+	return w.completedExecutionWorkspace.FinalizeNativeWork(ctx, info, issue, validate)
+}
+
+func (w *restoredRebaseWorkspace) PrepareRework(context.Context, workspace.Info, workspace.Issue, workspace.MergePrepareOptions, func(context.Context) error) (workspace.MergePrepareResult, error) {
+	if w.finalizationCalls == 2 {
+		return workspace.MergePrepareResult{}, errors.New("rework preparation ran again over the restored conflict")
+	}
+	return workspace.MergePrepareResult{Status: workspace.MergePrepareStatusClean}, nil
+}
+
+func (*restoredRebaseWorkspace) VerifyReworkRecovery(context.Context, workspace.Info, workspace.Issue, string, string, workspace.RecoveryState) (bool, error) {
+	return false, nil
+}
+
+type restoredRebaseExecution struct {
+	*retryStepExecution
+	source workspace.ChangeSource
+}
+
+func (*restoredRebaseExecution) SetChangeSource(func(context.Context, string, string) (tracker.ChangeSourceCapture, error)) {
+}
+
+func (e *restoredRebaseExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return e.source, nil
+}
+
+func (w *restoredRebaseWorkspace) PreserveIssue(ctx context.Context, issue workspace.Issue) (workspace.Preservation, error) {
+	if w.finalizationCalls == 2 && w.lostInspection {
+		return workspace.Preservation{Preserved: w.retainedAfterTimeout}, context.DeadlineExceeded
+	}
+	return w.completedExecutionWorkspace.PreserveIssue(ctx, issue)
+}
+
+func TestRecoveredIncompleteSourceReturnsToImplementation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		rebase     bool
+		inspection bool
+		retained   bool
+	}{
+		{name: "dirty source"},
+		{name: "paused rebase", rebase: true},
+		{name: "paused rebase with retention inspection timeout", rebase: true, inspection: true, retained: true},
+		{name: "paused rebase without confirmed retention", rebase: true, inspection: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			testRecoveredIncompleteSource(t, test.rebase, test.inspection, test.retained)
+		})
+	}
+}
+
+func testRecoveredIncompleteSource(t *testing.T, rebase, lostInspection, retained bool) {
+	t.Helper()
+	info := workspace.Info{Path: t.TempDir(), Branch: "native"}
+	dirty := workspace.RecoveryState{HeadSHA: "completed-head", WorkspaceFingerprint: "dirty-digest", TrackedPaths: []string{"example.go"}}
+	backend := &completedExecutionWorkspace{
+		retainedExecutionWorkspace: retainedExecutionWorkspace{
+			fakeWorkspaceBackend: &fakeWorkspaceBackend{info: info, recoveryStates: []workspace.RecoveryState{dirty}},
+		},
+		finalizationErr: &workspace.SourceFinalizationIncomplete{Status: workspace.MergePrepareStatusDirty},
+	}
+	var runnerWorkspace workspace.Backend = backend
+	correction := "stage any remaining issue changes"
+	if rebase {
+		runnerWorkspace = &restoredRebaseWorkspace{completedExecutionWorkspace: backend, lostInspection: lostInspection, retainedAfterTimeout: retained}
+		correction = "runner paused the rebase at unresolved conflicts"
+	}
+	message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	first := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	second := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+	recordedResume := AgentResume{ThreadID: "implementation-thread", SessionID: "implementation-session"}
+	agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{
+		updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}},
+		result:  AgentTurnResult{ThreadID: recordedResume.ThreadID, SessionID: recordedResume.SessionID, TurnID: "completed-turn"},
+	}}
+	agent.afterTurn = func() {
+		if agent.calls == 1 {
+			return
+		}
+		if agent.request.Resume != recordedResume || agent.verifiedResume != recordedResume {
+			t.Fatalf("correction resume = %+v, verified = %+v, want recorded session %+v", agent.request.Resume, agent.verifiedResume, recordedResume)
+		}
+		if agent.request.Workspace != info.Path || agent.request.ReadOnly || second.published ||
+			!strings.Contains(agent.request.Prompt, correction) {
+			t.Fatalf("correction did not reach the writable implementation workspace before publication: workspace=%q read-only=%t published=%t prompt=%q", agent.request.Workspace, agent.request.ReadOnly, second.published, agent.request.Prompt)
+		}
+		backend.finalizationErr = nil
+		backend.onFinalize = func() {
+			backend.recoveryStates[0] = workspace.RecoveryState{HeadSHA: "finalized-head", WorkspaceFingerprint: "clean-digest"}
+		}
+	}
+	cfg := config.Config{}
+	cfg.Agent.MaxTurns = 1
+	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: runnerWorkspace, AgentBackend: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RunRequest{Execution: first, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+	if rebase {
+		request.Issue.State = "Rework"
+	}
+	if _, err := r.Run(t.Context(), request); !errors.Is(err, ErrNativeRecoveryRequired) || first.finish != "interrupted" || first.published || agent.calls != 1 {
+		t.Fatalf("first run lost unfinished source: error=%v outcome=%q published=%t turns=%d", err, first.finish, first.published, agent.calls)
+	}
+	if first.checkpoint == nil || first.checkpoint.Resume != "resume_session" {
+		t.Fatalf("interrupted attempt did not retain the provider session: %+v", first.checkpoint)
+	}
+	sessions := &fakeSessionStore{sessionID: 18, resumeState: store.AgentResumeState{
+		DetentSessionID: 17, ProviderThreadID: recordedResume.ThreadID, ProviderSessionID: recordedResume.SessionID,
+		RequestedModel: first.identity.Model, AgentBackendID: first.identity.Backend, AgentBackendKind: "codex", AgentRole: first.identity.Role,
+	}}
+	r.store = sessions
+	second.recovery.Lease = tracker.NativeLease{ID: "current-lease", MachineID: "machine", FencingToken: 2}
+	second.recovery.Attempts = []tracker.NativeAttempt{{
+		NativeRunData: tracker.NativeRunData{AttemptID: "first", CompletionBody: message, Steps: first.steps, Identity: &first.identity, MachineID: "machine", LeaseID: "prior-lease", FencingToken: 1},
+		Status:        first.finish, Checkpoint: first.checkpoint,
+	}}
+	recovered := nativeTurnResumeAttempt(second.recovery)
+	if !phaserecovery.TurnMatches(recovered, &dirty) || recovered.Checkpoint.WorktreeState != "dirty" {
+		t.Fatalf("first run did not produce a reusable dirty turn receipt: %+v", recovered)
+	}
+	request.Execution = second
+	if rebase {
+		base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+		bundle := []byte("# v2 git bundle\n-" + base + " base\n" + head + " HEAD\n\nPACK")
+		source := &tracker.ChangeSource{Format: "git-bundle", BaseSHA: base, HeadSHA: head, Bytes: int64(len(bundle)),
+			BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: tracker.ChangeSourceDigest(nil)}
+		request.Execution = &restoredRebaseExecution{retryStepExecution: second, source: workspace.ChangeSource{
+			Version: tracker.ChangeVersion{ID: "published-change", ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Source: source}},
+			Bundle:  bundle,
+		}}
+	}
+	result, err := r.Run(t.Context(), request)
+	if lostInspection && !retained {
+		if !errors.Is(err, ErrWorkspacePreparation) || !errors.Is(err, context.DeadlineExceeded) || second.published || agent.calls != 1 {
+			t.Fatalf("correction started without confirmed retention: error=%v published=%t turns=%d", err, second.published, agent.calls)
+		}
+		return
+	}
+	if err != nil || result.FinalState != FinalStateCompleted || !second.published || agent.calls != 2 || backend.finalizationCalls != 3 ||
+		second.checkpoint == nil || second.checkpoint.HeadSHA != "finalized-head" || second.checkpoint.WorktreeState != "clean" {
+		t.Fatalf("retry did not correct the restored source: error=%v state=%s published=%t turns=%d finalizations=%d checkpoint=%+v",
+			err, result.FinalState, second.published, agent.calls, backend.finalizationCalls, second.checkpoint)
+	}
+	if sessions.resumeLookup.NativeAttemptID != "first" || sessions.started.ResumedFromSessionID != 17 {
+		t.Fatalf("correction did not use the recorded Detent session: lookup=%+v session start=%+v", sessions.resumeLookup, sessions.started)
+	}
+}
+
 func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	result, err := b.fakeCodexClient.RunTurn(ctx, request, update)
 	if !strings.HasPrefix(request.Prompt, progresscheck.FailureInstructions) {
@@ -501,16 +699,20 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 		{name: "long publication stops at its work budget", publicationDelay: 31 * time.Minute, workBudget: 30 * time.Minute, publicationTimeout: true},
 		{name: "publication exceeds work budget", publicationDelay: 6 * time.Minute, publicationTimeout: true},
 		{name: "publication respects revoked authority", publicationDelay: 2 * time.Minute, publicationRevoked: true},
-		{name: "validation exceeds cleanup deadline", validationDelay: 2 * time.Minute},
+		{name: "validation exceeds cleanup deadline", validationDelay: 2 * time.Minute, legacyReceiptJSON: true},
+		{name: "validation and validator each keep full work budget", validationDelay: 4 * time.Minute, validatorDelay: 4 * time.Minute, workBudget: 5 * time.Minute},
 		{name: "validation exceeds work budget", validationDelay: 6 * time.Minute, validationTimeout: true},
 		{name: "validation uses session budget without a turn limit", validationDelay: 2 * time.Minute, sessionBudget: true},
 		{name: "validation exceeds session budget without a turn limit", validationDelay: 6 * time.Minute, validationTimeout: true, sessionBudget: true},
 		{name: "legacy rolling mode validates finalization", validationDelay: 2 * time.Minute, rollingBarrier: true},
-		{name: "operator stop during successful long validation", operatorStop: true, validationDelay: 2 * time.Minute, legacyReceiptJSON: true},
+		{name: "operator stop cancels long validation", operatorStop: true, validationDelay: 2 * time.Minute},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithCancel(t.Context())
+				if test.expired {
+					ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+				}
 				defer cancel()
 				ctx, stopOperator := context.WithCancelCause(ctx)
 				defer stopOperator(context.Canceled)
@@ -593,7 +795,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 					t.Fatal("host finalization preceded provider completion observation")
 				}
 				publicationFailed := test.publicationTimeout || test.publicationRevoked
-				failed := test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
+				failed := test.expired || test.cancelled || test.revoked || test.validationTimeout || test.gateFailure && !test.blocked || test.operatorStop
 				if (completion.Err != nil) != (failed || publicationFailed) || execution.published != (!failed && !publicationFailed && !test.blocked) || backend.retained != failed || agent.calls != 1 {
 					t.Fatalf("error=%v published=%t retained=%t turns=%d", completion.Err, execution.published, backend.retained, agent.calls)
 				}
@@ -661,8 +863,8 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				if test.validationTimeout && (!errors.Is(completion.Err, context.DeadlineExceeded) || execution.validation != nil || execution.finish == "succeeded") {
 					t.Fatalf("timed-out validation was accepted: error=%v receipt=%+v finish=%s", completion.Err, execution.validation, execution.finish)
 				}
-				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation == nil || execution.validation.ExitCode != 0 || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
-					t.Fatalf("operator stop lost successful validation or checkpoint: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
+				if test.operatorStop && (!errors.Is(completion.Err, ErrOperatorStopped) || execution.validation != nil || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.HeadSHA != "completed-head") {
+					t.Fatalf("operator stop did not cancel long validation cleanly: error=%v validation=%+v finish=%s checkpoint=%+v", completion.Err, execution.validation, execution.finish, execution.checkpoint)
 				}
 				if test.validationDelay > 0 && !failed && (execution.validation == nil || execution.validation.HeadSHA != "completed-head" || execution.validation.ExitCode != 0) {
 					t.Fatalf("successful finalized-head validation was not published: %+v", execution.validation)
@@ -673,53 +875,17 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 	}
 }
 
-type reapedExecutionWorkspace struct {
-	completedExecutionWorkspace
-	captureErr error
-	original   workspace.Info
-	restored   bool
-}
-
-func (w *reapedExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspace.Info, _ workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
-	if err := validate(ctx); err != nil {
-		return previous, false, err
-	}
-	if w.captureErr != nil {
-		return previous, false, w.captureErr
-	}
-	return workspace.CheckpointRef{Ref: tracker.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: "completed-head", BaseSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
-}
-
-func (w *reapedExecutionWorkspace) RestoreCheckpointForFinalization(_ context.Context, original workspace.Info, issue workspace.Issue, checkpoint workspace.CheckpointRef) (workspace.Info, workspace.Issue, error) {
-	if !w.retained || checkpoint.CommitSHA != strings.Repeat("c", 40) || checkpoint.TreeSHA != strings.Repeat("e", 40) {
-		return workspace.Info{}, issue, errors.New("restore requires retained workspace and immutable checkpoint")
-	}
-	w.original = original
-	w.restored = true
-	return workspace.Info{Path: filepath.Join(filepath.Dir(original.Path), "restored"), Branch: "restored"}, issue, nil
-}
-
-func (w *reapedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, info workspace.Info, issue workspace.Issue, validate func(context.Context) error) (string, error) {
-	if !w.restored || info.Path == w.original.Path || info.Branch == w.original.Branch {
-		return "", errors.New("finalization used mutable survivor workspace")
-	}
-	return w.completedExecutionWorkspace.FinalizeNativeWork(ctx, info, issue, validate)
-}
-
 func TestCompletedNativeTurnReapFailure(t *testing.T) {
 	turnFailure := errors.New("implementation failed")
 	for _, test := range []struct {
-		name         string
-		captureErr   error
-		turnErr      error
-		wantRecovery bool
+		name    string
+		turnErr error
 	}{
-		{name: "captured source completes"},
-		{name: "uncaptured source recovers", captureErr: errors.New("checkpoint upload unavailable"), wantRecovery: true},
+		{name: "completed turn remains interrupted"},
 		{name: "failed turn keeps its failure", turnErr: turnFailure},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			backend := &reapedExecutionWorkspace{completedExecutionWorkspace: completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}, captureErr: test.captureErr}
+			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
 			execution := &finalizingTestExecution{}
 			agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{err: test.turnErr, result: AgentTurnResult{ThreadID: "finished-thread", SessionID: "finished-session"}, updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1234}}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {}}
 			var logs bytes.Buffer
@@ -736,27 +902,11 @@ func TestCompletedNativeTurnReapFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			completion := supervisor.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work", Identifier: "example-org/example-project#1"}, Mode: RunModeImplement})
-			wantSuccess := test.turnErr == nil && !test.wantRecovery
-			if (completion.Err == nil) != wantSuccess || execution.published != wantSuccess || backend.finalized != wantSuccess || !backend.retained || agent.calls != 1 {
+			if !errors.Is(completion.Err, ErrWorkerProcessReap) || execution.published || backend.finalized || !backend.retained || agent.calls != 1 {
 				t.Fatalf("error=%v published=%t finalized=%t retained=%t calls=%d", completion.Err, execution.published, backend.finalized, backend.retained, agent.calls)
 			}
-			if test.turnErr != nil && (!errors.Is(completion.Err, test.turnErr) || execution.finish != "failed") {
+			if test.turnErr != nil && !errors.Is(completion.Err, test.turnErr) {
 				t.Fatalf("lost turn failure: %v", completion.Err)
-			}
-			if errors.Is(completion.Err, ErrNativeRecoveryRequired) != test.wantRecovery {
-				t.Fatalf("recovery error=%v", completion.Err)
-			}
-			if test.wantRecovery && (!errors.Is(completion.Err, ErrWorkerProcessReap) || execution.finish != "interrupted" || execution.checkpoint == nil || execution.checkpoint.Resume != "resume_session" || backend.restored) {
-				t.Fatalf("recovery error=%v outcome=%s checkpoint=%+v restored=%t", completion.Err, execution.finish, execution.checkpoint, backend.restored)
-			}
-			if test.wantRecovery {
-				r.store = &fakeSessionStore{resumeState: store.AgentResumeState{ProviderThreadID: "finished-thread", ProviderSessionID: "finished-session"}}
-				execution.recovery.Attempts = []tracker.NativeAttempt{{Status: execution.finish, Checkpoint: execution.checkpoint, NativeRunData: tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1}}}}
-				_, runtime, _, _ := r.runtimeSnapshot()
-				resume, err := r.nativeSessionResumeState(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}}, runtime)
-				if err != nil || resume.ProviderThreadID != "finished-thread" || resume.ProviderSessionID != "finished-session" {
-					t.Fatalf("finished implementation did not retain its provider resume: %+v %v", resume, err)
-				}
 			}
 			if !strings.Contains(logs.String(), `"attribution":"instance"`) || !strings.Contains(logs.String(), "workspace processes remained after SIGKILL") {
 				t.Fatalf("missing instance cleanup evidence: %s", logs.String())
@@ -819,8 +969,8 @@ func TestRestoredSourceGateRepairSurvivesCompletion(t *testing.T) {
 		retainedReview: &retainedReviewWorkspace{},
 	}
 	err = r.afterExecution(ctx, request, source, info, workspace.Issue{PhaseSource: &tracker.NativePhaseReceipt{}}, AgentResume{}, false)
-	repair, ok := err.(*sourceGateRepair)
-	if !ok || repair.output != source.validationOutput || execution.finalizations != 0 {
+	repair, ok := err.(*sourceRepair)
+	if !ok || repair.incomplete != nil || repair.output != source.validationOutput || execution.finalizations != 0 {
 		t.Fatalf("restored gate result=%T %v, artifact finalizations=%d", err, err, execution.finalizations)
 	}
 }
@@ -961,25 +1111,29 @@ func (w *deadlineRoundWorkspace) PushItemPhase(ctx context.Context, info workspa
 	return "example-phase", head, tree, validate(ctx)
 }
 
-func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, tracker.NativePhaseReceipt, func(context.Context) error) error {
-	return nil
+func (*deadlineRoundWorkspace) PreserveItemPhaseHistory(context.Context, workspace.Info, workspace.Issue, workspace.PhaseSource, func(context.Context) error) (string, error) {
+	return "", nil
 }
 
 type deadlineRoundBackend struct {
 	fakeCodexClient
-	run func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
+	detectToolLoops bool
+	run             func(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
 }
+
+func (b *deadlineRoundBackend) SupportsToolLoopDetection() bool { return b.detectToolLoops }
 
 func (b *deadlineRoundBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	return b.run(ctx, request, update)
 }
 
 type deadlineRoundScenario struct {
-	judgeTempDir   string
-	judgeFailure   error
-	loseFence      bool
-	loseFinalReply bool
-	answer         string
+	detectToolLoops bool
+	judgeTempDir    string
+	judgeFailure    error
+	loseFence       bool
+	loseFinalReply  bool
+	answer          string
 }
 
 func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
@@ -1002,7 +1156,7 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	timeoutRecordedBeforeJudge := false
 	var judgeScratch string
 	resume := AgentResume{ThreadID: "thread-impl", SessionID: "session-impl"}
-	agent := &deadlineRoundBackend{run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	agent := &deadlineRoundBackend{detectToolLoops: scenario.detectToolLoops, run: func(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 		if req.TextOnly {
 			judgments++
 			if scenario.answer != "" && (!strings.Contains(req.Prompt, scenario.answer) || strings.Contains(req.Prompt, "Deleted wording") || strings.Contains(req.Prompt, "Superseded worker question")) {
@@ -1035,6 +1189,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 			if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, ThreadID: resume.ThreadID, TurnID: "round-1"}); err != nil {
 				return AgentTurnResult{}, err
 			}
+			if scenario.detectToolLoops {
+				if _, ok := ctx.Deadline(); ok || !req.DetectToolLoops || req.TurnTimeout != deadline || req.MaxDuration != 0 {
+					t.Fatalf("provider turn received a runner deadline or lost its own timeout: deadline=%v detection=%v provider timeout=%v runner timeout=%v", ok, req.DetectToolLoops, req.TurnTimeout, req.MaxDuration)
+				}
+				return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, &sessiontimeout.Error{Kind: sessiontimeout.TurnDeadline, Limit: deadline}
+			}
 			limit.Expire()
 			return AgentTurnResult{ThreadID: resume.ThreadID, SessionID: resume.SessionID}, context.Cause(ctx)
 		}
@@ -1046,8 +1206,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	if scenario.judgeTempDir != "" {
 		t.Setenv("TMPDIR", scenario.judgeTempDir)
 	}
+	agentConfig := config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}
+	if scenario.detectToolLoops {
+		agentConfig.MaxSessionDurationMS = int(deadline / time.Millisecond)
+	}
 	r, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: sessions, Workspace: source, AgentBackend: agent, turnLimit: limit.Context, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
-		Workflow: config.Workflow{Config: config.Config{Agent: config.Agent{MaxTurnDurationMS: int(deadline / time.Millisecond)}}, Prompt: "Complete the native issue"},
+		Workflow: config.Workflow{Config: config.Config{Agent: agentConfig}, Prompt: "Complete the native issue"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1084,6 +1248,12 @@ func runNativeDeadlineRounds(t *testing.T, scenario deadlineRoundScenario) {
 	if verdict.Phase != "implement" || verdict.ProviderTimeout == nil || verdict.ProviderTimeout.Kind != sessiontimeout.TurnDeadline || verdict.ProviderTimeout.Limit != deadline {
 		t.Fatalf("round evidence = %+v", verdict)
 	}
+}
+
+func TestResultAwareReworkUsesProviderDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runNativeDeadlineRounds(t, deadlineRoundScenario{detectToolLoops: true})
+	})
 }
 
 func TestRoundJudgeReadsOperatorAnswer(t *testing.T) {

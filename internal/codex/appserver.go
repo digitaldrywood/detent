@@ -604,7 +604,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	turnTransport := transport
 	var tools *toolTransport
 	if req.ToolHandler != nil {
-		tools = newToolTransport(ctx, transport, req.ToolHandler, s.logger)
+		tools = newToolTransport(ctx, transport, req.ToolHandler, s.logger, lifetime)
 		defer func() { err = tools.finish(turnError(err)) }()
 		turnTransport = tools
 	}
@@ -622,7 +622,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		turnID := turn.ID
 		lifetime.Activity()
 		if tools != nil {
-			tools.observeTurn(threadID, turnID, lifetime)
+			tools.observeTurn(threadID, turnID)
 		}
 
 		result = RunTurnResult{
@@ -665,6 +665,9 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			return RunTurnResult{}, err
 		}
 		confirmedTerminal = req.DetectToolLoops
+		if tools != nil {
+			tools.observeTurn("", "")
+		}
 
 		if turnIndex == 0 && req.FinalPrompt != nil {
 			if prompt := req.FinalPrompt(); prompt != "" {

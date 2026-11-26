@@ -13,6 +13,10 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 	var observation *tracker.NativeRuntimeObservation
 	localWorker := e.hasWorkers()
 	e.cancelMu.Lock()
+	if e.unretiredProvider {
+		e.cancelMu.Unlock()
+		return executioncontract.ExecutionState{}, runner.ErrProviderSessionUnretired
+	}
 	controller := e.supervisor != nil
 	lost := e.supervisionLost || controller && supervisorLost(e.supervisor)
 	select {
@@ -92,16 +96,19 @@ func (e *nativeExecution) FinishPrepared(ctx context.Context, reason string) err
 	unretired := e.unretiredProvider
 	e.cancelMu.Unlock()
 	if unretired {
-		return runner.ErrExecutionAuthorityUnavailable
+		return runner.ErrProviderSessionUnretired
 	}
 	return e.finishPrepared(ctx, reason)
 }
 func (e *nativeExecution) Cancel(cause error) {
 	if runner.UnretiredProviderSession(cause) {
 		e.cancelMu.Lock()
-		e.supervisionLost = true
+		defer e.cancelMu.Unlock()
 		e.unretiredProvider = true
-		e.cancelMu.Unlock()
+		if e.cancel != nil {
+			e.cancel(cause)
+		}
+		return
 	}
 	e.cancelExecution(cause)
 }

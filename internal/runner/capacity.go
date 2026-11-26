@@ -3,9 +3,10 @@ package runner
 import (
 	"context"
 	"errors"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -75,7 +76,7 @@ type CapacityStatusController interface {
 
 func (r *Runner) CapacityScope(req RunRequest) (backendcapacity.Scope, bool) {
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runworkspace.RunRole(req.Mode, req.Issue)
+	role := req.executionRole()
 	routeRole := runtime.effectiveRunRole(role)
 	selection, _, backendConfig, err := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if err != nil {
@@ -94,7 +95,7 @@ func (r *Runner) ClassifyCapacityError(
 		return nil, false
 	}
 	workflow, runtime, _, _ := r.runtimeSnapshot()
-	role := runworkspace.RunRole(req.Mode, req.Issue)
+	role := req.executionRole()
 	routeRole := runtime.effectiveRunRole(role)
 	selection, backend, backendConfig, selectionErr := runtime.selectBackendForRole(req.Issue, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
 	if selectionErr != nil {
