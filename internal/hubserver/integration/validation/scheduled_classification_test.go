@@ -287,6 +287,7 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			beforeImports := importer.calls
 			beforeCalls := backend.calls
 			for n := range 30 {
 				distinct := input
@@ -308,6 +309,9 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			}
 			if calls := backend.calls - beforeCalls; calls != 1 || rows != 2 {
 				t.Fatalf("distinct jobs made %d model calls and left %d decisions, want 1 call and 2 decisions (including the existing decision)", calls, rows)
+			}
+			if imports := importer.calls - beforeImports; imports != 1 {
+				t.Fatalf("organization budget allowed %d GitHub verifications, want 1", imports)
 			}
 		})
 	}
