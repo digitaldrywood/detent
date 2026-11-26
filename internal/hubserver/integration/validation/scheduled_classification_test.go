@@ -35,11 +35,11 @@ type ciDecisionBackend struct {
 }
 
 func (b *ciDecisionBackend) RunTurn(ctx context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	b.calls++
 	if !b.expected {
-		b.t.Fatal("replay or invalid evidence reached the AI backend")
+		b.t.Fatalf("replay or invalid evidence reached the AI backend on call %d", b.calls)
 	}
 	b.expected = false
-	b.calls++
 	if onCall := b.onCall; onCall != nil {
 		b.onCall = nil
 		onCall()
@@ -78,12 +78,12 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 	t.Parallel()
 	backend := &ciDecisionBackend{}
 	importer := &scheduledClassificationImporter{}
-	hub := hubfixture.Open(t, hubserver.Config{
+	cfg := hubserver.Config{
 		Clock:         func() time.Time { return time.Unix(7200, 0).UTC() },
 		ImportBackend: importer,
 		Conversation:  &hubserver.ConversationConfig{Backend: backend, Model: "configured-model"},
-	})
-	storage := hub.Repository
+	}
+	local := hubfixture.Open(t, cfg)
 	repository := "owner/repository"
 	for _, test := range []struct {
 		name, log string
@@ -94,10 +94,20 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 		{"timeout with location", "internal/client.go:42:3: network timeout", progresscheck.CIDecision{Outcome: progresscheck.CIInfrastructure, Target: "download timeout", Reason: "external network unavailable"}, false},
 		{"unknown", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
 		{"interrupted request", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
+		{"storage denial", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "TestExample", Reason: strings.Repeat("assertion failed ", 20)}, false},
 		{"provider unavailable", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			*backend = ciDecisionBackend{t: t, decision: test.decision, fail: test.fail}
+			hub := local
+			var hosted *hubfixture.Hosted
+			if test.name == "storage denial" {
+				hostedConfig := cfg
+				hostedConfig.Hosted = hubfixture.HostedSecurityConfig(hubfixture.NewHostedProvider()).Hosted
+				hosted = hubfixture.OpenHosted(t, hostedConfig)
+				hub = hosted.Hub
+			}
+			storage := hub.Repository
 			org := hub.Primary
 			firstProject := hubtest.Project(t, storage, org, hubtest.ProjectOptions{}).ID
 			secondProject := hubtest.Project(t, storage, org, hubtest.ProjectOptions{}).ID
@@ -116,7 +126,21 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			actor := hubtest.Credential(t, storage, org, hubtest.CredentialOptions{KeyScope: "write", Now: hub.Now(), Projects: []tracker.ProjectID{firstProject, secondProject}})
+			options := hubtest.CredentialOptions{KeyScope: "write", Now: hub.Now(), Projects: []tracker.ProjectID{firstProject, secondProject}}
+			if hosted != nil {
+				hosted.Project = firstProject
+				user := hosted.User(t, "classifier", "owner", "classifier@example.test", "write", "")
+				member := new(hubtest.SeededMember)
+				if err := storage.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
+					var err error
+					member.Member, err = r.AccessMember(t.Context(), user.Identity.Subject)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				options.Member = member
+			}
+			actor := hubtest.Credential(t, storage, org, options)
 			request := func(project tracker.ProjectID, input progresscheck.CIFailure) *httptest.ResponseRecorder {
 				path := hubfixture.ProjectBase(org, project) + "/scheduled-ci-decisions"
 				return hub.Request(t, http.MethodPost, path, actor.Token, input)
@@ -133,7 +157,11 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 			if test.name == "Go test" {
 				backend.onCall = func() {
 					before := importer.calls
-					call(firstProject, input, http.StatusConflict)
+					replay := call(firstProject, input, http.StatusOK)
+					var decision progresscheck.CIDecision
+					if err := json.Unmarshal(replay.Body.Bytes(), &decision); err != nil || decision.Outcome != progresscheck.CIUnknown {
+						t.Fatalf("in-flight replay = %+v, %v", decision, err)
+					}
 					if importer.calls != before {
 						t.Error("in-flight duplicate reached the importer")
 					}
@@ -150,6 +178,31 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				if response.Code == http.StatusOK || backend.calls != 1 {
 					t.Fatalf("interrupted classification status=%d calls=%d", response.Code, backend.calls)
 				}
+			}
+			if test.name == "storage denial" {
+				backend.expected = true
+				backend.onCall = func() {
+					if err := storage.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+						_, err := w.AdjustCollaborationBytes(t.Context(), 1<<55, 1<<55+1<<20)
+						return err
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				call(firstProject, input, http.StatusTooManyRequests)
+			}
+			if test.name == "interrupted request" || test.name == "storage denial" {
+				for range 2 {
+					response := call(firstProject, input, http.StatusOK)
+					var decision progresscheck.CIDecision
+					if err := json.Unmarshal(response.Body.Bytes(), &decision); err != nil || decision.Outcome != progresscheck.CIUnknown {
+						t.Fatalf("failed attempt replay = %+v, %v", decision, err)
+					}
+				}
+				if backend.calls != 1 {
+					t.Fatalf("model calls=%d, want 1", backend.calls)
+				}
+				return
 			}
 			backend.expected = true
 			var first progresscheck.CIDecision

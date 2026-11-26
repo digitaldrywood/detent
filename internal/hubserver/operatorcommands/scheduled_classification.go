@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -136,7 +137,7 @@ func (s ScheduledCIDeps) reserveClassification(ctx context.Context, scope hubsco
 	})
 }
 
-func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, result progresscheck.CIDecision, jobKey, receiptID string) error {
+func (s ScheduledCIDeps) writeClassification(ctx context.Context, scope hubscope.NativeScope, at time.Time, write func(policystore.ScheduledWriter, int64) (billingstore.UsageResult, error)) error {
 	return s.Repository.WriteTenant(ctx, scope.Organization, corestore.Serving, func(w tenantstore.Writer) error {
 		if err := s.Authorize(ctx, w, scope, true); err != nil {
 			return err
@@ -145,17 +146,9 @@ func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		now := s.Now().UTC()
-		released, err := owner.ReleaseScheduledClassification(ctx, scope.Project, jobKey, receiptID, &now)
-		if err != nil {
-			return err
-		}
-		if !released {
-			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
-		}
 		limit := int64(math.MaxInt64)
 		if s.Plans.Plans() != nil {
-			entitlement, err := hubapi.FeatureResult(s.Plans.EntitlementRecord(ctx, w, now))
+			entitlement, err := hubapi.FeatureResult(s.Plans.EntitlementRecord(ctx, w, at))
 			if err != nil {
 				return err
 			}
@@ -163,7 +156,7 @@ func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope
 				limit = allowance
 			}
 		}
-		usage, err := owner.StoreScheduledDecision(ctx, scope.Project, input, result, now, limit)
+		usage, err := write(owner, limit)
 		if err != nil {
 			return err
 		}
@@ -174,9 +167,10 @@ func (s ScheduledCIDeps) storeClassification(ctx context.Context, scope hubscope
 	})
 }
 
-func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey, receiptID string) (err error) {
+func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey, receiptID string) (result progresscheck.CIDecision, err error) {
+	invocationRecorded := false
 	defer func() {
-		if err == nil {
+		if err == nil || invocationRecorded {
 			return
 		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -192,19 +186,42 @@ func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.Na
 		err = errors.Join(err, cleanupErr)
 	}()
 	if err := s.Verify(ctx, scope, input); err != nil {
-		return err
+		return result, err
 	}
-	result, err := (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
+	fallback := progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
+	at := s.Now().UTC()
+	err = s.writeClassification(ctx, scope, at, func(owner policystore.ScheduledWriter, limit int64) (billingstore.UsageResult, error) {
+		released, err := owner.ReleaseScheduledClassification(ctx, scope.Project, jobKey, receiptID, &at)
+		if err != nil {
+			return billingstore.UsageResult{}, err
+		}
+		if !released {
+			return billingstore.UsageResult{}, &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
+		usage, err := owner.StoreScheduledDecision(ctx, scope.Project, input, fallback, at, limit)
+		if err == nil && usage.Allowed && !usage.Applied {
+			return usage, &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
+		return usage, err
+	})
+	if err != nil {
+		return result, fmt.Errorf("record CI classification invocation: %w", err)
+	}
+	invocationRecorded = true
+	result, err = (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return result, ctx.Err()
 		}
-		result = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
+		return fallback, nil
 	}
-	if err := s.storeClassification(ctx, scope, input, result, jobKey, receiptID); err != nil {
-		return fmt.Errorf("store CI classification: %w", err)
+	err = s.writeClassification(ctx, scope, s.Now().UTC(), func(owner policystore.ScheduledWriter, limit int64) (billingstore.UsageResult, error) {
+		return owner.UpdateScheduledDecision(ctx, scope.Project, input, result, limit)
+	})
+	if err != nil {
+		return result, fmt.Errorf("store CI classification: %w", err)
 	}
-	return nil
+	return result, nil
 }
 
 func (s ScheduledCIDeps) Classify(c echo.Context) error {
@@ -244,10 +261,7 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 	if err := s.reserveClassification(ctx, scope, input, jobKey, receiptID); err != nil {
 		return s.Error(c, err)
 	}
-	if err := s.classifyReserved(ctx, scope, input, jobKey, receiptID); err != nil {
-		return s.Error(c, err)
-	}
-	result, _, err = s.readCIClassification(ctx, scope, input)
+	result, err = s.classifyReserved(ctx, scope, input, jobKey, receiptID)
 	if err != nil {
 		return s.Error(c, err)
 	}

@@ -57,6 +57,20 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			if got != want {
 				t.Fatalf("decision = %+v, want %+v", got, want)
 			}
+			if usage, err := owner.UpdateScheduledDecision(t.Context(), "prj_first", input, other, math.MaxInt64); err != nil || !usage.Applied {
+				t.Fatalf("updated decision accounting = %+v, %v", usage, err)
+			}
+			updated, err := w.CollaborationBytes(t.Context())
+			if err != nil {
+				return err
+			}
+			wantBytes = 74
+			if org == "org_second" {
+				wantBytes = 75
+			}
+			if updated-before != wantBytes {
+				t.Fatalf("updated decision bytes = %d, want %d", updated-before, wantBytes)
+			}
 			input.HeadSHA = "changed"
 			if _, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input); err == nil {
 				t.Fatal("changed head replay accepted")
