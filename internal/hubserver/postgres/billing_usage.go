@@ -115,9 +115,20 @@ func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time
 	if cutoff.IsZero() || limit < 1 || limit > 128 {
 		return corestore.ErrInvalidPage
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (SELECT receipt_id FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (
+		SELECT r.receipt_id FROM hosted_usage_receipts r
+		WHERE r.organization_id=$1 AND r.window_start <= $2
+		  AND (r.metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') OR starts_with(r.metric,'scheduled-ci/'))
+		  AND NOT EXISTS (
+			SELECT 1 FROM scheduled_ci_classification_claims c
+			WHERE c.organization_id=r.organization_id AND c.receipt_id=r.receipt_id AND c.expires_at > CURRENT_TIMESTAMP
+		  )
+		ORDER BY r.window_start,r.receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
 		return mapError(ctx, err)
 	}
-	_, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2 AND metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
+	_, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (
+		SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2
+		  AND (metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') OR starts_with(metric,'scheduled-ci/'))
+		ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
 	return mapError(ctx, err)
 }

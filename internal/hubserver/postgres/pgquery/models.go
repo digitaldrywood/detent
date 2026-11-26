@@ -5558,6 +5558,14 @@ type RunnerWorkspaceReport struct {
 	Isolation      string
 }
 
+type ScheduledCiClassificationClaim struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	JobKey         string
+	ReceiptID      string
+	ExpiresAt      time.Time
+}
+
 type ScheduledCiDecision struct {
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
