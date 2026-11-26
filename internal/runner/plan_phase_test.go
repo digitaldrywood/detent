@@ -68,10 +68,12 @@ func TestPublishedChangeRecoveryRequiresHumanPlanApproval(t *testing.T) {
 		name                 string
 		plan                 *tracker.NativePlanState
 		uncertainPublication bool
+		publishedReceipt     bool
 	}{
 		{name: "unapproved draft", plan: &tracker.NativePlanState{Draft: "Implement the requested change."}},
 		{name: "pending publication cannot skip approval", plan: &tracker.NativePlanState{Draft: "Implement the requested change."}, uncertainPublication: true},
 		{name: "missing plan decision fails closed"},
+		{name: "published receipt cannot replace plan approval", publishedReceipt: true},
 		{name: "approval does not bypass uncertain publication", uncertainPublication: true, plan: &tracker.NativePlanState{
 			Draft: "Implement the requested change.", Answer: "Approve plan", AnswerID: "answer_approved", AnswerAttemptID: "attempt_prior",
 		}},
@@ -93,6 +95,9 @@ func TestPublishedChangeRecoveryRequiresHumanPlanApproval(t *testing.T) {
 					ID: change.VersionID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: head},
 				}},
 			}}}
+			if tc.publishedReceipt {
+				execution.continuation.PublishedChangeReceipt = &tracker.NativePhaseReceipt{HeadSHA: head, TreeSHA: tree, Phase: "implement"}
+			}
 			workspaceBackend := &publishedChangePlanWorkspace{
 				fakeWorkspaceBackend: &fakeWorkspaceBackend{
 					info:           workspace.Info{Path: t.TempDir(), Branch: "detent/example"},
