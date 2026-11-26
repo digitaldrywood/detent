@@ -69,7 +69,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 		{name: "restart stale completion pending landing", restartIntent: "stale", absorbedConflict: true, landing: true},
 		{name: "restart resolved conflict pending landing", restartIntent: "resolved", absorbedConflict: true, landing: true},
 		{name: "conflict resolution absorbed by target advances the Change head", absorbedConflict: true, updatePolicy: true},
-		{name: "planning enabled Rework restores missing published head before provider", planning: true},
+		{name: "automated planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
@@ -420,6 +420,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				return
 			}
 			expectPendingLanding := false
+			var plan gate.PlanConfig
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution, targets ...string) runner.RunResult {
 				root := filepath.Join(t.TempDir(), "workspaces")
 				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: root, SourceRoot: source, AutoBranch: true})
@@ -443,7 +444,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning && candidate.State == "Rework"}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: plan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -567,6 +568,15 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			}
 			if updatePolicy {
 				h.repolicy(t)
+			}
+			if test.planning {
+				plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
+				previousPolicy := h.descriptor.ID
+				h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = plan.Enabled, plan.Review
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := os.WriteFile(filepath.Join(sourceA, "UPSTREAM.md"), []byte("new dev base\n"), 0o600); err != nil {
 				t.Fatal(err)
