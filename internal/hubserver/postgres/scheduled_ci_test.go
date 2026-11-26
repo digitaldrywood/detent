@@ -17,7 +17,8 @@ import (
 
 func TestScheduledDecisionTenantReplay(t *testing.T) {
 	t.Parallel()
-	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, repository, org)
 		now := time.Now().UTC()
@@ -80,6 +81,14 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		wantProjectBytes := int64(74)
+		if org == "org_second" {
+			wantProjectBytes = 75
+		}
+		var projectBytes int64
+		if err := admin.QueryRowContext(t.Context(), `SELECT collaboration_bytes FROM scheduled_ci_project_storage WHERE organization_id=$1 AND project_id='prj_first'`, org).Scan(&projectBytes); err != nil || projectBytes != wantProjectBytes {
+			t.Fatalf("%s project decision bytes = %d, want %d: %v", org, projectBytes, wantProjectBytes, err)
 		}
 		input.HeadSHA = "head"
 		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {

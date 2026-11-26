@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/requestmetrics"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -28,7 +30,9 @@ func newTenantTestMetrics(repo metricsstore.Repository, org tracker.Organization
 }
 
 func TestScheduledCIClassificationFallbackReceiptRetention(t *testing.T) {
-	t.Parallel()
+	if os.Getenv(pgtest.Environment) == "" {
+		t.Setenv(pgtest.Environment, "binary")
+	}
 	repo, admin := projectRecordPostgresWithAdmin(t, 3)
 	window := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	tests := []struct {

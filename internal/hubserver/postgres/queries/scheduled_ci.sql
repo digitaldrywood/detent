@@ -28,13 +28,11 @@ WHERE (d.organization_id,d.project_id,d.repository,d.run_id,d.run_attempt,d.job_
     = (p.organization_id,p.project_id,p.repository,p.run_id,p.run_attempt,p.job_id)
 RETURNING p.collaboration_bytes;
 
--- name: DeleteProjectScheduledDecisions :one
-WITH removed AS (
-    DELETE FROM scheduled_ci_decisions
-    WHERE organization_id=$1 AND project_id=$2
-    RETURNING collaboration_bytes
-)
-SELECT COALESCE(sum(collaboration_bytes),0)::bigint AS released_bytes FROM removed;
+-- name: ScheduledCIProjectStorage :one
+SELECT COALESCE((
+    SELECT collaboration_bytes FROM scheduled_ci_project_storage
+    WHERE organization_id=sqlc.arg(organization_id) AND project_id=sqlc.arg(project_id)
+),0)::bigint AS collaboration_bytes;
 
 -- name: ClaimScheduledClassification :execrows
 INSERT INTO scheduled_ci_classification_claims(organization_id,project_id,job_key,receipt_id,expires_at)

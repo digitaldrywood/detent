@@ -125,12 +125,12 @@ func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error
 			return err
 		}
 	}
-	bytes, err := s.queries.DeleteProjectScheduledDecisions(ctx, pgquery.DeleteProjectScheduledDecisionsParams{
+	bytes, err := s.queries.ScheduledCIProjectStorage(ctx, pgquery.ScheduledCIProjectStorageParams{
 		OrganizationID: s.organization,
 		ProjectID:      id,
 	})
 	if err != nil {
-		return fmt.Errorf("delete scheduled CI decisions: %w", mapError(ctx, err))
+		return fmt.Errorf("read scheduled CI decision storage: %w", mapError(ctx, err))
 	}
 	if bytes > 0 {
 		if _, err := s.AdjustCollaborationBytes(ctx, -bytes, math.MaxInt64); err != nil {
