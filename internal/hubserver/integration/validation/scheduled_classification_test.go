@@ -236,13 +236,17 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				unknownRun, unknownJob := input, input
 				unknownRun.RunID, unknownJob.JobID = "2", "999"
 				call(firstProject, unknownRun, http.StatusUnprocessableEntity)
-				call(firstProject, unknownJob, http.StatusUnprocessableEntity)
+				for range 2 {
+					call(firstProject, unknownJob, http.StatusUnprocessableEntity)
+				}
+
+				const wantNewDecisions = 116
 				beforeImports, beforeCalls := importer.calls, backend.calls
 				for n := range 125 {
 					job := input
 					job.JobID = fmt.Sprint(n + 100)
 					want := http.StatusTooManyRequests
-					if n < 117 {
+					if n < wantNewDecisions {
 						backend.expected = true
 						want = http.StatusOK
 					}
@@ -259,8 +263,8 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				if err := hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1 AND project_id=$2`, org, firstProject).Scan(&rows); err != nil {
 					t.Fatal(err)
 				}
-				if imports, calls := importer.calls-beforeImports, backend.calls-beforeCalls; imports != 117 || calls != 117 || rows != 118 {
-					t.Fatalf("project budget made %d importer calls and %d model calls and retained %d decisions, want 117, 117 and 118", imports, calls, rows)
+				if imports, calls := importer.calls-beforeImports, backend.calls-beforeCalls; imports != wantNewDecisions || calls != wantNewDecisions || rows != wantNewDecisions+1 {
+					t.Fatalf("project budget made %d importer calls and %d model calls and retained %d decisions, want %d, %d and %d", imports, calls, rows, wantNewDecisions, wantNewDecisions, wantNewDecisions+1)
 				}
 				backend.expected = true
 				anotherJob := input
