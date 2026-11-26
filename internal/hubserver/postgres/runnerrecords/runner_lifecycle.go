@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
@@ -16,14 +17,15 @@ const lifecycleColumns = `process_id,sequence,state,version,build_revision,targe
 
 type runnerLifecycle struct {
 	runnerauth.Lifecycle
-	rollout runnerstore.Rollout
+	rollout                runnerstore.Rollout
+	refusedThroughSequence int64
 }
 
 func (s *Store) currentLifecycle(ctx context.Context, id string) (*runnerLifecycle, error) {
 	var l runnerLifecycle
-	err := s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id).
+	err := s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,refused_through_sequence FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id).
 		Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt,
-			&l.rollout.RequestID, &l.rollout.Version, &l.rollout.OrganizationRevision)
+			&l.rollout.RequestID, &l.rollout.Version, &l.rollout.OrganizationRevision, &l.refusedThroughSequence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, corestore.ErrNotFound
 	}
@@ -62,16 +64,32 @@ func (s *Store) RunnerLifecycleHistory(ctx context.Context, id string, limit int
 }
 
 func (s *Store) RunnerLifecycleReceipt(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string) (runnerstore.LifecycleRefusal, bool, error) {
-	var refusal runnerstore.LifecycleRefusal
-	err := s.db.QueryRow(ctx, `SELECT refusal FROM runner_lifecycle_transitions WHERE organization_id=$1 AND runner_id=$2 AND process_id=$3 AND sequence=$4 AND report_digest=$5 AND report_digest <> ''`, s.organization, id, r.ProcessID, r.Sequence, digest).Scan(&refusal)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	return refusal, err == nil, s.mapError(ctx, err)
+	var refusal pgtype.Text
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(
+ (SELECT refusal FROM runner_lifecycle_transitions
+  WHERE organization_id=$1 AND runner_id=$2 AND process_id=$3 AND sequence=$4 AND report_digest=$5 AND report_digest<>''),
+ (SELECT refusal FROM runner_lifecycle_transitions
+  WHERE organization_id=$1 AND runner_id=$2 AND refusal_slot=($4::bigint % 64)::smallint AND process_id=$3 AND sequence=$4)
+ )`, s.organization, id, r.ProcessID, r.Sequence, digest).Scan(&refusal)
+	return runnerstore.LifecycleRefusal(refusal.String), refusal.Valid, s.mapError(ctx, err)
 }
 
 func (s *Store) RefuseRunnerLifecycle(ctx context.Context, id string, report runnerauth.LifecycleReport, digest string, refusal runnerstore.LifecycleRefusal, now time.Time) error {
-	return s.appendRunnerLifecycle(ctx, id, runnerLifecycle{Lifecycle: runnerauth.Lifecycle{LifecycleReport: report, LastTransitionAt: now}}, digest, refusal)
+	next := runnerLifecycle{Lifecycle: runnerauth.Lifecycle{LifecycleReport: report, LastTransitionAt: now}}
+	args := append(lifecycleArgs(string(s.organization), id, next), digest, refusal)
+	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle_transitions(organization_id,runner_id,`+lifecycleColumns+`,report_digest,refusal,refusal_slot)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,($4::bigint % 64)::smallint)
+ ON CONFLICT(organization_id,runner_id,refusal_slot) WHERE refusal_slot IS NOT NULL DO UPDATE SET
+ transition_id=DEFAULT,process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,
+ build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,
+ last_transition_at=EXCLUDED.last_transition_at,report_digest=EXCLUDED.report_digest,refusal=EXCLUDED.refusal
+ WHERE (runner_lifecycle_transitions.process_id,runner_lifecycle_transitions.sequence)<>(EXCLUDED.process_id,EXCLUDED.sequence)`, args...)
+	if err != nil {
+		return s.mapError(ctx, err)
+	}
+	_, err = s.db.Exec(ctx, `UPDATE runner_lifecycle SET refused_through_sequence=$4
+ WHERE organization_id=$1 AND runner_id=$2 AND process_id=$3 AND refused_through_sequence<$4 AND sequence<$4`, s.organization, id, report.ProcessID, report.Sequence)
+	return s.mapError(ctx, err)
 }
 
 func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, rollout runnerstore.Rollout, now time.Time) error {
@@ -87,10 +105,11 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 	}
 	next := runnerLifecycle{Lifecycle: runnerauth.Lifecycle{LifecycleReport: r, LastTransitionAt: now}}
 	if old != nil && old.ProcessID == r.ProcessID {
-		if r.Sequence <= old.Sequence || old.Version != r.Version || old.BuildRevision != r.BuildRevision || !lifecycleTransition(old.State, r.State) {
+		if r.Sequence <= old.Sequence || r.Sequence <= old.refusedThroughSequence || old.Version != r.Version || old.BuildRevision != r.BuildRevision || !lifecycleTransition(old.State, r.State) {
 			return corestore.ErrRevisionConflict
 		}
 		next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
+		next.refusedThroughSequence = old.refusedThroughSequence
 		next.rollout = old.rollout
 		if r.State == runnerauth.LifecycleShuttingDown && r.Reason == "update" &&
 			(old.rollout.RequestID == "" || r.TargetVersion != old.rollout.Version) {
@@ -147,18 +166,28 @@ func lifecycleArgs(organization string, id string, next runnerLifecycle) []any {
 	return []any{organization, id, next.ProcessID, next.Sequence, next.State, next.Version, next.BuildRevision, next.TargetVersion, next.Reason, next.ErrorCode, next.ConsecutiveFailedStarts, next.LastTransitionAt}
 }
 
-func (s *Store) appendRunnerLifecycle(ctx context.Context, id string, next runnerLifecycle, digest string, refusal runnerstore.LifecycleRefusal) error {
-	args := append(lifecycleArgs(string(s.organization), id, next), digest, refusal, next.rollout.RequestID)
-	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle_transitions(organization_id,runner_id,`+lifecycleColumns+`,report_digest,refusal,rollout_request_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, args...)
-	return s.mapError(ctx, err)
-}
-
 func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next runnerLifecycle, digest string) error {
-	if err := s.appendRunnerLifecycle(ctx, id, next, digest, ""); err != nil {
-		return err
+	args := append(lifecycleArgs(string(s.organization), id, next), digest, next.rollout.RequestID)
+	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle_transitions(organization_id,runner_id,`+lifecycleColumns+`,report_digest,rollout_request_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, args...)
+	if err != nil {
+		return s.mapError(ctx, err)
 	}
-	args := append(lifecycleArgs(string(s.organization), id, next), next.rollout.RequestID, next.rollout.Version, next.rollout.OrganizationRevision)
-	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,runner_id) DO UPDATE SET process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,consecutive_failed_starts=EXCLUDED.consecutive_failed_starts,last_transition_at=EXCLUDED.last_transition_at,rollout_request_id=EXCLUDED.rollout_request_id,rollout_version=EXCLUDED.rollout_version,rollout_revision=EXCLUDED.rollout_revision`, args...)
+	args = append(lifecycleArgs(string(s.organization), id, next), next.rollout.RequestID, next.rollout.Version, next.rollout.OrganizationRevision, next.refusedThroughSequence)
+	_, err = s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision,refused_through_sequence) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT(organization_id,runner_id) DO UPDATE SET process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,consecutive_failed_starts=EXCLUDED.consecutive_failed_starts,last_transition_at=EXCLUDED.last_transition_at,rollout_request_id=EXCLUDED.rollout_request_id,rollout_version=EXCLUDED.rollout_version,rollout_revision=EXCLUDED.rollout_revision,refused_through_sequence=EXCLUDED.refused_through_sequence`, args...)
+	if err != nil {
+		return s.mapError(ctx, err)
+	}
+	switch {
+	case next.State == runnerauth.LifecycleReady:
+		_, err = s.db.Exec(ctx, `DELETE FROM runner_update_pauses WHERE organization_id=$1 AND runner_id=$2 AND version=$3`, s.organization, id, next.Version)
+	case next.State == runnerauth.LifecycleStartFailed && next.ConsecutiveFailedStarts >= 3 && next.rollout.RequestID != "" && next.Version == next.rollout.Version:
+		if err := s.LockOrganizationUpdateTarget(ctx, true); err != nil {
+			return err
+		}
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_update_pauses(organization_id,runner_id,version,rollout_revision)
+ VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,runner_id,version) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision
+ WHERE runner_update_pauses.rollout_revision<EXCLUDED.rollout_revision`, s.organization, id, next.Version, next.rollout.OrganizationRevision)
+	}
 	return s.mapError(ctx, err)
 }
 

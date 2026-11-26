@@ -1,6 +1,7 @@
 package runnerstore
 
 import (
+	"context"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -25,6 +26,15 @@ type UpdateRequestRecord struct {
 	HoldRevision             int64
 	HoldOrganizationRevision int64
 	OrganizationHold         bool
+}
+
+type AutomaticOfferPolicy struct {
+	OrganizationRevision int64
+	RunnerRevision       int64
+}
+
+type AutomaticOfferWriter interface {
+	EnsureAutomaticRunnerOffer(context.Context, UpdateRequestRecord, AutomaticOfferPolicy) (string, error)
 }
 
 type UrgentUpdate struct {

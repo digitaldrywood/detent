@@ -27,6 +27,9 @@ func (s *session) RunnerUrgentUpdate(ctx context.Context) (runnerstore.UrgentUpd
 func (s *session) CreateRunnerUpdateRequest(ctx context.Context, r runnerstore.UpdateRequestRecord) error {
 	return s.runnerRecords().CreateRunnerUpdateRequest(ctx, r)
 }
+func (s *session) EnsureAutomaticRunnerOffer(ctx context.Context, r runnerstore.UpdateRequestRecord, policy runnerstore.AutomaticOfferPolicy) (string, error) {
+	return s.runnerRecords().EnsureAutomaticRunnerOffer(ctx, r, policy)
+}
 func (s *session) SetRunnerUpdateDesired(ctx context.Context, id string, revision int64, request string) error {
 	return s.runnerRecords().SetRunnerUpdateDesired(ctx, id, revision, request)
 }

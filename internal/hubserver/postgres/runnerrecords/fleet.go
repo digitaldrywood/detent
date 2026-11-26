@@ -8,14 +8,15 @@ import (
 
 func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.FleetRecord, indices map[string]int, ids []string) error {
 	rows, err := s.db.Query(ctx, `SELECT r.runner_id,COALESCE(NULLIF(o.version,''),NULLIF(t.version,''),''),
- EXISTS(SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=r.organization_id AND f.version=d.version AND f.rollout_revision=COALESCE(o.revision,0) AND `+failedRolloutSQL+`),
- EXISTS(SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=r.organization_id AND f.version=u.version AND f.rollout_revision=COALESCE(o.revision,0) AND `+failedRolloutSQL+`),
- COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+`,false)
+ EXISTS(SELECT 1 FROM runner_update_pauses f WHERE f.organization_id=r.organization_id AND f.version=d.version AND f.rollout_revision=COALESCE(o.revision,0)),
+ EXISTS(SELECT 1 FROM runner_update_pauses f WHERE f.organization_id=r.organization_id AND f.version=u.version AND f.rollout_revision=COALESCE(o.revision,0)),
+ COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL+`,false)
  FROM runner_identities r
  LEFT JOIN runner_update_targets o ON o.organization_id=r.organization_id AND o.runner_id=''
  LEFT JOIN runner_update_targets t ON t.organization_id=r.organization_id AND t.runner_id=r.runner_id
  LEFT JOIN runner_update_desired desired ON desired.organization_id=r.organization_id AND desired.runner_id=r.runner_id
  LEFT JOIN runner_update_requests d ON d.organization_id=desired.organization_id AND d.request_id=desired.request_id
+ LEFT JOIN runner_update_observations b ON b.organization_id=r.organization_id AND b.runner_id=r.runner_id
  LEFT JOIN runner_urgent_updates urgent ON urgent.organization_id=r.organization_id
  LEFT JOIN runner_update_requests u ON u.organization_id=urgent.organization_id AND u.request_id=urgent.request_id
  WHERE r.organization_id=$1 AND r.runner_id=ANY($2)`, s.organization, ids)

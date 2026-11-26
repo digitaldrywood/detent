@@ -5085,6 +5085,7 @@ type RunnerLifecycle struct {
 	RolloutRequestID        string
 	RolloutVersion          string
 	RolloutRevision         int64
+	RefusedThroughSequence  int64
 }
 
 type RunnerLifecycleTransition struct {
@@ -5104,6 +5105,7 @@ type RunnerLifecycleTransition struct {
 	ReportDigest            string
 	Refusal                 string
 	RolloutRequestID        string
+	RefusalSlot             pgtype.Int2
 }
 
 type RunnerLocalCheck struct {
@@ -5559,6 +5561,13 @@ type RunnerUpdateObservation struct {
 	RunningObservedAt      time.Time
 }
 
+type RunnerUpdatePause struct {
+	OrganizationID  tracker.OrganizationID
+	RunnerID        string
+	Version         string
+	RolloutRevision int64
+}
+
 type RunnerUpdateReceipt struct {
 	OrganizationID            tracker.OrganizationID
 	RunnerID                  string
@@ -5574,20 +5583,23 @@ type RunnerUpdateReceipt struct {
 }
 
 type RunnerUpdateRequest struct {
-	OrganizationID           tracker.OrganizationID
-	RequestID                string
-	RunnerID                 *string
-	RequestedAt              time.Time
-	Service                  string
-	ExpectedBuildRevision    string
-	Version                  string
-	Release                  bool
-	FromRelease              bool
-	Urgent                   bool
-	FollowHub                bool
-	HoldRevision             int64
-	HoldOrganizationRevision int64
-	OrganizationHold         bool
+	OrganizationID                tracker.OrganizationID
+	RequestID                     string
+	RunnerID                      *string
+	RequestedAt                   time.Time
+	Service                       string
+	ExpectedBuildRevision         string
+	Version                       string
+	Release                       bool
+	FromRelease                   bool
+	Urgent                        bool
+	FollowHub                     bool
+	HoldRevision                  int64
+	HoldOrganizationRevision      int64
+	OrganizationHold              bool
+	AutomaticOfferSlot            pgtype.Int2
+	AutomaticOrganizationRevision int64
+	AutomaticRunnerRevision       int64
 }
 
 type RunnerUpdateTarget struct {

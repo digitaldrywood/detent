@@ -42,7 +42,8 @@ func (s *Store) RunnerUpdateState(ctx context.Context, runnerID string) (runners
  JOIN runner_update_requests d ON (d.organization_id,d.request_id)=(desired.organization_id,desired.request_id)
  LEFT JOIN runner_update_targets o ON o.organization_id=desired.organization_id AND o.runner_id=''
  LEFT JOIN runner_update_targets t ON t.organization_id=desired.organization_id AND t.runner_id=desired.runner_id
- WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND `+currentHoldOfferSQL, s.organization, runnerID).Scan(&desiredID)
+ LEFT JOIN runner_update_observations b ON b.organization_id=desired.organization_id AND b.runner_id=desired.runner_id
+ WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND `+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL, s.organization, runnerID).Scan(&desiredID)
 	if err == nil {
 		record, err := s.runnerUpdateRequest(ctx, desiredID)
 		if err != nil {
@@ -174,6 +175,10 @@ func (s *Store) RunnerUrgentUpdate(ctx context.Context) (runnerstore.UrgentUpdat
 }
 
 func (s *Store) CreateRunnerUpdateRequest(ctx context.Context, record runnerstore.UpdateRequestRecord) error {
+	return s.createRunnerUpdateRequest(ctx, record, runnerstore.AutomaticOfferPolicy{}, nil)
+}
+
+func (s *Store) createRunnerUpdateRequest(ctx context.Context, record runnerstore.UpdateRequestRecord, policy runnerstore.AutomaticOfferPolicy, slot *int16) error {
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
 		return err
 	}
@@ -185,13 +190,16 @@ func (s *Store) CreateRunnerUpdateRequest(ctx context.Context, record runnerstor
 		runnerID = record.RunnerID
 	}
 	request := record.Request
-	result, err := s.db.Exec(ctx, `INSERT INTO runner_update_requests(organization_id,request_id,runner_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub,hold_revision,hold_organization_revision,organization_hold) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(organization_id,request_id) DO NOTHING`, s.organization, request.ID, runnerID, request.RequestedAt, request.Service, request.ExpectedBuildRevision, request.Version, request.Release, request.FromRelease, request.Urgent, request.FollowHub, record.HoldRevision, record.HoldOrganizationRevision, record.OrganizationHold)
+	result, err := s.db.Exec(ctx, `INSERT INTO runner_update_requests(organization_id,request_id,runner_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub,hold_revision,hold_organization_revision,organization_hold,automatic_organization_revision,automatic_runner_revision,automatic_offer_slot) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT(organization_id,request_id) DO NOTHING`, s.organization, request.ID, runnerID, request.RequestedAt, request.Service, request.ExpectedBuildRevision, request.Version, request.Release, request.FromRelease, request.Urgent, request.FollowHub, record.HoldRevision, record.HoldOrganizationRevision, record.OrganizationHold, policy.OrganizationRevision, policy.RunnerRevision, slot)
 	if err != nil {
 		return s.mapError(ctx, err)
 	}
 	count := result.RowsAffected()
 	if count == 1 {
 		return err
+	}
+	if slot != nil {
+		return corestore.ErrRevisionConflict
 	}
 	previous, err := s.runnerUpdateRequest(ctx, request.ID)
 	if err != nil {

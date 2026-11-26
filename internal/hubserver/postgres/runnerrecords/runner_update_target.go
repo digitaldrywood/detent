@@ -50,8 +50,6 @@ func (s *Store) SetRunnerUpdateTarget(ctx context.Context, id string, target run
 	return nil
 }
 
-const failedRolloutSQL = `f.state='start_failed' AND f.consecutive_failed_starts>=3 AND f.version=f.rollout_version AND f.rollout_request_id <> ''`
-
 const currentHoldOfferSQL = `(d.hold_revision=0
  OR (d.organization_hold AND d.hold_revision=o.revision AND d.version=o.version)
  OR (NOT d.organization_hold AND d.hold_organization_revision=COALESCE(o.revision,0) AND COALESCE(o.version,'')='' AND d.hold_revision=t.revision AND d.version=t.version))`
@@ -59,8 +57,7 @@ const currentHoldOfferSQL = `(d.hold_revision=0
 func (s *Store) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
 	var failed bool
 	err := s.db.QueryRow(ctx, `SELECT EXISTS(
- SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=$1 AND f.version=$2
- AND `+failedRolloutSQL+`
+ SELECT 1 FROM runner_update_pauses f WHERE f.organization_id=$1 AND f.version=$2
  AND f.rollout_revision=COALESCE((SELECT revision FROM runner_update_targets WHERE organization_id=$1 AND runner_id=''),0)
 )`, s.organization, version).Scan(&failed)
 	return failed, s.mapError(ctx, err)
