@@ -70,8 +70,6 @@ var diagnosticSummary = regexp.MustCompile(`^[\t ]*(?:--- FAIL|FAIL\t|panic:|fat
 
 var goTestFailure = regexp.MustCompile(`^[\t ]*(?:--- FAIL:|FAIL(?:[\t ]|$)|panic:|fatal error:|WARNING: DATA RACE|test timed out)`)
 
-const sourcemapLocationWarning = "): Error when using sourcemap for reporting an error: Can't resolve original location of error."
-
 func Diagnostic(value string, maxBytes int) (string, bool) {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
 	if maxBytes <= 0 || len(value) <= maxBytes {
@@ -99,7 +97,7 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			running = true
 			timeout = false
 		}
-		if !strings.HasSuffix(trimmed, sourcemapLocationWarning) && (diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running) {
+		if diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running {
 			if !strings.HasSuffix(line, "\n") {
 				lines[i] += "\n"
 			}

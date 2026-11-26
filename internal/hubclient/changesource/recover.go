@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -15,7 +14,6 @@ import (
 type Reader interface {
 	CurrentChange(context.Context, tracker.NativeWorkItemID) (tracker.ChangeDetail, error)
 	ChangeSource(context.Context, tracker.NativeWorkItemID, string, string) ([]byte, error)
-	ItemPhaseReceipts(context.Context, tracker.NativeWorkItemID) ([]tracker.NativePhaseReceipt, error)
 }
 type Authority interface {
 	Recovery() tracker.NativeRecovery
@@ -25,7 +23,7 @@ type Authority interface {
 	Accept(tracker.NativeChangeReference)
 }
 
-func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, host Authority) (workspace.ChangeSource, error) {
+func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, host Authority, phase *tracker.NativePhaseReceipt) (workspace.ChangeSource, error) {
 	detail, err := reader.CurrentChange(ctx, item)
 	if err != nil {
 		return workspace.ChangeSource{}, err
@@ -38,13 +36,6 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 	if detail.Change.CurrentVersion == "" {
 		return workspace.ChangeSource{}, nil
 	}
-	receipts, err := reader.ItemPhaseReceipts(ctx, item)
-	if err != nil {
-		var refusal *api.APIError
-		if !errors.As(err, &refusal) || refusal.Status != http.StatusNotFound || refusal.Code != "" {
-			return workspace.ChangeSource{}, err
-		}
-	}
 	for _, version := range detail.Versions {
 		if version.ID != detail.Change.CurrentVersion {
 			continue
@@ -52,14 +43,14 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 		source := workspace.ChangeSource{Version: version}
 		source.Transferred = version.ID == host.Recovery().SourceVersionID
 		for _, previous := range detail.Versions {
-			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || (versionPhase(receipts, previous) == nil && (previous.Source == nil ||
+			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
 				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||
-				previous.Source.Bytes <= 0 || previous.Source.BundleSHA256 == "" || previous.Source.DiffSHA256 == "")) {
+				previous.Source.Bytes <= 0 || previous.Source.BundleSHA256 == "" || previous.Source.DiffSHA256 == "" {
 				continue
 			}
 			source.PreviousHeads = append(source.PreviousHeads, previous.HeadSHA)
 		}
-		if phase := versionPhase(receipts, version); phase != nil {
+		if phase != nil && phase.HeadSHA == version.HeadSHA && phase.PolicyID == version.PolicyID {
 			source.PushedPhase = phase
 		} else if version.Source != nil {
 			source.Bundle, err = reader.ChangeSource(ctx, item, detail.Change.ID, version.ID)
@@ -85,16 +76,4 @@ func Recover(ctx context.Context, reader Reader, item tracker.NativeWorkItemID, 
 		return source, nil
 	}
 	return workspace.ChangeSource{}, runner.ErrNativeRecoveryRequired
-}
-
-func versionPhase(receipts []tracker.NativePhaseReceipt, version tracker.ChangeVersion) *tracker.NativePhaseReceipt {
-	if version.AttemptID == "" {
-		return nil
-	}
-	for _, receipt := range receipts {
-		if receipt.HeadSHA == version.HeadSHA && receipt.PolicyID == version.PolicyID && receipt.AttemptID == version.AttemptID && !tracker.IsPlanPhase(receipt.Phase) {
-			return &receipt
-		}
-	}
-	return nil
 }

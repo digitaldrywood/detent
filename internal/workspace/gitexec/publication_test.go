@@ -611,7 +611,7 @@ func TestPublicationRepositorySkipsFIFO(t *testing.T) {
 	bareGit := filepath.Join(realRoot, "upstream.git")
 	runTestGit(t, realRoot, "init", "--bare", "-b", "main", bareGit)
 
-	if got := PublicationRepository(t.Context(), "", fifoPath); got != bareGit {
+	if got := PublicationRepository("", fifoPath); got != bareGit {
 		t.Fatalf("PublicationRepository(fifo) = %q, want %q", got, bareGit)
 	}
 }

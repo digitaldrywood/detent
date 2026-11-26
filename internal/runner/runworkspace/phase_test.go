@@ -52,12 +52,11 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			root := filepath.Join(dir, "workspaces")
 			checkout := filepath.Join(root, "item")
 			git := func(args ...string) string { return phaseTestGit(t, args...) }
-			git("init", "--bare", "--template=", "--initial-branch=main", origin)
+			git("init", "--bare", "--template=", origin)
 			git("init", "--bare", "--template=", other)
 			git("init", "--template=", source)
 			git("-C", source, "remote", "add", "origin", origin)
 			git("-C", source, "commit", "--allow-empty", "-m", "Phase source")
-			git("-C", source, "push", "origin", "HEAD:refs/heads/main")
 			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
@@ -87,6 +86,7 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			execution := &phaseExecution{}
 			issue := workspace.Issue{Identifier: "ITEM", PublicationRepository: origin}
 			if name == "lease lost after push" {
+				git("-C", source, "push", "origin", "HEAD:refs/heads/main")
 				if err := os.WriteFile(filepath.Join(checkout, "orphaned.txt"), []byte("unfinished phase\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}

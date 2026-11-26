@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -103,7 +102,7 @@ func httpsRepository(host, path string) string {
 	return "https://" + host + "/" + path
 }
 
-func PublicationRepository(ctx context.Context, path, remote string) string {
+func PublicationRepository(path, remote string) string {
 	remote = strings.TrimSuffix(remote, "\n")
 	if remote == "" || strings.TrimSpace(remote) != remote || strings.ContainsAny(remote, "\r\n") {
 		return ""
@@ -141,14 +140,14 @@ func PublicationRepository(ctx context.Context, path, remote string) string {
 		if firstExisting == "" {
 			firstExisting = absolute
 		}
-		if isLocalGitRepository(ctx, absolute) {
+		if isLocalGitRepository(absolute) {
 			return absolute
 		}
 	}
 	return firstExisting
 }
 
-func isLocalGitRepository(ctx context.Context, path string) bool {
+func isLocalGitRepository(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || (!info.IsDir() && !info.Mode().IsRegular()) {
 		return false
@@ -156,7 +155,7 @@ func isLocalGitRepository(ctx context.Context, path string) bool {
 	if info.Mode().IsRegular() && isGitBundleFile(path) {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	for _, candidate := range []string{path, filepath.Join(path, ".git")} {
 		if _, err := ReadPublicationSource(ctx, filepath.Dir(path), "rev-parse", "--resolve-git-dir", candidate); err == nil {
@@ -175,10 +174,11 @@ func isGitBundleFile(path string) bool {
 	if err != nil {
 		return false
 	}
-	var buf [16]byte
-	_, readErr := io.ReadFull(f, buf[:])
-	closeErr := f.Close()
-	return readErr == nil && closeErr == nil && (string(buf[:]) == "# v2 git bundle\n" || string(buf[:]) == "# v3 git bundle\n")
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, 16)
+	n, _ := f.Read(buf)
+	header := string(buf[:n])
+	return strings.HasPrefix(header, "# v2 git bundle\n") || strings.HasPrefix(header, "# v3 git bundle\n")
 }
 
 func SamePublicationRepository(expected, actual string) bool {
@@ -213,11 +213,11 @@ func foldASCIILetter(letter byte) byte {
 
 func VerifyPublicationRemoteFetchURL(ctx context.Context, path, remote, repository string) (string, error) {
 	fetchURL, err := RunRemoteFetch(ctx, path, "remote", "get-url", "--all", remote)
-	if err != nil || !SamePublicationRepository(repository, PublicationRepository(ctx, path, fetchURL)) {
+	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, fetchURL)) {
 		return "", errors.New("the publication fetch remote differs from the configured project repository; restore its configured destination before retrying")
 	}
 	pushURL, err := RunRemoteFetch(ctx, path, "remote", "get-url", "--push", "--all", remote)
-	if err != nil || !SamePublicationRepository(repository, PublicationRepository(ctx, path, pushURL)) {
+	if err != nil || !SamePublicationRepository(repository, PublicationRepository(path, pushURL)) {
 		return "", errors.New("the publication push remote differs from the configured project repository; restore its configured push destination before retrying")
 	}
 	verifiedFetch := strings.TrimSuffix(fetchURL, "\n")
@@ -245,7 +245,7 @@ func VerifyRemoteFetchDestination(ctx context.Context, path, fetchRepo string) e
 	if strings.TrimSpace(effectiveFetch) != effectiveFetch || strings.ContainsAny(effectiveFetch, "\r\n") {
 		return errors.New("fetch remote resolved to an unexpected whitespace destination")
 	}
-	if effectiveFetch != fetchRepo && !SamePublicationRepository(PublicationRepository(ctx, path, fetchRepo), PublicationRepository(ctx, path, effectiveFetch)) {
+	if effectiveFetch != fetchRepo && !SamePublicationRepository(PublicationRepository(path, fetchRepo), PublicationRepository(path, effectiveFetch)) {
 		return errors.New("fetch remote was redirected to a different repository")
 	}
 	return nil

@@ -465,7 +465,7 @@ func (l *LocalGit) LandChangeViaGitHub(ctx context.Context, info Info, issue Iss
 	}
 	base := strings.TrimSpace(opts.TargetBranch)
 	if base == "" {
-		base, err = gitexec.PublicationDefaultBranch(ctx, opts.publicationRepository(ctx))
+		base, err = gitexec.PublicationDefaultBranch(ctx, opts.publicationRepository())
 		if err != nil {
 			return LandResult{}, fmt.Errorf("resolve remote default branch: %w", err)
 		}
@@ -1005,7 +1005,7 @@ func (l *LocalGit) verifyGitHubLandingSource(ctx context.Context, info Info, iss
 		return errors.Join(refusal, err)
 	}
 	fetched = strings.TrimSpace(fetched)
-	refs, err := gitexec.ReadPublicationRefs(ctx, opts.publicationRepository(ctx), false, "refs/heads/"+branch, "refs/heads/"+base)
+	refs, err := gitexec.ReadPublicationRefs(ctx, opts.publicationRepository(), false, "refs/heads/"+branch, "refs/heads/"+base)
 	if err != nil {
 		return githubLandingConflictReadFailure("git ls-remote", fmt.Errorf("verify refused landing refs: %w", err), refusal)
 	}

@@ -71,38 +71,6 @@ func (q *Queries) InsertNativePhaseReceipt(ctx context.Context, arg InsertNative
 	return i, err
 }
 
-const nativeAttemptHasSourceReceipt = `-- name: NativeAttemptHasSourceReceipt :one
-SELECT EXISTS (
-    SELECT 1 FROM native_phase_receipts
-    WHERE organization_id = $1 AND project_id = $2 AND issue_id = $3
-      AND attempt_id = $4 AND head_sha = $5 AND policy_id = $6
-      AND phase IN ('implement', 'project_gate', 'review', 'merge')
-)
-`
-
-type NativeAttemptHasSourceReceiptParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	IssueID        int64
-	AttemptID      string
-	HeadSHA        string
-	PolicyID       string
-}
-
-func (q *Queries) NativeAttemptHasSourceReceipt(ctx context.Context, arg NativeAttemptHasSourceReceiptParams) (bool, error) {
-	row := q.db.QueryRow(ctx, nativeAttemptHasSourceReceipt,
-		arg.OrganizationID,
-		arg.ProjectID,
-		arg.IssueID,
-		arg.AttemptID,
-		arg.HeadSHA,
-		arg.PolicyID,
-	)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const nativePhaseContinuation = `-- name: NativePhaseContinuation :many
 WITH last_pushed AS (
     SELECT source.organization_id, source.project_id, source.issue_id, source.position, source.idempotency_key, source.lease_id, source.fencing_token, source.attempt_id, source.phase, source.branch, source.head_sha, source.tree_sha, source.policy_id, source.input_digest FROM native_phase_receipts source

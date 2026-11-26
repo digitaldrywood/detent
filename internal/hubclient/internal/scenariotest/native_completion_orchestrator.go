@@ -109,8 +109,7 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 			t.Fatal(err)
 		}
 	case <-testenv.WaitContext(t, t.Context()).Done():
-		state, stateErr := orch.State(t.Context())
-		t.Fatalf("native completion did not release its claim: landing=%+v events=%+v error=%v", completed.result.NativeLanding, state.RecentEvents, stateErr)
+		t.Fatal("no-change completion did not release its claim")
 	}
 	if err := orch.Drain(t.Context()); err != nil {
 		t.Fatal(err)

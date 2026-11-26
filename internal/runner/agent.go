@@ -1236,17 +1236,17 @@ func (r *Runner) runAgentTurn(
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
 	updates := runRequest
-	artifactWriter, canSpool := runRequest.Execution.(spooledArtifactExecution)
+	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
 		})
 	}
 	var interventions []tracker.ExecutionLoopIntervention
-	loopOwner, canRecordLoops := runRequest.Execution.(interface {
+	loopOwner, _ := runRequest.Execution.(interface {
 		RecordLoopIntervention(context.Context, tracker.ExecutionLoopIntervention) error
 	})
-	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && canRecordLoops {
+	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && loopOwner != nil {
 		turnRequest.RecordLoopIntervention = func(event tracker.ExecutionLoopIntervention) {
 			event.Revision = runRequest.checklistRevision
 			if len(interventions) == progresscheck.ToolLoopWindow {
@@ -1316,7 +1316,7 @@ func (r *Runner) runAgentTurn(
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && canSpool && runRequest.artifactSpool != nil {
+			if observe != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
 				runRequest.artifactSpool.chunks++
 				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
@@ -1818,10 +1818,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
 	mode := runworkspace.NormalizeRunMode(req.Mode)
-	phaseExecution, hasPhaseExecution := req.Execution.(PhaseReceiptExecution)
-	if (req.phaseReceipts || req.phaseContinuation != nil) && !hasPhaseExecution {
-		return RunResult{}, failedStep("publication", ErrPhaseReceiptsUnavailable)
-	}
 	if mode == RunModeImplement && spoolsArtifactLog(req.Execution) {
 		req.artifactSpool = &sourceArtifactSpool{}
 	}
@@ -1859,11 +1855,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			phaseSource = continuation.LastPushed
 		}
 		resumePhase := phaseSource != nil && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan
-		if req.executionRole() == RoleRework && recovery.Change != nil && recovery.ChangeDetail != nil &&
-			recovery.ChangeDetail.Summary.Status == "reviewed" && continuation.PublishedChangeReceipt != nil &&
-			phaseSource != nil && phaseSource.HeadSHA == recovery.Change.HeadSHA {
-			resumePhase = false
-		}
 		publicationRecovery = publicationRecovery && resumePhase
 		if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
 			turnRecovery = nativePhaseTurnResumeAttempt(recovery, *phaseSource)
@@ -1941,7 +1932,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		sourceErr = recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
 		if legacyPublishedSource {
 			if sourceErr != nil {
-				return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
+				return RunResult{}, fmt.Errorf("%w: recover published Change source: %w", ErrNativeRecoveryRequired, sourceErr)
 			}
 			if workspaceIssue.Source == nil {
 				return RunResult{}, fmt.Errorf("%w: published Change source is unavailable", ErrNativeRecoveryRequired)
@@ -2277,10 +2268,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if mode == RunModeImplement && req.Execution != nil {
 		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
 	}
-	if legacyPublishedSource && workspaceIssue.Source != nil && req.phaseContinuation.LastPushed != nil {
-		req.phaseReceipts = true
-		req.publishedPhaseSource = &workspace.PhaseSource{}
-	}
 	role := req.executionRole()
 	routeRole := agentRuntime.effectiveRunRole(role)
 	selection, backend, backendConfig, err := agentRuntime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), routeRole)
@@ -2397,17 +2384,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	preStartBinding := true
 	var executionIdentity tracker.NativeExecutionIdentity
-	var phasedProvider phasedProviderExecution
 	if req.Execution != nil {
 		start := req.Execution.Start
 
 		if planPhase {
-			var ok bool
-			phasedProvider, ok = req.Execution.(phasedProviderExecution)
+			phased, ok := req.Execution.(phasedProviderExecution)
 			if !ok {
 				return RunResult{}, errors.New("native planning requires a fenced phase provider")
 			}
-			start = phasedProvider.StartPhased
+			start = phased.StartPhased
 		}
 		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
 		if _, binds := req.Execution.(ConversationExecution); binds {
@@ -2530,11 +2515,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			afterRunPending = false
 			return admission, err
 		}
-		if err := phasedProvider.SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
+		if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
-		if err := phaseExecution.VerifyPhaseAuthority(ctx); err != nil {
+		if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
@@ -2594,8 +2579,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if reviewRecovery != nil || turnRecovery != nil {
 			sessionErr = r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, r.now(), result, sessionModel, backendConfig.Kind, 0, AgentTurnResult{}, 0)
 		}
-		var repair *sourceRepair
-		if !errors.As(err, &repair) || sessionErr != nil {
+		repair, needsRepair := err.(*sourceRepair)
+		if !needsRepair || sessionErr != nil {
 			return result, errors.Join(err, sessionErr)
 		}
 		if err := errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx)); err != nil {
@@ -2603,7 +2588,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if repair.incomplete != nil {
 			if req.phaseReceipts {
-				if err := phaseExecution.VerifyPhaseAuthority(ctx); err != nil {
+				if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
 					return result, errors.Join(repair, err)
 				}
 			}
@@ -2910,7 +2895,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
 			retry := r.roundRetry(sessionCtx, req, "implement", providerTimeout, &deadlines, retryDelay)
 			validate := func(ctx context.Context) error {
-				return progresscheck.AwaitRoundAuthority(ctx, phaseExecution.VerifyPhaseAuthority, retry)
+				return progresscheck.AwaitRoundAuthority(ctx, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, retry)
 			}
 			assessment, verdictErr := r.decideRound(sessionCtx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err, false, retry)
 			if verdictErr != nil {
@@ -3183,8 +3168,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			var err error
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 			cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, result.TurnStarted)
-			var repair *sourceRepair
-			if turnErr == nil && errors.As(err, &repair) && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
+			repair, needsRepair := err.(*sourceRepair)
+			if turnErr == nil && needsRepair && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
 				err = errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx))
 				if err == nil {
 					err = verifyAgentResume(ctx, backend, processRequest, resume)
@@ -3201,7 +3186,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 				if err == nil && repair.incomplete != nil {
 					if req.phaseReceipts {
-						err = phaseExecution.VerifyPhaseAuthority(ctx)
+						err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx)
 					}
 					correctionPrompt = sourceFinalizationPrompt(repair.incomplete.Status)
 				}
