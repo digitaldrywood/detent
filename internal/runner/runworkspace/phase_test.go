@@ -43,7 +43,7 @@ func (e *phaseExecution) RecordPhaseReceipt(_ context.Context, _, branch, head, 
 }
 
 func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
-	for _, name := range []string{"normal", "isolated configuration", "lease lost after push", "missing project", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
+	for _, name := range []string{"normal", "isolated configuration", "unborn remote scans the root commit", "lease lost after push", "missing project", "pushurl", "insteadOf", "pushInsteadOf", "multiple push urls"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			source := filepath.Join(dir, "source")
@@ -56,7 +56,11 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			git("init", "--bare", "--template=", other)
 			git("init", "--template=", source)
 			git("-C", source, "remote", "add", "origin", origin)
-			git("-C", source, "commit", "--allow-empty", "-m", "Phase source")
+			message := "Phase source"
+			if name == "unborn remote scans the root commit" {
+				message = "ghp_" + strings.Repeat("aB0cD1", 6)
+			}
+			git("-C", source, "commit", "--allow-empty", "-m", message)
 			backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 			if err != nil {
 				t.Fatal(err)
@@ -100,6 +104,12 @@ func TestPublishPhaseUsesConfiguredRepository(t *testing.T) {
 			_, err = PublishPhase(t.Context(), execution, backend, info, issue, nil, "implement", "")
 			remoteHead := git("-C", origin, "for-each-ref", "--format=%(objectname)", ref)
 			otherHead := git("-C", other, "for-each-ref", "--format=%(objectname)", ref)
+			if name == "unborn remote scans the root commit" {
+				if err == nil || !strings.Contains(err.Error(), "possible credential in selected content") || execution.receipts != 0 || remoteHead != "" || otherHead != "" {
+					t.Fatalf("unsafe root publication: error=%v receipts=%d configured ref=%q other ref=%q", err, execution.receipts, remoteHead, otherHead)
+				}
+				return
+			}
 			if name == "lease lost after push" {
 				orphan := git("-C", checkout, "rev-parse", "HEAD")
 				if !errors.Is(err, execution.receiptErr) || execution.receipts != 0 || remoteHead != orphan {

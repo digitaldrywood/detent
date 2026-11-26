@@ -19,7 +19,10 @@ const (
 )
 
 func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) error {
-	args := append([]string{"rev-list", "--max-count=" + strconv.Itoa(phaseCommitLimit+1), head, "--not"}, published...)
+	args := []string{"rev-list", "--max-count=" + strconv.Itoa(phaseCommitLimit+1), head}
+	if len(published) != 0 {
+		args = append(append(args, "--not"), published...)
+	}
 	rawCommits, err := readPhaseOutput(git, (phaseCommitLimit+1)*65, "commit list", args...)
 	if err != nil {
 		return err
