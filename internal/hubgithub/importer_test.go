@@ -167,6 +167,7 @@ func TestImportScheduledOccurrence(t *testing.T) {
 		stage      string
 		conclusion string
 		jobName    string
+		fullName   string
 		secondPage bool
 	}{
 		{name: "failed job while workflow is running", valid: true},
@@ -174,6 +175,9 @@ func TestImportScheduledOccurrence(t *testing.T) {
 		{name: "classification verifies a job on the second page", stage: githubcontract.ScheduledClassificationStage, secondPage: true, valid: true},
 		{name: "classification verifies a 257-byte job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 257), valid: true},
 		{name: "classification verifies a 512-byte job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 512), valid: true},
+		{name: "classification verifies a truncated job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 512), fullName: "y" + strings.Repeat("x", 512), valid: true},
+		{name: "classification verifies a truncated multibyte job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 511), fullName: "é" + strings.Repeat("x", 511), valid: true},
+		{name: "repair requires the exact job name", jobName: strings.Repeat("x", 256), fullName: "y" + strings.Repeat("x", 256)},
 		{name: "repair refuses a cancelled job", conclusion: "cancelled"},
 		{name: "wrong run", changeRun: func(r map[string]any) { r["id"] = 124 }},
 		{name: "wrong attempt", changeRun: func(r map[string]any) { r["run_attempt"] = 2 }},
@@ -200,6 +204,9 @@ func TestImportScheduledOccurrence(t *testing.T) {
 			job := map[string]any{"id": 456, "run_id": 123, "name": "Coverage", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-11T12:00:00Z", "completed_at": "2026-10-11T12:01:00Z"}
 			if test.jobName != "" {
 				evidence.JobName, job["name"] = test.jobName, test.jobName
+			}
+			if test.fullName != "" {
+				job["name"] = test.fullName
 			}
 			if test.conclusion != "" {
 				evidence.Conclusion, job["conclusion"] = test.conclusion, test.conclusion

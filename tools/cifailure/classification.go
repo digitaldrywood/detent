@@ -32,7 +32,7 @@ func boundedCIText(value string, limit int) string {
 
 func classifyFailure(ctx context.Context, destination issueDestination, j job, log []byte, logErr error, files []string, missing string, getenv func(string) string) (progresscheck.CIDecision, error) {
 	request := progresscheck.CIFailure{Repository: getenv("GITHUB_REPOSITORY"), HeadSHA: getenv("CI_DEVELOP_SHA"), RunID: getenv("GITHUB_RUN_ID"), RunAttempt: getenv("GITHUB_RUN_ATTEMPT"),
-		JobID: strconv.FormatInt(j.ID, 10), JobName: boundedCIText(j.Name, 512), ExitStatus: j.Conclusion, LogTail: boundedCIText(ansiEscape.ReplaceAllString(string(log), ""), 8000), MissingEvidence: missing}
+		JobID: strconv.FormatInt(j.ID, 10), JobName: progresscheck.BoundCIJobName(j.Name), ExitStatus: j.Conclusion, LogTail: boundedCIText(ansiEscape.ReplaceAllString(string(log), ""), 8000), MissingEvidence: missing}
 	if request.ExitStatus == "" {
 		request.ExitStatus = "unknown"
 	}
