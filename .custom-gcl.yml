@@ -1,6 +1,0 @@
-version: v2.14.0
-name: golangci-lint-custom
-plugins:
-  - module: github.com/digitaldrywood/heft
-    import: github.com/digitaldrywood/heft/plugin
-    version: v0.1.0
