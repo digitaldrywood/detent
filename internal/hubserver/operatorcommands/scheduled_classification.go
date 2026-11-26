@@ -64,15 +64,16 @@ func (b CITextBackend) Generate(ctx context.Context, instructions, input string)
 	return text.String(), err
 }
 
-func (s ScheduledCIDeps) readCIClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure) (progresscheck.CIDecision, bool, error) {
+func (s ScheduledCIDeps) readCIClassification(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey string) (progresscheck.CIDecision, bool, error) {
 	var result progresscheck.CIDecision
+	var pending bool
 	err := s.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		owner, ok := r.(policystore.ScheduledReader)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		result, err = owner.ReadScheduledDecision(ctx, scope.Project, input)
+		result, pending, err = owner.ReadScheduledDecision(ctx, scope.Project, input, jobKey, s.Now().UTC())
 		return err
 	})
 	if errors.Is(err, corestore.ErrNotFound) {
@@ -80,6 +81,9 @@ func (s ScheduledCIDeps) readCIClassification(ctx context.Context, scope hubscop
 	}
 	if errors.Is(err, corestore.ErrRevisionConflict) {
 		return result, false, hubapi.NativePublicInvalid("CI classification commit differs from retained failure")
+	}
+	if err == nil && pending {
+		return progresscheck.CIDecision{}, false, &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
 	}
 	return result, err == nil, err
 }
@@ -125,7 +129,7 @@ func (s ScheduledCIDeps) reserveClassification(ctx context.Context, scope hubsco
 		if !claimed {
 			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
 		}
-		switch _, readErr := owner.ReadScheduledDecision(ctx, scope.Project, input); {
+		switch _, _, readErr := owner.ReadScheduledDecision(ctx, scope.Project, input, jobKey, now); {
 		case readErr == nil:
 			return &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
 		case errors.Is(readErr, corestore.ErrRevisionConflict):
@@ -168,9 +172,9 @@ func (s ScheduledCIDeps) writeClassification(ctx context.Context, scope hubscope
 }
 
 func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.NativeScope, input progresscheck.CIFailure, jobKey, receiptID string) (result progresscheck.CIDecision, err error) {
-	invocationRecorded := false
+	claimReleased := false
 	defer func() {
-		if err == nil || invocationRecorded {
+		if claimReleased {
 			return
 		}
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -191,11 +195,11 @@ func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.Na
 	fallback := progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "AI classification unavailable or invalid; diagnose the retained job evidence through the source repair path."}
 	at := s.Now().UTC()
 	err = s.writeClassification(ctx, scope, at, func(owner policystore.ScheduledWriter, limit int64) (billingstore.UsageResult, error) {
-		released, err := owner.ReleaseScheduledClassification(ctx, scope.Project, jobKey, receiptID, &at)
+		locked, err := owner.LockScheduledClassification(ctx, scope.Project, jobKey, receiptID, at)
 		if err != nil {
 			return billingstore.UsageResult{}, err
 		}
-		if !released {
+		if !locked {
 			return billingstore.UsageResult{}, &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
 		}
 		usage, err := owner.StoreScheduledDecision(ctx, scope.Project, input, fallback, at, limit)
@@ -207,7 +211,6 @@ func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.Na
 	if err != nil {
 		return result, fmt.Errorf("record CI classification invocation: %w", err)
 	}
-	invocationRecorded = true
 	result, err = (progresscheck.AI{Backend: s.Text}).ClassifyCI(ctx, input)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -215,12 +218,21 @@ func (s ScheduledCIDeps) classifyReserved(ctx context.Context, scope hubscope.Na
 		}
 		return fallback, nil
 	}
-	err = s.writeClassification(ctx, scope, s.Now().UTC(), func(owner policystore.ScheduledWriter, limit int64) (billingstore.UsageResult, error) {
+	at = s.Now().UTC()
+	err = s.writeClassification(ctx, scope, at, func(owner policystore.ScheduledWriter, limit int64) (billingstore.UsageResult, error) {
+		released, err := owner.ReleaseScheduledClassification(ctx, scope.Project, jobKey, receiptID, &at)
+		if err != nil {
+			return billingstore.UsageResult{}, err
+		}
+		if !released {
+			return billingstore.UsageResult{}, &hubapi.NativeError{Code: "conflict", Status: http.StatusConflict}
+		}
 		return owner.UpdateScheduledDecision(ctx, scope.Project, input, result, limit)
 	})
 	if err != nil {
 		return result, fmt.Errorf("store CI classification: %w", err)
 	}
+	claimReleased = true
 	return result, nil
 }
 
@@ -246,18 +258,19 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 		return s.Error(c, hubapi.NativePublicInvalid("CI classification repository differs from project"))
 	}
 	input.Repository = repository
-	result, found, err := s.readCIClassification(ctx, scope, input)
+	identity, err := json.Marshal([]string{input.Repository, input.RunID, input.RunAttempt, input.JobID})
+	if err != nil {
+		return s.Error(c, err)
+	}
+	jobKey := policy.Digest(identity)
+	result, found, err := s.readCIClassification(ctx, scope, input, jobKey)
 	if found || err != nil {
 		if err != nil {
 			return s.Error(c, err)
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	identity, err := json.Marshal([]string{input.Repository, input.RunID, input.RunAttempt, input.JobID})
-	if err != nil {
-		return s.Error(c, err)
-	}
-	jobKey, receiptID := policy.Digest(identity), hubapi.NewID("scheduled_ci")
+	receiptID := hubapi.NewID("scheduled_ci")
 	if err := s.reserveClassification(ctx, scope, input, jobKey, receiptID); err != nil {
 		return s.Error(c, err)
 	}

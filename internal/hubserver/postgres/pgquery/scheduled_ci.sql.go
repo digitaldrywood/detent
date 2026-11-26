@@ -44,12 +44,49 @@ func (q *Queries) ClaimScheduledClassification(ctx context.Context, arg ClaimSch
 	return result.RowsAffected(), nil
 }
 
+const lockScheduledClassification = `-- name: LockScheduledClassification :one
+SELECT true FROM scheduled_ci_classification_claims
+WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4
+  AND expires_at > $5
+FOR UPDATE
+`
+
+type LockScheduledClassificationParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	JobKey         string
+	ReceiptID      string
+	AsOf           time.Time
+}
+
+func (q *Queries) LockScheduledClassification(ctx context.Context, arg LockScheduledClassificationParams) (bool, error) {
+	row := q.db.QueryRow(ctx, lockScheduledClassification,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.JobKey,
+		arg.ReceiptID,
+		arg.AsOf,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const readScheduledDecision = `-- name: ReadScheduledDecision :one
-SELECT organization_id, project_id, repository, head_sha, run_id, run_attempt, job_id, outcome, target, reason, created_at, collaboration_bytes FROM scheduled_ci_decisions
-WHERE organization_id=$1 AND project_id=$2 AND repository=$3 AND run_id=$4 AND run_attempt=$5 AND job_id=$6
+SELECT d.head_sha, d.outcome, d.target, d.reason, EXISTS (
+    SELECT 1 FROM scheduled_ci_classification_claims c
+    WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id
+      AND c.job_key=$1 AND c.expires_at>$2
+) AS pending
+FROM scheduled_ci_decisions d
+WHERE d.organization_id=$3 AND d.project_id=$4
+  AND d.repository=$5 AND d.run_id=$6
+  AND d.run_attempt=$7 AND d.job_id=$8
 `
 
 type ReadScheduledDecisionParams struct {
+	JobKey         string
+	AsOf           time.Time
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
 	Repository     string
@@ -58,8 +95,18 @@ type ReadScheduledDecisionParams struct {
 	JobID          string
 }
 
-func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDecisionParams) (ScheduledCiDecision, error) {
+type ReadScheduledDecisionRow struct {
+	HeadSHA string
+	Outcome string
+	Target  string
+	Reason  string
+	Pending bool
+}
+
+func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDecisionParams) (ReadScheduledDecisionRow, error) {
 	row := q.db.QueryRow(ctx, readScheduledDecision,
+		arg.JobKey,
+		arg.AsOf,
 		arg.OrganizationID,
 		arg.ProjectID,
 		arg.Repository,
@@ -67,20 +114,13 @@ func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDe
 		arg.RunAttempt,
 		arg.JobID,
 	)
-	var i ScheduledCiDecision
+	var i ReadScheduledDecisionRow
 	err := row.Scan(
-		&i.OrganizationID,
-		&i.ProjectID,
-		&i.Repository,
 		&i.HeadSHA,
-		&i.RunID,
-		&i.RunAttempt,
-		&i.JobID,
 		&i.Outcome,
 		&i.Target,
 		&i.Reason,
-		&i.CreatedAt,
-		&i.CollaborationBytes,
+		&i.Pending,
 	)
 	return i, err
 }

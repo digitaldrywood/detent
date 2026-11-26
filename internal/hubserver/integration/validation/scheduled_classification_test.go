@@ -154,14 +154,10 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				return response
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
-			if test.name == "Go test" {
+			if test.name == "timeout with location" {
 				backend.onCall = func() {
 					before := importer.calls
-					replay := call(firstProject, input, http.StatusOK)
-					var decision progresscheck.CIDecision
-					if err := json.Unmarshal(replay.Body.Bytes(), &decision); err != nil || decision.Outcome != progresscheck.CIUnknown {
-						t.Fatalf("in-flight replay = %+v, %v", decision, err)
-					}
+					call(firstProject, input, http.StatusConflict)
 					if importer.calls != before {
 						t.Error("in-flight duplicate reached the importer")
 					}

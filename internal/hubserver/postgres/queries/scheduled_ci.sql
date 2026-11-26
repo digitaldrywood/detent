@@ -1,6 +1,13 @@
 -- name: ReadScheduledDecision :one
-SELECT * FROM scheduled_ci_decisions
-WHERE organization_id=$1 AND project_id=$2 AND repository=$3 AND run_id=$4 AND run_attempt=$5 AND job_id=$6;
+SELECT d.head_sha, d.outcome, d.target, d.reason, EXISTS (
+    SELECT 1 FROM scheduled_ci_classification_claims c
+    WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id
+      AND c.job_key=sqlc.arg(job_key) AND c.expires_at>sqlc.arg(as_of)
+) AS pending
+FROM scheduled_ci_decisions d
+WHERE d.organization_id=sqlc.arg(organization_id) AND d.project_id=sqlc.arg(project_id)
+  AND d.repository=sqlc.arg(repository) AND d.run_id=sqlc.arg(run_id)
+  AND d.run_attempt=sqlc.arg(run_attempt) AND d.job_id=sqlc.arg(job_id);
 
 -- name: StoreScheduledDecision :execrows
 INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at,collaboration_bytes)
@@ -32,6 +39,12 @@ WHERE scheduled_ci_classification_claims.expires_at <= sqlc.arg(as_of);
 DELETE FROM scheduled_ci_classification_claims
 WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4
  AND (sqlc.narg(valid_at)::timestamptz IS NULL OR expires_at > sqlc.narg(valid_at));
+
+-- name: LockScheduledClassification :one
+SELECT true FROM scheduled_ci_classification_claims
+WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4
+  AND expires_at > sqlc.arg(as_of)
+FOR UPDATE;
 
 -- name: ScheduledLandedWorkItems :many
 SELECT work_item_id FROM change_requests

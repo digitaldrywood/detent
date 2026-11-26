@@ -16,6 +16,7 @@ import (
 	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -191,7 +192,8 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 	}
 	evidence := *request.Scheduled
 	identity := evidence
-	if request.Stage == githubcontract.ScheduledClassificationStage && len(identity.JobName) <= 512 {
+	classification := request.Stage == githubcontract.ScheduledClassificationStage
+	if classification && len(identity.JobName) <= progresscheck.MaxCIJobNameBytes {
 		identity.JobName = ""
 	}
 	parsed := gate.ParseScheduledEvidence(identity.Stamp())
@@ -243,7 +245,11 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 			return githubcontract.GitHubImportPage{}, errors.New("scheduled job page exceeds its size limit")
 		}
 		for _, job := range jobs.Jobs {
-			if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && matchesScheduledJobConclusion(request.Stage, job.Conclusion) {
+			name := job.Name
+			if classification {
+				name = progresscheck.BoundCIJobName(name)
+			}
+			if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && matchesScheduledJobConclusion(request.Stage, job.Conclusion) {
 				evidence.Checks = nil
 				evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
 				evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID

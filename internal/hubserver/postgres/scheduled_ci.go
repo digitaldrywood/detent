@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
@@ -12,16 +13,19 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *session) ReadScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure) (progresscheck.CIDecision, error) {
-	row, err := s.queries.ReadScheduledDecision(ctx, pgquery.ReadScheduledDecisionParams{OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID})
+func (s *session) ReadScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure, jobKey string, asOf time.Time) (progresscheck.CIDecision, bool, error) {
+	row, err := s.queries.ReadScheduledDecision(ctx, pgquery.ReadScheduledDecisionParams{
+		OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, RunID: input.RunID,
+		RunAttempt: input.RunAttempt, JobID: input.JobID, JobKey: jobKey, AsOf: asOf,
+	})
 	if err != nil {
-		return progresscheck.CIDecision{}, mapError(ctx, err)
+		return progresscheck.CIDecision{}, false, mapError(ctx, err)
 	}
 	if row.HeadSHA != input.HeadSHA {
-		return progresscheck.CIDecision{}, corestore.ErrRevisionConflict
+		return progresscheck.CIDecision{}, false, corestore.ErrRevisionConflict
 	}
 	result := progresscheck.CIDecision{Outcome: progresscheck.CIOutcome(row.Outcome), Target: row.Target, Reason: row.Reason}
-	return result, result.Validate()
+	return result, row.Pending, result.Validate()
 }
 
 func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure, result progresscheck.CIDecision, at time.Time, limit int64) (billingstore.UsageResult, error) {
@@ -78,6 +82,17 @@ func (s *session) ReleaseScheduledClassification(ctx context.Context, project tr
 		OrganizationID: s.organization, ProjectID: project, JobKey: jobKey, ReceiptID: receiptID, ValidAt: validAt,
 	})
 	return count == 1, mapError(ctx, err)
+}
+
+func (s *session) LockScheduledClassification(ctx context.Context, project tracker.ProjectID, jobKey, receiptID string, asOf time.Time) (bool, error) {
+	locked, err := s.queries.LockScheduledClassification(ctx, pgquery.LockScheduledClassificationParams{
+		OrganizationID: s.organization, ProjectID: project, JobKey: jobKey, ReceiptID: receiptID, AsOf: asOf,
+	})
+	err = mapError(ctx, err)
+	if errors.Is(err, corestore.ErrNotFound) {
+		return false, nil
+	}
+	return locked, err
 }
 
 func (s *session) ScheduledLandedWorkItems(ctx context.Context, project tracker.ProjectID, sha string) ([]string, error) {

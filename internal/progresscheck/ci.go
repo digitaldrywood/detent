@@ -35,6 +35,12 @@ type CIFailure struct {
 	MissingEvidence string   `json:"missing_evidence,omitempty"`
 }
 
+const MaxCIJobNameBytes = 512
+
+func BoundCIJobName(name string) string {
+	return strings.ToValidUTF8(name[max(0, len(name)-MaxCIJobNameBytes):], "")
+}
+
 type CIDecision struct {
 	Outcome CIOutcome `json:"outcome"`
 	Target  string    `json:"target"`
@@ -52,10 +58,13 @@ func (d CIDecision) Validate() error {
 }
 
 func (r CIFailure) Validate() error {
-	for _, value := range []string{r.Repository, r.HeadSHA, r.RunID, r.RunAttempt, r.JobID, r.JobName, r.ExitStatus} {
+	for _, value := range []string{r.Repository, r.HeadSHA, r.RunID, r.RunAttempt, r.JobID, r.ExitStatus} {
 		if value == "" || len(value) > 512 {
 			return errors.New("invalid CI failure identity")
 		}
+	}
+	if r.JobName == "" || len(r.JobName) > MaxCIJobNameBytes {
+		return errors.New("invalid CI job name")
 	}
 	if len(r.LogTail) > 8000 || len(r.ChangedFiles) > 100 || len(r.Step) > 512 || len(r.MissingEvidence) > 1024 {
 		return errors.New("CI evidence exceeds field bounds")

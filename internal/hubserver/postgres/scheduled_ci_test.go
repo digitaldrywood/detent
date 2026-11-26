@@ -20,6 +20,7 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
 	for _, org := range []tracker.OrganizationID{"org_first", "org_second"} {
 		pgstoretest.SeedRepository(t, repository, org)
+		now := time.Now().UTC()
 		input := progresscheck.CIFailure{Repository: "owner/repository", HeadSHA: "head", RunID: "run", RunAttempt: "1", JobID: "job", JobName: "test", ExitStatus: "failure"}
 		want := progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "test", Reason: string(org)}
 		err := repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
@@ -50,12 +51,12 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			if after-before != wantBytes {
 				t.Fatalf("decision bytes = %d, want %d", after-before, wantBytes)
 			}
-			got, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input)
+			got, pending, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input, "job", now)
 			if err != nil {
 				return err
 			}
-			if got != want {
-				t.Fatalf("decision = %+v, want %+v", got, want)
+			if got != want || pending {
+				t.Fatalf("decision = %+v, pending = %t, want %+v and final", got, pending, want)
 			}
 			if usage, err := owner.UpdateScheduledDecision(t.Context(), "prj_first", input, other, math.MaxInt64); err != nil || !usage.Applied {
 				t.Fatalf("updated decision accounting = %+v, %v", usage, err)
@@ -72,7 +73,7 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 				t.Fatalf("updated decision bytes = %d, want %d", updated-before, wantBytes)
 			}
 			input.HeadSHA = "changed"
-			if _, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input); err == nil {
+			if _, _, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input, "job", now); err == nil {
 				t.Fatal("changed head replay accepted")
 			}
 			return nil
@@ -80,7 +81,7 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		now := time.Now().UTC()
+		input.HeadSHA = "head"
 		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
 			owner := w.(policystore.ScheduledWriter)
 			for _, id := range []string{"original", "replacement"} {
@@ -119,6 +120,15 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 				t.Fatalf("expired owner release = %t, %v", released, err)
 			}
 			at := now.Add(time.Minute)
+			for _, boundary := range []struct {
+				at      time.Time
+				pending bool
+			}{{at, true}, {at.Add(time.Minute), false}} {
+				_, pending, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input, "job", boundary.at)
+				if err != nil || pending != boundary.pending {
+					t.Fatalf("pending at %s = %t, %v; want %t", boundary.at, pending, err, boundary.pending)
+				}
+			}
 			if released, err := owner.ReleaseScheduledClassification(t.Context(), "prj_first", "job", "replacement", &at); err != nil || !released {
 				t.Fatalf("live owner release after retention = %t, %v", released, err)
 			}
@@ -140,7 +150,7 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 		err = repository.ReadTenant(t.Context(), org, corestore.Serving, func(r tenantstore.Reader) error {
-			_, err := r.(policystore.ScheduledReader).ReadScheduledDecision(t.Context(), "prj_first", input)
+			_, _, err := r.(policystore.ScheduledReader).ReadScheduledDecision(t.Context(), "prj_first", input, "job", now)
 			return err
 		})
 		if !errors.Is(err, corestore.ErrNotFound) {
