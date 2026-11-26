@@ -1855,6 +1855,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			phaseSource = continuation.LastPushed
 		}
 		resumePhase := phaseSource != nil && continuation.NextPhase != RunModeImplement && continuation.NextPhase != RunModePlan
+		if req.executionRole() == RoleRework && recovery.Change != nil && recovery.ChangeDetail != nil &&
+			recovery.ChangeDetail.Summary.Status == "reviewed" && continuation.PublishedChangeReceipt != nil &&
+			phaseSource != nil && phaseSource.HeadSHA == recovery.Change.HeadSHA {
+			resumePhase = false
+		}
 		publicationRecovery = publicationRecovery && resumePhase
 		if resumePhase && !req.operatorFreshRetry() && !tracker.IsPlanPhase(phaseSource.Phase) {
 			turnRecovery = nativePhaseTurnResumeAttempt(recovery, *phaseSource)
@@ -1932,7 +1937,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		sourceErr = recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery)
 		if legacyPublishedSource {
 			if sourceErr != nil {
-				return RunResult{}, fmt.Errorf("%w: recover published Change source: %w", ErrNativeRecoveryRequired, sourceErr)
+				return RunResult{}, fmt.Errorf("%w: recover native Change source: %w", ErrNativeRecoveryRequired, sourceErr)
 			}
 			if workspaceIssue.Source == nil {
 				return RunResult{}, fmt.Errorf("%w: published Change source is unavailable", ErrNativeRecoveryRequired)
@@ -2267,6 +2272,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	if mode == RunModeImplement && req.Execution != nil {
 		promptOptions.ReviewConversationRefusal = NativeReviewConversationRefusal(req.Execution.Recovery())
+	}
+	if legacyPublishedSource && workspaceIssue.Source != nil && req.phaseContinuation.LastPushed != nil {
+		req.phaseReceipts = true
+		req.publishedPhaseSource = &workspace.PhaseSource{}
 	}
 	role := req.executionRole()
 	routeRole := agentRuntime.effectiveRunRole(role)

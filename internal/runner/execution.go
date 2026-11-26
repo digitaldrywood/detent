@@ -395,7 +395,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			return RunResult{}, err
 		}
 	}
-	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil {
+	if workflow.Config.Plan.Enabled && mode == RunModeImplement && req.Execution != nil && req.Admission == nil && !legacyPublishedSource && (req.phaseContinuation == nil || req.phaseContinuation.PublishedChangeReceipt == nil) {
 		if req.phaseContinuation == nil {
 			return RunResult{}, failedStep("publication", errors.New("native planning requires Git phase receipts"))
 		}
@@ -645,6 +645,12 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			result.NativeChange = &NativeChange{}
 		}
 		result.NativeChange.VersionCode, result.NativeChange.VersionError = phaseRefusal.Kind, phaseRefusal.Reason
+	}
+	if req.phaseReceipts && mode == RunModeImplement && errors.Is(runErr, workspace.ErrCheckpointUnsafe) {
+		if result.NativeChange == nil {
+			result.NativeChange = &NativeChange{}
+		}
+		result.NativeChange.VersionError = runErr.Error()
 	}
 	if change := result.NativeChange; change != nil && change.SecurityAudit != nil && change.SecurityAudit.Verdict == "wait" {
 		result.FinalMessage = change.SecurityAudit.Run.CompletionMessage(result.FinalMessage)

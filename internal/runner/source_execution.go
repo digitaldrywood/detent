@@ -78,7 +78,7 @@ func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuati
 	if continuation == nil {
 		return false
 	}
-	if recovery.SourceVersionID != "" && (recovery.Change == nil || recovery.Change.VersionID != recovery.SourceVersionID) {
+	if recovery.SourceVersionID != "" {
 		return true
 	}
 	change := recovery.Change

@@ -556,6 +556,7 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
+		cfg.Agent.MaxTurns = 2
 	}
 	cfg.Gate.Run = gate
 	cfg.Budget.Enabled = false
@@ -605,6 +606,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 		updatesMu.Unlock()
 		return nil
 	}}
+	if failingReview {
+		request.Mode, request.Routine = runnerpkg.RunModeImplement, nil
+	}
 	local := len(producerFailure) > 1 && producerFailure[1]
 	if local {
 		artifacts, publish, _ := localWorkerArtifacts(t, true)
@@ -630,6 +634,9 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	if failingReview {
 		if probe == nil {
 			t.Fatal("source review failure fixture requires a native publisher")
+		}
+		if probe.validation.Command != gate || probe.validation.ExitCode != 0 || probe.validation.HeadSHA != probe.lastDiff.HeadSHA {
+			t.Fatalf("remote source validation was not recorded for the reviewed head: %+v", probe.validation)
 		}
 		var status interface{ BackendErrorStatus() string }
 		if err == nil || !strings.Contains(err.Error(), "parse validator result") || !errors.As(err, &status) || status.BackendErrorStatus() != "interrupted" || probe.outcome != "interrupted" || probe.finished != 1 || result.NativeChange == nil || result.NativeChange.VersionID != "central-version" || result.NativeChange.HeadSHA != probe.lastDiff.HeadSHA || result.NativeChange.ImplementationReviewError == "" || !strings.Contains(result.FinalMessage, "status: complete") || probe.lastDiff.HeadSHA == probe.base {

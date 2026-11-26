@@ -11,6 +11,7 @@ type PhaseReceiptWriter interface {
 }
 
 type PhaseReceiptReader interface {
+	AttemptHasSourceReceipt(context.Context, tracker.ProjectID, int64, string, string, string) (bool, error)
 	RecentPhaseReceipts(context.Context, tracker.ProjectID, int64) ([]tracker.NativePhaseReceipt, error)
 	PhaseContinuation(context.Context, tracker.ProjectID, int64, string, []string, []string) (tracker.NativePhaseContinuation, error)
 }
