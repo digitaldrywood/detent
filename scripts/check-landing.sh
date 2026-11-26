@@ -1,5 +1,8 @@
 set -euo pipefail
 
+stage="resolve landing comparison"
+trap 'status=$?; printf "check-landing: error: %s exited %s\n" "$stage" "$status" >&2; exit "$status"' ERR
+
 base_ref=${1:?base ref required}
 procs=${2:?process budget required}
 linter=${3:?linter path required}
@@ -207,6 +210,7 @@ exit "$status"
     return 1
 }
 
+stage="select landing assets"
 needs_assets=$(python3 - "$base" "$head" <<'PY'
 import os
 import subprocess
@@ -240,10 +244,21 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
-    make -j1 assets generate-docs TEST_PROCS="$procs"
+    stage="generate assets and docs"
+    asset_log=$(mktemp "${TMPDIR:-/tmp}/detent-landing-assets.XXXXXX")
+    if make -j1 assets generate-docs TEST_PROCS="$procs" >"$asset_log" 2>&1; then
+        printf 'Landing assets and docs generated.\n'
+    else
+        status=$?
+        printf 'check-landing: error: %s exited %s\n' "$stage" "$status" >&2
+        cat "$asset_log" >&2
+        exit "$status"
+    fi
 fi
+stage="build Go packages"
 go build -p "$procs" ./...
 
+stage="select landing test and lint packages"
 selection=$(python3 - "$base" "$head" <<'PY'
 import json
 from pathlib import Path
@@ -318,10 +333,14 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
     test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    stage="start disposable PostgreSQL"
     start_landing_postgres
+    stage="run landing tests"
     env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=30m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
+    stage="prepare landing linter"
     make -j1 "$linter" TEST_PROCS="$procs"
+    stage="lint landing packages"
     env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
