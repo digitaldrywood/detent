@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 // PrepareSSHSource uses the same private GitHub config as local agent turns.
@@ -33,7 +34,9 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 			return err
 		}
 	}
-	for name, value := range gitCredentialHelperEnvironment(cfg.Worker.GitHubToken) {
+	credEnv := gitCredentialHelperEnvironment(cfg.Worker.GitHubToken)
+	gitexec.SetGitHubCredentialHelper(credEnv["GIT_CONFIG_VALUE_1"])
+	for name, value := range credEnv {
 		if err := os.Setenv(name, value); err != nil {
 			return err
 		}

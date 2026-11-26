@@ -29,6 +29,9 @@ import (
 )
 
 func TestOfflineCLIUpdateReportsVerifiedController(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping offline update binary recompile test in -short mode")
+	}
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "selected.yaml")

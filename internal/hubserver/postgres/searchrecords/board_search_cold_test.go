@@ -16,6 +16,9 @@ import (
 )
 
 func TestBoardSearchCoversProjectsUpToTheCeiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large-dataset Postgres search ceiling test in -short mode")
+	}
 	t.Parallel()
 	deadline, ok := t.Deadline()
 	if !ok {

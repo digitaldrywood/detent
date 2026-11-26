@@ -78,6 +78,9 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 
 func ScenarioPostgresDatabase(t *testing.T) (*sql.DB, pgtransport.Connection) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	admin := scenarioPostgresTemplate.Database(t)
 	return admin, fixtureRuntimeConnection(t, scenarioPostgresTemplate, admin)
 }
@@ -89,6 +92,9 @@ var nativeChangeRepositories sync.Map
 
 func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	if cfg.Postgres != nil {
 		return cfg
 	}

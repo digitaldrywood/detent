@@ -225,6 +225,10 @@ func (l *LocalGit) recoveryStateWithBase(ctx context.Context, normalized Info, i
 	if err != nil {
 		return RecoveryState{}, err
 	}
+	rebasePaused, err := rebaseInProgress(ctx, normalized.Path)
+	if err != nil {
+		return RecoveryState{}, err
+	}
 	return RecoveryState{
 		DiffStat:                       stat,
 		BaseFingerprint:                gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
@@ -236,6 +240,7 @@ func (l *LocalGit) recoveryStateWithBase(ctx context.Context, normalized Info, i
 		UntrackedPaths:                 observation.untrackedPaths,
 		CommitsNotInPullRequest:        commitsNotInPullRequest,
 		PullRequestComparisonAvailable: comparisonAvailable,
+		RebaseInProgress:               rebasePaused,
 	}, nil
 }
 

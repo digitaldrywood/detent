@@ -81,6 +81,9 @@ func Main(m *testing.M) {
 
 func Database(t *testing.T) *sql.DB {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres hubtest fixture in -short mode")
+	}
 	return template.Database(t)
 }
 
