@@ -32,6 +32,9 @@ func VersionStored(ctx context.Context, details attachment.DetailStore, organiza
 	if err != nil {
 		return false, err
 	}
+	if version.GitSource != nil {
+		return true, nil
+	}
 	if version.Source == nil {
 		return false, nil
 	}

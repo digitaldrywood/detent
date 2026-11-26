@@ -31,7 +31,7 @@ func (e *nativeExecution) completionSnapshot() checkpoint.State {
 		Diff: e.lastDiff, StoredSeq: e.storedSeq,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
-		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
+		PhaseSource: e.phaseSource, SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
 		RecoveredSource: e.recoveredSource, MergeResolution: e.mergeResolution,
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition:  e.preparedDisposition,

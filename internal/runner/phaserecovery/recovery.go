@@ -25,7 +25,7 @@ func ReviewAttempt(recovery tracker.NativeRecovery, command string, landingNeeds
 			break
 		}
 	}
-	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired && !repairResume || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
+	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired && !repairResume || current.SourceDiffDigest() == "" || current.RunID == "" || current.AttemptID == "" {
 		return nil
 	}
 	if command != "" && (current.Validation == nil || current.Validation.Command != command || current.Validation.ExitCode != 0 || current.Validation.HeadSHA != current.HeadSHA || current.Validation.TreeSHA == "") {

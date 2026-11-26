@@ -91,8 +91,8 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 			return runner.NativeValidation{}, err
 		}
 		diff := &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: policy.Digest(raw)}
-		if version.Source != nil {
-			diff.Digest = version.Source.DiffSHA256
+		if digest := version.SourceDiffDigest(); digest != "" {
+			diff.Digest = digest
 		}
 		var patch strings.Builder
 		complete := true
@@ -104,12 +104,12 @@ func PrepareVersion(ctx context.Context, reader VersionReader, host VersionAutho
 		if complete {
 			diff.Patch = patch.String()
 		}
-		if state.SourceRequired && version.Source != nil {
+		if digest := version.SourceDiffDigest(); (state.SourceRequired || version.GitSource != nil) && digest != "" {
 			if err := host.Retain(ctx, *state.Diff); err != nil {
 				return runner.NativeValidation{}, err
 			}
 			capture := host.Retained()
-			if capture == nil || capture.Source.BaseSHA != version.BaseSHA || capture.Source.HeadSHA != version.HeadSHA || capture.Source.DiffSHA256 != version.Source.DiffSHA256 {
+			if capture == nil || capture.Source.BaseSHA != version.BaseSHA || capture.Source.HeadSHA != version.HeadSHA || capture.Source.DiffSHA256 != digest {
 				return runner.NativeValidation{}, errors.New("retained review source differs from the immutable version")
 			}
 			diff.Patch = capture.Patch

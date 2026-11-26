@@ -14,7 +14,7 @@ func Retain(ctx context.Context, required bool, current *tracker.ChangeSourceCap
 		return Retention{Capture: current}, nil
 	}
 	if current != nil && current.Source.BaseSHA == diff.BaseSHA && current.Source.HeadSHA == diff.HeadSHA {
-		return Retention{Capture: current}, current.Source.Validate(diff.BaseSHA, diff.HeadSHA, current.Bundle)
+		return Retention{Capture: current}, validateCapture(diff, *current)
 	}
 	if captureSource == nil {
 		return Retention{}, errors.New("the finalized Change source capture is unavailable; resume on the source-owning runner before publication")
@@ -23,9 +23,20 @@ func Retain(ctx context.Context, required bool, current *tracker.ChangeSourceCap
 	if err != nil {
 		return Retention{}, err
 	}
-	if err := capture.Source.Validate(diff.BaseSHA, diff.HeadSHA, capture.Bundle); err != nil {
+	if err := validateCapture(diff, capture); err != nil {
 		return Retention{}, err
 	}
 	current = &capture
 	return Retention{Capture: current}, nil
+}
+
+func validateCapture(diff tracker.AttemptDiffRequest, capture tracker.ChangeSourceCapture) error {
+	source := capture.Source
+	if source.Format != tracker.ChangeSourceGitPhase {
+		return source.Validate(diff.BaseSHA, diff.HeadSHA, capture.Bundle)
+	}
+	if source.BaseSHA != diff.BaseSHA || source.HeadSHA != diff.HeadSHA || source.DiffSHA256 == "" || len(capture.Bundle) != 0 {
+		return errors.New("Git phase description differs from the finalized source")
+	}
+	return nil
 }

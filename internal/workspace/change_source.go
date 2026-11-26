@@ -64,9 +64,9 @@ func (l *LocalGit) importWorkspaceChangeSource(ctx context.Context, issue Issue)
 	if err := l.fetchItemPhase(ctx, itemInfo, itemIssue, PhaseSource{Branch: phase.Branch, HeadSHA: phase.HeadSHA, TreeSHA: phase.TreeSHA}); err != nil {
 		return err
 	}
-	if version.Source != nil {
+	if expected := version.SourceDiffDigest(); expected != "" {
 		digest, err := changeSourceDiff(ctx, l.sourceRoot, version.BaseSHA, version.HeadSHA)
-		if err != nil || digest != version.Source.DiffSHA256 {
+		if err != nil || digest != expected {
 			return errors.Join(errors.New("pushed Change source diff differs from the immutable version"), err)
 		}
 	}
@@ -141,7 +141,7 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if err != nil {
 		return false, err
 	}
-	if issue.Source.Transferred && issue.Source.Version.Source == nil {
+	if issue.Source.Transferred && issue.Source.Version.Source == nil && issue.Source.PushedPhase == nil {
 		return false, refuse(LandRefusalMissingHead, "the transferred version has no retained bundle; republish the exact head with source capture before retrying transfer")
 	}
 	restore := issue.Source.Transferred || !issue.NativeRework && issue.Source.PushedPhase != nil && issue.PullRequestHeadSHA == issue.Source.Version.HeadSHA
@@ -152,7 +152,7 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 		if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
 			return false, nil
 		}
-		previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
+		previous := issue.Source.Version.SourceDiffDigest() != "" && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
 		if state.UnpushedCommits > 0 && !previous {
 			return false, nil
 		}
@@ -256,6 +256,9 @@ func changeSourceDiff(ctx context.Context, dir, base, head string) (string, erro
 }
 func CaptureChangeSource(ctx context.Context, dir, base, head string) (tracker.ChangeSourceCapture, error) {
 	return changesource.Capture(ctx, dir, base, head)
+}
+func DescribeChangeSource(ctx context.Context, dir, base, head string) (tracker.ChangeSourceCapture, error) {
+	return changesource.Describe(ctx, dir, base, head)
 }
 func VerifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
 	return changesource.Verify(ctx, source, bundle)

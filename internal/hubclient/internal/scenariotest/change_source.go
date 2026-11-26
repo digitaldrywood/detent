@@ -3,7 +3,9 @@ package scenariotest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -495,7 +498,53 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 			}
 			providerA := &committingAgent{staged: true, validator: "pass", complete: true}
+			client := fixtureClient(h.native.Transport())
+			transport := client.requests.Load()
+			var refusedForgedPhase atomic.Bool
+			if test.name == "same policy" {
+				client.requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/versions") {
+						return transport.RoundTrip(request)
+					}
+					raw, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					request.Body = io.NopCloser(bytes.NewReader(raw))
+					var publication tracker.PublishChangeVersion
+					if err := json.Unmarshal(raw, &publication); err != nil {
+						return nil, err
+					}
+					if publication.GitSource == nil {
+						return nil, errors.New("phase publication did not send Git provenance")
+					}
+					publication.IdempotencyKey = "mismatched-phase-fixture"
+					publication.GitSource.Phase.Branch += "-mismatch"
+					body, err := json.Marshal(publication)
+					if err != nil {
+						return nil, err
+					}
+					mismatch := request.Clone(request.Context())
+					mismatch.Body = io.NopCloser(bytes.NewReader(body))
+					mismatch.ContentLength = int64(len(body))
+					response, err := transport.RoundTrip(mismatch)
+					if err != nil {
+						return nil, err
+					}
+					response.Body.Close()
+					if response.StatusCode != http.StatusConflict {
+						return nil, errors.New("Hub accepted mismatched Git phase provenance")
+					}
+					refusedForgedPhase.Store(true)
+					return transport.RoundTrip(request)
+				}))
+				t.Cleanup(func() { client.requests.Store(transport) })
+			}
 			first := run(sourceA, providerA, candidateA, h.scheduler.RunExecution(issue.ID))
+			client.requests.Store(transport)
+			if test.name == "same policy" && !refusedForgedPhase.Load() {
+				t.Fatal("publication did not exercise the mismatched phase refusal")
+			}
 			oldHead := first.NativeChange.HeadSHA
 			phases, err := h.native.ItemPhaseReceipts(t.Context(), item)
 			if err != nil || len(phases) == 0 || phases[0].HeadSHA != oldHead || phases[0].TreeSHA != headTree(remote, oldHead) ||
@@ -510,7 +559,9 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				t.Fatalf("reviewed commit is not the pushed phase branch head: %q, %v", branchHead, err)
 			}
 			old, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
-			if err != nil || old.Versions[0].Source == nil || len(old.Reviews) != 1 {
+			if err != nil || len(old.Versions) != 1 || old.Versions[0].GitSource == nil || old.Versions[0].Source != nil || len(old.Reviews) != 1 ||
+				old.Versions[0].GitSource.Phase.HeadSHA != oldHead || old.Versions[0].GitSource.Phase.TreeSHA != headTree(remote, oldHead) ||
+				old.Reviews[0].Validator == nil || old.Reviews[0].Validator.DiffDigest != old.Versions[0].SourceDiffDigest() {
 				t.Fatalf("reviewed source was not retained: %+v, %v", old, err)
 			}
 			if test.restartIntent != "" && (old.Change.CurrentLanding() != nil || old.Versions[0].LandingQuality != nil) {
@@ -559,6 +610,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				input := old.Versions[0].ChangeVersionInput
 				input.HeadSHA, input.RunID, input.AttemptID, input.Validation = currentHead, "", "", nil
 				input.Code.URI, input.Code.SHA256 = nativeChangeRepository+"/commit/"+currentHead, policy.Digest([]byte(currentHead))
+				input.GitSource = nil
 				input.Source = &capture.Source
 				if _, err := h.admin.PublishChangeVersion(t.Context(), item, first.NativeChange.ChangeID, tracker.PublishChangeVersion{Mutation: api.NativeMutationKey(), ExpectedVersionID: first.NativeChange.VersionID, ChangeVersionInput: input, SourceBundle: capture.Bundle}); err != nil {
 					t.Fatal(err)
@@ -603,6 +655,11 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			}
 			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: api.NativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
+			}
+			if state == "Rework" {
+				if _, err := h.admin.CreateComment(t.Context(), item, tracker.CreateComment{Mutation: api.NativeMutationKey(), Body: "Reconcile the reviewed change with the updated target branch."}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.landing {
 				candidates := h.candidatesIn(t, "Merging")
@@ -795,7 +852,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if lease.ID == owner.claim.lease.ID || lease.FencingToken == owner.claim.lease.FencingToken || lease.MachineID == owner.claim.lease.MachineID {
 					t.Fatalf("fresh scheduler reused previous execution authority: %+v", lease)
 				}
-				if recovered.Version.ID != old.Change.CurrentVersion || recovered.Version.Source == nil || recovered.Version.Source.DiffSHA256 != old.Versions[0].Source.DiffSHA256 {
+				if recovered.Version.ID != old.Change.CurrentVersion || recovered.PushedPhase == nil || recovered.Version.SourceDiffDigest() != old.Versions[0].SourceDiffDigest() {
 					t.Fatalf("fresh recovery lost selected source: %+v", recovered.Version)
 				}
 				target := "Rework"
@@ -837,7 +894,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						t.Fatal(err)
 					}
 					source, err := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
-					if err != nil || source.Version.ID != recovery.Change.VersionID || source.Version.HeadSHA != recovery.Change.HeadSHA || source.Version.Source == nil || source.Version.Source.Validate(source.Version.BaseSHA, source.Version.HeadSHA, source.Bundle) != nil {
+					if err != nil || source.Version.ID != recovery.Change.VersionID || source.Version.HeadSHA != recovery.Change.HeadSHA || source.PushedPhase == nil || source.PushedPhase.HeadSHA != source.Version.HeadSHA || source.Version.SourceDiffDigest() == "" {
 						t.Fatalf("current retry source cannot be authenticated and restored: %+v, %v", source.Version, err)
 					}
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "verified recovery source"); err != nil {
@@ -861,7 +918,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 				version := detail.Versions[len(detail.Versions)-1]
 				review := detail.Reviews[len(detail.Reviews)-1]
-				if version.ID != second.NativeChange.VersionID || version.HeadSHA != second.NativeChange.HeadSHA || version.PolicyID != h.descriptor.ID || version.Source == nil || version.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) || review.VersionID != version.ID || review.Decision != "approved" {
+				if version.ID != second.NativeChange.VersionID || version.HeadSHA != second.NativeChange.HeadSHA || version.PolicyID != h.descriptor.ID || version.GitSource == nil || version.SourceDiffDigest() == tracker.ChangeSourceDigest(nil) || review.VersionID != version.ID || review.Decision != "approved" {
 					t.Fatalf("resolved source lost current-head/policy review: version=%+v review=%+v", version, review)
 				}
 				path, err := api.NativeAttemptDiffPath(version.AttemptID)

@@ -10,19 +10,23 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (s *session) RecordPhaseReceipt(ctx context.Context, project tracker.ProjectID, issueID int64, input tracker.NativePhaseReceipt) (tracker.NativePhaseReceipt, error) {
-	existing, err := s.queries.NativePhaseReceiptByKey(ctx, pgquery.NativePhaseReceiptByKeyParams{
+func (s *session) PhaseReceiptByKey(ctx context.Context, project tracker.ProjectID, issueID int64, fence tracker.FencingToken, key string) (tracker.NativePhaseReceipt, error) {
+	row, err := s.queries.NativePhaseReceiptByKey(ctx, pgquery.NativePhaseReceiptByKeyParams{
 		OrganizationID: s.organization, ProjectID: project, IssueID: issueID,
-		FencingToken: int64(input.FencingToken), IdempotencyKey: input.IdempotencyKey,
+		FencingToken: int64(fence), IdempotencyKey: key,
 	})
+	return phaseReceipt(row), mapError(ctx, err)
+}
+
+func (s *session) RecordPhaseReceipt(ctx context.Context, project tracker.ProjectID, issueID int64, input tracker.NativePhaseReceipt) (tracker.NativePhaseReceipt, error) {
+	receipt, err := s.PhaseReceiptByKey(ctx, project, issueID, input.FencingToken, input.IdempotencyKey)
 	if err == nil {
-		receipt := phaseReceipt(existing)
 		if receipt != input {
 			return tracker.NativePhaseReceipt{}, mutation.ErrConflict
 		}
 		return receipt, nil
 	}
-	if err = mapError(ctx, err); !errors.Is(err, corestore.ErrNotFound) {
+	if !errors.Is(err, corestore.ErrNotFound) {
 		return tracker.NativePhaseReceipt{}, err
 	}
 	row, err := s.queries.InsertNativePhaseReceipt(ctx, pgquery.InsertNativePhaseReceiptParams{
