@@ -444,7 +444,9 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: plan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				candidatePlan := plan
+				candidatePlan.Enabled = plan.Enabled && candidate.State == "Rework"
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: candidatePlan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
