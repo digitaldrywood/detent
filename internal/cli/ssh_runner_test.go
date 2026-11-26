@@ -380,6 +380,9 @@ func sshTestProvider(ctx context.Context) error {
 }
 
 func TestSSHWorkerLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping SSH worker subprocess integration test in -short mode")
+	}
 	t.Run("reject protocol v2", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()

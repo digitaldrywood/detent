@@ -52,6 +52,9 @@ func (b *diagnosticCommandBackend) RunTurnWithTools(ctx context.Context, _ Agent
 }
 
 func TestValidatorRecoveredSourceSearchDoesNotFailRequiredValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow validator recovered source search test in -short mode")
+	}
 	isolateAttemptDiffGitConfig(t)
 	source := initRunnerSourceRepo(t)
 	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))

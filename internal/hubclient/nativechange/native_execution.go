@@ -868,6 +868,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 				outcome = "cancelled"
 			}
 		}
+		if finishErr == nil && !e.claimActive() {
+			finishErr = runner.ErrExecutionAuthorityUnavailable
+		}
 		if finishErr == nil {
 			finishErr = e.Finish(ctx, outcome)
 		}

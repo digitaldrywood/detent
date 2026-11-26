@@ -357,9 +357,10 @@ func TestNativeValidatorReceivesScopedEvidenceReads(t *testing.T) {
 			t.Run(test.name+"/worker="+strconv.FormatBool(worker), func(t *testing.T) {
 				t.Parallel()
 				backend := &attachmentValidatorBackend{t: t, text: test.text, unread: test.unread, corrupt: test.corrupt}
+				worktree := &attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}
 				runner, err := NewRunner(Dependencies{ProcessSource: emptyProcessSource, Store: &fakeSessionStore{sessionID: 73},
 					Workflow:  config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true}}, Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "example-model"}}}}, Prompt: "Review"},
-					Workspace: &attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}, AgentBackend: backend,
+					Workspace: worktree, AgentBackend: backend,
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -388,7 +389,7 @@ func TestNativeValidatorReceivesScopedEvidenceReads(t *testing.T) {
 				if test.text {
 					criterion = "Historical failure is reproduced"
 				}
-				err = runner.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Metadata: map[string]string{"hub_project_id": "prj_example"}, Description: "## Acceptance Criteria\n- " + criterion}})
+				err = runner.validateNativeChange(t.Context(), RunRequest{Execution: reviewExecution, retainedReview: &retainedReviewWorkspace{backend: worktree, info: worktree.info}, Issue: connector.Issue{ID: "wi_example", Identifier: "prj_example#1", Metadata: map[string]string{"hub_project_id": "prj_example"}, Description: "## Acceptance Criteria\n- " + criterion}})
 				if err != nil {
 					t.Fatal(err)
 				}

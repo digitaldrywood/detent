@@ -141,6 +141,7 @@ type RecoveryState struct {
 	UntrackedPaths                 []string
 	CommitsNotInPullRequest        []string
 	PullRequestComparisonAvailable bool
+	RebaseInProgress               bool
 }
 
 type ArtifactEvidence struct {

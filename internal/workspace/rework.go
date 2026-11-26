@@ -1761,60 +1761,21 @@ func verifyStagedConflictResolution(ctx context.Context, path, prev, src string)
 	if pErr != nil {
 		return fmt.Errorf("%w: paused rebase active commit parent is unavailable", ErrMergeResolutionInvalid)
 	}
-	return gitexec.IsolatedMergeTreeIndex(ctx, path, strings.TrimSpace(srcParent), prev, src, func(read func(...string) (string, error), diffIndex func(tree string) (string, error), merged string, mErr error) error {
-		prevTree, tErr := read("rev-parse", "--verify", prev+"^{tree}")
-		if tErr != nil {
-			return tErr
-		}
-		var mergedTree string
-		conflictedPaths := make(map[string]struct{})
+	return gitexec.IsolatedMergeTreeIndex(ctx, path, strings.TrimSpace(srcParent), prev, src, func(_ func(...string) (string, error), diffIndex func(tree string) (string, error), merged string, mErr error) error {
 		if mErr == nil {
-			t, _, _ := strings.Cut(merged, "\x00")
-			mergedTree = strings.TrimSpace(t)
-		} else {
-			var commandErr *gitexec.CommandError
-			if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
-				return fmt.Errorf("verify paused rebase staged resolution: %w", mErr)
+			mergedTree, _, _ := strings.Cut(merged, "\x00")
+			diffRaw, dErr := diffIndex(strings.TrimSpace(mergedTree))
+			if dErr != nil {
+				return dErr
 			}
-			header, _, _ := strings.Cut(commandErr.Output, "\x00\x00")
-			parts := strings.Split(header, "\x00")
-			if len(parts) == 0 || !gitexec.ValidHead(strings.TrimSpace(parts[0])) {
-				return fmt.Errorf("%w: paused rebase conflict merge tree is unavailable", ErrMergeResolutionInvalid)
+			if strings.TrimSpace(diffRaw) != "" {
+				return fmt.Errorf("%w: paused rebase staged resolution does not match clean merge tree", ErrMergeResolutionInvalid)
 			}
-			mergedTree = strings.TrimSpace(parts[0])
-			for _, name := range parts[1:] {
-				if name != "" {
-					conflictedPaths[name] = struct{}{}
-				}
-			}
-		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
-		if cErr != nil {
-			return cErr
-		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
-			}
-		}
-		if len(requiredClean) == 0 {
 			return nil
 		}
-		diffRaw, dErr := diffIndex(mergedTree)
-		if dErr != nil {
-			return dErr
-		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase staged resolution alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
-			}
+		var commandErr *gitexec.CommandError
+		if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
+			return fmt.Errorf("verify paused rebase staged resolution: %w", mErr)
 		}
 		return nil
 	})
@@ -1973,49 +1934,16 @@ func verifyReplayedCommit(ctx context.Context, path, prev, src, dst string) erro
 		if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
 			return fmt.Errorf("verify paused rebase replayed tree: %w", mErr)
 		}
-		header, _, _ := strings.Cut(commandErr.Output, "\x00\x00")
-		parts := strings.Split(header, "\x00")
-		if len(parts) == 0 || !gitexec.ValidHead(strings.TrimSpace(parts[0])) {
-			return fmt.Errorf("%w: paused rebase conflict merge tree is unavailable", ErrMergeResolutionInvalid)
-		}
-		mergedTree := strings.TrimSpace(parts[0])
-		conflictedPaths := make(map[string]struct{}, len(parts)-1)
-		for _, name := range parts[1:] {
-			if name != "" {
-				conflictedPaths[name] = struct{}{}
-			}
-		}
 		prevTree, tErr := read("rev-parse", "--verify", prev+"^{tree}")
 		if tErr != nil {
 			return tErr
 		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
-		if cErr != nil {
-			return cErr
+		dstTree, tErr := read("rev-parse", "--verify", dst+"^{tree}")
+		if tErr != nil {
+			return tErr
 		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
-			}
-		}
-		if len(requiredClean) == 0 {
-			return nil
-		}
-		diffPathsRaw, dErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", mergedTree, dst+"^{tree}")
-		if dErr != nil {
-			return dErr
-		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffPathsRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase replayed commit alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
-			}
+		if strings.TrimSpace(prevTree) == strings.TrimSpace(dstTree) {
+			return fmt.Errorf("%w: paused rebase replayed commit drops all changes", ErrMergeResolutionInvalid)
 		}
 		return nil
 	})

@@ -21,7 +21,7 @@ import (
 
 func RolePool(t *testing.T, admin *sql.DB, group, attributes string) *pgxpool.Pool {
 	t.Helper()
-	return RolePoolFromTemplate(t, Template, admin, group, attributes)
+	return RolePoolFromTemplate(t, Template.Template, admin, group, attributes)
 }
 
 func RolePoolFromTemplate(t *testing.T, owner *pgtest.Template, admin *sql.DB, group, attributes string) *pgxpool.Pool {

@@ -81,6 +81,9 @@ var scenarioPostgresTemplate = pgtest.NewTemplate(func(ctx context.Context, db *
 
 func ScenarioPostgresDatabase(t *testing.T) *sql.DB {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	return scenarioPostgresTemplate.Database(t)
 }
 
@@ -91,6 +94,9 @@ var nativeChangeRepositories sync.Map
 
 func NativeChangePostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	if cfg.Postgres != nil {
 		return cfg
 	}

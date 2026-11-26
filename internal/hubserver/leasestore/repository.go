@@ -57,6 +57,7 @@ type Reader interface {
 type CheckpointAttemptReader interface {
 	SourceCheckpointAttempt(context.Context, int64) (Attempt, error)
 	SourceCheckpointAttempts(context.Context, int64, int) ([]Attempt, error)
+	SourceCheckpointAttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
 	CheckpointAttemptPage(context.Context, int64, AttemptCursor, int) (AttemptPage, error)
 }
 

@@ -78,6 +78,20 @@ func withValidationProcessOwner(ctx context.Context, sessions SessionStore, proj
 	})
 }
 
+func (p *hostValidationProcess) reserveScratch(ctx context.Context) error {
+	if p.root == "" || p.scratch == "" {
+		return nil
+	}
+	p.start.Worker = &store.WorkerProcessRegistration{
+		CleanupRoot: p.root,
+		CleanupPath: p.scratch,
+	}
+	var err error
+	p.sessionID, p.reconcileStart, err = startWorkerSession(ctx, p.store, p.start)
+	p.launchRefused = err != nil
+	return err
+}
+
 func (p *hostValidationProcess) Started(ctx context.Context, identity procgroup.Identity) error {
 	worker, err := inspectedWorkerProcess(identity)
 	if err != nil {
@@ -118,6 +132,9 @@ func (p *hostValidationProcess) Finished(ctx context.Context, result gate.Comman
 		p.reconcileStart = nil
 	}
 	if p.sessionID <= 0 {
+		return nil
+	}
+	if cleanupErr != nil && (p.start.Worker == nil || p.start.Worker.PID <= 0) {
 		return nil
 	}
 	now := time.Now().UTC()

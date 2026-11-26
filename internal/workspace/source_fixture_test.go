@@ -6,10 +6,28 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
 )
 
-func runWorkspaceTests(m *testing.M) int         { stubReapProcessScanner(); return gitfixture.RunTests(m) }
-func initSourceRepo(t *testing.T) string         { t.Helper(); return gitfixture.SourceRepo(t) }
-func initSourceRepoAt(t *testing.T, path string) { t.Helper(); gitfixture.SourceRepoAt(t, path) }
-func initBareRemote(t *testing.T) string         { t.Helper(); return gitfixture.BareRemote(t) }
+func runWorkspaceTests(m *testing.M) int { stubReapProcessScanner(); return gitfixture.RunTests(m) }
+func initSourceRepo(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Git subprocess integration test in -short mode")
+	}
+	return gitfixture.SourceRepo(t)
+}
+func initSourceRepoAt(t *testing.T, path string) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Git subprocess integration test in -short mode")
+	}
+	gitfixture.SourceRepoAt(t, path)
+}
+func initBareRemote(t *testing.T) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Git subprocess integration test in -short mode")
+	}
+	return gitfixture.BareRemote(t)
+}
 func runGit(t *testing.T, path string, args ...string) string {
 	t.Helper()
 	return gitfixture.Git(t, path, args...)
