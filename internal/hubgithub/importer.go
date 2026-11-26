@@ -190,7 +190,11 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence is required")
 	}
 	evidence := *request.Scheduled
-	parsed := gate.ParseScheduledEvidence(evidence.Stamp())
+	identity := evidence
+	if request.Stage == githubcontract.ScheduledClassificationStage && len(identity.JobName) <= 512 {
+		identity.JobName = ""
+	}
+	parsed := gate.ParseScheduledEvidence(identity.Stamp())
 	if len(parsed) != 1 || evidence.Repository != request.Repository || evidence.JobID == "0" {
 		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence is invalid")
 	}
@@ -215,7 +219,7 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 	if strconv.FormatInt(run.ID, 10) != evidence.RunID || strconv.FormatInt(run.Attempt, 10) != evidence.RunAttempt || !matchesScheduledCIWorkflow(request, run.Path, run.HeadBranch) || run.HeadSHA != evidence.HeadSHA || !strings.EqualFold(run.Repository.Name, request.Repository) || !strings.EqualFold(run.HeadRepository.Name, request.Repository) || (run.Event != "schedule" && run.Event != "push" && run.Event != "workflow_dispatch") {
 		return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence does not match the repository CI run attempt")
 	}
-	var jobs struct {
+	type jobPage struct {
 		Jobs []struct {
 			ID          int64     `json:"id"`
 			RunID       int64     `json:"run_id"`
@@ -227,16 +231,29 @@ func (i *Importer) fetchScheduledOccurrence(ctx context.Context, request githubc
 			CompletedAt time.Time `json:"completed_at"`
 		} `json:"jobs"`
 	}
-	if err := i.client.REST(ctx, http.MethodGet, path+"/jobs?per_page=100", nil, &jobs); err != nil {
-		return githubcontract.GitHubImportPage{}, err
-	}
-	for _, job := range jobs.Jobs {
-		if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && matchesScheduledJobConclusion(request.Stage, job.Conclusion) {
-			evidence.Checks = nil
-			evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
-			evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID
-			return githubcontract.GitHubImportPage{Scheduled: &evidence}, nil
+	endpoint := path + "/jobs?per_page=100"
+	pagePath := endpoint
+	for page := 1; page <= 10; page++ {
+		var jobs jobPage
+		next, err := i.client.RESTPage(ctx, pagePath, &jobs)
+		if err != nil {
+			return githubcontract.GitHubImportPage{}, err
 		}
+		if len(jobs.Jobs) > 100 {
+			return githubcontract.GitHubImportPage{}, errors.New("scheduled job page exceeds its size limit")
+		}
+		for _, job := range jobs.Jobs {
+			if strconv.FormatInt(job.ID, 10) == evidence.JobID && job.RunID == run.ID && job.HeadSHA == evidence.HeadSHA && job.Name == evidence.JobName && job.Status == "completed" && job.Conclusion == evidence.Conclusion && matchesScheduledJobConclusion(request.Stage, job.Conclusion) {
+				evidence.Checks = nil
+				evidence.StartedAt, evidence.FinishedAt = job.StartedAt, job.CompletedAt
+				evidence.JobURL = "https://github.com/" + request.Repository + "/actions/jobs/" + evidence.JobID
+				return githubcontract.GitHubImportPage{Scheduled: &evidence}, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		pagePath = endpoint + "&page=" + strconv.Itoa(page+1)
 	}
 	return githubcontract.GitHubImportPage{}, errors.New("scheduled occurrence does not match a failed job in the run attempt")
 }

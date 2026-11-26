@@ -28,7 +28,7 @@ func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.Pr
 	if project == "" || input.Validate() != nil || result.Validate() != nil || at.IsZero() {
 		return billingstore.UsageResult{}, eventstore.ErrInvalidRecord
 	}
-	bytes := int64(len(s.organization) + len(project) + len(input.Repository) + len(input.HeadSHA) + len(input.RunID) + len(input.RunAttempt) + len(input.JobID) + len(result.Outcome) + len(result.Target) + len(result.Reason) + 8)
+	bytes := scheduledDecisionBytes(s.organization, project, input, result)
 	inserted, err := s.queries.StoreScheduledDecision(ctx, pgquery.StoreScheduledDecisionParams{
 		OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA,
 		RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome),
@@ -41,6 +41,26 @@ func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.Pr
 		return billingstore.UsageResult{Allowed: true}, nil
 	}
 	return s.AdjustCollaborationBytes(ctx, bytes, limit)
+}
+
+func (s *session) UpdateScheduledDecision(ctx context.Context, project tracker.ProjectID, input progresscheck.CIFailure, result progresscheck.CIDecision, limit int64) (billingstore.UsageResult, error) {
+	if project == "" || input.Validate() != nil || result.Validate() != nil {
+		return billingstore.UsageResult{}, eventstore.ErrInvalidRecord
+	}
+	bytes := scheduledDecisionBytes(s.organization, project, input, result)
+	previous, err := s.queries.UpdateScheduledDecision(ctx, pgquery.UpdateScheduledDecisionParams{
+		OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA,
+		RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome),
+		Target: result.Target, Reason: result.Reason, CollaborationBytes: bytes,
+	})
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	return s.AdjustCollaborationBytes(ctx, bytes-previous, limit)
+}
+
+func scheduledDecisionBytes(org tracker.OrganizationID, project tracker.ProjectID, input progresscheck.CIFailure, result progresscheck.CIDecision) int64 {
+	return int64(len(org) + len(project) + len(input.Repository) + len(input.HeadSHA) + len(input.RunID) + len(input.RunAttempt) + len(input.JobID) + len(result.Outcome) + len(result.Target) + len(result.Reason) + 8)
 }
 
 func (s *session) ClaimScheduledClassification(ctx context.Context, project tracker.ProjectID, jobKey, receiptID string, now, expiresAt time.Time) (bool, error) {

@@ -184,3 +184,52 @@ func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduled
 	}
 	return result.RowsAffected(), nil
 }
+
+const updateScheduledDecision = `-- name: UpdateScheduledDecision :one
+WITH previous AS (
+    SELECT s.organization_id,s.project_id,s.repository,s.run_id,s.run_attempt,s.job_id,s.collaboration_bytes
+    FROM scheduled_ci_decisions s
+    WHERE s.organization_id=$5 AND s.project_id=$6 AND s.repository=$7
+      AND s.run_id=$8 AND s.run_attempt=$9 AND s.job_id=$10 AND s.head_sha=$11
+    FOR UPDATE
+)
+UPDATE scheduled_ci_decisions d
+SET outcome=$1,target=$2,reason=$3,collaboration_bytes=$4
+FROM previous p
+WHERE (d.organization_id,d.project_id,d.repository,d.run_id,d.run_attempt,d.job_id)
+    = (p.organization_id,p.project_id,p.repository,p.run_id,p.run_attempt,p.job_id)
+RETURNING p.collaboration_bytes
+`
+
+type UpdateScheduledDecisionParams struct {
+	Outcome            string
+	Target             string
+	Reason             string
+	CollaborationBytes int64
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	Repository         string
+	RunID              string
+	RunAttempt         string
+	JobID              string
+	HeadSHA            string
+}
+
+func (q *Queries) UpdateScheduledDecision(ctx context.Context, arg UpdateScheduledDecisionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, updateScheduledDecision,
+		arg.Outcome,
+		arg.Target,
+		arg.Reason,
+		arg.CollaborationBytes,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.Repository,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.JobID,
+		arg.HeadSHA,
+	)
+	var collaboration_bytes int64
+	err := row.Scan(&collaboration_bytes)
+	return collaboration_bytes, err
+}
