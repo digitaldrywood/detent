@@ -187,18 +187,31 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				unknownRun, unknownJob := input, input
 				unknownRun.RunID, unknownJob.JobID = "2", "999"
 				call(firstProject, unknownRun, http.StatusUnprocessableEntity)
-				before := importer.calls
+				call(firstProject, unknownJob, http.StatusUnprocessableEntity)
+				beforeImports, beforeCalls := importer.calls, backend.calls
 				for n := range 125 {
-					want := http.StatusUnprocessableEntity
-					if n >= 118 {
-						want = http.StatusTooManyRequests
+					job := input
+					job.JobID = fmt.Sprint(n + 100)
+					want := http.StatusTooManyRequests
+					if n < 117 {
+						backend.expected = true
+						want = http.StatusOK
 					}
-					if response := request(firstProject, unknownJob); response.Code != want {
-						t.Errorf("unknown job request %d status=%d want=%d", n, response.Code, want)
+					if response := request(firstProject, job); response.Code != want {
+						t.Errorf("project job request %d status=%d want=%d", n, response.Code, want)
 					}
 				}
-				if calls := importer.calls - before; calls != 118 {
-					t.Errorf("unknown job made %d importer calls, want 118", calls)
+				backend.expected = false
+				for range 8 {
+					call(firstProject, unknownJob, http.StatusTooManyRequests)
+				}
+				call(firstProject, input, http.StatusOK)
+				var rows int
+				if err := hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1 AND project_id=$2`, org, firstProject).Scan(&rows); err != nil {
+					t.Fatal(err)
+				}
+				if imports, calls := importer.calls-beforeImports, backend.calls-beforeCalls; imports != 117 || calls != 117 || rows != 118 {
+					t.Fatalf("project budget made %d importer calls and %d model calls and retained %d decisions, want 117, 117 and 118", imports, calls, rows)
 				}
 				backend.expected = true
 				anotherJob := input

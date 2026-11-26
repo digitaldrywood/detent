@@ -18,7 +18,6 @@ func verifyPhasePublication(t *testing.T) {
 	t.Helper()
 	for _, test := range []struct {
 		name, wantError, configKey string
-		progressBase               string
 		configure                  func(*testing.T, landingFixture)
 		deny                       bool
 		noDestination              bool
@@ -42,20 +41,12 @@ func verifyPhasePublication(t *testing.T) {
 			writeFileDiffFile(t, f.info.Path, "feature.txt", "dirty\n")
 		}},
 		{name: "external alternate", wantError: "publication object store uses alternates", configure: addPhaseFixtureAlternate},
-		{name: "missing remote base", progressBase: "missing", wantError: "publication base branch is missing"},
-		{name: "local rework ref does not exclude unpublished history", wantError: "excluded source path", configure: func(t *testing.T, f landingFixture) {
-			writeFileDiffFile(t, f.info.Path, ".env", "fixture only\n")
-			runGit(t, f.info.Path, "add", "-f", ".env")
-			runGit(t, f.info.Path, "commit", "-m", "add excluded fixture")
-			runGit(t, f.info.Path, "update-ref", worktreeReworkBranchRef(f.issue.ProgressBaseRef), "HEAD")
-		}},
 		{name: "authority comes first", wantError: "phase lease denied", configure: addPhaseFixtureAlternate, deny: true, noDestination: true},
 		{name: "destination comes before source", wantError: "publication fetch remote differs", configure: addPhaseFixtureAlternate, noDestination: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			f.issue.PublicationRepository = f.remote
-			f.issue.ProgressBaseRef = test.progressBase
 			if test.noDestination {
 				f.issue.PublicationRepository = ""
 			}

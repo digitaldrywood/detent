@@ -206,9 +206,9 @@ ifneq ($(wildcard .custom-gcl.yml),)
 	$(HEFT) check ./...
 endif
 
-$(GOLANGCI_LINT_CUSTOM): scripts/build-golangci-lint.sh .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
+$(GOLANGCI_LINT_CUSTOM): $(GOLANGCI_LINT) .custom-gcl.yml $(GOLANGCI_LINT_VERSION_FILE)
 	@grep -q '^version: $(GOLANGCI_LINT_VERSION)$$' .custom-gcl.yml || { echo ".custom-gcl.yml version must match $(GOLANGCI_LINT_VERSION_FILE) ($(GOLANGCI_LINT_VERSION))"; exit 1; }
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" bash scripts/build-golangci-lint.sh "$(GOLANGCI_LINT_VERSION)" "$(HEFT_VERSION)" "$@"
+	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" "$(GOLANGCI_LINT)" custom --destination "$(GOLANGCI_LINT_CUSTOM_DIR)" --name golangci-lint-custom
 
 $(GOLANGCI_LINT):
 	@bash scripts/runner-setup.sh go-tool github.com/golangci/golangci-lint/v2/cmd/golangci-lint $(GOLANGCI_LINT_VERSION) "$(GOLANGCI_LINT)" "$(GOLANGCI_LINT_TOOLCHAIN)"

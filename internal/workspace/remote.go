@@ -32,11 +32,11 @@ func verifyPublicationRemote(ctx context.Context, path, remote, repository strin
 	return nil
 }
 
-func (opts LandOptions) publicationRepository(ctx context.Context) string {
-	return gitexec.PublicationRepository(ctx, "", cmp.Or(opts.PublicationRepository, opts.Repository))
+func (opts LandOptions) publicationRepository() string {
+	return gitexec.PublicationRepository("", cmp.Or(opts.PublicationRepository, opts.Repository))
 }
 
 func landingPublicationRepository(ctx context.Context, path, remote string, opts LandOptions) (string, error) {
-	repository := opts.publicationRepository(ctx)
+	repository := opts.publicationRepository()
 	return repository, verifyPublicationRemote(ctx, path, remote, repository)
 }

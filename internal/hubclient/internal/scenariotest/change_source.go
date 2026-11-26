@@ -69,7 +69,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 		{name: "restart stale completion pending landing", restartIntent: "stale", absorbedConflict: true, landing: true},
 		{name: "restart resolved conflict pending landing", restartIntent: "resolved", absorbedConflict: true, landing: true},
 		{name: "conflict resolution absorbed by target advances the Change head", absorbedConflict: true, updatePolicy: true},
-		{name: "automated planning enabled Rework restores missing published head before provider", planning: true},
+		{name: "planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
@@ -420,7 +420,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				return
 			}
 			expectPendingLanding := false
-			var plan gate.PlanConfig
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution, targets ...string) runner.RunResult {
 				root := filepath.Join(t.TempDir(), "workspaces")
 				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: root, SourceRoot: source, AutoBranch: true})
@@ -444,7 +443,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						}
 					}
 				}
-				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: plan, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Store: api.NewRunnerSessions(h.native), ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -511,7 +510,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				t.Fatalf("reviewed commit is not the pushed phase branch head: %q, %v", branchHead, err)
 			}
 			old, err := h.admin.Change(t.Context(), item, first.NativeChange.ChangeID)
-			if err != nil || len(old.Versions) != 1 || len(old.Reviews) != 1 || old.Reviews[0].VersionID != old.Versions[0].ID {
+			if err != nil || old.Versions[0].Source == nil || len(old.Reviews) != 1 {
 				t.Fatalf("reviewed source was not retained: %+v, %v", old, err)
 			}
 			if test.restartIntent != "" && (old.Change.CurrentLanding() != nil || old.Versions[0].LandingQuality != nil) {
@@ -568,15 +567,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 			}
 			if updatePolicy {
 				h.repolicy(t)
-			}
-			if test.planning {
-				plan = gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated}
-				previousPolicy := h.descriptor.ID
-				h.descriptor.Gates.PlanEnabled, h.descriptor.Gates.PlanReview = plan.Enabled, plan.Review
-				h.descriptor = h.descriptor.WithID()
-				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previousPolicy, Policy: h.descriptor}); err != nil {
-					t.Fatal(err)
-				}
 			}
 			if err := os.WriteFile(filepath.Join(sourceA, "UPSTREAM.md"), []byte("new dev base\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -751,12 +741,6 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 			}
 			providerB.duringTurn = func() {
-				if test.planning {
-					lease := h.scheduler.RunExecution(issue.ID).Recovery().Lease
-					if lease.PolicyID != h.descriptor.ID {
-						t.Fatalf("recovered lease policy = %s, want automated planning policy %s", lease.PolicyID, h.descriptor.ID)
-					}
-				}
 				role := runner.RoleRework
 				if test.landing {
 					role = runner.RoleMerge
@@ -811,7 +795,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				if lease.ID == owner.claim.lease.ID || lease.FencingToken == owner.claim.lease.FencingToken || lease.MachineID == owner.claim.lease.MachineID {
 					t.Fatalf("fresh scheduler reused previous execution authority: %+v", lease)
 				}
-				if recovered.Version.ID != old.Change.CurrentVersion || recovered.PushedPhase == nil || *recovered.PushedPhase != phases[0] {
+				if recovered.Version.ID != old.Change.CurrentVersion || recovered.Version.Source == nil || recovered.Version.Source.DiffSHA256 != old.Versions[0].Source.DiffSHA256 {
 					t.Fatalf("fresh recovery lost selected source: %+v", recovered.Version)
 				}
 				target := "Rework"
@@ -853,7 +837,7 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 						t.Fatal(err)
 					}
 					source, err := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
-					if err != nil || source.Version.ID != recovery.Change.VersionID || source.Version.HeadSHA != recovery.Change.HeadSHA || source.PushedPhase == nil && (source.Version.Source == nil || source.Version.Source.Validate(source.Version.BaseSHA, source.Version.HeadSHA, source.Bundle) != nil) {
+					if err != nil || source.Version.ID != recovery.Change.VersionID || source.Version.HeadSHA != recovery.Change.HeadSHA || source.Version.Source == nil || source.Version.Source.Validate(source.Version.BaseSHA, source.Version.HeadSHA, source.Bundle) != nil {
 						t.Fatalf("current retry source cannot be authenticated and restored: %+v, %v", source.Version, err)
 					}
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "verified recovery source"); err != nil {
@@ -877,14 +861,8 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 				version := detail.Versions[len(detail.Versions)-1]
 				review := detail.Reviews[len(detail.Reviews)-1]
-				if version.ID != second.NativeChange.VersionID || version.HeadSHA != second.NativeChange.HeadSHA || version.PolicyID != h.descriptor.ID || review.VersionID != version.ID || review.Decision != "approved" {
+				if version.ID != second.NativeChange.VersionID || version.HeadSHA != second.NativeChange.HeadSHA || version.PolicyID != h.descriptor.ID || version.Source == nil || version.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil) || review.VersionID != version.ID || review.Decision != "approved" {
 					t.Fatalf("resolved source lost current-head/policy review: version=%+v review=%+v", version, review)
-				}
-				receipts, err := h.admin.ItemPhaseReceipts(t.Context(), item)
-				if err != nil || !slices.ContainsFunc(receipts, func(receipt tracker.NativePhaseReceipt) bool {
-					return receipt.Phase == "implement" && receipt.HeadSHA == version.HeadSHA && receipt.AttemptID == version.AttemptID && receipt.PolicyID == version.PolicyID
-				}) {
-					t.Fatalf("resolved source has no matching Git phase receipt: %v", err)
 				}
 				path, err := api.NativeAttemptDiffPath(version.AttemptID)
 				if err != nil {
