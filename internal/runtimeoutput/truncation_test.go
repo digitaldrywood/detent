@@ -159,6 +159,12 @@ func TestDiagnostic(t *testing.T) {
 			{name: "failure at EOF stays a complete line", input: strings.Repeat("ok example.org/passing\n", 4000) + "test timed out after 1m0s", want: []string{"test timed out after 1m0s\n"}},
 			{name: "failure overflow", input: strings.Repeat("--- FAIL: TestExample (0.01s)\n", limit), want: []string{"failure lines dropped]\n"}},
 			{name: "oversized failure before short failure", input: "panic: " + strings.Repeat("界", limit) + "\n--- FAIL: TestShort (0.01s)\n", want: []string{"--- FAIL: TestShort (0.01s)\n", "[1 failure lines dropped]\n"}},
+			{name: "go test assertions survive earlier sourcemap warnings", input: strings.Repeat("src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", 1024) +
+				"--- FAIL: TestRetireWriter (0.11s)\n    lifetime_test.go:77: process identity was unavailable\n" +
+				"--- FAIL: TestRetainGeneration (0.81s)\n    lifetime_test.go:98: got stale generation\n" +
+				"FAIL\texample.org/project/internal/hook\t1.746s\n",
+				want: []string{"--- FAIL: TestRetireWriter (0.11s)\n", "    lifetime_test.go:77: process identity was unavailable\n",
+					"--- FAIL: TestRetainGeneration (0.81s)\n", "    lifetime_test.go:98: got stale generation\n", "FAIL\texample.org/project/internal/hook\t1.746s\n"}, chained: true},
 			{name: "go test failures outrank earlier sourcemap warnings", input: strings.Repeat("node_modules/@tanstack/query-core/build/modern/index.js (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
 				"Error: dashboard API is unreachable\n" + strings.Repeat("ok  \tgithub.com/example-org/example-project/internal/passing\t0.412s\n", 200) +
 				"--- FAIL: TestStoreRefresh (0.02s)\n" +
