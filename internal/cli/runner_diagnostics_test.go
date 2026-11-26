@@ -31,6 +31,9 @@ import (
 )
 
 func TestCollectRunnerLocalChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping runner local checks subprocess test in -short mode")
+	}
 	t.Parallel()
 	for _, tt := range []struct {
 		name                                   string

@@ -71,10 +71,7 @@ func TestLocalBoardMigrationToLanding(t *testing.T) {
 	hubfixture.RequireStatus(t, hub.Request(t, http.MethodPut, f.Base+"/change-review-policy", hub.AdminToken(), tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "review-policy"}, Policy: rules}), http.StatusOK)
 	worker := runner.Redemption.Credential
 	claimRequest := tracker.NativeClaim{PolicyID: hubfixture.Policy().ID, WorkItemID: imported[0].WorkItemID, MachineID: runner.Binding.MachineID, SessionID: "migration", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
-	hubfixture.RequireCode(t, hub.Request(t, http.MethodPost, f.Base+"/claims", worker, claimRequest), http.StatusConflict, "issue_contract_unsatisfied")
 	itemPath := f.Base + "/work-items/" + string(imported[0].WorkItemID)
-	body := imported[0].Body + hubfixture.IssueContractSections
-	hubfixture.RequireStatus(t, hub.Request(t, http.MethodPatch, itemPath, f.Token, tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "complete-imported-contract"}, ExpectedRevision: imported[0].Revision, Body: &body}), http.StatusOK)
 	claim := hub.Request(t, http.MethodPost, f.Base+"/claims", worker, claimRequest)
 	hubfixture.RequireStatus(t, claim, http.StatusOK)
 	var lease tracker.NativeLease

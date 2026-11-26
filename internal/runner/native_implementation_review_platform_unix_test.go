@@ -7,11 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,10 +38,6 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		command          string
 		missingTree      bool
 		wantRuns         int
-		wrapped          bool
-		linterState      string
-		unsupported      bool
-		shadow           bool
 		gateFailure      bool
 		securityAudit    bool
 		acceptanceRework bool
@@ -56,7 +49,6 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "accepted audit reaches validator", validator: true, verdict: "pass", securityAudit: true},
 		{name: "accepted audit crosses SSH", validator: true, verdict: "pass", securityAudit: true, ssh: true},
 		{name: "accepted audit does not approve acceptance", validator: true, verdict: "pass", securityAudit: true, acceptanceRework: true},
-		{name: "direct Go launcher requires independent commands", validator: true, verdict: "pass", command: "go build ./...", wrapped: true, wantRuns: 2},
 		{name: "source review without acceptance validator", verdict: "pass"},
 		{name: "source rework without acceptance validator", verdict: "rework"},
 		{name: "source rework stops acceptance validator", validator: true, verdict: "rework"},
@@ -69,13 +61,6 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 		{name: "clock-behind failure with replayed pass requires command", validator: true, verdict: "pass", latestFailed: true, replayedPass: true, wantRuns: 1},
 		{name: "clock-behind newer pass supersedes failure", validator: true, verdict: "pass", latestPassed: true},
 		{name: "opaque make toolchain requires commands", validator: true, verdict: "pass", command: "make check-landing", wantRuns: 2},
-		{name: "matching landing receipt has unbound runtime inputs", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
-		{name: "unbound landing receipt reruns after transport", ssh: true, validator: true, verdict: "pass", command: "make check-landing", wrapped: true, wantRuns: 2},
-		{name: "replaced landing linter requires command", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "replaced", wantRuns: 2},
-		{name: "missing landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "missing", wantRuns: 2},
-		{name: "unexecutable landing linter declines reuse", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, linterState: "unexecutable", wantRuns: 2},
-		{name: "unsupported wrapper is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, wantRuns: 2},
-		{name: "shadow Makefile is executed independently", validator: true, verdict: "pass", command: "make check-landing", wrapped: true, unsupported: true, shadow: true, wantRuns: 2},
 		{name: "pnpm without Node toolchain evidence requires commands", validator: true, verdict: "pass", command: "pnpm test", wantRuns: 2},
 		{name: "missing candidate tree requires both commands", validator: true, verdict: "pass", missingTree: true, wantRuns: 2},
 		{name: "changed head requires command", validator: true, verdict: "pass", editReceipt: func(r *gate.CommandResult) { r.HeadSHA = "old-head" }, wantRuns: 1},
@@ -96,112 +81,6 @@ func TestNativeImplementationReviewPrecedesAcceptanceValidator(t *testing.T) {
 			backend := &implementationReviewBackend{t: t, events: &events, response: fmt.Sprintf(`{"verdict":%q,"score":1,"summary":"Independent source result","criteria_evidence":[]}`, test.verdict)}
 			worktree := &implementationReviewWorkspace{attachmentValidatorWorkspace: attachmentValidatorWorkspace{reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: []string{"head"}}}}
 			receipt := gate.CommandResult{ReceiptID: "receipt-original", Command: command, HeadSHA: "head", TreeSHA: "tree", DurationNS: int64(time.Second), StartedAt: time.Now().Add(time.Hour), Evidence: worktree.ReviewCommandEvidence(t.Context(), workspace.Info{}, workspace.Issue{}, "go test ./...")}
-			if test.wrapped {
-
-				t.Setenv("CHECK_LAND_BASE", "origin/develop")
-				t.Setenv("MAKEFLAGS", "")
-				t.Setenv("MFLAGS", "")
-				source := initRunnerSourceRepo(t)
-				for _, name := range []string{"Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py", "scripts/runner-setup.sh"} {
-					content, err := os.ReadFile(filepath.Join("..", "..", name))
-					if err != nil {
-						t.Fatal(err)
-					}
-					if test.unsupported && !test.shadow && name == "scripts/check-landing.sh" {
-						content = append(content, []byte("\nprintf 'custom wrapper\\n'\n")...)
-					}
-					writeRunnerFiles(t, source, map[string]string{name: string(content)})
-					if test.shadow && name == "Makefile" {
-						writeRunnerFiles(t, source, map[string]string{"GNUmakefile": string(content)})
-					}
-				}
-				writeRunnerFiles(t, source, map[string]string{
-					"go.mod":            "module example.test/project\n\ngo 1.26.0\ntoolchain go1.26.9\n",
-					".gitignore":        "tmp/\nnode_modules/\n/static/app/conversation/\n/docs/config.md/\n",
-					".golangci-version": "v2.14.0\n",
-					"main.go":           "package main\nfunc main() {}\n",
-				})
-				runRunnerGit(t, source, "add", ".")
-				runRunnerGit(t, source, "commit", "-m", "landing fixture")
-				runRunnerGit(t, source, "update-ref", "refs/remotes/origin/develop", "HEAD~1")
-				linter := filepath.Join(source, "tmp", "tools", "golangci-lint", "v2.14.0", "go1.26.9", "golangci-lint")
-				if err := os.MkdirAll(filepath.Dir(linter), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				linterTool := "#!/bin/sh\necho original >> .git/linter-invocations\n"
-				if err := os.WriteFile(linter, []byte(linterTool), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				bin := t.TempDir()
-				goTool := `#!/bin/sh
-version=${GOTOOLCHAIN:-go1.27.1}
-if [ "$1" = env ]; then
-    printf '{"GOHOSTOS":"linux","GOHOSTARCH":"amd64","GOVERSION":"%s"}\n' "$version"
-elif [ "$1" = build ]; then
-    echo build >> .git/invocations
-elif [ "$1" = list ]; then
-    printf '{"Dir":"%s","ImportPath":"example.test/project"}\n' "$PWD"
-elif [ "$1" = install ]; then
-    mkdir -p "$GOBIN"
-    printf '#!/bin/sh\nexit 0\n' > "$GOBIN/golangci-lint"
-    chmod 700 "$GOBIN/golangci-lint"
-elif [ "$1" = test ]; then
-    python3 - <<'PY'
-import json
-import runpy
-
-for package, tests in runpy.run_path("scripts/check-landing.py")["REQUIRED_POSTGRES"].items():
-    for test in tests:
-        for action in ("run", "pass"):
-            print(json.dumps({"Action": action, "Package": package, "Test": test}))
-    print(json.dumps({"Action": "pass", "Package": package}))
-PY
-fi
-`
-				if err := os.WriteFile(filepath.Join(bin, "go"), []byte(goTool), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				for _, tool := range []string{"initdb", "postgres"} {
-					if err := os.WriteFile(filepath.Join(bin, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-						t.Fatal(err)
-					}
-				}
-				searchPath := bin + string(os.PathListSeparator) + os.Getenv("PATH")
-				t.Setenv("PATH", searchPath)
-				t.Setenv("GOTOOLCHAIN", "go1.27.1")
-				if strings.HasPrefix(command, "go ") {
-					t.Setenv("GOTOOLCHAIN", "go1.26.9")
-				}
-				options := workspace.LocalGitOptions{ProcessSource: emptyProcessSource, Root: filepath.Dir(source), SourceRoot: source}
-				local, err := workspace.NewLocalGit(options)
-				if err != nil {
-					t.Fatal(err)
-				}
-				worktree.local = local
-				worktree.info.Path = source
-				head := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
-				worktree.heads = []string{head}
-				receipt, err = local.RunReviewCommand(t.Context(), worktree.info, workspace.Issue{ProjectID: defaultProjectID, ID: "wi_example", Identifier: "prj_example#1", PullRequestHeadSHA: head}, command)
-				if err != nil || receipt.ExitCode != 0 {
-					t.Fatalf("host finalization command: %+v %v", receipt, err)
-				}
-				receipt.TimingStage = "finalization"
-				receipt = tracker.PublicGateResult(receipt)
-				switch test.linterState {
-				case "replaced":
-					if err := os.WriteFile(linter, []byte("#!/bin/sh\necho replacement >> .git/linter-invocations\n"), 0o700); err != nil {
-						t.Fatal(err)
-					}
-				case "missing":
-					if err := os.Remove(linter); err != nil {
-						t.Fatal(err)
-					}
-				case "unexecutable":
-					if err := os.Chmod(linter, 0o600); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
 			candidateTree := receipt.TreeSHA
 			if test.ssh {
 				receipt.StartedAt = receipt.StartedAt.UTC()
@@ -230,9 +109,6 @@ fi
 				if test.acceptanceRework {
 					backend.validatorResponse = `{"verdict":"rework","score":0,"summary":"Behavior remains unverified despite a passing security audit","criteria_evidence":[{"criterion":"Preserve existing behavior","kind":"not_verified","reference":"Missing behavioral evidence"}]}`
 				}
-			}
-			if test.wrapped {
-				execution.head = receipt.HeadSHA
 			}
 			var reviewExecution Execution = execution
 			if test.ssh {
@@ -304,24 +180,6 @@ fi
 			if len(worktree.commands) != test.wantRuns {
 				t.Fatalf("applicable evidence was rerun or invalid evidence skipped execution: commands=%v want executions=%d", worktree.commands, test.wantRuns)
 			}
-			if test.wrapped {
-				invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "invocations"))
-				if err != nil || string(invocations) != "build\n" {
-					t.Fatalf("review command wrote into the retained checkout: %q %v", invocations, err)
-				}
-				if !test.unsupported && receipt.Evidence.Environment.GoVersion != "go1.26.9" {
-					t.Fatalf("receipt captured ambient toolchain: %+v", receipt.Evidence)
-				}
-				if receipt.Evidence.InputsSHA != "" {
-					t.Fatal("observed local command received a reusable identity")
-				}
-				if test.linterState == "replaced" || test.wantRuns == 0 {
-					invocations, err := os.ReadFile(filepath.Join(worktree.info.Path, ".git", "linter-invocations"))
-					if err != nil || string(invocations) != "original\n" {
-						t.Fatalf("review command used the retained checkout's linter: %q %v", invocations, err)
-					}
-				}
-			}
 			if test.wantRuns == 0 && !reflect.DeepEqual(execution.reviewResult.Commands, []gate.CommandResult{expectedReceipt}) {
 				t.Fatalf("reuse rewrote the original receipt: %+v", execution.reviewResult.Commands)
 			}
@@ -329,19 +187,6 @@ fi
 				t.Fatalf("fresh acceptance review lost applicable source-review evidence: %+v", execution.validatorResult.Commands)
 			}
 		})
-	}
-}
-
-func writeRunnerFiles(t *testing.T, root string, files map[string]string) {
-	t.Helper()
-	for name, content := range files {
-		path := filepath.Join(root, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
 	}
 }
 

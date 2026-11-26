@@ -90,7 +90,7 @@ if [ -n "$receipts" ]; then description="$description; $receipts"; fi
 gh api -X POST "repos/$repository/statuses/$sha" -f context="$context" -f state="$state" -f description="${description:0:140}" > /dev/null
 echo "Posted $context=$state on $sha. Log: $log"
 if [ "$state" = failure ]; then
-  grep -E 'detent-check-evidence: .*"exit_code":[1-9]|^--- FAIL|^FAIL[[:space:]]' "$log" | tail -20 >&2 || true
+  grep -E '^--- FAIL|^FAIL[[:space:]]' "$log" | tail -20 >&2 || true
   exit 1
 fi
 if [ "$branch" != develop ]; then

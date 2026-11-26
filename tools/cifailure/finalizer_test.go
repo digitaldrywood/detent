@@ -13,6 +13,9 @@ import (
 )
 
 func TestReleaseFinalizer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping release-finalize.sh GPG/shell integration test in -short mode")
+	}
 	t.Parallel()
 	if _, err := exec.LookPath("jq"); err != nil {
 		t.Fatal("jq is required for the release shell fixture")

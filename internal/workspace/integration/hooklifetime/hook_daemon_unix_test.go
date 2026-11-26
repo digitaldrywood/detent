@@ -5,6 +5,7 @@ package hooklifetime_test
 import (
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"os/exec"
@@ -20,7 +21,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/internal/gitfixture"
 )
 
-func TestMain(m *testing.M) { os.Exit(gitfixture.RunTests(m)) }
+func TestMain(m *testing.M) {
+	flag.Parse()
+	if testing.Short() && os.Getenv("TEST_HOOK_CONTROL") == "" {
+		os.Exit(0)
+	}
+	os.Exit(gitfixture.RunTests(m))
+}
 
 func TestDetachedHookHelper(t *testing.T) { runDetachedHook(t) }
 
