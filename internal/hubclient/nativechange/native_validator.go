@@ -173,7 +173,6 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	if err := e.Validate(ctx); err != nil {
 		return err
 	}
-	ctx = api.WithPublicationRetry(ctx, e.RetryPhasePublication)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change != nil && e.change.NoChange != nil {

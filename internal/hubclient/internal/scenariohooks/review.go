@@ -62,14 +62,13 @@ func (r *ReviewDispatch) Next(t *testing.T, ctx context.Context) runner.RunReque
 	}
 }
 
-func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req runner.RunRequest, admin *api.NativeClient, replacement tracker.ChangeVersion, scheduler *dispatch.Scheduler, setNow func(*dispatch.Scheduler, time.Time)) {
+func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req runner.RunRequest, admin *api.NativeClient, replacement tracker.ChangeVersion) {
 	t.Helper()
 	owner := req.Execution.(execution.Execution)
 	observation := owner.CompletionData().Runtime
 	if observation == nil || observation.Phase != "completed" {
 		t.Fatal("expected a completed implementation heartbeat")
 	}
-	setNow(scheduler, observation.HeartbeatAt.Add(2*time.Minute))
 	if _, err := owner.ClaimState(t.Context()); err != nil {
 		t.Fatal(err)
 	}

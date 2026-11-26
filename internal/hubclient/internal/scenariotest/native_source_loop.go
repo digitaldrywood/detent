@@ -2,7 +2,6 @@ package scenariotest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +36,6 @@ type sourceRepairAgent struct {
 	deadlineRound  string
 	deadlineRounds int
 	repeatRemedy   bool
-	incidents      int
 	timedOut       int
 	timedOutPath   string
 	oldWriter      procgroup.Identity
@@ -248,7 +246,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		{name: "verdict cannot skip a failed gate", gateRepair: true, limit: 4, verdict: "pass", roundChoice: `{"action":"continue","next_phase":"merge","reason":"Skip the failing command."}`, wantReason: "phase is not authorized", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "quiet session restart", deadlineRound: "idle", deadlineRounds: 2, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
-		{name: "repeated timeout files one incident", deadlineRound: "idle", deadlineRounds: 3, repeatRemedy: true, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
+		{name: "repeated timeout retains round evidence", deadlineRound: "idle", deadlineRounds: 3, repeatRemedy: true, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "busy round review", deadlineRound: "review", deadlineRounds: 1, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
@@ -323,24 +321,12 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 				runExecution = remote
 			}
 			request := runner.RunRequest{Execution: runExecution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, DeferExecutionFinish: test.land}
-			if test.repeatRemedy {
-				request.AgentToolHandler = func(_ context.Context, call runner.AgentToolCall) (runner.AgentToolResult, error) {
-					var incident struct {
-						Fingerprint string `json:"fingerprint"`
-					}
-					if call.Name != "file_machine_issue" || json.Unmarshal(call.Arguments, &incident) != nil || incident.Fingerprint == "" {
-						return runner.AgentToolResult{}, fmt.Errorf("unexpected timeout incident: %v", call)
-					}
-					provider.incidents++
-					return runner.AgentToolResult{Success: true}, nil
-				}
-			}
 			result, err := agent.Run(t.Context(), request)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.repeatRemedy && provider.incidents != 1 {
-				t.Errorf("repeated recovery filed %d machine incidents, want one", provider.incidents)
+			if test.repeatRemedy && (len(provider.roundPrompts) < test.deadlineRounds || !strings.Contains(provider.roundPrompts[test.deadlineRounds-1], "Retry the same unavailable tool.")) {
+				t.Error("the final timeout judgment lost evidence from earlier rounds")
 			}
 			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns > 1 {
 				t.Fatalf("workspace lifecycle: before=%d after=%d", loopWorkspace.beforeRuns, loopWorkspace.afterRuns)

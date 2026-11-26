@@ -601,24 +601,6 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			} else {
 				candidate = h.claim(t, issue.ID)
 			}
-			if test.LateConflict {
-				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, path := range []string{info.Path, source} {
-					content := "preserved staged work\n"
-					if path == source {
-						content = "parallel source\n"
-					}
-					if err := os.WriteFile(filepath.Join(path, "CHANGE.md"), []byte(content), 0o600); err != nil {
-						t.Fatal(err)
-					}
-					nativeChangeGit(t, path, "add", "CHANGE.md")
-				}
-				nativeChangeGit(t, source, "commit", "-m", "parallel source")
-				nativeChangeGit(t, source, "push", "origin", "main")
-			}
 			execution := h.scheduler.RunExecution(issue.ID)
 			if execution == nil {
 				t.Fatal("claimed native issue has no execution lifecycle")
@@ -643,6 +625,45 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 			}
 			provider := &committingAgent{finalMessage: test.FinalMessage, dependencyOnly: test.DependencyOnly, failedCheck: test.FailedCheck, commit: test.Commit, dirty: test.Dirty, staged: test.Staged || genuinePublication, validator: test.Validator, lowScore: test.LowScore, complete: test.Absorbed || test.Delivered != "" || test.SummaryFailure, hold: test.Hold, inProgress: test.LateConflict}
+			conflictObserved := false
+			var initialReworkPrompt string
+			if test.LateConflict {
+				provider.duringTurn = func() {
+					initialReworkPrompt = provider.prompt
+					if err := os.WriteFile(filepath.Join(source, "CHANGE.md"), []byte("parallel source\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, source, "add", "CHANGE.md")
+					nativeChangeGit(t, source, "commit", "-m", "parallel source")
+					nativeChangeGit(t, source, "push", "origin", "main")
+					provider.duringTurn = nil
+				}
+				provider.verifyResume = func(_ runner.AgentProcessRequest, resume runner.AgentResume) error {
+					if resume != (runner.AgentResume{ThreadID: "thread-native"}) {
+						return fmt.Errorf("unexpected correction session: %+v", resume)
+					}
+					return nil
+				}
+				provider.duringLiveTurn = func(request runner.AgentTurnRequest, _ runner.AgentUpdateHandler) {
+					if !strings.Contains(request.Prompt, "The runner paused the rebase at unresolved conflicts.") {
+						return
+					}
+					owner := execution.(*ownedExecution)
+					if conflictObserved || owner.CompletionSnapshot().WorktreeState != "dirty" || checks.DirtyArtifacts(t, Underlying(owner)) {
+						t.Error("unresolved source was captured or corrected twice")
+					}
+					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if err != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
+						t.Errorf("conflict changed version, feedback or lane before correction: %v", err)
+					}
+					files, err := exec.CommandContext(t.Context(), "git", "-C", request.Workspace, "diff", "--name-only", "--diff-filter=U").Output()
+					if err != nil || strings.TrimSpace(string(files)) != "CHANGE.md" {
+						t.Errorf("host conflict was not retained: %q, %v", files, err)
+					}
+					conflictObserved = true
+					provider.inProgress = false
+				}
+			}
 			if test.SourceFixture != "" {
 				provider.duringTurn = func() {
 					for path, original := range fixtures {
@@ -2065,57 +2086,8 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				h.claim(t, next.ID)
 				return
 			}
-			if test.LateConflict {
-				owner := execution.(*ownedExecution)
-				if err != nil || result.FinalState != runner.FinalStateCompleted || result.NativeChange != nil || owner.CompletionData().Outcome != "succeeded" || owner.CompletionSnapshot().WorktreeState != "dirty" || checks.DirtyArtifacts(t, Underlying(owner)) {
-					t.Fatalf("late host conflict lost successful dirty continuation: result=%+v outcome=%+v error=%v", result, owner.CompletionData(), err)
-				}
-				detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
-				if readErr != nil || !reflect.DeepEqual(detail, *expected) || h.state(t, issue.ID) != "Rework" {
-					t.Fatalf("late conflict changed version, feedback or lane: detail=%+v error=%v", detail, readErr)
-				}
-				if output, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "diff", "--name-only", "--diff-filter=U").Output(); err != nil || strings.TrimSpace(string(output)) != "CHANGE.md" {
-					t.Fatalf("host conflict not preserved: %s, %v", output, err)
-				}
-				if owner.CompletionSnapshot().Diff != nil {
-					for _, file := range owner.CompletionSnapshot().Diff.Files {
-						if strings.Contains(file.Patch, "<<<<<<<") {
-							t.Fatal("host conflict captured an unresolved index")
-						}
-					}
-				}
-				recovery, readErr := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				if readErr != nil || len(recovery.Attempts) != 1 {
-					t.Fatalf("late conflict lost durable native attempt: %+v, %v", recovery.Attempts, readErr)
-				}
-				attempt := recovery.Attempts[0]
-				if attempt.Status != "succeeded" || attempt.Sequence != owner.CompletionData().Sequence || attempt.Checkpoint == nil || attempt.Checkpoint.WorktreeState != "dirty" || attempt.Checkpoint.HeadSHA != result.DiffStats.HeadSHA {
-					t.Fatalf("late conflict receipt disagrees with authentic outcome: %+v", attempt)
-				}
-				if attempt.Disposition == nil || attempt.Disposition.Status != "in_progress" || attempt.Disposition.Blockers || attempt.Disposition.HumanAction || attempt.Disposition.ReasonCode != "" {
-					t.Fatalf("late conflict did not retain an unfinished disposition: %+v", attempt.Disposition)
-				}
-				previousLease := execution.Recovery().Lease
-				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
-					t.Fatal(err)
-				}
-				candidates := h.candidatesIn(t, "Rework")
-				if len(candidates) != 1 {
-					t.Fatalf("preserved conflict did not offer existing Rework continuation: %+v", candidates)
-				}
-				candidate = candidates[0]
-				if _, err := h.scheduler.AdoptClaim(t.Context(), candidate, time.Now()); err != nil {
-					t.Fatal(err)
-				}
-				execution = h.scheduler.RunExecution(issue.ID)
-				if execution.Recovery().Lease.ID == previousLease.ID || execution.Recovery().Lease.FencingToken == previousLease.FencingToken {
-					t.Fatal("conflict continuation reused terminal authority")
-				}
-				if execution.Recovery().Issue.Revision != recovery.Issue.Revision {
-					t.Fatal("conflict continuation fabricated an item edit")
-				}
-				provider.inProgress = false
-				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+			if test.LateConflict && !conflictObserved {
+				t.Fatalf("the runner did not correct the retained conflict: %v", err)
 			}
 			if !provider.bound && !test.SSH {
 				t.Fatalf("native worker did not bind its conversation: run error=%v", err)
@@ -2133,6 +2105,16 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				}
 				return
 			}
+			if test.Dirty {
+				if !errors.Is(err, runner.ErrNativeRecoveryRequired) || !strings.Contains(err.Error(), "source finalization has uncommitted changes") || result.NativeChange != nil || len(h.changes(t, issue.ID)) != 0 || h.state(t, issue.ID) != test.WantState {
+					t.Fatalf("uncommitted source escaped finalization: change=%+v error=%v", result.NativeChange, err)
+				}
+				draft, readErr := os.ReadFile(filepath.Join(provider.workspace, "SCRATCH.md"))
+				if readErr != nil || string(draft) != "draft\n" {
+					t.Fatalf("refusal discarded the draft: %q, %v", draft, readErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("run: %v (provider calls: %d; writable calls: %d; final message: %s)", err, provider.calls, provider.writableCalls, result.FinalMessage)
 			}
@@ -2140,12 +2122,16 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				t.Fatalf("final state = %q", result.FinalState)
 			}
 			if test.Rework {
+				reworkPrompt := provider.prompt
+				if test.LateConflict {
+					reworkPrompt = initialReworkPrompt
+				}
 				marker := "Native Hub recovery context"
-				start := strings.Index(provider.prompt, marker)
+				start := strings.Index(reworkPrompt, marker)
 				if start < 0 {
 					t.Fatal("provider prompt omitted native recovery")
 				}
-				data := provider.prompt[start:]
+				data := reworkPrompt[start:]
 				data = data[strings.Index(data, "\n")+1:]
 				var recovery tracker.NativeRecovery
 				if err := json.NewDecoder(strings.NewReader(data)).Decode(&recovery); err != nil {
@@ -2176,7 +2162,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if recovery.Change == nil || recovery.Change.VersionID != expected.Change.CurrentVersion || !reflect.DeepEqual(recovery.ChangeDetail, &currentFeedback) {
 					t.Fatalf("provider prompt lost exact Change feedback: change=%+v, detail=%+v", recovery.Change, recovery.ChangeDetail)
 				}
-				if !strings.Contains(provider.prompt, "Discussion is not formal approval") || !strings.Contains(provider.prompt, "historical context, not current approval or rejection") {
+				if !strings.Contains(reworkPrompt, "Discussion is not formal approval") || !strings.Contains(reworkPrompt, "historical context, not current approval or rejection") {
 					t.Fatal("provider prompt omitted feedback authority boundaries")
 				}
 				if !test.Formal {
@@ -2210,13 +2196,21 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				if transcript.Conversation.Execution.AttemptID == nil || *transcript.Conversation.Execution.AttemptID != attemptID {
 					t.Fatalf("conversation lost attempt identity: %+v", transcript)
 				}
-				found := false
+				found, original := false, false
+				completionTurn := "turn-1"
+				if test.LateConflict {
+					completionTurn = "turn-2"
+				}
 				for _, message := range transcript.Messages {
+					owned := message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && message.Actor.Kind == "runner"
 					if message.Text == "Finished the native work" {
-						found = message.AttemptID != nil && *message.AttemptID == attemptID && message.TurnID != nil && *message.TurnID == "turn-1" && message.Actor.Kind == "runner"
+						found = owned && *message.TurnID == completionTurn
+					}
+					if strings.HasPrefix(message.Text, "Native work remains unfinished") {
+						original = owned && *message.TurnID == "turn-1"
 					}
 				}
-				if !found {
+				if !found || test.LateConflict && !original {
 					t.Fatalf("conversation lost authenticated worker events: %+v", transcript.Messages)
 				}
 			}
@@ -2615,7 +2609,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 						t.Fatalf("landing receipt did not identify the actual merge: %s, %v, receipt=%+v", head, err, result.NativeLanding)
 					}
 					attempts, err := h.native.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
-					if err != nil || len(attempts.Items) != 3 {
+					if err != nil || len(attempts.Items) != 2 {
 						t.Fatalf("completed conflict journey lost authentic attempts: %+v, %v", attempts.Items, err)
 					}
 					for _, attempt := range attempts.Items {
@@ -2959,7 +2953,11 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 	a.prompt = request.Prompt
 	a.workspace = request.Workspace
 	a.bound = request.ConversationControl != nil
-	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: "turn-1"}); err != nil {
+	turnID := "turn-1"
+	if strings.Contains(request.Prompt, "The runner paused the rebase at unresolved conflicts.") {
+		turnID = "turn-2"
+	}
+	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnStarted, ThreadID: "thread-native", TurnID: turnID}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
 	if a.duringTurn != nil {
@@ -3011,13 +3009,13 @@ func (a *committingAgent) RunTurn(ctx context.Context, request runner.AgentTurnR
 	if a.finalMessage != "" {
 		message = a.finalMessage
 	}
-	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: "turn-1", Delta: message, ItemID: "result"}); err != nil {
+	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, ThreadID: "thread-native", TurnID: turnID, Delta: message, ItemID: "result-" + turnID}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
-	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: "turn-1", Status: "completed"}); err != nil {
+	if err := onUpdate(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: turnID, Status: "completed"}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
-	return runner.AgentTurnResult{ThreadID: "thread-native", TurnID: "turn-1"}, nil
+	return runner.AgentTurnResult{ThreadID: "thread-native", TurnID: turnID}, nil
 }
 
 func isolateNativeChangeGit(t *testing.T) {
@@ -3325,7 +3323,9 @@ func PublicationFixtureKeepsLeaseUntilHandoff(t *testing.T, factories Constructo
 		t.Fatal(err)
 	}
 	returned()
-	SetSchedulerNow(h.scheduler, time.Now().Add(2*h.scheduler.LeaseDuration()))
+	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+		t.Fatalf("could not renew authority before handoff: %v", err)
+	}
 	if err := fixture.Validate(guarded); err != nil {
 		t.Fatalf("publication guard did not retain renewable authority: %v", err)
 	}

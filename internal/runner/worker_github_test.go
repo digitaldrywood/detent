@@ -1081,7 +1081,13 @@ func TestWorkerGitHubFilteredEnvironment(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := exec.CommandContext(t.Context(), gh, "auth", "token", "--hostname", host)
-			cmd.Env = []string{"GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"], "PATH=" + os.Getenv("PATH")}
+			cmd.Dir = request.TempDir
+			cmd.Env = []string{
+				"GH_CONFIG_DIR=" + request.Environment.Variables["GH_CONFIG_DIR"],
+				"HOME=" + request.TempDir,
+				"XDG_STATE_HOME=" + filepath.Join(request.TempDir, "state"),
+				"PATH=" + os.Getenv("PATH"),
+			}
 			output, err := cmd.Output()
 			if err != nil {
 				t.Fatalf("gh cannot read credentials without token environment: %v", err)

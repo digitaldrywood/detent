@@ -824,6 +824,14 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	if localHead != "" && issue.VerifyPhaseBranch && info.RecoveredPhase.HeadSHA == "" {
+		_, err := l.Existing(issue)
+		if err == nil {
+			issue.FreshCheckout = false
+		} else if !errors.Is(err, ErrMissingWorkspace) {
+			return Info{}, err
+		}
+	}
 	if issue.Source != nil {
 		if err := l.importWorkspaceChangeSource(ctx, issue); err != nil {
 			return Info{}, err

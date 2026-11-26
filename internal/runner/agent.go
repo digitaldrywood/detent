@@ -1937,7 +1937,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if workspaceIssue.Source == nil {
 				return RunResult{}, fmt.Errorf("%w: published Change source is unavailable", ErrNativeRecoveryRequired)
 			}
-			workspaceIssue.FreshCheckout = !retainsPhaseCheckout(req.Execution.Recovery(), req.AttemptWorkspace, req.phaseContinuation.ActiveAttemptID)
+			workspaceIssue.FreshCheckout = !publicationRecovery && !retainsPhaseCheckout(req.Execution.Recovery(), req.AttemptWorkspace, req.phaseContinuation.ActiveAttemptID)
 		} else {
 			workspaceIssue.RequireCheckpoint = sourceErr != nil
 			restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
@@ -1953,6 +1953,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	workspaceIssue.VerifyPhaseBranch = req.phaseReceipts && mode == RunModeImplement && req.NativeLandingRework == nil
 	if workspaceIssue.VerifyPhaseBranch {
 		recovery := req.Execution.Recovery()
+		if planPending && req.phaseContinuation.LastPushed == nil {
+			if previous := recovery.SourceAttempt(); previous != nil && previous.MachineID != "" && previous.MachineID == recovery.Lease.MachineID &&
+				previous.Checkpoint != nil && previous.Checkpoint.Storage == "local_only" && previous.Checkpoint.WorktreeState == "unpushed" &&
+				!previous.Checkpoint.UncertainForgeEffect() {
+				workspaceIssue.LocalCheckpoint = previous.Checkpoint
+				workspaceIssue.RecoveryAttemptWorkspace = req.AttemptWorkspace
+				workspaceIssue.RecoveryAttemptWorkspace.Attempt = previous.AttemptID
+			}
+		}
 		if recovery.Change != nil {
 			workspaceIssue.PublishedChangeHeadSHA = recovery.Change.HeadSHA
 		}
@@ -2214,6 +2223,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 
 	attempt := req.Attempt
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
+	if publicationRecovery && !nativePublicationRecovery(req.Execution.Recovery(), recoveryState, tracker.NativeExecutionIdentity{Role: req.executionRole()}, workspaceIssue.Source) {
+		return RunResult{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
+	}
 	if workspaceIssue.VerifyPhaseBranch && (info.RecoveredPhase.HeadSHA != "" || phaseSource != nil || workspaceIssue.PublishedChangeHeadSHA != "") {
 		if err := verifyItemPhaseCheckout(ctx, runWorkspace, info, workspaceIssue, recoveryState); err != nil {
 			return RunResult{}, err

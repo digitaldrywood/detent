@@ -1086,7 +1086,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		return false, errors.Join(completionErr, err)
 	}
 	if err := recordExecutionCheckpoint(checkpointCtx, req.Execution, checkpoint); err != nil {
-		return false, errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
 	cancellation := executionCancellation(req)
 	completionErr = errors.Join(completionErr, cancellation)

@@ -21,6 +21,7 @@ type Execution interface {
 type Request struct {
 	Execution       Execution
 	Continuation    *tracker.NativePhaseContinuation
+	Published       *workspace.PhaseSource
 	Backend         workspace.Backend
 	Info            workspace.Info
 	Issue           workspace.Issue
@@ -75,7 +76,13 @@ func Run(ctx context.Context, req Request) (string, string, error) {
 		if pushedHead != head || pushedTree != tree {
 			return errors.New("pushed plan source does not match the reviewed source")
 		}
-		return req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, "")
+		if err := req.Execution.RecordPhaseReceipt(ctx, phase, branch, head, tree, ""); err != nil {
+			return err
+		}
+		if req.Published != nil {
+			*req.Published = workspace.PhaseSource{Branch: branch, HeadSHA: head, TreeSHA: tree}
+		}
+		return nil
 	}
 	phase, approval := "plan_draft", ""
 	if !state.NeedsProvider() && state.AnswerID != "" && state.AnswerAttemptID != "" {

@@ -85,6 +85,9 @@ func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuati
 	if change == nil {
 		return false
 	}
+	if previous := recovery.SourceAttempt(); previous != nil && previous.Checkpoint.UncertainForgeEffect() {
+		return true
+	}
 	if continuation.NextPhase == RunModeImplement && (continuation.Plan == nil || continuation.Plan.Accepted) && nativeReviewResumeAttempt(recovery, gateCommand) != nil {
 		return true
 	}

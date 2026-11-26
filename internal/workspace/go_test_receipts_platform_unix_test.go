@@ -72,7 +72,7 @@ func TestInputs(t *testing.T) {
 			t.Fatal(err)
 		}
 		issue.PullRequestHeadSHA = strings.TrimSpace(head)
-		result, err := backend.RunReviewCommand(ctx, info, issue, "go test ./...")
+		result, err := backend.RunReviewCommand(ctx, info, issue, `TMP="${DETENT_RECEIPT_FIXTURE%/*}" go test ./...`)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -608,7 +608,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 					change := publishedSource()
 					capture := gitrepo.ReplacementSource(t, source, change.BaseSHA)
 					replacement := h.publishCaptured(t, current.WorkItemID, change.ChangeID, capture.Source.HeadSHA, &capture, change.VersionID, change.BaseSHA)
-					handoff.CheckReplacement(t, deadline, req, h.admin, replacement, h.scheduler, SetSchedulerNow)
+					handoff.CheckReplacement(t, deadline, req, h.admin, replacement)
 					return
 				}
 				handoff.CheckRestored(t, req, freshScheduler(), h.admin, SetSchedulerNow)

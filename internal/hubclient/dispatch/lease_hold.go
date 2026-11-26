@@ -19,6 +19,19 @@ func defaultLeaseHold() func(context.Context) (func(), error) {
 	}
 }
 
+func (s *Scheduler) holdNativeFetch(ctx context.Context) func() {
+	s.mu.Lock()
+	s.nativeFetches++
+	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
+	return func() {
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(ctx)
+	}
+}
+
 func (s *Scheduler) syncLeaseHold(ctx context.Context) {
 	if s == nil || s.leaseHold == nil {
 		return

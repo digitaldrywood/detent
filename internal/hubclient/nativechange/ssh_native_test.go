@@ -328,19 +328,23 @@ func TestSSHNativePublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)
-			remote, disconnect := nativeSSHExecution(t, ctx, e, root)
-			remote.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
-			remote.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				diff, err := workspace.GitFileDiffs(ctx, checkout, base, tracker.MaxDiffBytes)
-				if err != nil {
-					return tracker.AttemptDiffRequest{}, false
-				}
-				request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
-				for _, f := range diff.Files {
-					request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
-				}
-				return request, true
-			})
+			connect := func() (runner.Execution, func()) {
+				remote, disconnect := nativeSSHExecution(t, ctx, e, root)
+				remote.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
+				remote.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+					diff, err := workspace.GitFileDiffs(ctx, checkout, base, tracker.MaxDiffBytes)
+					if err != nil {
+						return tracker.AttemptDiffRequest{}, false
+					}
+					request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
+					for _, f := range diff.Files {
+						request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+					}
+					return request, true
+				})
+				return remote, disconnect
+			}
+			remote, disconnect := connect()
 			if err := remote.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
@@ -375,7 +379,7 @@ func TestSSHNativePublication(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(checkout, ".detent", "artifacts")); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("central journal written remotely")
 				}
-				remote, _ = nativeSSHExecution(t, ctx, e, root)
+				remote, _ = connect()
 				artifacts = remote.(runner.ArtifactExecution)
 				if err := artifacts.PrepareArtifacts(ctx, checkout); err != nil {
 					t.Fatal(err)
@@ -404,6 +408,9 @@ func TestSSHNativePublication(t *testing.T) {
 				disconnect()
 				// Frozen captures can finish centrally with no SSH connection.
 				err = e.FinalizeArtifacts(ctx, "unavailable remote checkout")
+				if err == nil {
+					_, _ = connect()
+				}
 			}
 			if err != nil {
 				t.Fatal(err)
