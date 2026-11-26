@@ -158,3 +158,81 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduledDecisionProjectDeletionReleasesStorage(t *testing.T) {
+	t.Parallel()
+	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	ctx := t.Context()
+	now := pgstoretest.HistoryAt()
+	input := progresscheck.CIFailure{Repository: "owner/repository", HeadSHA: "head", RunID: "run", RunAttempt: "1", JobID: "job", JobName: "test", ExitStatus: "failure"}
+	decision := progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "test", Reason: "assertion failed"}
+	for _, org := range []tracker.OrganizationID{"org_first", "org_other"} {
+		if err := repository.WriteTenant(ctx, org, corestore.Serving, func(w tenantstore.Writer) error {
+			if err := pgstoretest.SeedCoreOrganization(ctx, w, org); err != nil {
+				return err
+			}
+			if _, err := w.AdjustCollaborationBytes(ctx, 10, math.MaxInt64); err != nil {
+				return err
+			}
+			for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+				if _, err := w.CreateProject(ctx, corestore.Project{OrganizationID: org, ID: project, Name: string(project), Profile: "native"}); err != nil {
+					return err
+				}
+				usage, err := w.(policystore.ScheduledWriter).StoreScheduledDecision(ctx, project, input, decision, now, math.MaxInt64)
+				if err != nil || !usage.Applied {
+					t.Fatalf("seed decision for %s/%s: %+v, %v", org, project, usage, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rollback := errors.New("roll back project deletion")
+	for _, step := range []struct {
+		name     string
+		rollback bool
+		want     int64
+	}{{"rolled back", true, 169}, {"committed", false, 90}} {
+		t.Run(step.name, func(t *testing.T) {
+			err := repository.WriteTenant(ctx, "org_first", corestore.Serving, func(w tenantstore.Writer) error {
+				if err := w.DeleteProject(ctx, "prj_first"); err != nil {
+					return err
+				}
+				if step.rollback {
+					return rollback
+				}
+				return nil
+			})
+			if step.rollback && !errors.Is(err, rollback) || !step.rollback && err != nil {
+				t.Fatalf("delete project: %v", err)
+			}
+			for _, tenant := range []struct {
+				org     tracker.OrganizationID
+				want    int64
+				deleted bool
+			}{{"org_first", step.want, !step.rollback}, {"org_other", 169, false}} {
+				if err := repository.ReadTenant(ctx, tenant.org, corestore.Serving, func(r tenantstore.Reader) error {
+					owner := r.(policystore.ScheduledReader)
+					for _, project := range []tracker.ProjectID{"prj_first", "prj_second"} {
+						got, _, err := owner.ReadScheduledDecision(ctx, project, input, "job", now)
+						if tenant.deleted && project == "prj_first" {
+							if !errors.Is(err, corestore.ErrNotFound) {
+								t.Errorf("deleted project decision: %+v, %v", got, err)
+							}
+						} else if err != nil || got != decision {
+							t.Errorf("surviving decision for %s/%s: %+v, %v", tenant.org, project, got, err)
+						}
+					}
+					used, err := r.CollaborationBytes(ctx)
+					if err != nil || used != tenant.want {
+						t.Errorf("%s collaboration bytes = %d, want %d: %v", tenant.org, used, tenant.want, err)
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}

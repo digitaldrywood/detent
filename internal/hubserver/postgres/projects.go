@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"slices"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/projectreads"
@@ -121,6 +123,18 @@ func (s *session) DeleteProject(ctx context.Context, id tracker.ProjectID) error
 		}
 		if err := s.RemoveArchiveOwner(ctx, artifactstore.ArchiveOwner{OrganizationID: s.organization, ArchiveID: object.ID, Kind: "project-action", ID: actionstore.ArchiveOwnerID(id, action.Action.ID)}); err != nil {
 			return err
+		}
+	}
+	bytes, err := s.queries.DeleteProjectScheduledDecisions(ctx, pgquery.DeleteProjectScheduledDecisionsParams{
+		OrganizationID: s.organization,
+		ProjectID:      id,
+	})
+	if err != nil {
+		return fmt.Errorf("delete scheduled CI decisions: %w", mapError(ctx, err))
+	}
+	if bytes > 0 {
+		if _, err := s.AdjustCollaborationBytes(ctx, -bytes, math.MaxInt64); err != nil {
+			return fmt.Errorf("release scheduled CI decision storage: %w", err)
 		}
 	}
 	rows, err := s.queries.DeleteProject(ctx, pgquery.DeleteProjectParams{
