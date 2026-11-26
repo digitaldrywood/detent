@@ -532,10 +532,14 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		failureReason   string
 		urgent          bool
 		busyRepair      bool
+		activate        string
 	}{
 		{name: "selected release", current: "1.2.3"},
 		{name: "Hub-selected exact release below latest", current: "1.2.3", exact: true},
 		{name: "Hub holds an older signed release", current: "1.2.5", exact: true},
+		{name: "authorized after drain", current: "1.2.3", exact: true, activate: "authorize"},
+		{name: "target withdrawn during drain", current: "1.2.3", exact: true, activate: "withdraw"},
+
 		{name: "same version CLI repair", current: "1.2.4"},
 		{name: "same version Hub repair", current: "1.2.4", follow: true},
 		{name: "same version busy Hub repair resumes when idle", current: "1.2.4", follow: true, busyRepair: true},
@@ -729,6 +733,56 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 					return nil
 				},
+			}
+			if test.activate != "" {
+				now := time.Now().UTC()
+				running := runnerauth.BuildEvidence{Version: test.current, Commit: testPreviousCommit, Source: "release", SHA256: strings.Repeat("a", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				drained, reserved, withdrawn := false, false, false
+				authorizations, restarts := 0, 0
+				scheduler, err := NewScheduler(SchedulerConfig{
+					CheckInterval: time.Hour, Updater: service, RunningBuild: running, ApplyOptions: applyOptions,
+					ReserveDrain: func(context.Context) (func(), error) {
+						withdrawn = test.activate == "withdraw"
+						drained, reserved = true, true
+						return func() { reserved = false }, nil
+					},
+					RequestRestart: func(string) bool {
+						restarts++
+						return true
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, _, target, requestID string) error {
+					if state != runnerauth.LifecycleUpdating {
+						return nil
+					}
+					authorizations++
+					installed, err := os.ReadFile(binary)
+					if !drained || !reserved || preflightPath == "" || err != nil || string(installed) != "old" || target != version || requestID != "signed-update" {
+						t.Fatalf("activation ran out of order: drained=%t reserved=%t candidate=%q installed=%q error=%v request=%q target=%q", drained, reserved, preflightPath, installed, err, requestID, target)
+					}
+					if withdrawn {
+						return ErrRefused
+					}
+					return nil
+				})
+				initial := scheduler.EnrolledUpdate(t.Context(), running, nil)
+				result := scheduler.EnrolledUpdate(t.Context(), running, &runnerauth.UpdateRequest{
+					ID: "signed-update", Service: "detent", Version: version, Release: true, FromRelease: true,
+					ExpectedBuildRevision: initial.Revision, RequestedAt: now,
+				})
+				wantBinary, wantStatus, wantRestarts := "updated", "restart_requested", 1
+				if withdrawn {
+					wantBinary, wantStatus, wantRestarts = "old", "refused", 0
+				}
+				installed, err := os.ReadFile(binary)
+				if err != nil || string(installed) != wantBinary || restarts != wantRestarts || authorizations != 1 ||
+					result == nil || result.Receipt == nil || result.Receipt.Status != wantStatus || reserved == withdrawn {
+					t.Fatalf("installed=%q error=%v restarts=%d authorizations=%d receipt=%+v reserved=%t", installed, err, restarts, authorizations, result, reserved)
+				}
+				return
 			}
 			if test.failureStage != "" {
 				now := time.Now().UTC()

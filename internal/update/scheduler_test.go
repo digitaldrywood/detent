@@ -1100,11 +1100,16 @@ func (s *schedulerUpdaterStub) Check(context.Context) (Status, error) {
 	return s.checkStatus, s.checkErr
 }
 
-func (s *schedulerUpdaterStub) Apply(_ context.Context, opts ApplyOptions) (Status, error) {
+func (s *schedulerUpdaterStub) Apply(ctx context.Context, opts ApplyOptions) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.applyCalls++
 	s.applyOptions = append(s.applyOptions, opts)
+	if opts.authorizeActivation != nil && s.applyErr == nil && s.applyStatus.Action == ActionUpdated {
+		if err := opts.authorizeActivation(ctx); err != nil {
+			return Status{Action: ActionRefused}, err
+		}
+	}
 	return s.applyStatus, s.applyErr
 }
 

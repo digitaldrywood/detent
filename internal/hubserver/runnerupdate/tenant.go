@@ -79,10 +79,11 @@ func (s *Service) StoreObservation(ctx context.Context, writer tenantstore.Write
 }
 
 func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer, identity runnerstore.Identity, state runnerstore.UpdateState, report runnerauth.UpdateObservation, now time.Time, lifecycle bool, published bool) error {
-	version, held, err := EffectiveTarget(ctx, writer, identity.RunnerID, Target(s.deps.Version))
+	policy, err := readTargetPolicy(ctx, writer, identity.RunnerID)
 	if err != nil {
 		return err
 	}
+	version, held := policy.target(Target(s.deps.Version))
 	if !published && !held {
 		return nil
 	}
@@ -129,7 +130,16 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 	if err := request.Validate(); err != nil {
 		return hubapi.PublicInvalid("The current runner update request is invalid")
 	}
-	if err := writer.CreateRunnerUpdateRequest(ctx, runnerstore.UpdateRequestRecord{OrganizationID: identity.OrganizationID, RunnerID: identity.RunnerID, Request: request}); err != nil {
+	record := runnerstore.UpdateRequestRecord{OrganizationID: identity.OrganizationID, RunnerID: identity.RunnerID, Request: request}
+	if held {
+		record.HoldOrganizationRevision = policy.organization.Revision
+		record.OrganizationHold = policy.organization.Version != ""
+		record.HoldRevision = policy.runner.Revision
+		if record.OrganizationHold {
+			record.HoldRevision = policy.organization.Revision
+		}
+	}
+	if err := writer.CreateRunnerUpdateRequest(ctx, record); err != nil {
 		return err
 	}
 	return writer.SetRunnerUpdateDesired(ctx, identity.RunnerID, identity.Revision, request.ID)

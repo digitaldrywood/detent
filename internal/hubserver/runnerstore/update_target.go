@@ -14,5 +14,6 @@ type UpdateTargetReader interface {
 
 type UpdateTargetWriter interface {
 	UpdateTargetReader
+	LockOrganizationUpdateTarget(context.Context, bool) error
 	SetRunnerUpdateTarget(context.Context, string, UpdateTarget) error
 }

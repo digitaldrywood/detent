@@ -32,6 +32,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		reenterControl    bool
 		overlapControl    bool
 		precedingDispatch bool
+		lifecycle         bool
 		storagePressure   bool
 	}{
 		{name: "older Hub"},
@@ -44,6 +45,7 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 		{name: "configuration control permits candidate heartbeat", supported: true, reenterControl: true},
 		{name: "configuration receipt preserves routing order", supported: true, overlapControl: true},
 		{name: "configuration observation follows dispatch heartbeat", supported: true, precedingDispatch: true},
+		{name: "runner update is applied only by the runtime heartbeat", supported: true, lifecycle: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -266,6 +268,24 @@ func TestRunnerCapacityHeartbeat(t *testing.T) {
 			scheduler, err := newTestScheduler(client, config)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.lifecycle {
+				dispatching = true
+				scheduler.SetUpdateOwner(config.UpdateOwner, true)
+				if err := scheduler.ensureNativeMachine(t.Context(), scheduler.nativeProjects["native"]); err != nil {
+					t.Fatal(err)
+				}
+				if updateApplications != 0 || client.UpdateRequest() == nil {
+					t.Fatalf("dispatch heartbeat applied update or lost its offer: applications=%d offer=%+v", updateApplications, client.UpdateRequest())
+				}
+				before := observations
+				if err := scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if updateApplications != 1 || observations != before {
+					t.Fatalf("runtime heartbeat did not consume the existing offer: applications=%d observations=%d, want 1 and %d", updateApplications, observations, before)
+				}
+				return
 			}
 			scheduler.SetProjectConfigurationOwner(func(ownerCtx context.Context, project string, desired *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration {
 				projectCalls++

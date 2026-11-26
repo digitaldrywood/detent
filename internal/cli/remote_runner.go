@@ -120,17 +120,17 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) (result error) {
 		return fmt.Errorf("configure runner worker artifacts: %w", err)
 	}
 	if lifecycle != nil {
-		update.SetLifecycleReporter(lifecycle.Report)
+		update.SetLifecycleReporter(lifecycle.ReportTransition)
 	}
 	if err := update.PrepareWorkers(ctx); err != nil {
 		return fmt.Errorf("prepare runner worker artifacts: %w", err)
 	}
 	if owner, ok := scheduling.(interface {
-		SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
+		SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation, bool)
 	}); ok {
 		owner.SetUpdateOwner(func(ctx context.Context, request *runnerauth.UpdateRequest) *runnerauth.UpdateObservation {
 			return update.EnrolledUpdate(ctx, update.RunningBuild(), request)
-		})
+		}, lifecycle != nil)
 	}
 	provider := project.Dependencies{
 		Scheduling: scheduling, Logger: logger, GlobalDispatchGate: gate,

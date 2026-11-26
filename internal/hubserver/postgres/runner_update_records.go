@@ -48,8 +48,8 @@ func (s *session) RunnerLifecycleReceipt(ctx context.Context, id string, r runne
 func (s *session) RefuseRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, refusal runnerstore.LifecycleRefusal, now time.Time) error {
 	return s.runnerRecords().RefuseRunnerLifecycle(ctx, id, r, digest, refusal, now)
 }
-func (s *session) ReportRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, now time.Time) error {
-	return s.runnerRecords().ReportRunnerLifecycle(ctx, id, r, digest, now)
+func (s *session) ReportRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, rollout runnerstore.Rollout, now time.Time) error {
+	return s.runnerRecords().ReportRunnerLifecycle(ctx, id, r, digest, rollout, now)
 }
 func (s *session) RunnerStartDeadlines(ctx context.Context, now time.Time, limit int) ([]string, error) {
 	return s.runnerRecords().RunnerStartDeadlines(ctx, now, limit)
@@ -65,4 +65,8 @@ func (s *session) SetRunnerUpdateTarget(ctx context.Context, id string, target r
 }
 func (s *session) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
 	return s.runnerRecords().RunnerVersionFailed(ctx, version)
+}
+
+func (s *session) LockOrganizationUpdateTarget(ctx context.Context, exclusive bool) error {
+	return s.runnerRecords().LockOrganizationUpdateTarget(ctx, exclusive)
 }

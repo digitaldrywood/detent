@@ -5082,6 +5082,9 @@ type RunnerLifecycle struct {
 	ErrorCode               string
 	ConsecutiveFailedStarts int32
 	LastTransitionAt        time.Time
+	RolloutRequestID        string
+	RolloutVersion          string
+	RolloutRevision         int64
 }
 
 type RunnerLifecycleTransition struct {
@@ -5100,6 +5103,7 @@ type RunnerLifecycleTransition struct {
 	TransitionID            int64
 	ReportDigest            string
 	Refusal                 string
+	RolloutRequestID        string
 }
 
 type RunnerLocalCheck struct {
@@ -5570,17 +5574,20 @@ type RunnerUpdateReceipt struct {
 }
 
 type RunnerUpdateRequest struct {
-	OrganizationID        tracker.OrganizationID
-	RequestID             string
-	RunnerID              *string
-	RequestedAt           time.Time
-	Service               string
-	ExpectedBuildRevision string
-	Version               string
-	Release               bool
-	FromRelease           bool
-	Urgent                bool
-	FollowHub             bool
+	OrganizationID           tracker.OrganizationID
+	RequestID                string
+	RunnerID                 *string
+	RequestedAt              time.Time
+	Service                  string
+	ExpectedBuildRevision    string
+	Version                  string
+	Release                  bool
+	FromRelease              bool
+	Urgent                   bool
+	FollowHub                bool
+	HoldRevision             int64
+	HoldOrganizationRevision int64
+	OrganizationHold         bool
 }
 
 type RunnerUpdateTarget struct {

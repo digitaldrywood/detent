@@ -634,12 +634,12 @@ func TestSchedulerHubOwnedTarget(t *testing.T) {
 				t.Fatal(err)
 			}
 			states := []runnerauth.LifecycleState{}
-			scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, reason, target string) error {
+			scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, reason, target, requestID string) error {
 				states = append(states, state)
 				if state == runnerauth.LifecycleUpdating && !allow {
 					return ErrRefused
 				}
-				if state == runnerauth.LifecycleUpdating && target != "1.2.2" {
+				if state == runnerauth.LifecycleUpdating && (target != "1.2.2" || requestID != "hub-selected") {
 					t.Errorf("authorized target=%s", target)
 				}
 				if state == runnerauth.LifecycleShuttingDown && (reason != "update" || target != "1.2.2") {
@@ -651,7 +651,7 @@ func TestSchedulerHubOwnedTarget(t *testing.T) {
 			request := runnerauth.UpdateRequest{ID: "hub-selected", Service: "detent", Version: "1.2.2", ExpectedBuildRevision: observation.Revision, Release: true, RequestedAt: now}
 			observation = scheduler.EnrolledUpdate(t.Context(), running, &request)
 			if !allow {
-				if updater.applyCalls != 0 || len(states) != 3 || states[2] != runnerauth.LifecycleReady {
+				if updater.applyCalls != 1 || observation.Receipt == nil || observation.Receipt.Status != "refused" || len(states) != 3 || states[2] != runnerauth.LifecycleReady {
 					t.Fatalf("rejected offer applied: calls=%d states=%v", updater.applyCalls, states)
 				}
 				return
@@ -692,14 +692,11 @@ func TestSchedulerDeferredRestartReportsInstalledVersion(t *testing.T) {
 				t.Fatal(err)
 			}
 			var shutdownTargets []string
-			scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, _, target string) error {
+			scheduler.SetLifecycleReporter(func(_ context.Context, state runnerauth.LifecycleState, _, target, _ string) error {
 				if state != runnerauth.LifecycleShuttingDown {
 					return nil
 				}
 				shutdownTargets = append(shutdownTargets, target)
-				if restartAvailable && target != offer {
-					return ErrRefused
-				}
 				return nil
 			})
 			observation := scheduler.EnrolledUpdate(t.Context(), running, nil)
@@ -710,18 +707,14 @@ func TestSchedulerDeferredRestartReportsInstalledVersion(t *testing.T) {
 			}
 			updater.applyStatus = Status{}
 			updater.applyErr = errors.New("release unavailable")
-			request.ID, request.Version = "next", "1.2.5"
-			scheduler.EnrolledUpdate(t.Context(), running, &request)
+			request.ID, request.Version = "next", offer
 			restartAvailable = true
-			scheduler.EnrolledUpdate(t.Context(), running, nil)
+			scheduler.EnrolledUpdate(t.Context(), running, &request)
 			if !slices.Equal(shutdownTargets, []string{"1.2.4", "1.2.4"}) {
 				t.Errorf("shutdown targets = %v, want the installed version on both attempts", shutdownTargets)
 			}
-			wantRestarts := []string{"installed-controller"}
-			if offer == "1.2.4" {
-				wantRestarts = append(wantRestarts, "installed-controller")
-			}
-			if !slices.Equal(restarts, wantRestarts) {
+			wantRestarts := []string{"installed-controller", "installed-controller"}
+			if updater.applyCalls != 1 || !slices.Equal(restarts, wantRestarts) {
 				t.Errorf("restart calls = %v, want %v", restarts, wantRestarts)
 			}
 		})

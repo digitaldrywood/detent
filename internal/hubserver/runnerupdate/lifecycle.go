@@ -18,13 +18,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
-func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id string, report runnerauth.LifecycleReport) error {
+func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id string, command runnerauth.LifecycleCommand) error {
+	report := command.LifecycleReport
 	report.Version = strings.TrimPrefix(report.Version, "v")
 	report.TargetVersion = strings.TrimPrefix(report.TargetVersion, "v")
 	if report.Validate() != nil {
 		return hubapi.PublicInvalid("valid runner lifecycle report required")
 	}
-	encoded, err := json.Marshal(report)
+	command.LifecycleReport = report
+	if len(command.UpdateRequestID) > 128 {
+		return hubapi.PublicInvalid("valid runner update request required")
+	}
+	encoded, err := json.Marshal(command)
 	if err != nil {
 		return err
 	}
@@ -54,20 +59,31 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 		}
 		now := s.deps.Now().UTC()
 		presented := report
-		if report.State == runnerauth.LifecycleUpdating ||
-			report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update" ||
-			report.State == runnerauth.LifecycleDraining && report.TargetVersion != "" {
-			refusal, err = authorizeLifecycleUpdate(ctx, w, id, report)
-		} else {
-			var target string
-			target, _, err = EffectiveTarget(ctx, w, id, Target(s.deps.Version))
-			report.TargetVersion = target
+		var rollout runnerstore.Rollout
+		switch {
+		case report.State == runnerauth.LifecycleUpdating:
+			targetOwner, ok := w.(runnerstore.UpdateTargetWriter)
+			if !ok {
+				return hubapi.RunEventStorageUnavailable()
+			}
+			if err := targetOwner.LockOrganizationUpdateTarget(ctx, false); err != nil {
+				return err
+			}
+			rollout, refusal, err = authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
+		case report.State == runnerauth.LifecycleDraining && report.TargetVersion != "":
+			_, refusal, err = authorizeLifecycleUpdate(ctx, w, id, report, command.UpdateRequestID)
+		case report.State == runnerauth.LifecycleShuttingDown && report.Reason == "update":
+			if report.TargetVersion == "" {
+				refusal = runnerstore.LifecycleUpdateNotOffered
+			}
+		default:
+			report.TargetVersion, _, err = EffectiveTarget(ctx, w, id, Target(s.deps.Version))
 		}
 		if err != nil {
 			return err
 		}
 		if refusal == "" {
-			err := owner.ReportRunnerLifecycle(ctx, id, report, digest, now)
+			err := owner.ReportRunnerLifecycle(ctx, id, report, digest, rollout, now)
 			if !errors.Is(err, corestore.ErrRevisionConflict) {
 				return err
 			}
@@ -81,32 +97,33 @@ func (s *Service) ReportLifecycle(ctx context.Context, scope hubapi.Scope, id st
 	return err
 }
 
-func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id string, report runnerauth.LifecycleReport) (runnerstore.LifecycleRefusal, error) {
+func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id string, report runnerauth.LifecycleReport, requestID string) (runnerstore.Rollout, runnerstore.LifecycleRefusal, error) {
 	if report.TargetVersion == "" {
-		return runnerstore.LifecycleUpdateNotOffered, nil
+		return runnerstore.Rollout{}, runnerstore.LifecycleUpdateNotOffered, nil
 	}
 	state, err := w.RunnerUpdateState(ctx, id)
 	if err != nil {
-		return "", err
+		return runnerstore.Rollout{}, "", err
 	}
 	urgent, err := w.RunnerUrgentUpdate(ctx)
 	if err != nil {
-		return "", err
+		return runnerstore.Rollout{}, "", err
 	}
 	runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: id}, Routing: runnerauth.Routing{UpdateRequest: state.Desired}, Update: state.Observation}
 	if err := ApplyAvailableRouting(ctx, w, &runner, urgent, report.Version); err != nil {
-		return "", err
+		return runnerstore.Rollout{}, "", err
 	}
 	if state.Observation != nil && (strings.TrimPrefix(state.Observation.Running.Version, "v") != report.Version || state.Observation.Running.Commit != report.BuildRevision) {
-		return runnerstore.LifecycleRunningBuildChanged, nil
+		return runnerstore.Rollout{}, runnerstore.LifecycleRunningBuildChanged, nil
 	}
-	if runner.UpdateRequest == nil || runner.UpdateRequest.Version != report.TargetVersion {
-		return runnerstore.LifecycleUpdateNotOffered, nil
+	if runner.UpdateRequest == nil || runner.UpdateRequest.Version != report.TargetVersion || runner.UpdateRequest.ID != requestID {
+		return runnerstore.Rollout{}, runnerstore.LifecycleUpdateNotOffered, nil
 	}
 	if !runner.UpdateRequest.Urgent && (state.Observation == nil || runner.UpdateRequest.ExpectedBuildRevision != state.Observation.Revision) {
-		return runnerstore.LifecycleRunningBuildChanged, nil
+		return runnerstore.Rollout{}, runnerstore.LifecycleRunningBuildChanged, nil
 	}
-	return "", nil
+	policy, err := readTargetPolicy(ctx, w, "")
+	return runnerstore.Rollout{RequestID: runner.UpdateRequest.ID, Version: runner.UpdateRequest.Version, OrganizationRevision: policy.organization.Revision}, "", err
 }
 
 func (s *httpRoutes) reportRunnerLifecycle(c echo.Context) error {
@@ -114,7 +131,7 @@ func (s *httpRoutes) reportRunnerLifecycle(c echo.Context) error {
 	if err != nil {
 		return s.deps.Error(c, err)
 	}
-	var report runnerauth.LifecycleReport
+	var report runnerauth.LifecycleCommand
 	if err := hubapi.DecodeJSON(c, &report); err != nil {
 		return s.deps.Invalid(c, err)
 	}

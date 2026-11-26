@@ -21,7 +21,7 @@ func (s *Store) RunnerUpdateRequest(ctx context.Context, requestID string) (runn
 func (s *Store) runnerUpdateRequest(ctx context.Context, requestID string) (runnerstore.UpdateRequestRecord, error) {
 	var record runnerstore.UpdateRequestRecord
 	var runnerID pgtype.Text
-	err := s.db.QueryRow(ctx, `SELECT organization_id,runner_id,request_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub FROM runner_update_requests WHERE organization_id=$1 AND request_id=$2`, s.organization, requestID).Scan(&record.OrganizationID, &runnerID, &record.Request.ID, &record.Request.RequestedAt, &record.Request.Service, &record.Request.ExpectedBuildRevision, &record.Request.Version, &record.Request.Release, &record.Request.FromRelease, &record.Request.Urgent, &record.Request.FollowHub)
+	err := s.db.QueryRow(ctx, `SELECT organization_id,runner_id,request_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub,hold_revision,hold_organization_revision,organization_hold FROM runner_update_requests WHERE organization_id=$1 AND request_id=$2`, s.organization, requestID).Scan(&record.OrganizationID, &runnerID, &record.Request.ID, &record.Request.RequestedAt, &record.Request.Service, &record.Request.ExpectedBuildRevision, &record.Request.Version, &record.Request.Release, &record.Request.FromRelease, &record.Request.Urgent, &record.Request.FollowHub, &record.HoldRevision, &record.HoldOrganizationRevision, &record.OrganizationHold)
 	if err != nil {
 		return runnerstore.UpdateRequestRecord{}, s.mapError(ctx, err)
 	}
@@ -37,7 +37,12 @@ func (s *Store) runnerUpdateRequest(ctx context.Context, requestID string) (runn
 func (s *Store) RunnerUpdateState(ctx context.Context, runnerID string) (runnerstore.UpdateState, error) {
 	state := runnerstore.UpdateState{OrganizationID: s.organization, RunnerID: runnerID}
 	var desiredID string
-	err := s.db.QueryRow(ctx, `SELECT request_id FROM runner_update_desired WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID).Scan(&desiredID)
+	err := s.db.QueryRow(ctx, `SELECT desired.request_id
+ FROM runner_update_desired desired
+ JOIN runner_update_requests d ON (d.organization_id,d.request_id)=(desired.organization_id,desired.request_id)
+ LEFT JOIN runner_update_targets o ON o.organization_id=desired.organization_id AND o.runner_id=''
+ LEFT JOIN runner_update_targets t ON t.organization_id=desired.organization_id AND t.runner_id=desired.runner_id
+ WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND `+currentHoldOfferSQL, s.organization, runnerID).Scan(&desiredID)
 	if err == nil {
 		record, err := s.runnerUpdateRequest(ctx, desiredID)
 		if err != nil {
@@ -180,7 +185,7 @@ func (s *Store) CreateRunnerUpdateRequest(ctx context.Context, record runnerstor
 		runnerID = record.RunnerID
 	}
 	request := record.Request
-	result, err := s.db.Exec(ctx, `INSERT INTO runner_update_requests(organization_id,request_id,runner_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(organization_id,request_id) DO NOTHING`, s.organization, request.ID, runnerID, request.RequestedAt, request.Service, request.ExpectedBuildRevision, request.Version, request.Release, request.FromRelease, request.Urgent, request.FollowHub)
+	result, err := s.db.Exec(ctx, `INSERT INTO runner_update_requests(organization_id,request_id,runner_id,requested_at,service,expected_build_revision,version,release,from_release,urgent,follow_hub,hold_revision,hold_organization_revision,organization_hold) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(organization_id,request_id) DO NOTHING`, s.organization, request.ID, runnerID, request.RequestedAt, request.Service, request.ExpectedBuildRevision, request.Version, request.Release, request.FromRelease, request.Urgent, request.FollowHub, record.HoldRevision, record.HoldOrganizationRevision, record.OrganizationHold)
 	if err != nil {
 		return s.mapError(ctx, err)
 	}
@@ -192,7 +197,7 @@ func (s *Store) CreateRunnerUpdateRequest(ctx context.Context, record runnerstor
 	if err != nil {
 		return err
 	}
-	if previous.RunnerID != record.RunnerID || !previous.Request.Matches(request) {
+	if previous.RunnerID != record.RunnerID || previous.HoldRevision != record.HoldRevision || previous.HoldOrganizationRevision != record.HoldOrganizationRevision || previous.OrganizationHold != record.OrganizationHold || !previous.Request.Matches(request) {
 		return corestore.ErrRevisionConflict
 	}
 	return nil

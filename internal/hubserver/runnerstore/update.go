@@ -19,9 +19,12 @@ type UpdateState struct {
 }
 
 type UpdateRequestRecord struct {
-	OrganizationID tracker.OrganizationID
-	RunnerID       string
-	Request        runnerauth.UpdateRequest
+	OrganizationID           tracker.OrganizationID
+	RunnerID                 string
+	Request                  runnerauth.UpdateRequest
+	HoldRevision             int64
+	HoldOrganizationRevision int64
+	OrganizationHold         bool
 }
 
 type UrgentUpdate struct {

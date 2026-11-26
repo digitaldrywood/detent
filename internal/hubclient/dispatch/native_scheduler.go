@@ -90,7 +90,7 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 	projectOwner := s.projectConfiguration
 	s.mu.Unlock()
 	for _, source := range s.nativeProjectSnapshot() {
-		if err := s.heartbeatNativeMachine(ctx, source, projectOwner); err != nil {
+		if err := s.heartbeatNativeMachine(ctx, source, projectOwner, true); err != nil {
 			result = errors.Join(result, err)
 			continue
 		}
@@ -101,10 +101,10 @@ func (s *Scheduler) Heartbeat(ctx context.Context) error {
 }
 
 func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConnector) error {
-	return s.heartbeatNativeMachine(ctx, source, nil)
+	return s.heartbeatNativeMachine(ctx, source, nil, false)
 }
 
-func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
+func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration, runtimeHeartbeat bool) error {
 	if s.controlPaused.Load() {
 		return nil
 	}
@@ -142,8 +142,16 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	s.mu.Lock()
 	last := s.nativeHeartbeats[project]
 	owner := s.updateOwner
+	runtimeHeartbeatOnly := s.updateOnHeartbeat
 	s.mu.Unlock()
 	if ownerView == nil && !last.IsZero() && now.Before(last.Add(s.heartbeatInterval)) {
+		heartbeat.Unlock()
+		locked = false
+		if runtimeHeartbeat && runtimeHeartbeatOnly && owner != nil {
+			if request := s.client.UpdateRequest(); request != nil {
+				owner(ctx, request)
+			}
+		}
 		return nil
 	}
 	var update *runnerauth.UpdateObservation
@@ -316,7 +324,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 			}
 		}
 	}
-	if updateSupported {
+	if updateSupported && (!runtimeHeartbeatOnly || runtimeHeartbeat) {
 		if request := s.client.UpdateRequest(); request != nil {
 			if applied := owner(ctx, request); applied != nil && (machine.Update == nil || applied.Revision != machine.Update.Revision || !reflect.DeepEqual(applied.Receipt, machine.Update.Receipt)) {
 				s.mu.Lock()

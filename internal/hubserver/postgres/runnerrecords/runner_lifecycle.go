@@ -14,14 +14,16 @@ import (
 
 const lifecycleColumns = `process_id,sequence,state,version,build_revision,target_version,reason,error_code,consecutive_failed_starts,last_transition_at`
 
-func scanLifecycle(row pgx.Row) (runnerauth.Lifecycle, error) {
-	var l runnerauth.Lifecycle
-	err := row.Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt)
-	return l, err
+type runnerLifecycle struct {
+	runnerauth.Lifecycle
+	rollout runnerstore.Rollout
 }
 
-func (s *Store) RunnerLifecycle(ctx context.Context, id string) (*runnerauth.Lifecycle, error) {
-	l, err := scanLifecycle(s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+` FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id))
+func (s *Store) currentLifecycle(ctx context.Context, id string) (*runnerLifecycle, error) {
+	var l runnerLifecycle
+	err := s.db.QueryRow(ctx, `SELECT `+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision FROM runner_lifecycle WHERE organization_id=$1 AND runner_id=$2`, s.organization, id).
+		Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt,
+			&l.rollout.RequestID, &l.rollout.Version, &l.rollout.OrganizationRevision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, corestore.ErrNotFound
 	}
@@ -31,11 +33,19 @@ func (s *Store) RunnerLifecycle(ctx context.Context, id string) (*runnerauth.Lif
 	return &l, nil
 }
 
+func (s *Store) RunnerLifecycle(ctx context.Context, id string) (*runnerauth.Lifecycle, error) {
+	current, err := s.currentLifecycle(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &current.Lifecycle, nil
+}
+
 func (s *Store) RunnerLifecycleHistory(ctx context.Context, id string, limit int) ([]runnerstore.LifecycleTransition, error) {
 	if limit < 1 || limit > 100 {
 		return nil, runnerstore.ErrInvalidRecord
 	}
-	rows, err := s.db.Query(ctx, `SELECT `+lifecycleColumns+`,refusal FROM runner_lifecycle_transitions WHERE organization_id=$1 AND runner_id=$2 ORDER BY last_transition_at DESC,transition_id DESC LIMIT $3`, s.organization, id, limit)
+	rows, err := s.db.Query(ctx, `SELECT `+lifecycleColumns+`,refusal,rollout_request_id FROM runner_lifecycle_transitions WHERE organization_id=$1 AND runner_id=$2 ORDER BY last_transition_at DESC,transition_id DESC LIMIT $3`, s.organization, id, limit)
 	if err != nil {
 		return nil, s.mapError(ctx, err)
 	}
@@ -43,7 +53,7 @@ func (s *Store) RunnerLifecycleHistory(ctx context.Context, id string, limit int
 	result := []runnerstore.LifecycleTransition{}
 	for rows.Next() {
 		var l runnerstore.LifecycleTransition
-		if err := rows.Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt, &l.Refusal); err != nil {
+		if err := rows.Scan(&l.ProcessID, &l.Sequence, &l.State, &l.Version, &l.BuildRevision, &l.TargetVersion, &l.Reason, &l.ErrorCode, &l.ConsecutiveFailedStarts, &l.LastTransitionAt, &l.Refusal, &l.RolloutRequestID); err != nil {
 			return nil, s.mapError(ctx, err)
 		}
 		result = append(result, l)
@@ -61,26 +71,34 @@ func (s *Store) RunnerLifecycleReceipt(ctx context.Context, id string, r runnera
 }
 
 func (s *Store) RefuseRunnerLifecycle(ctx context.Context, id string, report runnerauth.LifecycleReport, digest string, refusal runnerstore.LifecycleRefusal, now time.Time) error {
-	return s.appendRunnerLifecycle(ctx, id, runnerauth.Lifecycle{LifecycleReport: report, LastTransitionAt: now}, digest, refusal)
+	return s.appendRunnerLifecycle(ctx, id, runnerLifecycle{Lifecycle: runnerauth.Lifecycle{LifecycleReport: report, LastTransitionAt: now}}, digest, refusal)
 }
 
-func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, now time.Time) error {
+func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerauth.LifecycleReport, digest string, rollout runnerstore.Rollout, now time.Time) error {
 	if r.Validate() != nil || now.IsZero() {
 		return runnerstore.ErrInvalidRecord
 	}
-	old, err := s.RunnerLifecycle(ctx, id)
+	old, err := s.currentLifecycle(ctx, id)
 	if errors.Is(err, corestore.ErrNotFound) {
 		err = nil
 	}
 	if err != nil {
 		return err
 	}
-	next := runnerauth.Lifecycle{LifecycleReport: r, LastTransitionAt: now}
+	next := runnerLifecycle{Lifecycle: runnerauth.Lifecycle{LifecycleReport: r, LastTransitionAt: now}}
 	if old != nil && old.ProcessID == r.ProcessID {
 		if r.Sequence <= old.Sequence || old.Version != r.Version || old.BuildRevision != r.BuildRevision || !lifecycleTransition(old.State, r.State) {
 			return corestore.ErrRevisionConflict
 		}
 		next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
+		next.rollout = old.rollout
+		if r.State == runnerauth.LifecycleShuttingDown && r.Reason == "update" &&
+			(old.rollout.RequestID == "" || r.TargetVersion != old.rollout.Version) {
+			return corestore.ErrRevisionConflict
+		}
+		if r.State == runnerauth.LifecycleUpdating {
+			next.rollout = rollout
+		}
 		if old.State == runnerauth.LifecycleStarting && r.State == runnerauth.LifecycleStartFailed {
 			next.ConsecutiveFailedStarts++
 		}
@@ -103,6 +121,9 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 				return err
 			}
 		}
+		if old != nil && old.rollout.Version == r.Version {
+			next.rollout = old.rollout
+		}
 		if old != nil && old.Version == r.Version {
 			next.ConsecutiveFailedStarts = old.ConsecutiveFailedStarts
 			if old.State == runnerauth.LifecycleStarting {
@@ -117,26 +138,27 @@ func (s *Store) ReportRunnerLifecycle(ctx context.Context, id string, r runnerau
 	}
 	if r.State == runnerauth.LifecycleReady {
 		next.ConsecutiveFailedStarts = 0
+		next.rollout = runnerstore.Rollout{}
 	}
 	return s.storeRunnerLifecycle(ctx, id, next, digest)
 }
 
-func lifecycleArgs(organization string, id string, next runnerauth.Lifecycle) []any {
+func lifecycleArgs(organization string, id string, next runnerLifecycle) []any {
 	return []any{organization, id, next.ProcessID, next.Sequence, next.State, next.Version, next.BuildRevision, next.TargetVersion, next.Reason, next.ErrorCode, next.ConsecutiveFailedStarts, next.LastTransitionAt}
 }
 
-func (s *Store) appendRunnerLifecycle(ctx context.Context, id string, next runnerauth.Lifecycle, digest string, refusal runnerstore.LifecycleRefusal) error {
-	args := append(lifecycleArgs(string(s.organization), id, next), digest, refusal)
-	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle_transitions(organization_id,runner_id,`+lifecycleColumns+`,report_digest,refusal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, args...)
+func (s *Store) appendRunnerLifecycle(ctx context.Context, id string, next runnerLifecycle, digest string, refusal runnerstore.LifecycleRefusal) error {
+	args := append(lifecycleArgs(string(s.organization), id, next), digest, refusal, next.rollout.RequestID)
+	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle_transitions(organization_id,runner_id,`+lifecycleColumns+`,report_digest,refusal,rollout_request_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, args...)
 	return s.mapError(ctx, err)
 }
 
-func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next runnerauth.Lifecycle, digest string) error {
+func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next runnerLifecycle, digest string) error {
 	if err := s.appendRunnerLifecycle(ctx, id, next, digest, ""); err != nil {
 		return err
 	}
-	args := lifecycleArgs(string(s.organization), id, next)
-	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(organization_id,runner_id) DO UPDATE SET process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,consecutive_failed_starts=EXCLUDED.consecutive_failed_starts,last_transition_at=EXCLUDED.last_transition_at`, args...)
+	args := append(lifecycleArgs(string(s.organization), id, next), next.rollout.RequestID, next.rollout.Version, next.rollout.OrganizationRevision)
+	_, err := s.db.Exec(ctx, `INSERT INTO runner_lifecycle(organization_id,runner_id,`+lifecycleColumns+`,rollout_request_id,rollout_version,rollout_revision) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(organization_id,runner_id) DO UPDATE SET process_id=EXCLUDED.process_id,sequence=EXCLUDED.sequence,state=EXCLUDED.state,version=EXCLUDED.version,build_revision=EXCLUDED.build_revision,target_version=EXCLUDED.target_version,reason=EXCLUDED.reason,error_code=EXCLUDED.error_code,consecutive_failed_starts=EXCLUDED.consecutive_failed_starts,last_transition_at=EXCLUDED.last_transition_at,rollout_request_id=EXCLUDED.rollout_request_id,rollout_version=EXCLUDED.rollout_version,rollout_revision=EXCLUDED.rollout_revision`, args...)
 	return s.mapError(ctx, err)
 }
 
@@ -200,7 +222,7 @@ func (s *Store) ExpireRunnerStart(ctx context.Context, id string, now time.Time)
 	if err := s.LockRunnerUpdate(ctx, id); err != nil {
 		return err
 	}
-	current, err := s.RunnerLifecycle(ctx, id)
+	current, err := s.currentLifecycle(ctx, id)
 	if errors.Is(err, corestore.ErrNotFound) {
 		return nil
 	}
@@ -213,7 +235,7 @@ func (s *Store) ExpireRunnerStart(ctx context.Context, id string, now time.Time)
 	if current.State == runnerauth.LifecycleShuttingDown {
 		current.State = runnerauth.LifecycleStopped
 	} else {
-		*current = current.Effective(now)
+		current.Lifecycle = current.Effective(now)
 	}
 	current.LastTransitionAt = now
 	return s.storeRunnerLifecycle(ctx, id, *current, "")

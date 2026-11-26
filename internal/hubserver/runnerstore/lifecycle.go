@@ -17,7 +17,14 @@ const (
 
 type LifecycleTransition struct {
 	runnerauth.Lifecycle
-	Refusal LifecycleRefusal
+	Refusal          LifecycleRefusal
+	RolloutRequestID string
+}
+
+type Rollout struct {
+	RequestID            string
+	Version              string
+	OrganizationRevision int64
 }
 
 type LifecycleReader interface {
@@ -35,5 +42,5 @@ type LifecycleWriter interface {
 	UpdateLocker
 	RunnerLifecycleReceipt(context.Context, string, runnerauth.LifecycleReport, string) (LifecycleRefusal, bool, error)
 	RefuseRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, string, LifecycleRefusal, time.Time) error
-	ReportRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, string, time.Time) error
+	ReportRunnerLifecycle(context.Context, string, runnerauth.LifecycleReport, string, Rollout, time.Time) error
 }

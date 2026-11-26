@@ -20,7 +20,7 @@ type Lifecycle struct {
 	routingState string
 	mu           sync.Mutex
 	report       runnerauth.LifecycleReport
-	send         func(context.Context, runnerauth.LifecycleReport) error
+	send         func(context.Context, runnerauth.LifecycleCommand) error
 }
 
 func StartLifecycle(ctx context.Context, settings globalconfig.HubClient, build buildinfo.Info, version string) (*Lifecycle, error) {
@@ -51,18 +51,22 @@ func (l *Lifecycle) ReportStartupFailure(ctx context.Context) {
 	}
 }
 
-func NewLifecycle(version, revision string, send func(context.Context, runnerauth.LifecycleReport) error) *Lifecycle {
+func NewLifecycle(version, revision string, send func(context.Context, runnerauth.LifecycleCommand) error) *Lifecycle {
 	return &Lifecycle{report: runnerauth.LifecycleReport{ProcessID: rand.Text(), Version: version, BuildRevision: revision}, send: send}
 }
 
 func (l *Lifecycle) Report(ctx context.Context, state runnerauth.LifecycleState, reason, target string) error {
+	return l.ReportTransition(ctx, state, reason, target, "")
+}
+
+func (l *Lifecycle) ReportTransition(ctx context.Context, state runnerauth.LifecycleState, reason, target, requestID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := l.reportLocked(ctx, state, reason, target); err != nil {
+	if err := l.reportLocked(ctx, state, reason, target, requestID); err != nil {
 		return err
 	}
 	if state == runnerauth.LifecycleReady && (l.routingState == "draining" || l.routingState == "disabled") {
-		return l.reportLocked(ctx, runnerauth.LifecycleDraining, "", "")
+		return l.reportLocked(ctx, runnerauth.LifecycleDraining, "", "", "")
 	}
 	return nil
 }
@@ -77,10 +81,10 @@ func (l *Lifecycle) Shutdown(ctx context.Context, reason string) error {
 	if reason == "update" {
 		target = l.report.TargetVersion
 	}
-	return l.reportLocked(ctx, runnerauth.LifecycleShuttingDown, reason, target)
+	return l.reportLocked(ctx, runnerauth.LifecycleShuttingDown, reason, target, "")
 }
 
-func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.LifecycleState, reason, target string) error {
+func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.LifecycleState, reason, target, requestID string) error {
 	next := l.report
 	next.Sequence++
 	next.State, next.Reason, next.TargetVersion = state, reason, target
@@ -88,7 +92,7 @@ func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.Lifecycle
 	if state == runnerauth.LifecycleStartFailed {
 		next.ErrorCode = "startup_error"
 	}
-	if err := l.send(ctx, next); err != nil {
+	if err := l.send(ctx, runnerauth.LifecycleCommand{LifecycleReport: next, UpdateRequestID: requestID}); err != nil {
 		var refusal *api.APIError
 		if errors.As(err, &refusal) && refusal.Status == http.StatusConflict {
 			l.report.Sequence = next.Sequence
@@ -113,5 +117,5 @@ func (l *Lifecycle) ObserveRouting(ctx context.Context, state string) error {
 	if next == l.report.State {
 		return nil
 	}
-	return l.reportLocked(ctx, next, "", "")
+	return l.reportLocked(ctx, next, "", "", "")
 }

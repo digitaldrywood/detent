@@ -326,6 +326,7 @@ type Service struct {
 }
 
 type ApplyOptions struct {
+	authorizeActivation   func(context.Context) error
 	ExactRelease          bool
 	ExpectedVersion       string
 	Urgent                bool
@@ -602,6 +603,20 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		return writeReleaseInstallLock(s.cfg.GOOS, opts, target, status.LatestVersion, status.LatestCommit, key)
 	}
 
+	if opts.authorizeActivation != nil {
+		beforeReplace := replacement.BeforeReplace
+		replacement.BeforeReplace = func(ctx context.Context, target, previous string) error {
+			if beforeReplace != nil {
+				if err := beforeReplace(ctx, target, previous); err != nil {
+					return err
+				}
+			}
+			if err := opts.authorizeActivation(ctx); err != nil {
+				return fmt.Errorf("authorize release activation: %w", err)
+			}
+			return nil
+		}
+	}
 	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -1166,20 +1181,9 @@ func stageWindowsReplacement(ctx context.Context, replacement Replacement) error
 		}
 	}
 	backupPath := strings.TrimSpace(replacement.BackupPath)
-	if replacement.BeforeReplace != nil {
-		if err := replacement.BeforeReplace(ctx, replacement.Target, backupPath); err != nil {
-			if replacement.AfterRevert != nil {
-				err = errors.Join(err, replacement.AfterRevert(ctx, replacement.Target))
-			}
-			return err
-		}
-	}
 
 	script, err := writeWindowsUpdateScript(dir, source, replacement.Target, backupPath)
 	if err != nil {
-		if replacement.AfterRevert != nil {
-			err = errors.Join(err, replacement.AfterRevert(ctx, replacement.Target))
-		}
 		return err
 	}
 	cleanupScript := true
@@ -1188,6 +1192,15 @@ func stageWindowsReplacement(ctx context.Context, replacement Replacement) error
 			removeFile(script)
 		}
 	}()
+
+	if replacement.BeforeReplace != nil {
+		if err := replacement.BeforeReplace(ctx, replacement.Target, backupPath); err != nil {
+			if replacement.AfterRevert != nil {
+				err = errors.Join(err, replacement.AfterRevert(ctx, replacement.Target))
+			}
+			return err
+		}
+	}
 
 	starter := replacement.StartProcess
 	if starter == nil {

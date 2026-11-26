@@ -40,7 +40,7 @@ func (c *Client) StoreRunnerUpdateReceipt(ctx context.Context, receipt *runnerau
 	}{receipt, running}, nil)
 }
 
-func (c *Client) ReportRunnerLifecycle(ctx context.Context, report runnerauth.LifecycleReport) error {
+func (c *Client) ReportRunnerLifecycle(ctx context.Context, report runnerauth.LifecycleCommand) error {
 	path, err := c.runnerReceiptPath()
 	if err != nil {
 		return err

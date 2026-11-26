@@ -174,7 +174,12 @@ func (s *Scheduler) applyEnrolledRequestLocked(ctx context.Context, running runn
 	opts.FollowHub = request.FollowHub
 	var applied Status
 	var err error
-	if releaseIdle != nil {
+	if report := s.cfg.ReportLifecycle; report != nil {
+		opts.authorizeActivation = func(ctx context.Context) error {
+			return report(ctx, runnerauth.LifecycleUpdating, "", request.Version, request.ID)
+		}
+		applied, err = s.drainAndApplyWithOptionsLocked(ctx, opts)
+	} else if releaseIdle != nil {
 		applied, err = s.applyWithOptionsLocked(ctx, releaseIdle, opts)
 	} else {
 		applied, err = s.applyRequestedLocked(ctx, opts)
@@ -392,28 +397,23 @@ func (s *Scheduler) applyHubRequestLocked(ctx context.Context, running runneraut
 	if request.Validate() != nil {
 		return observed
 	}
+	if _, pending := s.restartBehindControlLocked(ctx); pending {
+		return s.enrolledObservation(running)
+	}
 	if receipt := observed.Receipt; receipt != nil && receipt.Request.Matches(*request) && (receipt.ExecutionReady() || receipt.Status == "restart_requested" || receipt.Status == "running") {
 		return observed
 	}
-	if err := s.cfg.ReportLifecycle(ctx, runnerauth.LifecycleDraining, "", request.Version); err != nil {
+	if err := s.cfg.ReportLifecycle(ctx, runnerauth.LifecycleDraining, "", request.Version, request.ID); err != nil {
 		s.cfg.Logger.Warn("report update drain", "error", err)
-		return observed
-	}
-	if err := s.cfg.ReportLifecycle(ctx, runnerauth.LifecycleUpdating, "", request.Version); err != nil {
-		s.cfg.Logger.Warn("authorize runner update", "error", err)
-		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		if err := s.cfg.ReportLifecycle(reportCtx, runnerauth.LifecycleReady, "", ""); err != nil {
-			s.cfg.Logger.Warn("report rejected update", "error", err)
-		}
 		return observed
 	}
 	receipt := &runnerauth.UpdateReceipt{Request: *request, Status: "applying", ObservedAt: s.cfg.Now().UTC()}
 	result := s.applyEnrolledRequestLocked(ctx, running, receipt, nil)
-	if s.Status().State != "restart_requested" {
+	state := s.Status().State
+	if state != "restart_requested" && state != "applied_restart_deferred" {
 		reportCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		if err := s.cfg.ReportLifecycle(reportCtx, runnerauth.LifecycleReady, "", ""); err != nil {
+		if err := s.cfg.ReportLifecycle(reportCtx, runnerauth.LifecycleReady, "", "", ""); err != nil {
 			s.cfg.Logger.Warn("report update result", "error", err)
 		}
 	}

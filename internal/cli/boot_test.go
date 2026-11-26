@@ -47,12 +47,30 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 		t.Run(fmt.Sprintf("missingCheckout=%t", missingCheckout), func(t *testing.T) {
 			func(t *testing.T) {
 				observations := make(chan *runnerauth.UpdateObservation, 1)
+				var firstRequest sync.Once
+				reports := make(chan runnerauth.LifecycleReport, 8)
 				var identity runnerauth.File
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
+					firstRequest.Do(func() {
+						if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/lifecycle") {
+							t.Errorf("first Hub call was %s %s", r.Method, r.URL.Path)
+						}
+					})
 					var response any
 					switch {
 					case strings.HasSuffix(r.URL.Path, "/lifecycle"):
+						var report runnerauth.LifecycleReport
+						if err := json.NewDecoder(r.Body).Decode(&report); err != nil {
+							t.Error(err)
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
+						select {
+						case reports <- report:
+						default:
+							t.Error("unexpected lifecycle report")
+						}
 						w.WriteHeader(http.StatusNoContent)
 						return
 					case r.URL.Path == "/api/v2/capabilities":
@@ -152,6 +170,21 @@ func TestStartRunningPublishesEnrolledUpdateSupport(t *testing.T) {
 				case <-waitCtx.Done():
 					t.Fatalf("headless heartbeat wait ended: %v", context.Cause(waitCtx))
 				}
+				cancel()
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					t.Error(err)
+				}
+				joined = true
+				close(reports)
+				var lifecycle []runnerauth.LifecycleReport
+				for report := range reports {
+					lifecycle = append(lifecycle, report)
+				}
+				if len(lifecycle) != 3 || lifecycle[0].State != runnerauth.LifecycleStarting || lifecycle[0].Version != "dev" || lifecycle[0].BuildRevision == "" ||
+					lifecycle[1].State != runnerauth.LifecycleReady || lifecycle[2].State != runnerauth.LifecycleShuttingDown || lifecycle[2].Reason != "signal" {
+					t.Fatalf("process lifecycle reports = %+v", lifecycle)
+				}
+
 			}(t)
 		})
 	}

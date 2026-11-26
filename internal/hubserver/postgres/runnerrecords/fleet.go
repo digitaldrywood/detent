@@ -8,8 +8,9 @@ import (
 
 func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.FleetRecord, indices map[string]int, ids []string) error {
 	rows, err := s.db.Query(ctx, `SELECT r.runner_id,COALESCE(NULLIF(o.version,''),NULLIF(t.version,''),''),
- EXISTS(SELECT 1 FROM runner_lifecycle_transitions f WHERE f.organization_id=r.organization_id AND f.version=d.version AND f.consecutive_failed_starts>=3),
- EXISTS(SELECT 1 FROM runner_lifecycle_transitions f WHERE f.organization_id=r.organization_id AND f.version=u.version AND f.consecutive_failed_starts>=3),COALESCE(u.version,'')
+ EXISTS(SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=r.organization_id AND f.version=d.version AND f.rollout_revision=COALESCE(o.revision,0) AND `+failedRolloutSQL+`),
+ EXISTS(SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=r.organization_id AND f.version=u.version AND f.rollout_revision=COALESCE(o.revision,0) AND `+failedRolloutSQL+`),
+ COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+`,false)
  FROM runner_identities r
  LEFT JOIN runner_update_targets o ON o.organization_id=r.organization_id AND o.runner_id=''
  LEFT JOIN runner_update_targets t ON t.organization_id=r.organization_id AND t.runner_id=r.runner_id
@@ -24,15 +25,15 @@ func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.Fle
 	defer rows.Close()
 	for rows.Next() {
 		var id, held, urgentVersion string
-		var failed, urgentFailed bool
-		if err := rows.Scan(&id, &held, &failed, &urgentFailed, &urgentVersion); err != nil {
+		var failed, urgentFailed, currentHoldOffer bool
+		if err := rows.Scan(&id, &held, &failed, &urgentFailed, &urgentVersion, &currentHoldOffer); err != nil {
 			return s.mapError(ctx, err)
 		}
 		record := &records[indices[id]]
 		state := &record.Update
 		state.UrgentPolicyChecked = true
 		state.UrgentAllowed = !urgentFailed && (held == "" || held == urgentVersion)
-		if state.Desired != nil && (failed || held != "" && held != state.Desired.Version) {
+		if state.Desired != nil && (failed || !currentHoldOffer || held != "" && held != state.Desired.Version) {
 			state.Desired = nil
 		}
 		state.TargetHeld = held != ""

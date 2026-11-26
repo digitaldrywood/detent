@@ -24,9 +24,14 @@ func (s *Store) SetRunnerUpdateTarget(ctx context.Context, id string, target run
 		return runnerstore.ErrInvalidRecord
 	}
 	if id != "" {
+		if err := s.LockRunnerUpdate(ctx, id); err != nil {
+			return err
+		}
 		if _, err := s.identity(ctx, id); err != nil {
 			return err
 		}
+	} else if err := s.LockOrganizationUpdateTarget(ctx, true); err != nil {
+		return err
 	}
 	result, err := s.db.Exec(ctx, `INSERT INTO runner_update_targets(organization_id,runner_id,version,revision) SELECT $1,$2,$3,1 WHERE $4::bigint=0 ON CONFLICT(organization_id,runner_id) DO NOTHING`, s.organization, id, target.Version, target.Revision)
 	if err != nil {
@@ -45,8 +50,27 @@ func (s *Store) SetRunnerUpdateTarget(ctx context.Context, id string, target run
 	return nil
 }
 
+const failedRolloutSQL = `f.state='start_failed' AND f.consecutive_failed_starts>=3 AND f.version=f.rollout_version AND f.rollout_request_id <> ''`
+
+const currentHoldOfferSQL = `(d.hold_revision=0
+ OR (d.organization_hold AND d.hold_revision=o.revision AND d.version=o.version)
+ OR (NOT d.organization_hold AND d.hold_organization_revision=COALESCE(o.revision,0) AND COALESCE(o.version,'')='' AND d.hold_revision=t.revision AND d.version=t.version))`
+
 func (s *Store) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
 	var failed bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM runner_lifecycle_transitions WHERE organization_id=$1 AND version=$2 AND consecutive_failed_starts>=3)`, s.organization, version).Scan(&failed)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(
+ SELECT 1 FROM runner_lifecycle f WHERE f.organization_id=$1 AND f.version=$2
+ AND `+failedRolloutSQL+`
+ AND f.rollout_revision=COALESCE((SELECT revision FROM runner_update_targets WHERE organization_id=$1 AND runner_id=''),0)
+)`, s.organization, version).Scan(&failed)
 	return failed, s.mapError(ctx, err)
+}
+
+func (s *Store) LockOrganizationUpdateTarget(ctx context.Context, exclusive bool) error {
+	query := `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR SHARE`
+	if exclusive {
+		query = `SELECT organization_id FROM organizations WHERE organization_id=$1 FOR NO KEY UPDATE`
+	}
+	var id string
+	return s.mapError(ctx, s.db.QueryRow(ctx, query, s.organization).Scan(&id))
 }

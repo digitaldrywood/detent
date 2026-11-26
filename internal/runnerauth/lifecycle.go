@@ -28,6 +28,11 @@ type LifecycleReport struct {
 	ErrorCode     string         `json:"error_code,omitempty"`
 }
 
+type LifecycleCommand struct {
+	LifecycleReport
+	UpdateRequestID string `json:"update_request_id,omitempty"`
+}
+
 type Lifecycle struct {
 	LifecycleReport
 	LastTransitionAt        time.Time `json:"last_transition_at"`

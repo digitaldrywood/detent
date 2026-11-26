@@ -1040,6 +1040,29 @@ cannot be remotely undone; loss of renewal authority cancels the local attempt.
 Routing state, project access, host capacity and individual lease ownership survive
 Hub restart. The schema migration preserves existing identities and lease history.
 
+## Runner lifecycle and update targets
+
+An enrolled runner reports process transitions to
+`POST /api/v2/organizations/{org}/runners/{runner}/lifecycle`. Update drain and
+activation reports name the selected `update_request_id` and `target_version`.
+The Hub checks the active offer again when accepting activation. An update
+shutdown refers to that accepted activation. Replaying the same process
+sequence and report returns its recorded outcome.
+
+Administrators read and change the target using GET and PUT on
+`/api/v2/organizations/{org}/runners/{runner}/update/target` or
+`/api/v2/organizations/{org}/runner-update/target`. A PUT contains a release
+`version` and the current `revision`, which starts at zero. An organization
+hold takes precedence over individual runner holds. Set `version` to the
+empty string to clear a hold.
+
+Repeated startup failures following a Hub-authorized activation pause offers
+of that version within the organization. Recovery clears the pause. An
+administrator can also reset it by submitting the current organization target
+with its current revision, including an empty version when there is no
+organization hold. The update advances the policy revision and keeps past
+failure reports in lifecycle history.
+
 ## Runner renewal, rotation and revocation
 
 | Endpoint | Authority | Behavior |

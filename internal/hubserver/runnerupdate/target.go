@@ -16,26 +16,43 @@ import (
 	"github.com/digitaldrywood/detent/internal/update"
 )
 
-func EffectiveTarget(ctx context.Context, r tenantstore.Reader, id, defaultVersion string) (string, bool, error) {
+type targetPolicy struct {
+	runner       runnerstore.UpdateTarget
+	organization runnerstore.UpdateTarget
+}
+
+func (p targetPolicy) target(defaultVersion string) (string, bool) {
+	if p.organization.Version != "" {
+		return p.organization.Version, true
+	}
+	if p.runner.Version != "" {
+		return p.runner.Version, true
+	}
+	return defaultVersion, false
+}
+
+func readTargetPolicy(ctx context.Context, r tenantstore.Reader, id string) (targetPolicy, error) {
+	var policy targetPolicy
 	owner, ok := r.(runnerstore.UpdateTargetReader)
 	if !ok {
-		return defaultVersion, false, nil
+		return policy, nil
 	}
-	organization, err := owner.RunnerUpdateTarget(ctx, "")
+	var err error
+	policy.organization, err = owner.RunnerUpdateTarget(ctx, "")
+	if err != nil || id == "" || policy.organization.Version != "" {
+		return policy, err
+	}
+	policy.runner, err = owner.RunnerUpdateTarget(ctx, id)
+	return policy, err
+}
+
+func EffectiveTarget(ctx context.Context, r tenantstore.Reader, id, defaultVersion string) (string, bool, error) {
+	policy, err := readTargetPolicy(ctx, r, id)
 	if err != nil {
 		return "", false, err
 	}
-	if organization.Version != "" {
-		return organization.Version, true, nil
-	}
-	runner, err := owner.RunnerUpdateTarget(ctx, id)
-	if err != nil {
-		return "", false, err
-	}
-	if runner.Version != "" {
-		return runner.Version, true, nil
-	}
-	return defaultVersion, false, nil
+	version, held := policy.target(defaultVersion)
+	return version, held, nil
 }
 
 func OfferAllowed(ctx context.Context, r tenantstore.Reader, id string, request *runnerauth.UpdateRequest) (bool, error) {

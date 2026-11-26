@@ -12,7 +12,8 @@ func TestLifecycleReportsRoutingTransitions(t *testing.T) {
 	for _, initial := range []string{"active", "draining"} {
 		t.Run(initial, func(t *testing.T) {
 			reports := []runnerauth.LifecycleReport{}
-			owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, report runnerauth.LifecycleReport) error {
+			owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, command runnerauth.LifecycleCommand) error {
+				report := command.LifecycleReport
 				reports = append(reports, report)
 				return nil
 			})
@@ -57,7 +58,8 @@ func TestLifecycleReportsShutdownOnce(t *testing.T) {
 	for _, reason := range []string{"signal", "update"} {
 		t.Run(reason, func(t *testing.T) {
 			var reports []runnerauth.LifecycleReport
-			owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, report runnerauth.LifecycleReport) error {
+			owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, command runnerauth.LifecycleCommand) error {
+				report := command.LifecycleReport
 				reports = append(reports, report)
 				return nil
 			})
