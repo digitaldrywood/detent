@@ -45,12 +45,15 @@ func TestScheduledCIStorageUpgradeChargesRetainedDecisionsOnce(t *testing.T) {
 		t.Helper()
 		for _, tenant := range tenants {
 			var count int
-			var used int64
+			var used, project, other int64
 			err := db.QueryRowContext(t.Context(), `SELECT
- (SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1), value
- FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, tenant.org).Scan(&count, &used)
-			if err != nil || count != tenant.decisions || used != tenant.after {
-				t.Errorf("%s decisions=%d collaboration bytes=%d, want %d and %d: %v", tenant.org, count, used, tenant.decisions, tenant.after, err)
+ (SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1), value,
+ COALESCE((SELECT collaboration_bytes FROM scheduled_ci_project_storage WHERE organization_id=$1 AND project_id='prj_shared'),0),
+ COALESCE((SELECT collaboration_bytes FROM scheduled_ci_project_storage WHERE organization_id=$1 AND project_id='prj_other'),0)
+ FROM hosted_usage_counters WHERE organization_id=$1 AND name='collaboration_bytes'`, tenant.org).Scan(&count, &used, &project, &other)
+			wantProject := tenant.after - tenant.before
+			if err != nil || count != tenant.decisions || used != tenant.after || project != wantProject || other != 0 {
+				t.Errorf("%s decisions=%d tenant bytes=%d project bytes=%d other project bytes=%d, want %d, %d, %d, 0: %v", tenant.org, count, used, project, other, tenant.decisions, tenant.after, wantProject, err)
 			}
 		}
 	}
@@ -58,9 +61,13 @@ func TestScheduledCIStorageUpgradeChargesRetainedDecisionsOnce(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	names, err := fs.Glob(migrations, "*_scheduled_ci_decision_storage.sql")
-	if err != nil || len(names) != 1 {
-		t.Fatalf("backfill migration=%v error=%v", names, err)
+	backfills := fstest.MapFS{}
+	for _, pattern := range []string{"*_scheduled_ci_decision_storage.sql", "*_backfill_scheduled_ci_project_storage.sql"} {
+		names, err := fs.Glob(migrations, pattern)
+		if err != nil || len(names) != 1 {
+			t.Fatalf("backfill migration=%v error=%v", names, err)
+		}
+		backfills[names[0]] = migrations[names[0]]
 	}
 	pool, err := store.PoolConfig()
 	if err != nil {
@@ -72,12 +79,12 @@ func TestScheduledCIStorageUpgradeChargesRetainedDecisionsOnce(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	replay, err := goose.NewProvider(goose.DialectPostgres, migrationDB, postgres.RoleMigrations(fstest.MapFS{names[0]: migrations[names[0]]}),
+	replay, err := goose.NewProvider(goose.DialectPostgres, migrationDB, postgres.RoleMigrations(backfills),
 		goose.WithDisableVersioning(true), goose.WithDisableGlobalRegistry(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := replay.Up(t.Context()); err != nil || len(applied) != 1 {
+	if applied, err := replay.Up(t.Context()); err != nil || len(applied) != 2 {
 		t.Fatalf("replay applied %d migrations: %v", len(applied), err)
 	}
 	assertCounters()

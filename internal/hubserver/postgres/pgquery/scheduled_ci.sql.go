@@ -44,27 +44,6 @@ func (q *Queries) ClaimScheduledClassification(ctx context.Context, arg ClaimSch
 	return result.RowsAffected(), nil
 }
 
-const deleteProjectScheduledDecisions = `-- name: DeleteProjectScheduledDecisions :one
-WITH removed AS (
-    DELETE FROM scheduled_ci_decisions
-    WHERE organization_id=$1 AND project_id=$2
-    RETURNING collaboration_bytes
-)
-SELECT COALESCE(sum(collaboration_bytes),0)::bigint AS released_bytes FROM removed
-`
-
-type DeleteProjectScheduledDecisionsParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-}
-
-func (q *Queries) DeleteProjectScheduledDecisions(ctx context.Context, arg DeleteProjectScheduledDecisionsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, deleteProjectScheduledDecisions, arg.OrganizationID, arg.ProjectID)
-	var released_bytes int64
-	err := row.Scan(&released_bytes)
-	return released_bytes, err
-}
-
 const lockScheduledClassification = `-- name: LockScheduledClassification :one
 SELECT true FROM scheduled_ci_classification_claims
 WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4
@@ -172,6 +151,25 @@ func (q *Queries) ReleaseScheduledClassification(ctx context.Context, arg Releas
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const scheduledCIProjectStorage = `-- name: ScheduledCIProjectStorage :one
+SELECT COALESCE((
+    SELECT collaboration_bytes FROM scheduled_ci_project_storage
+    WHERE organization_id=$1 AND project_id=$2
+),0)::bigint AS collaboration_bytes
+`
+
+type ScheduledCIProjectStorageParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) ScheduledCIProjectStorage(ctx context.Context, arg ScheduledCIProjectStorageParams) (int64, error) {
+	row := q.db.QueryRow(ctx, scheduledCIProjectStorage, arg.OrganizationID, arg.ProjectID)
+	var collaboration_bytes int64
+	err := row.Scan(&collaboration_bytes)
+	return collaboration_bytes, err
 }
 
 const scheduledLandedWorkItems = `-- name: ScheduledLandedWorkItems :many
