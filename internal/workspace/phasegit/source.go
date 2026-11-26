@@ -13,7 +13,6 @@ import (
 )
 
 type Command func(context.Context, ...string) (string, error)
-type RemoteHead func(context.Context, string, string, string) (string, bool, error)
 
 func Head(ctx context.Context, path string) (string, string, error) {
 	return readHead(func(args ...string) (string, error) { return gitexec.ReadPublicationSource(ctx, path, args...) })
@@ -134,7 +133,7 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 	return branch, head, tree, nil
 }
 
-func PreserveHistory(ctx context.Context, path, identifier string, previous model.PhaseSource, fetch, authorize func(context.Context) error, commit Command, remoteHead RemoteHead, moved error) (string, error) {
+func PreserveHistory(ctx context.Context, path, identifier, repository string, previous model.PhaseSource, fetch, authorize func(context.Context) error, commit Command, moved error) (string, error) {
 	head, tree, err := Head(ctx, path)
 	if err != nil || head == previous.HeadSHA {
 		return "", err
@@ -150,7 +149,7 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous mode
 			return "", err
 		}
 	}
-	remote, exists, err := remoteHead(ctx, path, gitexec.DefaultRemote, previous.Branch)
+	remote, exists, err := gitexec.PublicationBranchHead(ctx, repository, previous.Branch)
 	if err != nil {
 		return "", err
 	}
@@ -173,13 +172,11 @@ func PreserveHistory(ctx context.Context, path, identifier string, previous mode
 	return remote, nil
 }
 
-func Fetch(ctx context.Context, path, branch string, source model.PhaseSource, repository func(context.Context) string, expectedRepository string, acquire func(context.Context) (func(), error), git Command) error {
+func Fetch(ctx context.Context, path, branch, repository string, source model.PhaseSource, acquire func(context.Context) (func(), error)) error {
 	if !gitexec.ValidHead(source.HeadSHA) || !gitexec.ValidHead(source.TreeSHA) || source.Branch == "" || source.Branch != branch {
 		return errors.New("recorded phase does not name the item branch and immutable source")
 	}
-	repo := repository(ctx)
-	expected := strings.TrimSpace(expectedRepository)
-	if repo == "" || expected != "" && repo != expected {
+	if repository == "" {
 		return errors.New("recorded phase source is outside the configured repository")
 	}
 	release, err := acquire(ctx)
@@ -187,20 +184,16 @@ func Fetch(ctx context.Context, path, branch string, source model.PhaseSource, r
 		return err
 	}
 	defer release()
-	if _, err := git(ctx, "fetch", "--no-tags", "--no-recurse-submodules", "--write-fetch-head", gitexec.DefaultRemote, source.HeadSHA); err != nil {
+	head, err := gitexec.FetchPhaseSource(ctx, path, repository, source.HeadSHA)
+	if err != nil {
 		return fmt.Errorf("fetch recorded phase commit: %w", err)
 	}
-	head, err := ResolveFetchedHead(ctx, path)
-	if err != nil || strings.TrimSpace(head) != source.HeadSHA {
-		return errors.Join(errors.New("fetched commit differs from the recorded phase source"), err)
+	if head != source.HeadSHA {
+		return errors.New("fetched commit differs from the recorded phase source")
 	}
 	tree, err := gitexec.ReadPublicationSource(ctx, path, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", source.HeadSHA+"^{tree}")
 	if err != nil || strings.TrimSpace(tree) != source.TreeSHA {
 		return errors.Join(errors.New("fetched tree differs from the recorded phase source"), err)
 	}
 	return nil
-}
-
-func ResolveFetchedHead(ctx context.Context, path string) (string, error) {
-	return gitexec.ReadPublicationSource(ctx, path, "-c", "advice.graftFileDeprecated=false", "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}")
 }

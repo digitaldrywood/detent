@@ -36,6 +36,14 @@ func FetchRemoteBranch(ctx context.Context, path, remote, repository, branch str
 }
 
 func fetchPublicationBranch(ctx context.Context, path, remote, repository, branch string, extraConfig ...string) (base string, err error) {
+	return fetchPublicationSource(ctx, path, remote, repository, branch, "refs/heads/"+branch, RemoteFetchEnvironment(), extraConfig...)
+}
+
+func FetchPhaseSource(ctx context.Context, path, repository, ref string) (string, error) {
+	return fetchPublicationSource(ctx, path, "", repository, "", ref, IsolatedEnvironment())
+}
+
+func fetchPublicationSource(ctx context.Context, path, remote, repository, branch, ref string, fetchEnv []string, extraConfig ...string) (base string, err error) {
 	source, err := readPublicationMetadata(ctx, path, "")
 	if err != nil {
 		return "", err
@@ -88,9 +96,9 @@ func fetchPublicationBranch(ctx context.Context, path, remote, repository, branc
 		seededTips = append(seededTips, tip)
 	}
 	remoteFetchArgs := []string{"--git-dir=" + scratch, "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.alternateRefsCommand=true", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "-c", "protocol.file.allow=always", "-c", "protocol.ssh.allow=always"}
-	remoteFetchArgs = append(remoteFetchArgs, "fetch", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--", repository, "refs/heads/"+branch+":refs/heads/target")
+	remoteFetchArgs = append(remoteFetchArgs, "fetch", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance", "--no-recurse-submodules", "--", repository, ref+":refs/heads/target")
 	fetchArgs := RemoteArgs(remoteFetchArgs...)
-	if _, err := withCommandEnvironment(ctx, path, RemoteFetchEnvironment(), true, "", RunCommand, fetchArgs...); err != nil {
+	if _, err := withCommandEnvironment(ctx, path, fetchEnv, true, "", RunCommand, fetchArgs...); err != nil {
 		return "", redactRemoteError(err, repository)
 	}
 	resolved, err := withCommandEnvironment(ctx, scratch, isolatedEnv, true, "", RunCommand, "--git-dir="+scratch, "rev-parse", "--verify", "refs/heads/target^{commit}")
