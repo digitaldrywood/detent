@@ -48,7 +48,7 @@ func verifyPhasePublication(t *testing.T) {
 			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "fixture", "-m", "ghp_"+strings.Repeat("aB0cD1", 6))
 			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "continue")
 		}},
-		{name: "oversized commit message", wantError: "commit message exceeds the output limit", configure: func(t *testing.T, f landingFixture) {
+		{name: "oversized commit message", wantError: "commit object exceeds the output limit", configure: func(t *testing.T, f landingFixture) {
 			message := filepath.Join(t.TempDir(), "message.txt")
 			if err := os.WriteFile(message, []byte(strings.Repeat("fixture message\n", 70000)), 0o600); err != nil {
 				t.Fatal(err)
