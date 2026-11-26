@@ -23,17 +23,6 @@ type Deps struct {
 	Checkpoint func(context.Context, hubrecords.TenantAttemptSnapshot) (*tracker.NativeCheckpoint, error)
 }
 
-func VersionPushed(ctx context.Context, reader tenantstore.Reader, project tracker.ProjectID, item int64, version eventstore.Version) (bool, error) {
-	if version.AttemptID == "" {
-		return false, nil
-	}
-	receipts, ok := reader.(leasestore.PhaseReceiptReader)
-	if !ok {
-		return false, hubapi.NativeRunEventStorageUnavailable()
-	}
-	return receipts.AttemptHasSourceReceipt(ctx, project, item, version.AttemptID, version.HeadSHA, version.PolicyRevisionID)
-}
-
 func VersionStored(ctx context.Context, details attachment.DetailStore, organization tracker.OrganizationID, row eventstore.Version) (bool, error) {
 	if row.OrganizationID != organization {
 		return false, artifact.ErrIntegrity
@@ -60,7 +49,6 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 	facts := hubrecords.ClaimSourceFacts{Loaded: true}
 	var snapshot hubrecords.TenantAttemptSnapshot
 	var version *eventstore.Version
-	var pushed bool
 	err := deps.Repository.ReadTenant(ctx, organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if workspace, err := r.IsWorkspaceWorkItem(ctx, project, item.NativeID); err != nil || workspace {
 			return err
@@ -91,10 +79,6 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 			}
 			version = &row
 			facts.ChangeID, facts.VersionID = change.ID, row.ID
-			pushed, err = VersionPushed(ctx, r, project, item.ID, row)
-			if err != nil {
-				return err
-			}
 			if row.AttemptID != "" {
 				attempt, err := r.Attempt(ctx, row.AttemptID)
 				if err == nil && attempt.IssueID == item.ID {
@@ -152,9 +136,7 @@ func Read(ctx context.Context, deps Deps, organization tracker.OrganizationID, p
 			facts.Checkpoint = checkpoint
 		}
 	}
-	if pushed {
-		facts.VersionStored = true
-	} else if version != nil {
+	if version != nil {
 		facts.VersionStored, err = VersionStored(ctx, deps.Details, organization, *version)
 	}
 	return facts, err

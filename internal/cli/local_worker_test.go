@@ -752,7 +752,6 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 	sent := make(chan struct{}, 2)
 	intercept := func(handler http.Handler, request *http.Request) (*http.Response, error) {
 		var event tracker.NativeRunEvent
-		var overlapping runnersession.Mutation
 		if request.URL.Query().Has("attempt_worker_after") {
 			mu.Lock()
 			reconnectReads++
@@ -779,7 +778,9 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 				return nil, err
 			}
 			if mutation.Worker != nil && mutation.Worker.CleanupPath != "" {
-				overlapping = mutation
+				mu.Lock()
+				registration = mutation
+				mu.Unlock()
 			}
 		}
 		if event.Worker != nil {
@@ -819,16 +820,6 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 		}
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
-		if overlapping.Worker != nil && recorder.Code == http.StatusOK {
-			var session runnersession.Snapshot
-			if err := json.Unmarshal(recorder.Body.Bytes(), &session); err != nil {
-				return nil, err
-			}
-			overlapping.SessionID = session.ID
-			mu.Lock()
-			registration = overlapping
-			mu.Unlock()
-		}
 		if event.Type != "" {
 			t.Logf("%s sequence=%d launch=%t retirement=%t status=%d", event.Type, event.Data.Sequence, event.Worker != nil, event.WorkerCleanup != nil, recorder.Code)
 		}
@@ -1055,11 +1046,9 @@ func testFencedLaunchAcknowledgement(t *testing.T, scenario string) {
 			return
 		}
 		sessionWorker := registration.Worker
-		root := bestEffortTestPath(t, workspaceRoot)
-		attemptRoot := filepath.Join(root, execution.(runnerpkg.AttemptWorkerExecution).AttemptWorkspace().Key()+"-execution")
 		if len(events) != 1 || after[0] != before[0] || sessionWorker == nil || registration.SessionID <= 0 ||
 			registration.LeaseID != events[0].Data.LeaseID || registration.FencingToken != events[0].Data.FencingToken ||
-			sessionWorker.PID == int(before[0].Worker.PID) || sessionWorker.CleanupRoot != root || filepath.Dir(sessionWorker.CleanupPath) != attemptRoot {
+			sessionWorker.PID == int(before[0].Worker.PID) || filepath.Dir(filepath.Dir(sessionWorker.CleanupPath)) != bestEffortTestPath(t, workspaceRoot) {
 			t.Fatalf("overlap lost primary ownership or fenced session registration: owners=%+v session=%+v", after, sessionWorker)
 		}
 		var snapshot runnersession.Snapshot

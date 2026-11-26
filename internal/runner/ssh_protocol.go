@@ -58,7 +58,7 @@ func NewSSHPeer(ctx context.Context, input io.Reader, output io.Writer, handle f
 		decoder: json.NewDecoder(input), encoder: json.NewEncoder(output),
 		writer: make(chan struct{}, 1), pending: make(map[uint64]chan sshMessage), handle: handle,
 	}
-	go p.read(ctx)
+	go p.read()
 	return p
 }
 
@@ -123,7 +123,7 @@ func (p *SSHPeer) Call(ctx context.Context, method string, result any, args ...a
 	}
 }
 
-func (p *SSHPeer) read(ctx context.Context) {
+func (p *SSHPeer) read() {
 	defer p.cancel()
 	for {
 		var message sshMessage
@@ -142,19 +142,19 @@ func (p *SSHPeer) read(ctx context.Context) {
 		// Callbacks may issue another call in the opposite direction. A separate
 		// handler keeps the read loop available for that nested response.
 		go func() {
-			callCtx := ctx
+			ctx := p.ctx
 			if !message.Deadline.IsZero() {
 				var cancel context.CancelFunc
-				callCtx, cancel = context.WithDeadline(callCtx, message.Deadline)
+				ctx, cancel = context.WithDeadline(ctx, message.Deadline)
 				defer cancel()
 			}
 			var result any
-			err := context.Cause(callCtx)
+			err := context.Cause(ctx)
 			if err == nil {
 				if p.handle == nil {
 					err = fmt.Errorf("unsupported SSH method %q", message.Method)
 				} else {
-					result, err = p.handle(callCtx, message.Method, message.Arguments)
+					result, err = p.handle(ctx, message.Method, message.Arguments)
 				}
 			}
 			response := sshMessage{ID: message.ID, Error: encodeSSHError(err)}
@@ -162,7 +162,7 @@ func (p *SSHPeer) read(ctx context.Context) {
 				response.Result, err = json.Marshal(result)
 				response.Error = encodeSSHError(err)
 			}
-			if p.send(ctx, response) != nil {
+			if p.send(p.ctx, response) != nil {
 				p.cancel()
 			}
 		}()
@@ -250,7 +250,7 @@ func sshSentinels() []error {
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrProviderSessionUnretired, ErrLandingNotReviewed, ErrValidatorInfrastructure,
 		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired, ErrWorkerSessionStartUncertain,
-		ErrChangeSourceVersionSuperseded, ErrPhaseReceiptsUnavailable, progresscheck.ErrRoundVerdictRejected, progresscheck.ErrChecklistSuperseded}
+		ErrChangeSourceVersionSuperseded, progresscheck.ErrRoundVerdictRejected, progresscheck.ErrChecklistSuperseded}
 }
 
 func encodeSSHError(err error) *sshError {

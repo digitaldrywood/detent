@@ -284,12 +284,13 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
+	if reportErr != nil {
+		return reportErr
+	}
 	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
-	if reportErr == nil {
-		s.nativeHeartbeats[project] = s.now()
-	}
+	s.nativeHeartbeats[project] = s.now()
 	if projectConfig != nil {
 		if s.configHeartbeats == nil {
 			s.configHeartbeats = make(map[tracker.ProjectID]time.Time)
@@ -343,10 +344,8 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.machine.CapacityConfig = appliedCapacity
 		s.machine.Capacity = min(appliedCapacity.RuntimeLimit, appliedCapacity.ClientLimit, appliedCapacity.LocalLimit)
 	}
-	if reportErr == nil {
-		s.nativeHeartbeats[project] = s.now()
-	}
-	return reportErr
+	s.nativeHeartbeats[project] = s.now()
+	return nil
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
@@ -926,17 +925,14 @@ func (s *Scheduler) invalidateNativeClaim(ctx context.Context, issueID string, t
 	s.mu.Lock()
 	if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
 		current.lost = true
-		release := true
-		if execution := current.execution; execution != nil && execution.OwnsWork() {
-			execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
-			release = false
-		}
 		current.signalLeaseChange()
 		s.nativeClaims[issueID] = current
-		s.mu.Unlock()
-		if !release {
+		if execution := current.execution; execution != nil && execution.OwnsWork() {
+			s.mu.Unlock()
+			execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
 			return true
 		}
+		s.mu.Unlock()
 		if err := current.source.NativeClient().ReleaseAttempt(ctx, current.lease, "cancelled", true); err != nil && !nativeLeaseLost(err) {
 			slog.Default().Warn("native claim release unavailable", "work_item_id", issueID, "error", err)
 			return true
