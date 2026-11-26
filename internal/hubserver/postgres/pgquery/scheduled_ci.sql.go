@@ -44,6 +44,27 @@ func (q *Queries) ClaimScheduledClassification(ctx context.Context, arg ClaimSch
 	return result.RowsAffected(), nil
 }
 
+const deleteProjectScheduledDecisions = `-- name: DeleteProjectScheduledDecisions :one
+WITH removed AS (
+    DELETE FROM scheduled_ci_decisions
+    WHERE organization_id=$1 AND project_id=$2
+    RETURNING collaboration_bytes
+)
+SELECT COALESCE(sum(collaboration_bytes),0)::bigint AS released_bytes FROM removed
+`
+
+type DeleteProjectScheduledDecisionsParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+}
+
+func (q *Queries) DeleteProjectScheduledDecisions(ctx context.Context, arg DeleteProjectScheduledDecisionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, deleteProjectScheduledDecisions, arg.OrganizationID, arg.ProjectID)
+	var released_bytes int64
+	err := row.Scan(&released_bytes)
+	return released_bytes, err
+}
+
 const lockScheduledClassification = `-- name: LockScheduledClassification :one
 SELECT true FROM scheduled_ci_classification_claims
 WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4

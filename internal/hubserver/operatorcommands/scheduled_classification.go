@@ -146,6 +146,9 @@ func (s ScheduledCIDeps) writeClassification(ctx context.Context, scope hubscope
 		if err := s.Authorize(ctx, w, scope, true); err != nil {
 			return err
 		}
+		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
+			return err
+		}
 		owner, ok := w.(policystore.ScheduledWriter)
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
