@@ -77,6 +77,9 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			if _, _, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input, "job", now); err == nil {
 				t.Fatal("changed head replay accepted")
 			}
+			if usage, err := owner.UpdateScheduledDecision(t.Context(), "prj_first", input, want, math.MaxInt64); !errors.Is(err, corestore.ErrNotFound) || usage.Applied {
+				t.Fatalf("changed head update = %+v, %v, want not found and no usage applied", usage, err)
+			}
 			return nil
 		})
 		if err != nil {
