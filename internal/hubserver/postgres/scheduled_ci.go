@@ -28,15 +28,19 @@ func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.Pr
 	if project == "" || input.Validate() != nil || result.Validate() != nil || at.IsZero() {
 		return billingstore.UsageResult{}, eventstore.ErrInvalidRecord
 	}
-	inserted, err := s.queries.StoreScheduledDecision(ctx, pgquery.StoreScheduledDecisionParams{OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA, RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome), Target: result.Target, Reason: result.Reason, CreatedAt: at.UTC()})
+	bytes := int64(len(s.organization) + len(project) + len(input.Repository) + len(input.HeadSHA) + len(input.RunID) + len(input.RunAttempt) + len(input.JobID) + len(result.Outcome) + len(result.Target) + len(result.Reason) + 8)
+	inserted, err := s.queries.StoreScheduledDecision(ctx, pgquery.StoreScheduledDecisionParams{
+		OrganizationID: s.organization, ProjectID: project, Repository: input.Repository, HeadSHA: input.HeadSHA,
+		RunID: input.RunID, RunAttempt: input.RunAttempt, JobID: input.JobID, Outcome: string(result.Outcome),
+		Target: result.Target, Reason: result.Reason, CreatedAt: at.UTC(), CollaborationBytes: bytes,
+	})
 	if err != nil {
 		return billingstore.UsageResult{}, mapError(ctx, err)
 	}
 	if inserted == 0 {
 		return billingstore.UsageResult{Allowed: true}, nil
 	}
-	bytes := len(s.organization) + len(project) + len(input.Repository) + len(input.HeadSHA) + len(input.RunID) + len(input.RunAttempt) + len(input.JobID) + len(result.Outcome) + len(result.Target) + len(result.Reason) + 8
-	return s.AdjustCollaborationBytes(ctx, int64(bytes), limit)
+	return s.AdjustCollaborationBytes(ctx, bytes, limit)
 }
 
 func (s *session) ClaimScheduledClassification(ctx context.Context, project tracker.ProjectID, jobKey, receiptID string, now, expiresAt time.Time) (bool, error) {

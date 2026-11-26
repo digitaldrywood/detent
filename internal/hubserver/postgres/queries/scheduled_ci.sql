@@ -3,8 +3,8 @@ SELECT * FROM scheduled_ci_decisions
 WHERE organization_id=$1 AND project_id=$2 AND repository=$3 AND run_id=$4 AND run_attempt=$5 AND job_id=$6;
 
 -- name: StoreScheduledDecision :execrows
-INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING;
+INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at,collaboration_bytes)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING;
 
 -- name: ClaimScheduledClassification :execrows
 INSERT INTO scheduled_ci_classification_claims(organization_id,project_id,job_key,receipt_id,expires_at)
