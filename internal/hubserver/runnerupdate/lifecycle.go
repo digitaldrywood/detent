@@ -103,6 +103,9 @@ func authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Writer, id stri
 	if runner.UpdateRequest == nil || runner.UpdateRequest.Version != report.TargetVersion {
 		return runnerstore.LifecycleUpdateNotOffered, nil
 	}
+	if !runner.UpdateRequest.Urgent && (state.Observation == nil || runner.UpdateRequest.ExpectedBuildRevision != state.Observation.Revision) {
+		return runnerstore.LifecycleRunningBuildChanged, nil
+	}
 	return "", nil
 }
 

@@ -101,11 +101,13 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 	}
 	current := state.Desired
 	if current != nil {
+		sameTarget := current.Version == strings.TrimPrefix(version, "v")
+		staleBuild := lifecycle && sameTarget && current.ExpectedBuildRevision != report.Revision
 		staleRefusal := repair && current.ExpectedBuildRevision != report.Revision && report.Receipt != nil && report.Receipt.Request.Matches(*current) && report.Receipt.Status == "refused"
-		if current.Version == strings.TrimPrefix(version, "v") && !staleRefusal {
+		if sameTarget && !staleRefusal && !staleBuild {
 			return nil
 		}
-		if !held && !superseded(*current, report.Receipt, version) {
+		if !held && !staleBuild && !superseded(*current, report.Receipt, version) {
 			return nil
 		}
 	}
