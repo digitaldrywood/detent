@@ -74,6 +74,14 @@ func (e *sourceRepair) Unwrap() error { return e.err }
 type PhaseReceiptExecution = runworkspace.PhaseReceiptExecution
 type itemPhaseWorkspace = runworkspace.PhasePublisher
 
+func verifyPhaseAuthority(ctx context.Context, execution Execution) error {
+	phase, ok := execution.(PhaseReceiptExecution)
+	if !ok {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return phase.VerifyPhaseAuthority(ctx)
+}
+
 func requiresPublishedChangeRecovery(recovery tracker.NativeRecovery, continuation *tracker.NativePhaseContinuation, gateCommand string) bool {
 	if continuation == nil {
 		return false
@@ -138,10 +146,14 @@ func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Bac
 	if !req.phaseReceipts {
 		return nil
 	}
+	owner, ok := req.Execution.(PhaseReceiptExecution)
+	if !ok {
+		return failedStep("publication", ErrExecutionAuthorityUnavailable)
+	}
 	if issue.ExpectedPhaseRemoteHead == "" && req.publishedPhaseSource != nil {
 		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
 	}
-	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	source, err := runworkspace.PublishPhase(ctx, owner, backend, info, issue, req.phaseContinuation, phase, input)
 	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
 		*req.publishedPhaseSource = source
 	}

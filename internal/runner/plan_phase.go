@@ -81,7 +81,11 @@ func (r *Runner) planPhaseAgent(ctx context.Context, req RunRequest, workflow co
 		}
 		projection = admission.budgetProjection
 	}
-	if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, requirement); err != nil {
+	owner, ok := req.Execution.(phasedProviderExecution)
+	if !ok {
+		return nil, RunResult{}, ErrExecutionAuthorityUnavailable
+	}
+	if err := owner.SetPhaseProvider(ctx, requirement); err != nil {
 		return nil, RunResult{}, err
 	}
 	agentConfig := workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, selected.Selection.Level)

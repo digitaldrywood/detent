@@ -456,8 +456,6 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 		uses = previous.uses
 		if next, ok := backend.(*LocalGit); ok {
 			next.createMu = previous.createMu
-			if next.sourceRoot == previous.sourceRoot {
-			}
 			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
 				next.cleanupInventory = previous.cleanupInventory
 			}
@@ -1925,9 +1923,9 @@ func (l *LocalGit) preserveFailedWorkspace(ctx context.Context, path string, cau
 			slog.Any("error", err),
 		)
 		if preserved {
-			return fmt.Errorf("%w; workspace quarantined at %q but failed to release its branch: %v", cause, quarantinePath, err)
+			return fmt.Errorf("%w; workspace quarantined at %q but failed to release its branch: %s", cause, quarantinePath, err.Error())
 		}
-		return fmt.Errorf("%w; quarantine failed workspace %q: %v", cause, path, err)
+		return fmt.Errorf("%w; quarantine failed workspace %q: %s", cause, path, err.Error())
 	}
 	if !preserved {
 		return cause

@@ -64,7 +64,10 @@ func (r *ReviewDispatch) Next(t *testing.T, ctx context.Context) runner.RunReque
 
 func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req runner.RunRequest, admin *api.NativeClient, replacement tracker.ChangeVersion) {
 	t.Helper()
-	owner := req.Execution.(execution.Execution)
+	owner, ok := req.Execution.(execution.Execution)
+	if !ok {
+		t.Fatal("expected native review execution owner")
+	}
 	observation := owner.CompletionData().Runtime
 	if observation == nil || observation.Phase != "completed" {
 		t.Fatal("expected a completed implementation heartbeat")
@@ -85,15 +88,18 @@ func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req
 	if next.NativeReviewContinuation != nil || next.Mode != runner.RunModeImplement {
 		t.Fatalf("changed source dispatched as %s, continuation=%+v", next.Mode, next.NativeReviewContinuation)
 	}
-	nextOwner := next.Execution.(interface {
+	nextOwner, ok := next.Execution.(interface {
 		execution.Execution
 		runner.ChangeSourceExecution
 	})
+	if !ok {
+		t.Fatal("expected native replacement source owner")
+	}
 	currentSource, err := nextOwner.RecoverChangeSource(t.Context())
 	if err != nil || currentSource.Version.ID != replacement.ID || currentSource.Version.HeadSHA != replacement.HeadSHA {
 		t.Fatalf("implementation resumed on %s, want %s: %v", currentSource.Version.ID, replacement.ID, err)
 	}
-	previous := req.Execution.(execution.Execution).CompletionData()
+	previous := owner.CompletionData()
 	if nextOwner.CompletionData().AttemptID == previous.AttemptID {
 		t.Fatal("implementation reused the interrupted review attempt")
 	}
@@ -106,10 +112,13 @@ func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req
 
 func (r *ReviewDispatch) CheckRestored(t *testing.T, req runner.RunRequest, restored *dispatch.Scheduler, admin *api.NativeClient, setNow func(*dispatch.Scheduler, time.Time)) {
 	t.Helper()
-	previous := req.Execution.(interface {
+	previous, ok := req.Execution.(interface {
 		execution.Execution
 		CompletionState() json.RawMessage
 	})
+	if !ok {
+		t.Fatal("expected native completion state owner")
+	}
 	observation := previous.CompletionData().Runtime
 	if observation == nil || observation.Phase != "completed" {
 		t.Fatalf("expected completed implementation heartbeat: %+v", observation)
@@ -118,11 +127,14 @@ func (r *ReviewDispatch) CheckRestored(t *testing.T, req runner.RunRequest, rest
 	if _, err := restored.RestoreCompletion(t.Context(), orchestrator.SchedulingRequest{ProjectID: req.ProjectID, Policy: req.Policy}, req.Issue, previous.CompletionState()); err != nil {
 		t.Fatal(err)
 	}
-	owner := restored.RunExecution(req.Issue.ID).(interface {
+	owner, ok := restored.RunExecution(req.Issue.ID).(interface {
 		execution.Execution
 		runner.CompletionExecution
 		BindReviewHandoff(<-chan struct{})
 	})
+	if !ok {
+		t.Fatal("expected restored native review execution owner")
+	}
 	owner.BindReviewHandoff(r.reviewDone)
 	if err := owner.PrepareFinish(t.Context(), "succeeded", req.NativeReviewContinuation.FinalMessage, nil); err != nil {
 		t.Fatal(err)
@@ -180,7 +192,11 @@ func BeforeReviewDispatch(t *testing.T, orch *orchestrator.Orchestrator, schedul
 			return
 		}
 		once.Do(func() {
-			owner := scheduler.RunExecution(id).(execution.Execution)
+			owner, ok := scheduler.RunExecution(id).(execution.Execution)
+			if !ok {
+				result <- errors.New("missing native review execution owner")
+				return
+			}
 			runtime := owner.CompletionData().Runtime
 			if runtime == nil || runtime.Phase != "completed" {
 				result <- errors.New("missing completed implementation heartbeat")

@@ -320,7 +320,7 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	if err := ctx.Err(); err != nil {
 		return Status{}, err
 	}
-	if installed, pending := s.restartBehindControlLocked(); pending {
+	if installed, pending := s.restartBehindControlLocked(ctx); pending {
 		checkedAt := s.cfg.Now()
 		s.updateStatus(func(status *AutoStatus) {
 			status.LastCheckAt = &checkedAt
@@ -549,7 +549,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 	})
 	s.recordEnrolledApplied(applied, true)
 	persistErr := s.persistCurrentState()
-	s.restartBehindControlLocked()
+	s.restartBehindControlLocked(ctx)
 	return applied, persistErr
 }
 
@@ -583,14 +583,14 @@ func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions,
 	return installed, true
 }
 
-func (s *Scheduler) restartBehindControlLocked() (Status, bool) {
+func (s *Scheduler) restartBehindControlLocked(ctx context.Context) (Status, bool) {
 	s.mu.RLock()
 	pending := s.controlRestart
 	s.mu.RUnlock()
 	if pending == nil || s.cfg.RequestRestart == nil {
 		return Status{}, false
 	}
-	if !s.requestRestart(pending.installed) {
+	if !s.requestRestart(ctx, pending.installed) {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
 			status.LastError = "Update restart request was declined"
@@ -726,7 +726,7 @@ func (s *Scheduler) applyWithOptionsLocked(ctx context.Context, releaseIdle func
 		applied.FailureReason = "Update state persistence failed"
 		return applied, persistErr
 	}
-	restartRequested := s.requestRestart(applied)
+	restartRequested := s.requestRestart(ctx, applied)
 	if !restartRequested {
 		s.updateStatus(func(status *AutoStatus) {
 			status.State = "applied_restart_deferred"
@@ -925,7 +925,7 @@ func (s *Scheduler) SetLifecycleReporter(report func(context.Context, runnerauth
 	s.cfg.ReportLifecycle = report
 }
 
-func (s *Scheduler) requestRestart(installed Status) bool {
+func (s *Scheduler) requestRestart(ctx context.Context, installed Status) bool {
 	if s.cfg.RequestRestart == nil {
 		return false
 	}
@@ -933,7 +933,7 @@ func (s *Scheduler) requestRestart(installed Status) bool {
 	if report == nil {
 		return s.cfg.RequestRestart(installed.Binary)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	if err := report(ctx, runnerauth.LifecycleShuttingDown, "update", installed.LatestVersion); err != nil {
 		s.cfg.Logger.Warn("report update shutdown", "error", err)

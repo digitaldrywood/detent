@@ -25,7 +25,7 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	if request == nil {
 		if s.operationMu.TryLock() {
 			if ctx.Err() == nil {
-				if _, pending := s.restartBehindControlLocked(); pending {
+				if _, pending := s.restartBehindControlLocked(ctx); pending {
 					s.operationMu.Unlock()
 					return s.enrolledObservation(running)
 				}

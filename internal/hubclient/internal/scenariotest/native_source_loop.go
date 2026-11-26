@@ -98,7 +98,7 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 			body = fmt.Sprintf(`{"action":"continue","next_phase":"implement","reason":"Fixture evaluated the timed-out round %d."}`, a.roundVerdicts)
 		case strings.Contains(request.Prompt, "\nPhase: merge\n"):
 			body = `{"action":"done","reason":"The reviewed source landed."}`
-		case a.validator == "pass" && !(a.gateRepair && index == 0) && !(a.auditRework && index == 0) && a.sourceVerdict != "rework":
+		case a.validator == "pass" && (index != 0 || !a.gateRepair && !a.auditRework) && a.sourceVerdict != "rework":
 			body = `{"action":"continue","next_phase":"merge","reason":"The independent checks passed for the current source."}`
 		}
 		return runner.AgentTurnResult{}, update(runner.AgentUpdate{Type: runner.AgentUpdateMessageDelta, Delta: body})
@@ -198,7 +198,7 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 	}
 	if !review && a.writableCalls > 0 {
 		if request.Workspace != a.workspace || request.Resume.ThreadID != "thread-native" ||
-			(!strings.Contains(request.Prompt, "Checked") && !strings.Contains(request.Prompt, "Exercise the missing acceptance case.") && !(a.gateRepair && strings.Contains(request.Prompt, "repair required"))) {
+			(!strings.Contains(request.Prompt, "Checked") && !strings.Contains(request.Prompt, "Exercise the missing acceptance case.") && (!a.gateRepair || !strings.Contains(request.Prompt, "repair required"))) {
 			return runner.AgentTurnResult{}, errors.New("repair lost implementation resume or review findings")
 		}
 		if err := os.WriteFile(filepath.Join(request.Workspace, "REPAIR.md"), []byte("repaired\n"), 0o600); err != nil {
