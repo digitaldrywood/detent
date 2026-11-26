@@ -3160,7 +3160,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		cleanupWorkspace := false
 		if errors.Is(cleanupErr, ErrWorkerProcessReap) || errors.Is(turnErr, ErrWorkerProcessReap) {
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
-			turnErr = errors.Join(turnErr, cleanupErr, r.prepareReapedExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume))
+			if req.Execution != nil {
+				turnErr = errors.Join(turnErr, cleanupErr)
+			}
+			turnErr = errors.Join(turnErr, r.prepareReapedExecution(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume))
 		} else {
 			var err error
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
