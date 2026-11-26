@@ -301,6 +301,16 @@ func PublicationDefaultBranch(ctx context.Context, repository string) (string, e
 	return parseRemoteDefaultBranch(output, repository, err)
 }
 
+func PublicationDefaultBranchHead(ctx context.Context, repository string) (branch, head string, err error) {
+	output, err := ReadPublicationRefs(ctx, repository, true, "HEAD")
+	branch, err = parseRemoteDefaultBranch(output, repository, err)
+	if err != nil {
+		return "", "", err
+	}
+	head, _, err = parseRemoteBranchHead(output, "HEAD")
+	return branch, head, err
+}
+
 func IsolatedRemoteDefaultBranch(ctx context.Context, path, repository string) (string, error) {
 	output, err := ReadRemoteRefs(ctx, path, repository, true, "HEAD")
 	return parseRemoteDefaultBranch(output, "<redacted-remote>", err)
