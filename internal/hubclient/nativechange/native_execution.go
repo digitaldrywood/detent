@@ -31,6 +31,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
+type executionSupervisor struct {
+	lost func() bool
+}
+
 type nativeExecution struct {
 	phaseSource       *tracker.NativePhaseReceipt
 	phasePlanDigest   string
@@ -45,7 +49,7 @@ type nativeExecution struct {
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
 	reviewDone        <-chan struct{}
-	supervisor        context.Context
+	supervisor        *executionSupervisor
 	supervisionLost   bool
 	unretiredProvider bool
 	workers           []func(context.Context) error
@@ -229,6 +233,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}
 	live, cancel := context.WithCancelCause(ctx)
 	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
+	supervisor := &executionSupervisor{lost: func() bool { return supervisorLost(context.Cause(guarded)) }}
 	e.cancelMu.Lock()
 	if e.unretiredProvider {
 		e.cancelMu.Unlock()
@@ -241,7 +246,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		return guarded, func() {}, runner.ErrExecutionAuthorityUnavailable
 	}
 	e.cancel = cancel
-	e.supervisor = guarded
+	e.supervisor = supervisor
 	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -298,8 +303,8 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}()
 	return guarded, func() {
 		e.cancelMu.Lock()
-		if e.supervisor == guarded {
-			e.supervisionLost = e.supervisionLost || supervisorLost(guarded)
+		if e.supervisor == supervisor {
+			e.supervisionLost = e.supervisionLost || supervisor.lost()
 			e.supervisor = nil
 			e.cancel = nil
 		}
@@ -310,8 +315,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}, nil
 }
 
-func supervisorLost(ctx context.Context) bool {
-	cause := context.Cause(ctx)
+func supervisorLost(cause error) bool {
 	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause) && !runner.UnretiredProviderSession(cause)
 }
 
