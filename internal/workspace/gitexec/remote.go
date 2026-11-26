@@ -268,6 +268,13 @@ func parseRemoteDefaultBranch(output, remote string, err error) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	if branch := remoteDefaultBranchName(output); branch != "" {
+		return branch, nil
+	}
+	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
+}
+
+func remoteDefaultBranchName(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
@@ -275,10 +282,10 @@ func parseRemoteDefaultBranch(output, remote string, err error) (string, error) 
 		}
 		branch := strings.TrimPrefix(fields[1], "refs/heads/")
 		if branch != fields[1] && strings.TrimSpace(branch) != "" {
-			return branch, nil
+			return branch
 		}
 	}
-	return "", fmt.Errorf("remote %s HEAD is not a branch", remote)
+	return ""
 }
 
 func RemoteDefaultBranchHead(ctx context.Context, workspacePath string, remote string) (string, string, error) {
@@ -303,9 +310,12 @@ func PublicationDefaultBranch(ctx context.Context, repository string) (string, e
 
 func PublicationDefaultBranchHead(ctx context.Context, repository string) (branch, head string, err error) {
 	output, err := ReadPublicationRefs(ctx, repository, true, "HEAD")
-	branch, err = parseRemoteDefaultBranch(output, repository, err)
 	if err != nil {
 		return "", "", err
+	}
+	branch = remoteDefaultBranchName(output)
+	if branch == "" {
+		return "", "", nil
 	}
 	head, _, err = parseRemoteBranchHead(output, "HEAD")
 	return branch, head, err
