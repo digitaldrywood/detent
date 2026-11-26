@@ -135,6 +135,9 @@ func (p *resolutionProvider) RunTurn(ctx context.Context, req AgentTurnRequest, 
 }
 
 func TestNativeLandingMergeResolution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow Git merge resolution test in -short mode")
+	}
 	for _, test := range []struct {
 		name, content, effort                                        string
 		changed, failed, outside, shifted, gateFailure, budgetDenied bool

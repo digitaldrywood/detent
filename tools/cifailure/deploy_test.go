@@ -9,6 +9,9 @@ import (
 )
 
 func TestReleaseDeployBindsBinaryAndRestrictedSSH(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping deploy-release.sh shell integration test in -short mode")
+	}
 	for _, test := range []struct {
 		name, environment, version string
 		wrongBinary, sshFailure    bool

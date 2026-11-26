@@ -13,6 +13,9 @@ import (
 )
 
 func TestHubProfilingReload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping hub profiling reload test in -short mode")
+	}
 	for _, source := range []string{"config flag", "CONFIG", "hosted config"} {
 		t.Run(source, func(t *testing.T) {
 			root := t.TempDir()

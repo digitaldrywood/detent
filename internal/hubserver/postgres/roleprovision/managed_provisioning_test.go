@@ -73,6 +73,9 @@ type provisioningCase struct {
 }
 
 func TestRolesProvisionAsManagedAdministrator(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres role provisioning test in -short mode")
+	}
 	fixture := pgtest.NewTemplate(previousReleaseDatabase)
 	t.Cleanup(func() {
 		deadline, _ := t.Deadline()

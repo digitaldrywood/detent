@@ -696,6 +696,11 @@ func prepareAgentProcessRequest(ctx context.Context, process AgentProcessRequest
 	}
 	if owner != nil {
 		reservation, err = owner(ctx, workspace.Info{Path: process.Workspace}, workspace.Issue{}, tempDir)
+		if err == nil {
+			if reserver, ok := reservation.(interface{ reserveScratch(context.Context) error }); ok {
+				err = reserver.reserveScratch(ctx)
+			}
+		}
 		if err != nil {
 			return AgentProcessRequest{}, nil, errors.Join(fmt.Errorf("reserve agent preflight scratch: %w", err), cleanup())
 		}

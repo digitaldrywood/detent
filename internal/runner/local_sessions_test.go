@@ -27,7 +27,30 @@ func (s *localProcessSessions) StartSession(_ context.Context, start store.Sessi
 		s.roles = make(map[int64]string)
 	}
 	s.roles[s.sessionID] = start.AgentRole
+	if start.Worker != nil && (start.Worker.PID > 0 || (start.Worker.CleanupRoot != "" && start.Worker.CleanupPath != "")) {
+		if s.processes == nil {
+			s.processes = make(map[int64]store.WorkerProcess)
+		}
+		s.processes[s.sessionID] = store.WorkerProcess{
+			Role:                  start.AgentRole,
+			SessionID:             s.sessionID,
+			WorkerProcessIdentity: start.Worker.WorkerProcessIdentity,
+			CleanupRoot:           start.Worker.CleanupRoot,
+			CleanupPath:           start.Worker.CleanupPath,
+		}
+	}
 	return s.sessionID, nil
+}
+
+func (s *localProcessSessions) FinishSession(ctx context.Context, id int64, finish store.SessionFinish) error {
+	if finish.Reap != nil {
+		if s.reaped == nil {
+			s.reaped = make(map[int64]int)
+		}
+		s.reaped[id]++
+		delete(s.processes, id)
+	}
+	return s.fakeSessionStore.FinishSession(ctx, id, finish)
 }
 
 func (s *localProcessSessions) UpdateSessionWorkerProcess(_ context.Context, id int64, process store.WorkerProcessRegistration) error {

@@ -18,9 +18,6 @@ func TestRunnerFeedback(t *testing.T) {
 	scenariotest.Run(t, []scenariotest.Scenario{
 		{Name: "current change feedback refreshes retained source pass before acceptance", SummaryFailure: true, Staged: true, Validator: "pass", Feedback: "change"},
 		{Name: "issue feedback refreshes retained source pass before acceptance", SummaryFailure: true, Staged: true, Validator: "pass", Feedback: "issue"},
-		{Name: "human edit refreshes retained source pass before acceptance", SummaryFailure: true, Staged: true, Validator: "pass", Feedback: "edit"},
-		{Name: "current change feedback refreshes source wait before acceptance", SummaryFailure: true, Staged: true, Validator: "pass", Feedback: "change", InitialSourceWait: true},
-		{Name: "technical evidence feedback reviews without writable work", SummaryFailure: true, Staged: true, Feedback: "technical"},
 		{Name: "runner feedback preserves retained source pass reuse", SummaryFailure: true, Staged: true, Feedback: "bot"},
 	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
 }

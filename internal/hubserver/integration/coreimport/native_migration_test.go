@@ -38,6 +38,9 @@ import (
 )
 
 func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres historical migration test in -short mode")
+	}
 	t.Parallel()
 	migrations, err := postgres.MigrationFiles()
 	if err != nil {
