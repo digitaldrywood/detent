@@ -49,7 +49,7 @@ func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) err
 			return err
 		}
 		changed, err := readPhaseOutput(git, min(remaining, phaseMetadataBytes), "changed paths",
-			"diff-tree", "--root", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-r", "-m", "-z", commit)
+			"diff-tree", "--root", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-r", "-t", "-m", "-z", commit)
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,7 @@ func screenPhasePaths(git gitexec.BoundedRead, changed string, pathsRemaining, r
 			return err
 		}
 		switch fields[1] {
-		case "000000":
+		case "000000", "040000":
 			continue
 		case "100644", "100755":
 		default:

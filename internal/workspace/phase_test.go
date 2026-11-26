@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
@@ -146,6 +147,47 @@ func verifyPhasePublication(t *testing.T) {
 func addPhaseFixtureAlternate(t *testing.T, f landingFixture) {
 	t.Helper()
 	writeFileDiffFile(t, f.source, ".git/objects/info/alternates", filepath.Join(initBareRemote(t), "objects")+"\n")
+}
+
+func TestPhaseHistoryScreensEmptyDirectories(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		directory string
+		wantError bool
+	}{
+		{name: "ordinary directory", directory: "examples"},
+		{name: "excluded directory", directory: "node_modules", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newLandingFixture(t)
+			gitInput := func(input string, args ...string) string {
+				t.Helper()
+				output, err := gitexec.WithInput(t.Context(), f.info.Path, nil, true, input, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return strings.TrimSpace(output)
+			}
+			base := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+			baseTree := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^{tree}"))
+			empty := strings.TrimSpace(runGit(t, f.info.Path, "hash-object", "-w", "-t", "tree", os.DevNull))
+			entry := "040000 tree " + empty + "\t" + test.directory + "\n"
+			baseEntries := runGit(t, f.info.Path, "ls-tree", baseTree)
+			tree := gitInput(strings.TrimSpace(baseEntries)+"\n"+entry, "mktree")
+			added := gitInput("", "commit-tree", tree, "-p", base, "-m", "add empty fixture directory")
+			head := gitInput("", "commit-tree", baseTree, "-p", added, "-m", "remove empty fixture directory")
+			err := gitexec.WithPublicationCheckout(t.Context(), f.info.Path, f.source, func(_ func(...string) (string, error), read gitexec.BoundedRead, _ func(string, string, ...string) error) error {
+				return checkpoint.PhaseHistory(read, head, base)
+			})
+			if test.wantError {
+				if !errors.Is(err, checkpoint.ErrUnsafe) || !strings.Contains(err.Error(), "commit contains an unapproved path") {
+					t.Fatalf("scan error = %v, want unapproved path refusal", err)
+				}
+			} else if err != nil {
+				t.Fatalf("scan ordinary directory: %v", err)
+			}
+		})
+	}
 }
 
 func TestItemPhasePushRefusesDivergentRemote(t *testing.T) {
