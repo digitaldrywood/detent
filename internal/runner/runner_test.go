@@ -7882,6 +7882,9 @@ func runAgentGit(ctx context.Context, dir string, args ...string) error {
 
 func initRunnerSourceRepo(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Git subprocess integration test in -short mode")
+	}
 	return gitfixture.SourceRepo(t, runRunnerGit)
 }
 

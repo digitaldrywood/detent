@@ -546,3 +546,33 @@ func TestLinkedIssueIntakeAtomicAndNativeEdits(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkflowTransitionIgnoresStaleVersionLinkedSourceWithoutRow(t *testing.T) {
+	t.Parallel()
+	f := linkedFixture(t)
+	issue := f.link(t, "stale-linked-create")
+	if issue.LinkedSource == nil || issue.LinkedSource.Status != "complete" {
+		t.Fatalf("created issue = %+v", issue)
+	}
+
+	if _, err := nativeAttemptTestDatabase(t, f).ExecContext(
+		t.Context(),
+		"DELETE FROM linked_issue_sources WHERE organization_id=$1 AND project_id=$2 AND work_item_id=$3",
+		f.project.OrganizationID, f.project.ID, issue.WorkItemID,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	transitioned := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/workflow", f.token, tracker.Transition{
+		Mutation:         tracker.Mutation{IdempotencyKey: "stale-linked-unblock"},
+		ExpectedRevision: issue.Revision,
+		State:            "Todo",
+		Reason:           "user_requested",
+	})
+	requireNativeStatus(t, transitioned, http.StatusOK)
+	var updated tracker.NativeIssue
+	decodeHubResponse(t, transitioned, &updated)
+	if updated.State != "Todo" || updated.LinkedSource != nil {
+		t.Fatalf("transitioned issue = %+v", updated)
+	}
+}

@@ -2142,7 +2142,7 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		{name: "required PR hook retains configured source and target", publicationHook: true},
 		{name: "SSH publication identity without source iteration", publicationHook: true, remote: true},
 		{name: "SSH publication identity with source iteration", publicationHook: true, remote: true, sourceIteration: true},
-		{name: "slow artifacts", artifactDelay: 2 * time.Second},
+		{name: "slow artifacts", artifactDelay: 2 * time.Second, wantErr: context.DeadlineExceeded},
 		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
 		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
 		{name: "artifact failure retains checkpoint", artifactErr: uploadErr, wantErr: uploadErr},
