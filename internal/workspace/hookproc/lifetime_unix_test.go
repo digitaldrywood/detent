@@ -20,16 +20,27 @@ import (
 )
 
 func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
-	if _, err := exec.LookPath("initdb"); err != nil {
+	initdb, err := exec.LookPath("initdb")
+	if err != nil {
 		t.Skip("requires initdb on PATH")
 	}
-	if _, err := exec.LookPath("pg_ctl"); err != nil {
+	pgCtl, err := exec.LookPath("pg_ctl")
+	if err != nil {
 		t.Skip("requires pg_ctl on PATH")
 	}
 
 	root := t.TempDir()
 	data := filepath.Join(root, "data")
 	pidFile := filepath.Join(data, "postmaster.pid")
+	logPath := filepath.Join(root, "postgres.log")
+	env := []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + root}
+	init := exec.CommandContext(t.Context(), initdb, "-A", "trust", "--no-locale", "-D", data,
+		"-c", "max_connections=5", "-c", "shared_buffers=1MB")
+	init.Env = env
+	procgroup.Configure(t.Context(), init)
+	if output, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("initialize PostgreSQL fixture: %v: %s", err, output)
+	}
 	t.Cleanup(func() {
 		if _, err := os.Stat(pidFile); errors.Is(err, os.ErrNotExist) {
 			return
@@ -39,7 +50,10 @@ func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
 		defer cancel()
-		if output, err := exec.CommandContext(ctx, "pg_ctl", "-D", data, "-m", "immediate", "-w", "stop").CombinedOutput(); err != nil {
+		stop := exec.CommandContext(ctx, pgCtl, "-D", data, "-m", "immediate", "-w", "stop")
+		stop.Env = env
+		procgroup.Configure(ctx, stop)
+		if output, err := stop.CombinedOutput(); err != nil {
 			t.Errorf("stop PostgreSQL fixture: %v: %s", err, output)
 		}
 	})
@@ -54,17 +68,18 @@ func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
 		}
 	})
 	const token = "example-hook-owner"
-	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", `
-initdb -A trust --no-locale -D data >/dev/null
-pg_ctl -D data -l postgres.log -o '-c listen_addresses= -c unix_socket_directories=.' -w start
-printf 'export FIXTURE_READY=1\n' > .envrc
-`)
+	cmd := exec.CommandContext(t.Context(), pgCtl, "-D", data, "-l", logPath,
+		"-o", "-c listen_addresses= -c unix_socket_directories=.", "-w", "start")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), HookOwnerKey+"="+token, "DETENT_WORKSPACE="+root)
+	cmd.Env = append(env, HookOwnerKey+"="+token, "DETENT_WORKSPACE="+root)
 	(&Owner{descriptor: lifetime}).ConfigureCommand(cmd)
 	procgroup.Configure(t.Context(), cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("start PostgreSQL hook: %v: %s", err, output)
+		log, logErr := os.ReadFile(logPath)
+		if logErr != nil {
+			t.Fatalf("start PostgreSQL hook: %v: %s\nread PostgreSQL startup log: %v", err, output, logErr)
+		}
+		t.Fatalf("start PostgreSQL hook: %v: %s\nPostgreSQL startup log:\n%s", err, output, log)
 	}
 	info, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -147,7 +162,7 @@ func TestWriterHandoffLeavesOriginalExitUnverified(t *testing.T) {
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", `
 printf 'ready\n'
 IFS= read -r handoff
-/bin/cat <&3 >/dev/null &
+/bin/cat <&3 &
 replacement=$!
 exec 4>&-
 printf '%s\n' "$replacement"
@@ -203,6 +218,12 @@ IFS= read -r release || :
 		pid, err := strconv.Atoi(status.Text())
 		if err != nil || pid <= 1 || pid == original {
 			t.Fatalf("invalid replacement PID %q", status.Text())
+		}
+		if _, err := io.WriteString(retireReplacement, "replacement ready\n"); err != nil {
+			t.Fatal(err)
+		}
+		if !status.Scan() || status.Text() != "replacement ready" {
+			t.Fatalf("replacement readiness: %q, %v", status.Text(), status.Err())
 		}
 		if writer, err := lifetime.holdsWriter(ctx, original); err != nil || writer {
 			t.Fatalf("original still holds the FIFO: %t, %v", writer, err)
