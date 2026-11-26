@@ -66,7 +66,10 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		if err != nil {
 			return fmt.Errorf("resolve remote phase target: %w", err)
 		}
-		published := []string{base}
+		var published []string
+		if base != "" {
+			published = append(published, base)
+		}
 		if previous != "" {
 			published = append(published, previous)
 		}
@@ -82,6 +85,9 @@ func (l *LocalGit) verifiedPhaseTarget(ctx context.Context, path, repository, ta
 	var err error
 	if target == "" {
 		target, head, err = gitexec.PublicationDefaultBranchHead(ctx, repository)
+		if err != nil || target == "" {
+			return "", err
+		}
 	} else {
 		if _, _, err := read(0, "check-ref-format", "refs/heads/"+target); err != nil {
 			return "", err
