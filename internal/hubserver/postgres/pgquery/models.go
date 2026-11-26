@@ -5567,17 +5567,18 @@ type ScheduledCiClassificationClaim struct {
 }
 
 type ScheduledCiDecision struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	Repository     string
-	HeadSHA        string
-	RunID          string
-	RunAttempt     string
-	JobID          string
-	Outcome        string
-	Target         string
-	Reason         string
-	CreatedAt      time.Time
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	Repository         string
+	HeadSHA            string
+	RunID              string
+	RunAttempt         string
+	JobID              string
+	Outcome            string
+	Target             string
+	Reason             string
+	CreatedAt          time.Time
+	CollaborationBytes int64
 }
 
 type SchedulerEventHead struct {

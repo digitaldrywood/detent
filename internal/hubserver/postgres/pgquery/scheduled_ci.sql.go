@@ -45,7 +45,7 @@ func (q *Queries) ClaimScheduledClassification(ctx context.Context, arg ClaimSch
 }
 
 const readScheduledDecision = `-- name: ReadScheduledDecision :one
-SELECT organization_id, project_id, repository, head_sha, run_id, run_attempt, job_id, outcome, target, reason, created_at FROM scheduled_ci_decisions
+SELECT organization_id, project_id, repository, head_sha, run_id, run_attempt, job_id, outcome, target, reason, created_at, collaboration_bytes FROM scheduled_ci_decisions
 WHERE organization_id=$1 AND project_id=$2 AND repository=$3 AND run_id=$4 AND run_attempt=$5 AND job_id=$6
 `
 
@@ -80,6 +80,7 @@ func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDe
 		&i.Target,
 		&i.Reason,
 		&i.CreatedAt,
+		&i.CollaborationBytes,
 	)
 	return i, err
 }
@@ -144,22 +145,23 @@ func (q *Queries) ScheduledLandedWorkItems(ctx context.Context, arg ScheduledLan
 }
 
 const storeScheduledDecision = `-- name: StoreScheduledDecision :execrows
-INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT DO NOTHING
+INSERT INTO scheduled_ci_decisions(organization_id,project_id,repository,head_sha,run_id,run_attempt,job_id,outcome,target,reason,created_at,collaboration_bytes)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING
 `
 
 type StoreScheduledDecisionParams struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	Repository     string
-	HeadSHA        string
-	RunID          string
-	RunAttempt     string
-	JobID          string
-	Outcome        string
-	Target         string
-	Reason         string
-	CreatedAt      time.Time
+	OrganizationID     tracker.OrganizationID
+	ProjectID          tracker.ProjectID
+	Repository         string
+	HeadSHA            string
+	RunID              string
+	RunAttempt         string
+	JobID              string
+	Outcome            string
+	Target             string
+	Reason             string
+	CreatedAt          time.Time
+	CollaborationBytes int64
 }
 
 func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduledDecisionParams) (int64, error) {
@@ -175,6 +177,7 @@ func (q *Queries) StoreScheduledDecision(ctx context.Context, arg StoreScheduled
 		arg.Target,
 		arg.Reason,
 		arg.CreatedAt,
+		arg.CollaborationBytes,
 	)
 	if err != nil {
 		return 0, err
