@@ -23,40 +23,75 @@ func TestPhaseHistoryStopsBeforeReadingOverBudgetBlob(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			var reads []string
-			git := func(_ context.Context, args ...string) (string, error) {
-				switch args[0] {
-				case "merge-base":
-					return "", nil
-				case "rev-list":
-					return "latest\nearlier\n", nil
-				case "diff-tree":
-					return "file.txt\x00", nil
-				case "ls-tree":
-					object := first
-					if args[2] == "earlier" {
-						object = second
+			git := func(_ int, args ...string) (string, bool, error) {
+				switch args[1] {
+				case "-s":
+					if args[2] == second {
+						return scenario.secondSize + "\n", false, nil
 					}
-					return "100644 blob " + object + "\tfile.txt\x00", nil
-				case "cat-file":
-					if args[1] == "-s" {
-						if args[2] == second {
-							return scenario.secondSize + "\n", nil
-						}
-						return "2\n", nil
-					}
+					return "2\n", false, nil
+				case "blob":
 					reads = append(reads, args[2])
-					return "ok", nil
+					return "ok", false, nil
 				}
 				t.Fatalf("unexpected git command %v", args)
-				return "", nil
+				return "", false, nil
 			}
-			remaining := int64(2 * (phaseBlobOverhead + len("ok")))
-			err := history(t.Context(), git, "base", "head", func(string) bool { return true }, &remaining)
+			remaining := 2 * (phaseBlobOverhead + len("ok"))
+			pathsRemaining := 2
+			changed := ":100644 100644 " + second + " " + first + " M\x00file.txt\x00" +
+				":100644 100644 " + first + " " + second + " M\x00file.txt\x00"
+			err := screenPhasePaths(git, changed, &pathsRemaining, &remaining)
 			if scenario.wantError == "" && err != nil || scenario.wantError != "" && (!errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), scenario.wantError)) {
 				t.Fatalf("scan error = %v, want %q", err, scenario.wantError)
 			}
 			if !slices.Equal(reads, scenario.wantReads) {
 				t.Fatalf("read blobs %v, want %v", reads, scenario.wantReads)
+			}
+		})
+	}
+}
+
+func TestPhaseHistoryBoundsMetadata(t *testing.T) {
+	commit := strings.Repeat("1", 40)
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{name: "commit count", want: "commit limit"},
+		{name: "commit message output", want: "commit message exceeds the output limit"},
+		{name: "changed paths output", want: "changed paths exceeds the output limit"},
+		{name: "changed paths across commits", want: "changed path limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := func(limit int, args ...string) (string, bool, error) {
+				switch args[0] {
+				case "rev-list":
+					if args[1] != "--max-count=2049" || limit != 2049*65 {
+						t.Fatalf("rev-list bounds = %d, %v", limit, args)
+					}
+					if tc.name == "commit count" {
+						return strings.Repeat(commit+"\n", 2049), false, nil
+					}
+					return strings.Repeat(commit+"\n", 2), false, nil
+				case "cat-file":
+					if args[1] != "commit" || limit != 1<<20 {
+						t.Fatalf("unexpected commit read: %d, %v", limit, args)
+					}
+					return "tree example\n\nmessage\n", tc.name == "commit message output", nil
+				case "diff-tree":
+					if limit != 4<<20 {
+						t.Fatalf("unexpected changed paths output limit: %d", limit)
+					}
+					path := ":100644 000000 " + commit + " " + strings.Repeat("0", 40) + " D\x00deleted.txt\x00"
+					return strings.Repeat(path, 4097), tc.name == "changed paths output", nil
+				}
+				t.Fatalf("unexpected git command %v", args)
+				return "", false, nil
+			}
+			err := PhaseHistory(git, commit, strings.Repeat("2", 40))
+			if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("scan error = %v, want %q", err, tc.want)
 			}
 		})
 	}

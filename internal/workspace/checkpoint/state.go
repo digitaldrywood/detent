@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -128,24 +127,6 @@ func RemoteHead(ctx context.Context, git GitRunner, plan Plan) (string, error) {
 }
 
 func History(ctx context.Context, git GitRunner, base, head string, paths []string) error {
-	return history(ctx, git, base, head, func(path string) bool {
-		return slices.Contains(paths, path)
-	}, nil)
-}
-
-const (
-	phaseBlobLimit    = 32 << 20
-	phaseBlobOverhead = 1 << 10
-)
-
-func PhaseHistory(ctx context.Context, git GitRunner, base, head string) error {
-	remaining := int64(tracker.MaxChangeDiffBytes)
-	return history(ctx, git, base, head, func(path string) bool {
-		return !strings.HasPrefix(strings.ToLower(path), ".detent/")
-	}, &remaining)
-}
-
-func history(ctx context.Context, git GitRunner, base, head string, allowed func(string) bool, remaining *int64) error {
 	if _, err := git(ctx, "merge-base", "--is-ancestor", base, head); err != nil {
 		return fmt.Errorf("%w: checkpoint base changed", ErrUnsafe)
 	}
@@ -162,10 +143,10 @@ func history(ctx context.Context, git GitRunner, base, head string, allowed func
 			if path == "" {
 				continue
 			}
-			if !PathAllowed(path) || !allowed(path) {
+			if !PathAllowed(path) || !slices.Contains(paths, path) {
 				return fmt.Errorf("%w: commit contains an unapproved path %q", ErrUnsafe, path)
 			}
-			if err := scanBlob(ctx, git, commit+":", path, remaining); err != nil {
+			if err := Blob(ctx, git, commit+":", path); err != nil {
 				return err
 			}
 		}
@@ -174,10 +155,6 @@ func history(ctx context.Context, git GitRunner, base, head string, allowed func
 }
 
 func Blob(ctx context.Context, git GitRunner, prefix, path string) error {
-	return scanBlob(ctx, git, prefix, path, nil)
-}
-
-func scanBlob(ctx context.Context, git GitRunner, prefix, path string, remaining *int64) error {
 	args := []string{"ls-tree", "-z", strings.TrimSuffix(prefix, ":"), "--", path}
 	if prefix == ":" {
 		args = []string{"ls-files", "--stage", "-z", "--", path}
@@ -194,15 +171,14 @@ func scanBlob(ctx context.Context, git GitRunner, prefix, path string, remaining
 	if !ok || name != path || len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") {
 		return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
 	}
-	var blob string
-	if remaining == nil {
-		blob, err = git(ctx, "show", prefix+path)
-	} else {
-		blob, err = readPhaseBlob(ctx, git, fields[2], remaining)
-	}
+	blob, err := git(ctx, "show", prefix+path)
 	if err != nil {
 		return err
 	}
+	return screenCredentials(blob)
+}
+
+func screenCredentials(blob string) error {
 	for {
 		match := secretPattern.FindStringIndex(blob)
 		if match == nil {
@@ -213,29 +189,6 @@ func scanBlob(ctx context.Context, git GitRunner, prefix, path string, remaining
 		}
 		blob = blob[match[1]:]
 	}
-}
-
-func readPhaseBlob(ctx context.Context, git GitRunner, object string, remaining *int64) (string, error) {
-	if !gitexec.ValidHead(object) {
-		return "", fmt.Errorf("%w: invalid phase source blob identity", ErrUnsafe)
-	}
-	output, err := git(ctx, "cat-file", "-s", object)
-	if err != nil {
-		return "", fmt.Errorf("read phase source blob size: %w", err)
-	}
-	size, err := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-	if err != nil || size < 0 {
-		return "", fmt.Errorf("%w: invalid phase source blob size", ErrUnsafe)
-	}
-	if size > phaseBlobLimit {
-		return "", fmt.Errorf("%w: phase source blob exceeds the scan limit", ErrUnsafe)
-	}
-	cost := size + phaseBlobOverhead
-	if cost > *remaining {
-		return "", fmt.Errorf("%w: phase source exceeds the aggregate scan limit", ErrUnsafe)
-	}
-	*remaining -= cost
-	return git(ctx, "cat-file", "blob", object)
 }
 
 func syntheticRedactionFixture(match string) bool {

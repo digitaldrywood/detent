@@ -19,6 +19,7 @@ func verifyPhasePublication(t *testing.T) {
 	for _, test := range []struct {
 		name, wantError, configKey string
 		configure                  func(*testing.T, landingFixture)
+		progressBase               string
 		deny                       bool
 		noDestination              bool
 	}{
@@ -40,6 +41,29 @@ func verifyPhasePublication(t *testing.T) {
 		{name: "unsafe intermediate history", wantError: "possible credential in selected content", configure: func(t *testing.T, f landingFixture) {
 			writeFileDiffFile(t, f.info.Path, "feature.txt", "ghp_"+strings.Repeat("aB0cD1", 6)+"\n")
 			runGit(t, f.info.Path, "commit", "-am", "add fixture content")
+			runGit(t, f.info.Path, "revert", "--no-edit", "HEAD")
+		}},
+		{name: "unsafe intermediate commit message", wantError: "possible credential in selected content", configure: func(t *testing.T, f landingFixture) {
+			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "fixture", "-m", "ghp_"+strings.Repeat("aB0cD1", 6))
+			runGit(t, f.info.Path, "commit", "--allow-empty", "-m", "continue")
+		}},
+		{name: "oversized commit message", wantError: "commit message exceeds the output limit", configure: func(t *testing.T, f landingFixture) {
+			message := filepath.Join(t.TempDir(), "message.txt")
+			if err := os.WriteFile(message, []byte(strings.Repeat("fixture message\n", 70000)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, f.info.Path, "commit", "--allow-empty", "-F", message)
+		}},
+		{name: "remote target advances beyond local objects", progressBase: "main", configure: func(t *testing.T, f landingFixture) {
+			other := filepath.Join(t.TempDir(), "other")
+			runGit(t, f.source, "clone", "--no-local", f.remote, other)
+			runGit(t, other, "commit", "--allow-empty", "-m", "advance remote target")
+			runGit(t, other, "push", "origin", "HEAD:refs/heads/main")
+		}},
+		{name: "local target ref cannot exclude unpublished history", progressBase: "main", wantError: "possible credential in selected content", configure: func(t *testing.T, f landingFixture) {
+			writeFileDiffFile(t, f.info.Path, "feature.txt", "ghp_"+strings.Repeat("aB0cD1", 6)+"\n")
+			runGit(t, f.info.Path, "commit", "-am", "add fixture content")
+			runGit(t, f.info.Path, "update-ref", "refs/remotes/origin/main", "HEAD")
 			runGit(t, f.info.Path, "revert", "--no-edit", "HEAD")
 		}},
 		{name: "oversized intermediate file", wantError: "phase source blob exceeds the scan limit", configure: func(t *testing.T, f landingFixture) {
@@ -64,6 +88,7 @@ func verifyPhasePublication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			f := newLandingFixture(t)
 			f.issue.PublicationRepository = f.remote
+			f.issue.ProgressBaseRef = test.progressBase
 			if test.noDestination {
 				f.issue.PublicationRepository = ""
 			}

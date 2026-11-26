@@ -794,17 +794,19 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 	return tree, nil
 }
 
-func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
+type BoundedRead func(maxBytes int, args ...string) (string, bool, error)
+
+func WithPublicationCheckout(ctx context.Context, path, owner string, use func(read func(...string) (string, error), readBounded BoundedRead, push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationCheckout(ctx, path, owner, false, use)
 }
 
 func WithPublicationCheckoutFromHead(ctx context.Context, path, owner string, use func(read func(...string) (string, error)) error) error {
-	return withPublicationCheckout(ctx, path, owner, true, func(read func(...string) (string, error), _ func(string, string, ...string) error) error {
+	return withPublicationCheckout(ctx, path, owner, true, func(read func(...string) (string, error), _ BoundedRead, _ func(string, string, ...string) error) error {
 		return use(read)
 	})
 }
 
-func withPublicationCheckout(ctx context.Context, path, owner string, fromHead bool, use func(read func(...string) (string, error), push func(repository, refspec string, options ...string) error) error) error {
+func withPublicationCheckout(ctx context.Context, path, owner string, fromHead bool, use func(read func(...string) (string, error), readBounded BoundedRead, push func(repository, refspec string, options ...string) error) error) error {
 	return withPublicationGit(ctx, path, owner, func(scratch string, source publicationSource) error {
 		head, err := ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD")
 		if err != nil {
@@ -837,7 +839,10 @@ func withPublicationCheckout(ctx context.Context, path, owner string, fromHead b
 				return fmt.Errorf("prepare index from the published tree: %w", err)
 			}
 		}
-		return use(read, func(repository, refspec string, options ...string) error {
+		readBounded := func(maxBytes int, args ...string) (string, bool, error) {
+			return withinLimitEnvironment(ctx, scratch, IsolatedEnvironment(), maxBytes, args...)
+		}
+		return use(read, readBounded, func(repository, refspec string, options ...string) error {
 			return pushPublication(ctx, scratch, repository, refspec, options...)
 		})
 	})
