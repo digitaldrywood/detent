@@ -51,16 +51,16 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	if issue.ExpectedPhaseRemoteHead != "" {
 		expected = &issue.ExpectedPhaseRemoteHead
 	}
-	base, err := l.localOnlyProgressBase(ctx, info.Path, issue)
-	if err != nil {
-		return "", "", "", fmt.Errorf("resolve phase publication base: %w", err)
-	}
 	return phasegit.Push(ctx, info.Path, l.sourceRoot, info.PublishBranch(), repository, expected, authorize, func(ctx context.Context) error {
 		if err := verifyPublicationRemote(ctx, info.Path, defaultGitRemote, repository); err != nil {
 			return phasePublicationDestinationError{err}
 		}
 		return nil
 	}, func(read func(...string) (string, error), head string) error {
+		base, err := l.phasePublicationBase(ctx, info.Path, repository, issue, read)
+		if err != nil {
+			return fmt.Errorf("resolve phase publication base: %w", err)
+		}
 		common, err := read("merge-base", base, head)
 		if err != nil {
 			return fmt.Errorf("resolve phase publication merge base: %w", err)
@@ -71,6 +71,40 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 	}, func() error {
 		return refuse(LandRefusalHeadMoved, "the item branch changed during phase publication")
 	})
+}
+
+func (l *LocalGit) phasePublicationBase(ctx context.Context, path, repository string, issue Issue, read func(...string) (string, error)) (string, error) {
+	if issue.ReleaseDelivery != nil {
+		base := issue.ReleaseDelivery.BaseSHA
+		if !gitexec.ValidHead(base) {
+			return "", errors.New("invalid release delivery base")
+		}
+		return base, nil
+	}
+	branch := strings.TrimSpace(issue.ProgressBaseRef)
+	if branch == "" {
+		var err error
+		branch, err = gitexec.PublicationDefaultBranch(ctx, repository)
+		if err != nil {
+			return "", err
+		}
+	}
+	base, exists, err := gitexec.PublicationBranchHead(ctx, repository, branch)
+	if err != nil {
+		return "", err
+	}
+	if !exists || !gitexec.ValidHead(base) {
+		return "", errors.New("publication base branch is missing")
+	}
+	if _, err := read("cat-file", "-e", base+"^{commit}"); err == nil {
+		return base, nil
+	}
+	release, err := l.acquireSourceOperation(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return gitexec.FetchPublicationBranch(ctx, path, defaultGitRemote, repository, branch)
 }
 
 func (l *LocalGit) PreserveItemPhaseHistory(ctx context.Context, info Info, issue Issue, previous PhaseSource, authorize func(context.Context) error) (string, error) {

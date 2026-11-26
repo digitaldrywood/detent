@@ -12,6 +12,38 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const claimScheduledClassification = `-- name: ClaimScheduledClassification :execrows
+INSERT INTO scheduled_ci_classification_claims(organization_id,project_id,job_key,receipt_id,expires_at)
+VALUES ($1,$2,$3,$4,$5)
+ON CONFLICT (organization_id,project_id,job_key) DO UPDATE
+SET receipt_id=EXCLUDED.receipt_id, expires_at=EXCLUDED.expires_at
+WHERE scheduled_ci_classification_claims.expires_at <= $6
+`
+
+type ClaimScheduledClassificationParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	JobKey         string
+	ReceiptID      string
+	ExpiresAt      time.Time
+	AsOf           time.Time
+}
+
+func (q *Queries) ClaimScheduledClassification(ctx context.Context, arg ClaimScheduledClassificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimScheduledClassification,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.JobKey,
+		arg.ReceiptID,
+		arg.ExpiresAt,
+		arg.AsOf,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const readScheduledDecision = `-- name: ReadScheduledDecision :one
 SELECT organization_id, project_id, repository, head_sha, run_id, run_attempt, job_id, outcome, target, reason, created_at FROM scheduled_ci_decisions
 WHERE organization_id=$1 AND project_id=$2 AND repository=$3 AND run_id=$4 AND run_attempt=$5 AND job_id=$6
@@ -50,6 +82,34 @@ func (q *Queries) ReadScheduledDecision(ctx context.Context, arg ReadScheduledDe
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const releaseScheduledClassification = `-- name: ReleaseScheduledClassification :execrows
+DELETE FROM scheduled_ci_classification_claims
+WHERE organization_id=$1 AND project_id=$2 AND job_key=$3 AND receipt_id=$4
+ AND ($5::timestamptz IS NULL OR expires_at > $5)
+`
+
+type ReleaseScheduledClassificationParams struct {
+	OrganizationID tracker.OrganizationID
+	ProjectID      tracker.ProjectID
+	JobKey         string
+	ReceiptID      string
+	ValidAt        *time.Time
+}
+
+func (q *Queries) ReleaseScheduledClassification(ctx context.Context, arg ReleaseScheduledClassificationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseScheduledClassification,
+		arg.OrganizationID,
+		arg.ProjectID,
+		arg.JobKey,
+		arg.ReceiptID,
+		arg.ValidAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const scheduledLandedWorkItems = `-- name: ScheduledLandedWorkItems :many

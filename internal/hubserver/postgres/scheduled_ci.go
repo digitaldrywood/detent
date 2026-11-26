@@ -39,6 +39,23 @@ func (s *session) StoreScheduledDecision(ctx context.Context, project tracker.Pr
 	return s.AdjustCollaborationBytes(ctx, int64(bytes), limit)
 }
 
+func (s *session) ClaimScheduledClassification(ctx context.Context, project tracker.ProjectID, jobKey, receiptID string, now, expiresAt time.Time) (bool, error) {
+	if project == "" || jobKey == "" || receiptID == "" || now.IsZero() || !expiresAt.After(now) {
+		return false, eventstore.ErrInvalidRecord
+	}
+	count, err := s.queries.ClaimScheduledClassification(ctx, pgquery.ClaimScheduledClassificationParams{
+		OrganizationID: s.organization, ProjectID: project, JobKey: jobKey, ReceiptID: receiptID, ExpiresAt: expiresAt, AsOf: now,
+	})
+	return count == 1, mapError(ctx, err)
+}
+
+func (s *session) ReleaseScheduledClassification(ctx context.Context, project tracker.ProjectID, jobKey, receiptID string, validAt *time.Time) (bool, error) {
+	count, err := s.queries.ReleaseScheduledClassification(ctx, pgquery.ReleaseScheduledClassificationParams{
+		OrganizationID: s.organization, ProjectID: project, JobKey: jobKey, ReceiptID: receiptID, ValidAt: validAt,
+	})
+	return count == 1, mapError(ctx, err)
+}
+
 func (s *session) ScheduledLandedWorkItems(ctx context.Context, project tracker.ProjectID, sha string) ([]string, error) {
 	rows, err := s.queries.ScheduledLandedWorkItems(ctx, pgquery.ScheduledLandedWorkItemsParams{OrganizationID: s.organization, ProjectID: project, LandedMergeSHA: new(sha)})
 	result := make([]string, len(rows))

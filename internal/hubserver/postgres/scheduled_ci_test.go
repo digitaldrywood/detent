@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
@@ -59,6 +60,53 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 			input.HeadSHA = "changed"
 			if _, err := owner.ReadScheduledDecision(t.Context(), "prj_first", input); err == nil {
 				t.Fatal("changed head replay accepted")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			owner := w.(policystore.ScheduledWriter)
+			for _, id := range []string{"original", "replacement"} {
+				if _, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: org, ID: id, WindowStart: now.Add(-time.Hour), Metric: "api_mutations", Amount: 1}, 10); err != nil {
+					return err
+				}
+			}
+			for _, step := range []struct {
+				id   string
+				at   time.Time
+				want bool
+			}{
+				{"original", now, true},
+				{"replacement", now, false},
+				{"replacement", now.Add(time.Minute), true},
+			} {
+				got, err := owner.ClaimScheduledClassification(t.Context(), "prj_first", "job", step.id, step.at, step.at.Add(time.Minute))
+				if err != nil || got != step.want {
+					t.Fatalf("claim %s = %t, %v; want %t", step.id, got, err, step.want)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = repository.WriteTenant(t.Context(), org, corestore.Background, func(w tenantstore.Writer) error {
+			return w.PruneRequestBillingUsage(t.Context(), now, 128)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = repository.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+			owner := w.(policystore.ScheduledWriter)
+			if released, err := owner.ReleaseScheduledClassification(t.Context(), "prj_first", "job", "original", nil); err != nil || released {
+				t.Fatalf("expired owner release = %t, %v", released, err)
+			}
+			at := now.Add(time.Minute)
+			if released, err := owner.ReleaseScheduledClassification(t.Context(), "prj_first", "job", "replacement", &at); err != nil || !released {
+				t.Fatalf("live owner release after retention = %t, %v", released, err)
 			}
 			return nil
 		})
