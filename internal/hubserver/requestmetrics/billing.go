@@ -49,9 +49,7 @@ func (m *Service) WriteUsage(ctx context.Context, owner *BillingOwner, now time.
 		clear(pending)
 		return nil
 	}
-	if err := owner.Repository.WriteTenant(ctx, owner.Organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.PruneRequestBillingUsage(ctx, requestUsageCutoff(plans, now), 128)
-	}); err != nil {
+	if err := owner.PruneUsage(ctx, plans, now); err != nil {
 		return err
 	}
 	windows := UsageWindows(plans, now, pending)
@@ -96,4 +94,11 @@ type BillingOwner struct {
 	Repository   tenantstore.Repository
 	Organization tracker.OrganizationID
 	Plans        func() *BillingPlan
+}
+
+func (o *BillingOwner) PruneUsage(ctx context.Context, plans *BillingPlan, now time.Time) error {
+	cutoff := requestUsageCutoff(plans, now)
+	return o.Repository.WriteTenant(ctx, o.Organization, corestore.Background, func(w tenantstore.Writer) error {
+		return w.PruneRequestBillingUsage(ctx, cutoff, 128)
+	})
 }
