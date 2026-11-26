@@ -245,13 +245,12 @@ PY
 )
 if [ "$needs_assets" = "yes" ]; then
     stage="generate assets and docs"
-    asset_log=$(mktemp "${TMPDIR:-/tmp}/detent-landing-assets.XXXXXX")
-    if make -j1 assets generate-docs TEST_PROCS="$procs" >"$asset_log" 2>&1; then
+    if asset_output=$(make -j1 assets generate-docs TEST_PROCS="$procs" 2>&1 | tail -c 16384); then
         printf 'Landing assets and docs generated.\n'
     else
         status=$?
         printf 'check-landing: error: %s exited %s\n' "$stage" "$status" >&2
-        cat "$asset_log" >&2
+        printf '%s\n' "$asset_output" >&2
         exit "$status"
     fi
 fi
