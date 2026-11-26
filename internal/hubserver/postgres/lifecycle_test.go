@@ -177,6 +177,9 @@ func TestMigrateAppliesOlderPendingVersions(t *testing.T) {
 
 func migratedTemplate(t *testing.T, migrations fs.FS, seed func(context.Context, *sql.DB) error) *pgtest.Template {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres lifecycle migration test in -short mode")
+	}
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		roles, err := os.ReadFile("roles.sql")
 		if err != nil {

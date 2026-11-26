@@ -20,8 +20,11 @@ import (
 )
 
 func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
-	if os.Getenv("DETENT_TEST_POSTGRES") != "binary" {
-		t.Skip("requires the PostgreSQL binary test mode")
+	if _, err := exec.LookPath("initdb"); err != nil {
+		t.Skip("requires initdb on PATH")
+	}
+	if _, err := exec.LookPath("pg_ctl"); err != nil {
+		t.Skip("requires pg_ctl on PATH")
 	}
 
 	root := t.TempDir()

@@ -78,6 +78,9 @@ var dispatchPostgresAdmins sync.Map
 
 func DispatchPostgresDatabase(t *testing.T) *sql.DB {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	admin := dispatchPostgresTemplate.Database(t)
 	connection := dispatchPostgresTemplate.Connection(t, admin, "", "")
 	if _, err := admin.ExecContext(t.Context(), "ALTER DATABASE "+pgx.Identifier{connection.Database}.Sanitize()+" CONNECTION LIMIT 16"); err != nil {
@@ -106,6 +109,9 @@ func DispatchPostgresConfig(t *testing.T, cfg hubserver.Config) hubserver.Config
 
 func dispatchPostgresConfig(t *testing.T, cfg hubserver.Config, admin *sql.DB, organization string) hubserver.Config {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping full-stack Postgres scenario in -short mode")
+	}
 	select {
 	case dispatchPostgresFixtures <- struct{}{}:
 		t.Cleanup(func() { <-dispatchPostgresFixtures })

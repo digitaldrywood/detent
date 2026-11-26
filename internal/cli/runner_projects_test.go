@@ -69,6 +69,9 @@ func TestRunnerProjectObservationDue(t *testing.T) {
 }
 
 func TestRunnerCloudProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping runner cloud projects integration test in -short mode")
+	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {

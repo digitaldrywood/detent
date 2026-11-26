@@ -111,7 +111,15 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	var workspacePath string
+	if req.retainedReview != nil && strings.TrimSpace(req.retainedReview.info.Path) != "" {
+		if heads, ok := req.retainedReview.backend.(workspace.HeadProvider); ok {
+			if head, headErr := heads.Head(ctx, req.retainedReview.info, req.retainedReview.issue); headErr == nil && strings.TrimSpace(head) == input.Version.HeadSHA {
+				workspacePath = strings.TrimSpace(req.retainedReview.info.Path)
+			}
+		}
+	}
+	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: req.Issue, Snapshot: snapshot, WorkspacePath: workspacePath, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			review := tracker.SecurityAuditReview{VersionID: input.Version.ID, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
@@ -178,7 +186,7 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{landing: true, usageExecution: req.Execution, Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	_, err = r.Audit(ctx, SecurityAuditRequest{landing: true, usageExecution: req.Execution, Issue: issue, Snapshot: snapshot, WorkspacePath: strings.TrimSpace(files.WorkspacePath), StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			dispositions, err := r.nativeAuditDispositions(ctx, run.ID)

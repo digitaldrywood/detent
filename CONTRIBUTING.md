@@ -43,18 +43,6 @@ disposable test databases under that `TMPDIR` and tears down its server. These
 fixtures never hold runner application state. On Darwin, `pgtest` places only
 the Unix socket in a short directory when the job path exceeds the socket limit.
 
-The gate always includes the small PostgreSQL contract in
-`scripts/check-landing.py`, alongside the packages selected by the source diff.
-Its JSON inventory requires every named scenario to run and pass, including its
-subtests and package completion. Missing PostgreSQL skips fail the gate.
-The inventory reports no-test-file packages, subprocess helpers, short-mode
-integration exclusions, platform exclusions and opt-in previews or smoke tests
-separately. There is no missing-configuration skip exemption; the pgtest
-negative proof verifies a failing child process. Other skips are reported as
-unclassified for review; none can satisfy a required scenario.
-SIGTERM and SIGINT to the gate terminate the test process group; `pgtest`'s
-lifetime supervisor shuts down each test-owned server when its binary exits.
-
 ## UI Surface Guardrails
 
 High-impact UI changes require explicit issue authorization before implementation starts. If an issue does not describe the affected surface and real-estate tradeoff, choose a local or contextual treatment instead of a persistent global surface, or stop and ask for a more specific issue.
