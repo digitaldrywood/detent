@@ -463,7 +463,7 @@ func withPublicationGit(ctx context.Context, path, owner string, use func(string
 	return use(scratch, source)
 }
 
-func copyShallowBoundary(commonDir, scratchDir string) error {
+func copyShallowBoundary(commonDir, scratchDir string) (retErr error) {
 	if commonDir == "" {
 		return nil
 	}
@@ -471,7 +471,11 @@ func copyShallowBoundary(commonDir, scratchDir string) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() {
+		if err := root.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close repository root: %w", err))
+		}
+	}()
 	linfo, err := root.Lstat("shallow")
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -489,7 +493,11 @@ func copyShallowBoundary(commonDir, scratchDir string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close source shallow file: %w", err))
+		}
+	}()
 	info, err := file.Stat()
 	if err != nil {
 		return err
@@ -717,7 +725,7 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 		return "", errors.New("isolated patch apply requires an exact parent commit ID")
 	}
 	var tree string
-	if err := withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
+	if err := withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) (retErr error) {
 		env := append(IsolatedEnvironment(), "GIT_INDEX_FILE="+filepath.Join(scratch, "index"))
 		if _, err := withCommandEnvironment(ctx, scratch, env, true, "", RunCommand, "--git-dir="+scratch, "read-tree", parentSHA); err != nil {
 			return err
@@ -727,9 +735,7 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 			if _, err := patchFile.Seek(0, io.SeekStart); err != nil {
 				return err
 			}
-			msgOut := filepath.Join(scratch, "mailinfo.msg")
-			patchOut := filepath.Join(scratch, "mailinfo.patch")
-			mailCmd := exec.CommandContext(ctx, "git", "--git-dir="+scratch, "mailinfo", msgOut, patchOut)
+			mailCmd := exec.CommandContext(ctx, "git", "--git-dir=.", "mailinfo", "mailinfo.msg", "mailinfo.patch")
 			mailCmd.Dir = scratch
 			mailCmd.Env = env
 			mailCmd.Stdin = patchFile
@@ -744,11 +750,15 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 				}
 				return &CommandError{Command: "git", Args: []string{"mailinfo"}, ExitCode: exitCode, Output: mailErr.String(), Err: err}
 			}
-			extractedFile, err := os.Open(patchOut)
+			extractedFile, err := os.Open(filepath.Join(scratch, "mailinfo.patch"))
 			if err != nil {
 				return err
 			}
-			defer extractedFile.Close()
+			defer func() {
+				if err := extractedFile.Close(); err != nil {
+					retErr = errors.Join(retErr, fmt.Errorf("close extracted patch: %w", err))
+				}
+			}()
 			applyInput = extractedFile
 		}
 		hasContent, err := fileHasNonSpaceContent(applyInput)
@@ -756,7 +766,7 @@ func IsolatedApplyTree(ctx context.Context, path, parentSHA string, patchFile *o
 			return err
 		}
 		if hasContent {
-			cmd := exec.CommandContext(ctx, "git", "--git-dir="+scratch, "apply", "--cached", "--binary", "--unidiff-zero")
+			cmd := exec.CommandContext(ctx, "git", "--git-dir=.", "apply", "--cached", "--binary", "--unidiff-zero")
 			cmd.Dir = scratch
 			cmd.Env = env
 			cmd.Stdin = applyInput
