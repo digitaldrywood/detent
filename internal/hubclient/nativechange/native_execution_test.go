@@ -30,6 +30,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+type preparedPublicationHost struct {
+	executioncontract.ExecutionHost
+	claim executioncontract.ExecutionClaim
+}
+
+func (h preparedPublicationHost) ExecutionClaim(item string) (executioncontract.ExecutionClaim, bool) {
+	return h.claim, string(h.claim.Lease.WorkItemID) == item
+}
+
 func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -40,10 +49,12 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 		sourceError  string
 		versionError string
 		wantError    bool
+		lostClaim    bool
 	}{
 		{name: "confirmed source", head: "published-head", effect: "confirmed"},
 		{name: "moved final head", head: "changed-head", effect: "confirmed", wantError: true},
 		{name: "ambiguous effect", head: "published-head", effect: "ambiguous", wantError: true},
+		{name: "lost lease cannot finish publication", head: "published-head", effect: "confirmed", lostClaim: true, wantError: true},
 		{name: "unchanged source omits publication claim", head: "published-head", effect: "confirmed", unchanged: true},
 		{name: "unsettled source omits publication claim", head: "published-head", effect: "confirmed", unsettled: true},
 		{name: "unavailable source retains its failure", head: "published-head", effect: "confirmed", sourceError: "source unavailable"},
@@ -52,8 +63,12 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
+			now := time.Unix(7200, 0)
+			lease := tracker.NativeLease{WorkItemID: "item", ID: "lease", FencingToken: 1}
+			host := preparedPublicationHost{claim: executioncontract.ExecutionClaim{Lease: lease, Deadline: now.Add(time.Minute), Lost: test.lostClaim}}
 			execution := &nativeExecution{
-				scheduler: &executionAuthority{now: time.Now},
+				scheduler: &executionAuthority{host: host, now: func() time.Time { return now }},
+				claim:     nativeClaim{lease: lease},
 				settled:   !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
 				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},
@@ -65,8 +80,12 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 				},
 			}
 			if !test.unsettled {
-				if err := execution.prepareFinish(t.Context(), "succeeded"); (err != nil) != test.wantError {
+				err := execution.prepareFinish(t.Context(), "succeeded")
+				if (err != nil) != test.wantError {
 					t.Fatalf("prepared publication completion error = %v, want refusal %t", err, test.wantError)
+				}
+				if test.lostClaim && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("completion with lost lease returned %v", err)
 				}
 			}
 			if execution.data.Outcome != "" || execution.data.Finalization != nil {
