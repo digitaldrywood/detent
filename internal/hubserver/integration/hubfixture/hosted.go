@@ -66,6 +66,9 @@ func HostedSecurityConfig(provider *HostedProvider) Config {
 
 func OpenHosted(t *testing.T, cfg Config) *Hosted {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping Postgres hubserver integration test in -short mode")
+	}
 	if cfg.Hosted == nil {
 		t.Fatal("hubfixture.OpenHosted needs a hosted configuration")
 	}

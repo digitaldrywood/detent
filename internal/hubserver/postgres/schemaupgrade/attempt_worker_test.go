@@ -35,8 +35,8 @@ func TestAttemptWorkerIdentityMigration(t *testing.T) {
 	if err := repository.Close(); err != nil {
 		t.Fatal(err)
 	}
-	migration := roleConnection(t, pgstoretest.Template, db, postgres.MigrationRoleName)
-	runtime := roleConnection(t, pgstoretest.Template, db, postgres.RuntimeRoleName)
+	migration := roleConnection(t, pgstoretest.Template.Template, db, postgres.MigrationRoleName)
+	runtime := roleConnection(t, pgstoretest.Template.Template, db, postgres.RuntimeRoleName)
 	cfg, err := migration.PoolConfig()
 	if err != nil {
 		t.Fatal(err)

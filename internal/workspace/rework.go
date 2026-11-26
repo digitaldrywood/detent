@@ -281,12 +281,18 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
-		onto, targetBase, resolvedTarget, activeCommit, canSkipEmptyApply, err := l.verifyPausedRebaseState(ctx, info.Path, issue, opts)
+		pausedState, err := l.verifyPausedRebaseState(ctx, info.Path, issue, opts)
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
+		onto := pausedState.onto
+		resolvedTarget := pausedState.resolvedTarget
+		activeCommit := pausedState.activeCommit
+		canSkipEmptyApply := pausedState.canSkipEmpty
+		rescheduledPick := pausedState.rescheduledPick
+		pendingCommits := pausedState.pendingCommits
 		prepared.BaseSHA = onto
-		base = targetBase
+		base = pausedState.targetBase
 		targetBranch = resolvedTarget
 		if prepared.Status == MergePrepareStatusConflict {
 			if err := validate(ctx); err != nil {
@@ -353,12 +359,20 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 			prepared.Status = MergePrepareStatusDirty
 			return prepared, nil
 		}
-		if activeCommit != "" {
+		stagedBeforeCheck, sBeforeErr := runGitAt(ctx, info.Path, "diff", "--cached", "--ignore-submodules=none", "--name-only", "-z")
+		if sBeforeErr != nil {
+			return MergePrepareResult{}, sBeforeErr
+		}
+		if activeCommit != "" && (!rescheduledPick || stagedBeforeCheck != "") {
 			headNow, headErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
 			if headErr != nil {
 				return MergePrepareResult{}, headErr
 			}
-			if err := verifyStagedConflictResolution(ctx, info.Path, strings.TrimSpace(headNow), activeCommit); err != nil {
+			if rescheduledPick {
+				if err := verifyStagedExactReplayTree(ctx, info.Path, strings.TrimSpace(headNow), activeCommit); err != nil {
+					return MergePrepareResult{}, err
+				}
+			} else if err := verifyStagedConflictResolution(ctx, info.Path, strings.TrimSpace(headNow), activeCommit); err != nil {
 				return MergePrepareResult{}, err
 			}
 		}
@@ -373,7 +387,7 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if sErr != nil {
 			return MergePrepareResult{}, sErr
 		}
-		if stagedNow == "" && !canSkipEmptyApply {
+		if stagedNow == "" && !canSkipEmptyApply && !rescheduledPick {
 			return MergePrepareResult{}, fmt.Errorf("%w: paused rebase resolution drops non-conflicted changes", ErrMergeResolutionInvalid)
 		}
 		if err := validate(ctx); err != nil {
@@ -396,7 +410,98 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		if refErr := recordWorktreeReworkBase(ctx, info.Path, opts.TargetBranch, resolvedTarget, onto); refErr != nil {
 			return MergePrepareResult{}, refErr
 		}
-		replayOut, replayErr := l.runCommit(ctx, info.Path, []string{"LC_ALL=C"}, "-c", "rerere.enabled=false", "rebase", "--continue")
+		if rescheduledPick {
+			var stagedAddedPaths []string
+			if stagedNow != "" {
+				deletedRaw, delErr := runGitAt(ctx, info.Path, "diff", "--cached", "--no-renames", "--diff-filter=D", "--ignore-submodules=none", "--name-only", "-z")
+				if delErr != nil {
+					return MergePrepareResult{}, delErr
+				}
+				var deletedPaths []string
+				for _, name := range strings.Split(strings.TrimSuffix(deletedRaw, "\x00"), "\x00") {
+					if name != "" {
+						deletedPaths = append(deletedPaths, name)
+					}
+				}
+				addedRaw, addErr := runGitAt(ctx, info.Path, "diff", "--cached", "--no-renames", "--diff-filter=A", "--ignore-submodules=none", "--name-only", "-z")
+				if addErr != nil {
+					return MergePrepareResult{}, addErr
+				}
+				for _, name := range strings.Split(strings.TrimSuffix(addedRaw, "\x00"), "\x00") {
+					if name != "" {
+						stagedAddedPaths = append(stagedAddedPaths, name)
+					}
+				}
+				if len(deletedPaths) > 0 && hasUntrackedResetObstruction(info.Path, deletedPaths, stagedAddedPaths) {
+					return MergePrepareResult{}, fmt.Errorf("%w: paused rebase rescheduled pick reset would overwrite an untracked file", ErrMergeResolutionInvalid)
+				}
+			}
+			var pendingAddedPaths []string
+			if len(pendingCommits) > 0 {
+				headForReplay, hReplayErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+				if hReplayErr != nil {
+					return MergePrepareResult{}, hReplayErr
+				}
+				var replayErr error
+				pendingAddedPaths, replayErr = gitexec.IsolatedReplayWritePaths(ctx, info.Path, strings.TrimSpace(headForReplay), pendingCommits)
+				if replayErr != nil {
+					return MergePrepareResult{}, replayErr
+				}
+			}
+			if len(pendingAddedPaths) > 0 {
+				seenLookup := make(map[string]struct{}, len(pendingAddedPaths))
+				lookupPaths := make([]string, 0, len(pendingAddedPaths))
+				for _, name := range pendingAddedPaths {
+					for idx := strings.IndexByte(name, '/'); idx >= 0; {
+						prefix := name[:idx]
+						if _, seen := seenLookup[prefix]; !seen {
+							seenLookup[prefix] = struct{}{}
+							lookupPaths = append(lookupPaths, prefix)
+						}
+						next := strings.IndexByte(name[idx+1:], '/')
+						if next < 0 {
+							break
+						}
+						idx += 1 + next
+					}
+					if _, seen := seenLookup[name]; !seen {
+						seenLookup[name] = struct{}{}
+						lookupPaths = append(lookupPaths, name)
+					}
+				}
+				lsArgs := append([]string{"--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"}, lookupPaths...)
+				headTrackedRaw, hErr := gitexec.ReadPublicationSource(ctx, info.Path, lsArgs...)
+				if hErr != nil {
+					return MergePrepareResult{}, hErr
+				}
+				trackedExisting := append([]string(nil), stagedAddedPaths...)
+				for _, name := range strings.Split(strings.TrimSuffix(headTrackedRaw, "\x00"), "\x00") {
+					if name != "" {
+						trackedExisting = append(trackedExisting, name)
+					}
+				}
+				if hasUntrackedResetObstruction(info.Path, pendingAddedPaths, trackedExisting) {
+					return MergePrepareResult{}, fmt.Errorf("%w: paused rebase rescheduled pick would overwrite an untracked file", ErrMergeResolutionInvalid)
+				}
+			}
+			if stagedNow != "" {
+				if _, resetErr := runGitAt(ctx, info.Path, "reset", "--hard", "HEAD"); resetErr != nil {
+					return MergePrepareResult{}, resetErr
+				}
+			}
+		}
+		continueArgs := []string{"-c", "rerere.enabled=false"}
+		if rescheduledPick {
+			continueArgs = append(continueArgs,
+				"-c", "merge.directoryRenames=conflict",
+				"-c", "merge.renames=true",
+				"-c", "merge.renameLimit=0",
+				"-c", "diff.renames=true",
+				"-c", "diff.renameLimit=0",
+			)
+		}
+		continueArgs = append(continueArgs, "rebase", "--continue")
+		replayOut, replayErr := l.runCommit(ctx, info.Path, []string{"LC_ALL=C"}, continueArgs...)
 		var commandErr *CommandError
 		if errors.As(replayErr, &commandErr) && (strings.Contains(replayOut, "No changes - did you forget to use 'git add'?") || strings.Contains(commandErr.Output, "No changes - did you forget to use 'git add'?") || strings.Contains(commandErr.Output, `run "git rebase --skip"`)) {
 			if conflicts, cErr := reworkConflictPaths(ctx, info.Path); cErr == nil && len(conflicts) == 0 {
@@ -834,145 +939,193 @@ func (l *LocalGit) resolveReworkTargetBase(ctx context.Context, path string, iss
 	return base, target, nil
 }
 
-func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, issue Issue, opts MergePrepareOptions) (string, string, string, string, bool, error) {
+type pausedRebaseState struct {
+	onto            string
+	targetBase      string
+	resolvedTarget  string
+	activeCommit    string
+	canSkipEmpty    bool
+	rescheduledPick bool
+	pendingCommits  []string
+}
+
+func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, issue Issue, opts MergePrepareOptions) (pausedRebaseState, error) {
 	var onto string
 	var rebaseKind string
 	for _, kind := range []string{"rebase-merge", "rebase-apply"} {
 		ontoPath, err := gitPathFor(ctx, path, kind+"/onto")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		raw, err := readRegularGitFile(ontoPath)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		onto = strings.TrimSpace(string(raw))
 		rebaseKind = kind
 		break
 	}
 	if onto == "" {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase integration base is unavailable", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase integration base is unavailable", ErrMergeResolutionInvalid)
 	}
 	if !gitexec.ValidHead(onto) {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase integration base is invalid", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase integration base is invalid", ErrMergeResolutionInvalid)
 	}
 	base, target, err := l.resolveReworkTargetBase(ctx, path, issue, opts)
 	if err != nil {
-		return "", "", "", "", false, err
+		return pausedRebaseState{}, err
 	}
 	if err := gitexec.VerifyPublicationAncestry(ctx, path, onto, base); err != nil {
 		var commandErr *gitexec.CommandError
 		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-			return "", "", "", "", false, fmt.Errorf("%w: paused rebase target is not on the selected integration branch", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase target is not on the selected integration branch", ErrMergeResolutionInvalid)
 		}
-		return "", "", "", "", false, fmt.Errorf("verify paused rebase integration base: %w", err)
+		return pausedRebaseState{}, fmt.Errorf("verify paused rebase integration base: %w", err)
 	}
 	head, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		return "", "", "", "", false, err
+		return pausedRebaseState{}, err
 	}
 	head = strings.TrimSpace(head)
 	if !gitexec.ValidHead(head) {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase head is invalid", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head is invalid", ErrMergeResolutionInvalid)
 	}
 	headNamePath, err := gitPathFor(ctx, path, rebaseKind+"/head-name")
 	if err != nil {
-		return "", "", "", "", false, err
+		return pausedRebaseState{}, err
 	}
 	rawHeadName, err := readRegularGitFile(headNamePath)
 	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase branch metadata is unavailable", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase branch metadata is unavailable", ErrMergeResolutionInvalid)
 	}
 	headName := strings.TrimSpace(string(rawHeadName))
 	if !strings.HasPrefix(headName, "refs/heads/") {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase branch metadata is invalid", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase branch metadata is invalid", ErrMergeResolutionInvalid)
 	}
 	branchTip, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", headName+"^{commit}")
 	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase branch tip is unavailable", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase branch tip is unavailable", ErrMergeResolutionInvalid)
 	}
 	branchTip = strings.TrimSpace(branchTip)
 	origHeadPath, err := gitPathFor(ctx, path, rebaseKind+"/orig-head")
 	if err != nil {
-		return "", "", "", "", false, err
+		return pausedRebaseState{}, err
 	}
 	rawOrigHead, err := readRegularGitFile(origHeadPath)
 	if err != nil {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase original head is unavailable", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase original head is unavailable", ErrMergeResolutionInvalid)
 	}
 	origHead := strings.TrimSpace(string(rawOrigHead))
 	if !gitexec.ValidHead(origHead) || origHead != branchTip {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase original head does not match assigned branch", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase original head does not match assigned branch", ErrMergeResolutionInvalid)
 	}
 	expectedHead := onto
 	maxReplayed := 0
 	var accounted []string
 	var stoppedCommit string
+	var rescheduledPick bool
+	var pendingCommits []string
 	if rebaseKind == "rebase-merge" {
 		rewrittenPath, err := gitPathFor(ctx, path, "rebase-merge/rewritten-list")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		rawRewritten, err := readRegularGitFile(rewrittenPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
+		rewritten := make(map[string]string)
 		for line := range strings.SplitSeq(string(rawRewritten), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) == 0 {
 				continue
 			}
 			if len(fields) < 2 || !gitexec.ValidHead(fields[0]) || !gitexec.ValidHead(fields[1]) {
-				return "", "", "", "", false, fmt.Errorf("%w: paused rebase rewritten commit list is invalid", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase rewritten commit list is invalid", ErrMergeResolutionInvalid)
+			}
+			if _, dup := rewritten[fields[0]]; dup {
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase duplicates a rewritten commit", ErrMergeResolutionInvalid)
 			}
 			if err := gitexec.VerifyPublicationAncestry(ctx, path, fields[0], origHead); err != nil {
 				var commandErr *gitexec.CommandError
 				if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-					return "", "", "", "", false, fmt.Errorf("%w: paused rebase replayed commit is not on the assigned branch", ErrMergeResolutionInvalid)
+					return pausedRebaseState{}, fmt.Errorf("%w: paused rebase replayed commit is not on the assigned branch", ErrMergeResolutionInvalid)
 				}
-				return "", "", "", "", false, fmt.Errorf("verify paused rebase source commit: %w", err)
+				return pausedRebaseState{}, fmt.Errorf("verify paused rebase source commit: %w", err)
 			}
-			if err := verifyReplayedCommit(ctx, path, expectedHead, fields[0], fields[1]); err != nil {
-				return "", "", "", "", false, err
-			}
-			accounted = append(accounted, fields[0])
-			expectedHead = fields[1]
-			maxReplayed++
+			rewritten[fields[0]] = fields[1]
 		}
 		stoppedPath, err := gitPathFor(ctx, path, "rebase-merge/stopped-sha")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		if rawStopped, sErr := readRegularGitFile(stoppedPath); sErr == nil {
 			stopped := strings.TrimSpace(string(rawStopped))
 			if stopped != "" {
 				if !gitexec.ValidHead(stopped) {
-					return "", "", "", "", false, fmt.Errorf("%w: paused rebase stopped commit is invalid", ErrMergeResolutionInvalid)
+					return pausedRebaseState{}, fmt.Errorf("%w: paused rebase stopped commit is invalid", ErrMergeResolutionInvalid)
 				}
 				if err := gitexec.VerifyPublicationAncestry(ctx, path, stopped, origHead); err != nil {
 					var commandErr *gitexec.CommandError
 					if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-						return "", "", "", "", false, fmt.Errorf("%w: paused rebase stopped commit is not on the assigned branch", ErrMergeResolutionInvalid)
+						return pausedRebaseState{}, fmt.Errorf("%w: paused rebase stopped commit is not on the assigned branch", ErrMergeResolutionInvalid)
 					}
-					return "", "", "", "", false, fmt.Errorf("verify paused rebase stopped commit: %w", err)
+					return pausedRebaseState{}, fmt.Errorf("verify paused rebase stopped commit: %w", err)
 				}
-				accounted = append(accounted, stopped)
 				stoppedCommit = stopped
 			}
 		} else if !errors.Is(sErr, os.ErrNotExist) {
-			return "", "", "", "", false, sErr
+			return pausedRebaseState{}, sErr
+		}
+		donePath, err := gitPathFor(ctx, path, "rebase-merge/done")
+		if err != nil {
+			return pausedRebaseState{}, err
+		}
+		rawDone, doneErr := readRegularGitFile(donePath)
+		if doneErr != nil && !errors.Is(doneErr, os.ErrNotExist) {
+			return pausedRebaseState{}, doneErr
+		}
+		if errors.Is(doneErr, os.ErrNotExist) && len(rewritten) > 0 {
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase completed step log is unavailable", ErrMergeResolutionInvalid)
+		}
+		var doneSources []string
+		for line := range strings.SplitSeq(string(rawDone), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 || (fields[0] != "pick" && fields[0] != "p") {
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase completed log contains operations outside source replay", ErrMergeResolutionInvalid)
+			}
+			pickSHA, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--end-of-options", fields[1]+"^{commit}")
+			if err != nil {
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase completed commit is invalid", ErrMergeResolutionInvalid)
+			}
+			pickSHA = strings.TrimSpace(pickSHA)
+			if err := gitexec.VerifyPublicationAncestry(ctx, path, pickSHA, origHead); err != nil {
+				var commandErr *gitexec.CommandError
+				if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
+					return pausedRebaseState{}, fmt.Errorf("%w: paused rebase completed commit is not on the assigned branch", ErrMergeResolutionInvalid)
+				}
+				return pausedRebaseState{}, fmt.Errorf("verify paused rebase completed commit: %w", err)
+			}
+			if len(doneSources) == 0 || doneSources[len(doneSources)-1] != pickSHA {
+				doneSources = append(doneSources, pickSHA)
+			}
 		}
 		todoPath, err := gitPathFor(ctx, path, "rebase-merge/git-rebase-todo")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		rawTodo, err := readRegularGitFile(todoPath)
 		if err != nil {
-			return "", "", "", "", false, fmt.Errorf("%w: paused rebase todo is unavailable", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase todo is unavailable", ErrMergeResolutionInvalid)
 		}
+		var todoSources []string
 		for line := range strings.SplitSeq(string(rawTodo), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
@@ -980,42 +1133,97 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 			}
 			fields := strings.Fields(line)
 			if len(fields) < 2 || (fields[0] != "pick" && fields[0] != "p") {
-				return "", "", "", "", false, fmt.Errorf("%w: paused rebase contains operations outside source replay", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase contains operations outside source replay", ErrMergeResolutionInvalid)
 			}
 			pickSHA, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--end-of-options", fields[1]+"^{commit}")
 			if err != nil {
-				return "", "", "", "", false, fmt.Errorf("%w: paused rebase pending commit is invalid", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase pending commit is invalid", ErrMergeResolutionInvalid)
 			}
-			pickSHA = strings.TrimSpace(pickSHA)
-			accounted = append(accounted, pickSHA)
+			todoSources = append(todoSources, strings.TrimSpace(pickSHA))
 		}
+		var rescheduledCommit string
+		if stoppedCommit != "" && len(doneSources) > 0 && doneSources[len(doneSources)-1] == stoppedCommit {
+			doneSources = doneSources[:len(doneSources)-1]
+		} else if stoppedCommit == "" && len(doneSources) > 0 && len(todoSources) > 0 && doneSources[len(doneSources)-1] == todoSources[0] {
+			doneSources = doneSources[:len(doneSources)-1]
+			rescheduledPick = true
+			rescheduledCommit = todoSources[0]
+		}
+		consumedRewritten := make(map[string]struct{}, len(rewritten))
+		for _, src := range doneSources {
+			if dst, ok := rewritten[src]; ok {
+				consumedRewritten[src] = struct{}{}
+				if err := verifyReplayedCommit(ctx, path, expectedHead, src, dst); err != nil {
+					return pausedRebaseState{}, err
+				}
+				expectedHead = dst
+				maxReplayed++
+				accounted = append(accounted, src)
+				continue
+			}
+			fastForwarded := false
+			srcParent, pErr := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--quiet", src+"^")
+			if pErr != nil {
+				var commandErr *gitexec.CommandError
+				if !errors.As(pErr, &commandErr) || commandErr.ExitCode != 1 {
+					return pausedRebaseState{}, pErr
+				}
+			} else if strings.TrimSpace(srcParent) == expectedHead {
+				isAnc, ancErr := gitexec.VerifyPublicationAncestryComplete(ctx, path, src, head)
+				if ancErr != nil {
+					return pausedRebaseState{}, ancErr
+				}
+				if isAnc {
+					expectedHead = src
+					maxReplayed++
+					fastForwarded = true
+				}
+			}
+			if !fastForwarded {
+				if err := verifyCommitRedundant(ctx, path, expectedHead, src); err != nil {
+					return pausedRebaseState{}, err
+				}
+			}
+			accounted = append(accounted, src)
+		}
+		if len(consumedRewritten) != len(rewritten) {
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase rewritten commit list does not match completed rebase steps", ErrMergeResolutionInvalid)
+		}
+		if stoppedCommit != "" {
+			accounted = append(accounted, stoppedCommit)
+		}
+		accounted = append(accounted, todoSources...)
+		pendingCommits = todoSources
 		if err := verifyAssignedCommitsAccounted(ctx, path, onto, origHead, accounted); err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
+		}
+		if rescheduledPick && stoppedCommit == "" {
+			stoppedCommit = rescheduledCommit
 		}
 	} else {
 		nextPath, err := gitPathFor(ctx, path, "rebase-apply/next")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		rawNext, err := readRegularGitFile(nextPath)
 		if err != nil {
-			return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase state is unavailable", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase state is unavailable", ErrMergeResolutionInvalid)
 		}
 		nextNum, err := strconv.Atoi(strings.TrimSpace(string(rawNext)))
 		if err != nil || nextNum < 1 {
-			return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch index is invalid", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch index is invalid", ErrMergeResolutionInvalid)
 		}
 		lastPath, err := gitPathFor(ctx, path, "rebase-apply/last")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		rawLast, err := readRegularGitFile(lastPath)
 		if err != nil {
-			return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch count is unavailable", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch count is unavailable", ErrMergeResolutionInvalid)
 		}
 		lastNum, err := strconv.Atoi(strings.TrimSpace(string(rawLast)))
 		if err != nil || lastNum < nextNum || lastNum > 10000 {
-			return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch count is invalid", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch count is invalid", ErrMergeResolutionInvalid)
 		}
 		maxReplayed = nextNum - 1
 		var appliedSources []string
@@ -1023,29 +1231,29 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 		for i := 1; i <= lastNum; i++ {
 			patchPath, err := gitPathFor(ctx, path, fmt.Sprintf("rebase-apply/%04d", i))
 			if err != nil {
-				return "", "", "", "", false, err
+				return pausedRebaseState{}, err
 			}
 			firstLine, err := readRegularGitFirstLine(patchPath)
 			if err != nil {
-				return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch metadata is unavailable", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch metadata is unavailable", ErrMergeResolutionInvalid)
 			}
 			fields := strings.Fields(firstLine)
 			if len(fields) < 2 || fields[0] != "From" || !gitexec.ValidHead(fields[1]) {
-				return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch source is invalid", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch source is invalid", ErrMergeResolutionInvalid)
 			}
 			if err := gitexec.VerifyPublicationAncestry(ctx, path, fields[1], origHead); err != nil {
 				var commandErr *gitexec.CommandError
 				if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-					return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase patch is not on the assigned branch", ErrMergeResolutionInvalid)
+					return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase patch is not on the assigned branch", ErrMergeResolutionInvalid)
 				}
-				return "", "", "", "", false, fmt.Errorf("verify paused apply rebase source commit: %w", err)
+				return pausedRebaseState{}, fmt.Errorf("verify paused apply rebase source commit: %w", err)
 			}
 			accounted = append(accounted, fields[1])
 			if i < nextNum {
 				appliedSources = append(appliedSources, fields[1])
 			} else {
 				if err := verifyApplyPatchMatchesCommit(ctx, path, patchPath, fields[1], true); err != nil {
-					return "", "", "", "", false, err
+					return pausedRebaseState{}, err
 				}
 				if i == nextNum {
 					activeSource = fields[1]
@@ -1053,50 +1261,50 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 			}
 		}
 		if err := verifyAssignedCommitsAccounted(ctx, path, onto, origHead, accounted); err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		if activeSource != "" {
 			activePatchPath, err := gitPathFor(ctx, path, "rebase-apply/patch")
 			if err != nil {
-				return "", "", "", "", false, err
+				return pausedRebaseState{}, err
 			}
 			if err := verifyActiveApplyPatchMatchesCommit(ctx, path, activePatchPath, activeSource); err != nil {
-				return "", "", "", "", false, err
+				return pausedRebaseState{}, err
 			}
 		}
 		abortSafetyPath, err := gitPathFor(ctx, path, "rebase-apply/abort-safety")
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		rawSafety, err := readRegularGitFile(abortSafetyPath)
 		if err == nil {
 			safety := strings.TrimSpace(string(rawSafety))
 			if !gitexec.ValidHead(safety) {
-				return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase safety head is invalid", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase safety head is invalid", ErrMergeResolutionInvalid)
 			}
 			expectedHead = safety
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		} else if maxReplayed > 0 {
-			return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase safety head is unavailable", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase safety head is unavailable", ErrMergeResolutionInvalid)
 		}
 		if head != expectedHead {
-			return "", "", "", "", false, fmt.Errorf("%w: paused rebase head does not match active rebase state", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head does not match active rebase state", ErrMergeResolutionInvalid)
 		}
 		if err := gitexec.VerifyPublicationAncestry(ctx, path, onto, head); err != nil {
 			var commandErr *gitexec.CommandError
 			if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-				return "", "", "", "", false, fmt.Errorf("%w: paused rebase head does not descend from its target", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head does not descend from its target", ErrMergeResolutionInvalid)
 			}
-			return "", "", "", "", false, fmt.Errorf("verify paused rebase head ancestry: %w", err)
+			return pausedRebaseState{}, fmt.Errorf("verify paused rebase head ancestry: %w", err)
 		}
 		rawReplayed, err := gitexec.ReadPublicationSource(ctx, path, "rev-list", "--reverse", onto+".."+head)
 		if err != nil {
-			return "", "", "", "", false, err
+			return pausedRebaseState{}, err
 		}
 		replayed := strings.Fields(rawReplayed)
 		if len(replayed) > len(appliedSources) {
-			return "", "", "", "", false, fmt.Errorf("%w: paused rebase head contains unexpected commits", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head contains unexpected commits", ErrMergeResolutionInvalid)
 		}
 		prev := onto
 		srcIdx := 0
@@ -1111,20 +1319,20 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 					break
 				}
 				if !errors.Is(replayCheckErr, ErrMergeResolutionInvalid) {
-					return "", "", "", "", false, replayCheckErr
+					return pausedRebaseState{}, replayCheckErr
 				}
 				if err := verifyCommitRedundant(ctx, path, prev, src); err != nil {
-					return "", "", "", "", false, err
+					return pausedRebaseState{}, err
 				}
 			}
 			if !matched {
-				return "", "", "", "", false, fmt.Errorf("%w: paused apply rebase replayed commit does not match assigned source", ErrMergeResolutionInvalid)
+				return pausedRebaseState{}, fmt.Errorf("%w: paused apply rebase replayed commit does not match assigned source", ErrMergeResolutionInvalid)
 			}
 			prev = dst
 		}
 		for srcIdx < len(appliedSources) {
 			if err := verifyCommitRedundant(ctx, path, prev, appliedSources[srcIdx]); err != nil {
-				return "", "", "", "", false, err
+				return pausedRebaseState{}, err
 			}
 			srcIdx++
 		}
@@ -1134,39 +1342,53 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 			if skipErr == nil {
 				canSkipEmptyApply = true
 			} else if !errors.Is(skipErr, ErrMergeResolutionInvalid) {
-				return "", "", "", "", false, skipErr
+				return pausedRebaseState{}, skipErr
 			}
 		}
-		return onto, base, target, activeSource, canSkipEmptyApply, nil
+		return pausedRebaseState{
+			onto:           onto,
+			targetBase:     base,
+			resolvedTarget: target,
+			activeCommit:   activeSource,
+			canSkipEmpty:   canSkipEmptyApply,
+		}, nil
 	}
 	if head != expectedHead {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase head does not match active rebase state", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head does not match active rebase state", ErrMergeResolutionInvalid)
 	}
 	if err := gitexec.VerifyPublicationAncestry(ctx, path, onto, head); err != nil {
 		var commandErr *gitexec.CommandError
 		if errors.As(err, &commandErr) && commandErr.ExitCode == 1 {
-			return "", "", "", "", false, fmt.Errorf("%w: paused rebase head does not descend from its target", ErrMergeResolutionInvalid)
+			return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head does not descend from its target", ErrMergeResolutionInvalid)
 		}
-		return "", "", "", "", false, fmt.Errorf("verify paused rebase head ancestry: %w", err)
+		return pausedRebaseState{}, fmt.Errorf("verify paused rebase head ancestry: %w", err)
 	}
 	rawCount, err := gitexec.ReadPublicationSource(ctx, path, "rev-list", "--count", onto+".."+head)
 	if err != nil {
-		return "", "", "", "", false, err
+		return pausedRebaseState{}, err
 	}
 	replayedCount, err := strconv.Atoi(strings.TrimSpace(rawCount))
 	if err != nil || replayedCount > maxReplayed {
-		return "", "", "", "", false, fmt.Errorf("%w: paused rebase head contains unexpected commits", ErrMergeResolutionInvalid)
+		return pausedRebaseState{}, fmt.Errorf("%w: paused rebase head contains unexpected commits", ErrMergeResolutionInvalid)
 	}
 	var canDropEmptyActive bool
-	if stoppedCommit != "" {
+	if stoppedCommit != "" && !rescheduledPick {
 		dropErr := verifyCommitRedundant(ctx, path, head, stoppedCommit)
 		if dropErr == nil {
 			canDropEmptyActive = true
 		} else if !errors.Is(dropErr, ErrMergeResolutionInvalid) {
-			return "", "", "", "", false, dropErr
+			return pausedRebaseState{}, dropErr
 		}
 	}
-	return onto, base, target, stoppedCommit, canDropEmptyActive, nil
+	return pausedRebaseState{
+		onto:            onto,
+		targetBase:      base,
+		resolvedTarget:  target,
+		activeCommit:    stoppedCommit,
+		canSkipEmpty:    canDropEmptyActive,
+		rescheduledPick: rescheduledPick,
+		pendingCommits:  pendingCommits,
+	}, nil
 }
 
 func openRegularGitFile(path string) (*os.File, os.FileInfo, error) {
@@ -1414,65 +1636,146 @@ func verifyApplyPatchFileMatchesCommit(ctx context.Context, path string, patchFi
 	return nil
 }
 
+func hasUntrackedResetObstruction(root string, deletedPaths, addedPaths []string) bool {
+	type trackedEntry struct {
+		info       os.FileInfo
+		parentInfo os.FileInfo
+		base       string
+	}
+	trackedAdded := make([]trackedEntry, 0, len(addedPaths))
+	for _, rel := range addedPaths {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		info, err := os.Lstat(full)
+		if err != nil {
+			continue
+		}
+		parentInfo, pErr := os.Stat(filepath.Dir(full))
+		if pErr != nil {
+			continue
+		}
+		trackedAdded = append(trackedAdded, trackedEntry{
+			info:       info,
+			parentInfo: parentInfo,
+			base:       filepath.Base(full),
+		})
+	}
+	isTrackedAdded := func(full string, fi os.FileInfo) bool {
+		parentInfo, err := os.Stat(filepath.Dir(full))
+		if err != nil {
+			return false
+		}
+		base := filepath.Base(full)
+		for _, tracked := range trackedAdded {
+			if !os.SameFile(fi, tracked.info) || !os.SameFile(parentInfo, tracked.parentInfo) {
+				continue
+			}
+			if base == tracked.base {
+				return true
+			}
+			if strings.EqualFold(base, tracked.base) {
+				entries, rErr := os.ReadDir(filepath.Dir(full))
+				if rErr != nil {
+					return false
+				}
+				matches := 0
+				for _, entry := range entries {
+					if strings.EqualFold(entry.Name(), base) {
+						matches++
+					}
+				}
+				if matches == 1 {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	errObstructed := errors.New("obstructed")
+	for _, del := range deletedPaths {
+		parts := strings.Split(del, "/")
+		cur := root
+		for i, part := range parts {
+			if part == "" {
+				continue
+			}
+			cur = filepath.Join(cur, part)
+			fi, err := os.Lstat(cur)
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return true
+			}
+			if !fi.IsDir() {
+				if isTrackedAdded(cur, fi) {
+					break
+				}
+				return true
+			}
+			if i == len(parts)-1 {
+				walkErr := filepath.WalkDir(cur, func(p string, d os.DirEntry, wErr error) error {
+					if wErr != nil {
+						return errObstructed
+					}
+					if d.IsDir() {
+						return nil
+					}
+					entryInfo, statErr := os.Lstat(p)
+					if statErr != nil || !isTrackedAdded(p, entryInfo) {
+						return errObstructed
+					}
+					return nil
+				})
+				if walkErr != nil {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func verifyStagedExactReplayTree(ctx context.Context, path, prev, src string) error {
+	srcParent, pErr := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--quiet", src+"^")
+	if pErr != nil {
+		return fmt.Errorf("%w: paused rebase rescheduled commit parent is unavailable", ErrMergeResolutionInvalid)
+	}
+	return gitexec.IsolatedMergeTreeIndex(ctx, path, strings.TrimSpace(srcParent), prev, src, func(_ func(...string) (string, error), diffIndex func(tree string) (string, error), merged string, mErr error) error {
+		if mErr != nil {
+			return fmt.Errorf("%w: paused rebase rescheduled commit has unexpected merge state", ErrMergeResolutionInvalid)
+		}
+		mergedTree, _, _ := strings.Cut(merged, "\x00")
+		diffRaw, dErr := diffIndex(strings.TrimSpace(mergedTree))
+		if dErr != nil {
+			return dErr
+		}
+		if strings.TrimSpace(diffRaw) != "" {
+			return fmt.Errorf("%w: paused rebase rescheduled pick has extra staged changes", ErrMergeResolutionInvalid)
+		}
+		return nil
+	})
+}
+
 func verifyStagedConflictResolution(ctx context.Context, path, prev, src string) error {
 	srcParent, pErr := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--quiet", src+"^")
 	if pErr != nil {
 		return fmt.Errorf("%w: paused rebase active commit parent is unavailable", ErrMergeResolutionInvalid)
 	}
-	return gitexec.IsolatedMergeTreeIndex(ctx, path, strings.TrimSpace(srcParent), prev, src, func(read func(...string) (string, error), diffIndex func(tree string) (string, error), merged string, mErr error) error {
-		prevTree, tErr := read("rev-parse", "--verify", prev+"^{tree}")
-		if tErr != nil {
-			return tErr
-		}
-		var mergedTree string
-		conflictedPaths := make(map[string]struct{})
+	return gitexec.IsolatedMergeTreeIndex(ctx, path, strings.TrimSpace(srcParent), prev, src, func(_ func(...string) (string, error), diffIndex func(tree string) (string, error), merged string, mErr error) error {
 		if mErr == nil {
-			t, _, _ := strings.Cut(merged, "\x00")
-			mergedTree = strings.TrimSpace(t)
-		} else {
-			var commandErr *gitexec.CommandError
-			if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
-				return fmt.Errorf("verify paused rebase staged resolution: %w", mErr)
+			mergedTree, _, _ := strings.Cut(merged, "\x00")
+			diffRaw, dErr := diffIndex(strings.TrimSpace(mergedTree))
+			if dErr != nil {
+				return dErr
 			}
-			header, _, _ := strings.Cut(commandErr.Output, "\x00\x00")
-			parts := strings.Split(header, "\x00")
-			if len(parts) == 0 || !gitexec.ValidHead(strings.TrimSpace(parts[0])) {
-				return fmt.Errorf("%w: paused rebase conflict merge tree is unavailable", ErrMergeResolutionInvalid)
+			if strings.TrimSpace(diffRaw) != "" {
+				return fmt.Errorf("%w: paused rebase staged resolution does not match clean merge tree", ErrMergeResolutionInvalid)
 			}
-			mergedTree = strings.TrimSpace(parts[0])
-			for _, name := range parts[1:] {
-				if name != "" {
-					conflictedPaths[name] = struct{}{}
-				}
-			}
-		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
-		if cErr != nil {
-			return cErr
-		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
-			}
-		}
-		if len(requiredClean) == 0 {
 			return nil
 		}
-		diffRaw, dErr := diffIndex(mergedTree)
-		if dErr != nil {
-			return dErr
-		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase staged resolution alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
-			}
+		var commandErr *gitexec.CommandError
+		if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
+			return fmt.Errorf("verify paused rebase staged resolution: %w", mErr)
 		}
 		return nil
 	})
@@ -1631,49 +1934,16 @@ func verifyReplayedCommit(ctx context.Context, path, prev, src, dst string) erro
 		if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
 			return fmt.Errorf("verify paused rebase replayed tree: %w", mErr)
 		}
-		header, _, _ := strings.Cut(commandErr.Output, "\x00\x00")
-		parts := strings.Split(header, "\x00")
-		if len(parts) == 0 || !gitexec.ValidHead(strings.TrimSpace(parts[0])) {
-			return fmt.Errorf("%w: paused rebase conflict merge tree is unavailable", ErrMergeResolutionInvalid)
-		}
-		mergedTree := strings.TrimSpace(parts[0])
-		conflictedPaths := make(map[string]struct{}, len(parts)-1)
-		for _, name := range parts[1:] {
-			if name != "" {
-				conflictedPaths[name] = struct{}{}
-			}
-		}
 		prevTree, tErr := read("rev-parse", "--verify", prev+"^{tree}")
 		if tErr != nil {
 			return tErr
 		}
-		cleanMergedRaw, cErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", strings.TrimSpace(prevTree), mergedTree)
-		if cErr != nil {
-			return cErr
+		dstTree, tErr := read("rev-parse", "--verify", dst+"^{tree}")
+		if tErr != nil {
+			return tErr
 		}
-		requiredClean := make(map[string]struct{})
-		for _, name := range strings.Split(strings.TrimSuffix(cleanMergedRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, conflicted := conflictedPaths[name]; !conflicted {
-				requiredClean[name] = struct{}{}
-			}
-		}
-		if len(requiredClean) == 0 {
-			return nil
-		}
-		diffPathsRaw, dErr := read("diff-tree", "--no-commit-id", "--name-only", "-r", "-z", mergedTree, dst+"^{tree}")
-		if dErr != nil {
-			return dErr
-		}
-		for _, name := range strings.Split(strings.TrimSuffix(diffPathsRaw, "\x00"), "\x00") {
-			if name == "" {
-				continue
-			}
-			if _, ok := requiredClean[name]; ok {
-				return fmt.Errorf("%w: paused rebase replayed commit alters or drops non-conflicted source files", ErrMergeResolutionInvalid)
-			}
+		if strings.TrimSpace(prevTree) == strings.TrimSpace(dstTree) {
+			return fmt.Errorf("%w: paused rebase replayed commit drops all changes", ErrMergeResolutionInvalid)
 		}
 		return nil
 	})

@@ -120,7 +120,7 @@ func (r *Runner) finalizeNativeCommit(ctx context.Context, req RunRequest, backe
 		return "", err
 	}
 	previous, err := loadStep(ctx, req.Execution, binding)
-	if err != nil || previous.Step != "" && previous.Source.WorktreeState != "dirty" && !req.repairResume && !issue.NoChangeNeeded {
+	if err != nil || previous.Step != "" && previous.Source.WorktreeState != "dirty" && binding.Source.WorktreeState != "dirty" && !req.repairResume && !issue.NoChangeNeeded {
 		return previous.FinalizedBaseSHA, err
 	}
 	agentBinding := binding

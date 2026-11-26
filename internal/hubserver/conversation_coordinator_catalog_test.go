@@ -24,6 +24,9 @@ import (
 )
 
 func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping Postgres hubserver test in -short mode")
+	}
 	t.Parallel()
 	var mu sync.Mutex
 	counts := map[string]int{}

@@ -1027,6 +1027,9 @@ func (l *failingRefreshLaneLedger) LaneObservation(context.Context, store.IssueI
 }
 
 func TestRefreshCurrentLaneEntriesPreservesCacheOnFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow lane cache refresh test in -short mode")
+	}
 	t.Parallel()
 	for _, lane := range []string{"Todo", "Backlog"} {
 		t.Run(lane, func(t *testing.T) {

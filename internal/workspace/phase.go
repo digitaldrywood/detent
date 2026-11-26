@@ -135,7 +135,7 @@ func (l *LocalGit) verifyRetainedItemPhaseCheckout(ctx context.Context, info Inf
 		return err
 	}
 	if paused {
-		if _, _, _, _, _, err := l.verifyPausedRebaseState(ctx, info.Path, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}); err != nil {
+		if _, err := l.verifyPausedRebaseState(ctx, info.Path, issue, MergePrepareOptions{TargetBranch: issue.ProgressBaseRef}); err != nil {
 			return err
 		}
 	}

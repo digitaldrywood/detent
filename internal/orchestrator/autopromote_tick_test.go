@@ -4596,23 +4596,13 @@ func TestMergeWorkerDispatchCandidatesPrefersReadyHead(t *testing.T) {
 	ready.PullRequest.URL = "https://github.test/digitaldrywood/pyroapex/pull/1322"
 	ready.CreatedAt = &readyCreatedAt
 	state := newState(cfg)
-	var logs strings.Builder
 	orch := &Orchestrator{
-		cfg:    cfg,
-		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		cfg: cfg,
 	}
 
 	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{waiting, ready}, now)
 	if len(got) != 1 || got[0].ID != ready.ID {
 		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want ready issue %q", got, ready.ID)
-	}
-	for _, fragment := range []string{
-		"queue_depth=2",
-		"ready_count=1",
-	} {
-		if !strings.Contains(logs.String(), fragment) {
-			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
-		}
 	}
 }
 

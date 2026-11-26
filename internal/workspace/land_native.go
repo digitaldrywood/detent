@@ -358,6 +358,7 @@ func auditIntegratedLanding(ctx context.Context, path, base, head string, opts L
 	if diff.BaseSHA != base || diff.HeadSHA != head {
 		return nil, errors.New("landing security audit diff differs from the integrated change")
 	}
+	diff.WorkspacePath = path
 	audit, err := opts.SecurityAudit(ctx, diff)
 	if err != nil {
 		return nil, err
