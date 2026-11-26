@@ -751,6 +751,12 @@ func RunNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T, factories
 				}
 			}
 			providerB.duringTurn = func() {
+				if test.planning {
+					lease := h.scheduler.RunExecution(issue.ID).Recovery().Lease
+					if lease.PolicyID != h.descriptor.ID {
+						t.Fatalf("recovered lease policy = %s, want automated planning policy %s", lease.PolicyID, h.descriptor.ID)
+					}
+				}
 				role := runner.RoleRework
 				if test.landing {
 					role = runner.RoleMerge
