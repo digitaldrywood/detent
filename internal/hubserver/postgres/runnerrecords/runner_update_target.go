@@ -54,19 +54,14 @@ const currentHoldOfferSQL = `(d.hold_revision=0
  OR (d.organization_hold AND d.hold_revision=o.revision AND d.version=o.version)
  OR (NOT d.organization_hold AND d.hold_organization_revision=COALESCE(o.revision,0) AND COALESCE(o.version,'')='' AND d.hold_revision=t.revision AND d.version=t.version))`
 
-const pauseScopeSQL = `p.organization_id=candidate.organization_id AND p.version=candidate.version AND p.rollout_revision=candidate.revision`
+const releasePausedSQL = `EXISTS(SELECT 1 FROM runner_update_pauses p
+ WHERE p.organization_id=candidate.organization_id AND p.version=candidate.version AND p.rollout_revision=candidate.revision)`
 
-const pausedForRunnerSQL = `EXISTS(SELECT 1 FROM runner_update_pauses p
- WHERE p.organization_id=candidate.organization_id AND p.runner_id=candidate.runner_id AND p.version=candidate.version AND p.rollout_revision=candidate.revision)
- OR COALESCE(
- (SELECT p.machine_id FROM runner_update_pauses p WHERE ` + pauseScopeSQL + ` ORDER BY p.machine_id ASC LIMIT 1)
- <> (SELECT p.machine_id FROM runner_update_pauses p WHERE ` + pauseScopeSQL + ` ORDER BY p.machine_id DESC LIMIT 1), false)`
-
-func (s *Store) RunnerVersionFailed(ctx context.Context, runner, version string) (bool, error) {
+func (s *Store) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
 	var failed bool
-	err := s.db.QueryRow(ctx, `SELECT `+pausedForRunnerSQL+`
- FROM (SELECT $1::text AS organization_id,$2::text AS runner_id,$3::text AS version,
- COALESCE((SELECT revision FROM runner_update_targets WHERE organization_id=$1 AND runner_id=''),0) AS revision) candidate`, s.organization, runner, version).Scan(&failed)
+	err := s.db.QueryRow(ctx, `SELECT `+releasePausedSQL+`
+ FROM (SELECT $1::text AS organization_id,$2::text AS version,
+ COALESCE((SELECT revision FROM runner_update_targets WHERE organization_id=$1 AND runner_id=''),0) AS revision) candidate`, s.organization, version).Scan(&failed)
 	return failed, s.mapError(ctx, err)
 }
 

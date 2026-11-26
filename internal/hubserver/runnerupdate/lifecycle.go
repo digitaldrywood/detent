@@ -127,9 +127,6 @@ func (s *Service) authorizeLifecycleUpdate(ctx context.Context, w tenantstore.Wr
 	if err != nil {
 		return runnerstore.Rollout{}, "", err
 	}
-	if state.Desired != nil && state.Desired.FollowHub {
-		state.DesiredAutomatic = true
-	}
 	urgent, err := w.RunnerUrgentUpdate(ctx)
 	if err != nil {
 		return runnerstore.Rollout{}, "", err

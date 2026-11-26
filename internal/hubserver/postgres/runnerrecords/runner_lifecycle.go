@@ -222,9 +222,9 @@ func (s *Store) storeRunnerLifecycle(ctx context.Context, id string, next *runne
 		if err := s.LockOrganizationUpdateTarget(ctx, true); err != nil {
 			return err
 		}
-		_, err = s.db.Exec(ctx, `INSERT INTO runner_update_pauses(organization_id,runner_id,version,rollout_revision,machine_id)
- SELECT organization_id,runner_id,$3,$4,machine_id FROM runner_identities WHERE organization_id=$1 AND runner_id=$2
- ON CONFLICT(organization_id,runner_id,version) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision,machine_id=EXCLUDED.machine_id
+		_, err = s.db.Exec(ctx, `INSERT INTO runner_update_pauses(organization_id,runner_id,version,rollout_revision)
+ VALUES($1,$2,$3,$4)
+ ON CONFLICT(organization_id,runner_id,version) DO UPDATE SET rollout_revision=EXCLUDED.rollout_revision
  WHERE runner_update_pauses.rollout_revision<EXCLUDED.rollout_revision`, s.organization, id, next.Version, next.rollout.OrganizationRevision)
 	}
 	return s.mapError(ctx, err)

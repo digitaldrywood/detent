@@ -69,8 +69,8 @@ func (s *session) RunnerUpdateTarget(ctx context.Context, id string) (runnerstor
 func (s *session) SetRunnerUpdateTarget(ctx context.Context, id string, target runnerstore.UpdateTarget) error {
 	return s.runnerRecords().SetRunnerUpdateTarget(ctx, id, target)
 }
-func (s *session) RunnerVersionFailed(ctx context.Context, runner, version string) (bool, error) {
-	return s.runnerRecords().RunnerVersionFailed(ctx, runner, version)
+func (s *session) RunnerVersionFailed(ctx context.Context, version string) (bool, error) {
+	return s.runnerRecords().RunnerVersionFailed(ctx, version)
 }
 
 func (s *session) LockOrganizationUpdateTarget(ctx context.Context, exclusive bool) error {

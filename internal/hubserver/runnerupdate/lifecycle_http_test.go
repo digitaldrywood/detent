@@ -247,7 +247,7 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 	for _, scope := range []string{"runner", "organization"} {
 		t.Run(scope, func(t *testing.T) {
 			hubVersion := "1.3.0"
-			f := newReceiptFixtureAtVersion(t, &hubVersion, 3)
+			f := newReceiptFixtureAtVersion(t, &hubVersion, 2)
 			heartbeat, ok := f.service.Repository.(interface {
 				WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
 			})
@@ -369,20 +369,22 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			if offer := read(1).Desired; offer == nil || !offer.Matches(*changedOffer) {
 				t.Errorf("returning to the changed build did not reuse its offer: %+v", offer)
 			}
-			for i := range 7 {
-				otherBuild := build
-				otherBuild.SHA256 = fmt.Sprintf("%064x", i)
-				revision := observe(1, otherBuild)
-				offer := read(1).Desired
-				if i < 6 && (offer == nil || offer.ExpectedBuildRevision != revision) || i == 6 && offer != nil {
-					t.Errorf("offer for additional build %d: %+v", i, offer)
+			if scope == "runner" {
+				for i := range 7 {
+					otherBuild := build
+					otherBuild.SHA256 = fmt.Sprintf("%064x", i)
+					revision := observe(1, otherBuild)
+					offer := read(1).Desired
+					if i < 6 && (offer == nil || offer.ExpectedBuildRevision != revision) || i == 6 && offer != nil {
+						t.Errorf("offer for additional build %d: %+v", i, offer)
+					}
 				}
+				if fleet := peerFleet(); fleet.Desired != nil {
+					t.Errorf("fleet returned a stale build offer at capacity: %+v", fleet)
+				}
+				peer.Sequence, peer.State, peer.TargetVersion = 7, runnerauth.LifecycleUpdating, "1.3.0"
+				report(1, lifecycleUpdateCommand{peer, changedOffer.ID}, http.StatusConflict)
 			}
-			if fleet := peerFleet(); fleet.Desired != nil {
-				t.Errorf("fleet returned a stale build offer at capacity: %+v", fleet)
-			}
-			peer.Sequence, peer.State, peer.TargetVersion = 7, runnerauth.LifecycleUpdating, "1.3.0"
-			report(1, lifecycleUpdateCommand{peer, changedOffer.ID}, http.StatusConflict)
 			observe(1, build)
 			if offer := read(1).Desired; offer == nil || !offer.Matches(*initialOffer) {
 				t.Errorf("known build lost its offer at capacity: %+v", offer)
@@ -420,17 +422,48 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 				report(index, lifecycleUpdateCommand{start, offer.ID}, http.StatusNoContent)
 			}
 			authorizeRollout(0)
+			peer.Sequence, peer.State, peer.TargetVersion = 8, runnerauth.LifecycleDraining, "1.3.0"
+			report(1, lifecycleUpdateCommand{peer, initialOffer.ID}, http.StatusNoContent)
 			authorizedFailure := starts(0, "authorized")
-			if own, peer := read(0), read(1); own.Desired != nil || peer.Desired == nil || peerFleet().Desired == nil {
-				t.Fatalf("a single runner failure affected the peer or left its own offer active: own=%+v peer=%+v", own.Desired, peer.Desired)
+			if own, peer := read(0), read(1); own.Desired != nil || peer.Desired != nil || peerFleet().Desired != nil {
+				t.Errorf("first runner failure left an offer active: own=%+v peer=%+v", own.Desired, peer.Desired)
 			}
-			if f.bindings[0].MachineID == f.bindings[2].MachineID {
-				t.Fatal("corroborating runners share a machine identity")
+			if scope == "organization" {
+				unofferedBuild := build
+				unofferedBuild.SHA256 = strings.Repeat("f", 64)
+				observe(1, unofferedBuild)
+				if err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+					state, err := r.RunnerUpdateState(t.Context(), f.bindings[1].RunnerID)
+					if err == nil && state.Desired != nil {
+						t.Errorf("created an offer for a new build during the pause: %+v", state.Desired)
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				observe(1, build)
 			}
-			authorizeRollout(2)
-			starts(2, "corroborated")
-			if view := read(1); view.Desired != nil {
-				t.Fatalf("failed rollout still offered: %+v", view.Desired)
+			activationAfterPause := peer
+			activationAfterPause.Sequence, activationAfterPause.State = 9, runnerauth.LifecycleUpdating
+			report(1, lifecycleUpdateCommand{activationAfterPause, initialOffer.ID}, http.StatusConflict)
+			report(1, lifecycleUpdateCommand{activationAfterPause, initialOffer.ID}, http.StatusConflict)
+			if err := f.service.Repository.ReadTenant(t.Context(), "org_startup", corestore.Serving, func(r tenantstore.Reader) error {
+				owner := r.(runnerstore.LifecycleReader)
+				current, err := owner.RunnerLifecycle(t.Context(), f.bindings[1].RunnerID)
+				if err != nil {
+					return err
+				}
+				history, err := owner.RunnerLifecycleHistory(t.Context(), f.bindings[1].RunnerID, 100)
+				if err != nil {
+					return err
+				}
+				if current.LifecycleReport != peer || len(history) < 2 || history[0].LifecycleReport != activationAfterPause ||
+					history[0].Refusal != runnerstore.LifecycleUpdateNotOffered || history[1].LifecycleReport != peer || history[1].Refusal != "" {
+					t.Fatalf("paused activation changed the owner or duplicated the refusal: current=%+v history=%+v", current, history)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
 			}
 			seedMonotonicRequest(t, f, 1, runnerauth.UpdateRequest{ID: "urgent", RequestedAt: now, Service: "detent", Version: "1.3.0", Release: true, Urgent: true})
 			if view := read(1); view.Desired != nil {

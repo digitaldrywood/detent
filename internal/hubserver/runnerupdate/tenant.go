@@ -98,7 +98,7 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 		return nil
 	}
 	probe := &runnerauth.UpdateRequest{Version: version}
-	allowed, err := offerAllowedForTarget(ctx, writer, identity.RunnerID, probe, version, held)
+	allowed, err := offerAllowedForTarget(ctx, writer, probe, version, held)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 	if err != nil {
 		return err
 	}
-	urgentAllowed, err := offerAllowedForTarget(ctx, writer, identity.RunnerID, urgent.Request, version, held)
+	urgentAllowed, err := offerAllowedForTarget(ctx, writer, urgent.Request, version, held)
 	if err != nil {
 		return err
 	}
@@ -179,6 +179,13 @@ func (s *Service) View(ctx context.Context, scope hubapi.Scope, runnerID string)
 			return err
 		}
 		view = runner.UpdateView(now)
+		if view.Status == "ready" && view.Observation != nil {
+			receipt := view.Observation.Receipt
+			if receipt != nil && receipt.Status == "running" && receipt.Request.FollowHub && receipt.Applied != nil &&
+				view.Observation.Running.Matches(*receipt.Applied) {
+				view.Status = receipt.Status
+			}
+		}
 		view.TargetVersion, view.TargetHeld, err = EffectiveTarget(ctx, reader, runnerID, Target(s.deps.Version))
 		return err
 	})

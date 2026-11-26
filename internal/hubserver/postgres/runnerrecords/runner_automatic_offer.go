@@ -8,7 +8,7 @@ import (
 
 const automaticOfferSlots = 8
 
-const automaticOfferSQL = `(d.automatic_offer_slot IS NOT NULL)`
+const automaticOfferSQL = `(d.automatic_offer_slot IS NOT NULL OR d.follow_hub)`
 
 const currentAutomaticOfferSQL = `(d.automatic_offer_slot IS NULL
  OR (d.automatic_organization_revision=COALESCE(o.revision,0)

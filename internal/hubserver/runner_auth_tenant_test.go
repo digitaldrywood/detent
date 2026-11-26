@@ -780,6 +780,24 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 			if !routing.Routing.UpdateRequest.RequestedAt.Equal(view.Desired.RequestedAt) {
 				t.Fatalf("follow-Hub response request time=%s, persisted=%s", routing.Routing.UpdateRequest.RequestedAt, view.Desired.RequestedAt)
 			}
+			heartbeatPath := "/api/v2/organizations/" + string(organization.ID) + "/projects/" + string(project.ID) + "/machines/" + runner.machineID + "/heartbeat"
+			withdrawn := view.Desired.ID
+			service.config.Version = "v0.174.1"
+			rollback := performHubAPIRequest(t, service, http.MethodPost, heartbeatPath, runner.secret, heartbeatPayload)
+			requireNativeStatus(t, rollback, http.StatusOK)
+			var rollbackRouting runnerauth.RoutingSnapshot
+			decodeHubResponse(t, rollback, &rollbackRouting)
+			if rollbackRouting.Routing.UpdateRequest != nil || readUpdate().Desired != nil {
+				t.Errorf("legacy heartbeat kept the withdrawn follow-Hub offer: %+v", rollbackRouting.Routing.UpdateRequest)
+			}
+			service.config.Version = "v0.174.2"
+			reissue := performHubAPIRequest(t, service, http.MethodPost, heartbeatPath, runner.secret, heartbeatPayload)
+			requireNativeStatus(t, reissue, http.StatusOK)
+			view = readUpdate()
+			if view.Desired == nil || !view.Desired.FollowHub || view.Desired.ID == withdrawn {
+				t.Fatalf("reissued legacy offer reused a withdrawn pointer: %+v", view.Desired)
+			}
+			routing.Routing.UpdateRequest = view.Desired
 			target := runnerauth.BuildEvidence{Version: "0.174.2", Commit: strings.Repeat("c", 40), Source: "release", SHA256: strings.Repeat("d", 64), OS: "darwin", Architecture: "arm64", VerifiedRelease: true, ObservedAt: clock.value}
 			updateReport.Running = target
 			updateReport.AvailableVersion = "0.174.3"
@@ -791,9 +809,13 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 			requireNativeStatus(t, settled, http.StatusOK)
 			var settledRouting runnerauth.RoutingSnapshot
 			decodeHubResponse(t, settled, &settledRouting)
+			if settledRouting.Routing.UpdateRequest != nil {
+				t.Fatalf("settled legacy receipt was advertised as a withdrawn update: %+v", settledRouting.Routing.UpdateRequest)
+			}
 			view = readUpdate()
-			if view.Status != "running" || view.Desired == nil || view.Desired.ID != routing.Routing.UpdateRequest.ID {
-				t.Fatalf("settled follow-Hub update status=%s desired=%+v observation=%+v receipt=%+v", view.Status, view.Desired, view.Observation, view.Observation.Receipt)
+			if view.Status != "running" || view.Desired != nil || view.Observation == nil || view.Observation.Receipt == nil ||
+				view.Observation.Receipt.Request.ID != routing.Routing.UpdateRequest.ID {
+				t.Fatalf("settled follow-Hub update status=%s desired=%+v observation=%+v", view.Status, view.Desired, view.Observation)
 			}
 			manual := runnerUpdateChange{ExpectedRevision: view.Revision, ExpectedBuildRevision: updateReport.Revision, Service: "detent", Version: "0.174.3", Release: true, FromRelease: true, Confirm: true, IdempotencyKey: "pg-runner-update"}
 			applyPath := runnerUpdatePath + "/apply"
@@ -1181,8 +1203,8 @@ func TestTenantRunnerHeartbeatHandlesMultipleLiveAssignedLeases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 27 || heartbeats != 13 {
-		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=27/13", mutations, heartbeats)
+	if mutations != 29 || heartbeats != 15 {
+		t.Fatalf("runner protocol usage api_mutations=%d heartbeats=%d want=29/15", mutations, heartbeats)
 	}
 }
 

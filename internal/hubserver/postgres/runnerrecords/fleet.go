@@ -8,8 +8,8 @@ import (
 
 func (s *Store) FilterFleetOffers(ctx context.Context, records []runnerstore.FleetRecord, indices map[string]int, ids []string) error {
 	rows, err := s.db.Query(ctx, `SELECT r.runner_id,COALESCE(NULLIF(o.version,''),NULLIF(t.version,''),''),
- (SELECT `+pausedForRunnerSQL+` FROM (VALUES (r.organization_id,r.runner_id,d.version,COALESCE(o.revision,0))) candidate(organization_id,runner_id,version,revision)),
- (SELECT `+pausedForRunnerSQL+` FROM (VALUES (r.organization_id,r.runner_id,u.version,COALESCE(o.revision,0))) candidate(organization_id,runner_id,version,revision)),
+ (SELECT `+releasePausedSQL+` FROM (VALUES (r.organization_id,d.version,COALESCE(o.revision,0))) candidate(organization_id,version,revision)),
+ (SELECT `+releasePausedSQL+` FROM (VALUES (r.organization_id,u.version,COALESCE(o.revision,0))) candidate(organization_id,version,revision)),
  COALESCE(u.version,''),COALESCE(`+currentHoldOfferSQL+` AND `+currentAutomaticOfferSQL+`,false),
  COALESCE(`+automaticOfferSQL+`,false)
  FROM runner_identities r

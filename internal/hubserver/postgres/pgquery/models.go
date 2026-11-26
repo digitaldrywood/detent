@@ -5570,7 +5570,6 @@ type RunnerUpdatePause struct {
 	RunnerID        string
 	Version         string
 	RolloutRevision int64
-	MachineID       string
 }
 
 type RunnerUpdateReceipt struct {
