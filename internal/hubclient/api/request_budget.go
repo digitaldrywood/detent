@@ -13,7 +13,14 @@ const requestBudgetCode = "runner_request_budget"
 
 type requestGuard struct {
 	done  <-chan struct{}
-	cause func() error
+	check func() error
+}
+
+func (g requestGuard) err() error {
+	if g.check == nil {
+		return nil
+	}
+	return g.check()
 }
 
 func (c *Client) withinRequestBudget(ctx context.Context, guard requestGuard, method, path string, replayMutation bool, send func() error) error {
@@ -21,11 +28,6 @@ func (c *Client) withinRequestBudget(ctx context.Context, guard requestGuard, me
 	for {
 		if err := c.waitRequestBudget(ctx, guard, method, path); err != nil {
 			return err
-		}
-		select {
-		case <-guard.done:
-			return guard.cause()
-		default:
 		}
 		err := send()
 		var apiErr *APIError
@@ -42,9 +44,12 @@ func (c *Client) withinRequestBudget(ctx context.Context, guard requestGuard, me
 func (c *Client) waitRequestBudget(ctx context.Context, guard requestGuard, method, path string) error {
 	path, _, _ = strings.Cut(path, "?")
 	if method == http.MethodPost && (strings.HasSuffix(path, "/claims") || strings.HasSuffix(path, "/heartbeat") || strings.Contains(path, "/leases/") || strings.Contains(path, "/runners/") && strings.HasSuffix(path, "/renew")) {
-		return nil
+		return guard.err()
 	}
 	for {
+		if err := guard.err(); err != nil {
+			return err
+		}
 		c.requestBudgetMu.Lock()
 		delay := time.Until(*c.requestBudgetWindow(path))
 		c.requestBudgetMu.Unlock()
@@ -58,7 +63,7 @@ func (c *Client) waitRequestBudget(ctx context.Context, guard requestGuard, meth
 			return ctx.Err()
 		case <-guard.done:
 			timer.Stop()
-			return guard.cause()
+			guard.done = nil
 		case <-timer.C:
 		}
 	}
