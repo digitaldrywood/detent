@@ -240,17 +240,32 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
-    (
-        asset_log=$(mktemp "${TMPDIR:-/tmp}/detent-landing-assets.XXXXXX")
-        trap 'rm -f "$asset_log"' EXIT
-        if make -j1 assets generate-docs TEST_PROCS="$procs" >"$asset_log" 2>&1; then
-            printf 'Landing assets and generated docs built successfully.\n'
-        else
-            status=$?
-            cat "$asset_log"
-            exit "$status"
-        fi
-    )
+    python3 - "$procs" <<'PY'
+import subprocess
+import sys
+
+limit = 16 * 1024
+tail = bytearray()
+truncated = False
+with subprocess.Popen(
+    ["make", "-j1", "assets", "generate-docs", f"TEST_PROCS={sys.argv[1]}"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+) as build:
+    while chunk := build.stdout.read(8192):
+        tail.extend(chunk)
+        if len(tail) > limit:
+            truncated = True
+            del tail[:-limit]
+    status = build.wait()
+
+if status:
+    if truncated:
+        sys.stdout.buffer.write(b"[earlier asset build output truncated]\n")
+    sys.stdout.buffer.write(tail)
+    sys.exit(status if status > 0 else 128 - status)
+PY
+    printf 'Landing assets and generated docs built successfully.\n'
 fi
 go build -p "$procs" ./...
 
