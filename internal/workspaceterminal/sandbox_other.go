@@ -14,3 +14,5 @@ func validateSandboxRoot(string) error { return ErrSandboxIsolation }
 func sandboxHostProbe(context.Context) error { return ErrSandboxIsolation }
 
 func sandboxCommand(*exec.Cmd, string, []string, string) error { return ErrSandboxIsolation }
+
+func sandboxActionCommand(*exec.Cmd) error { return ErrSandboxIsolation }

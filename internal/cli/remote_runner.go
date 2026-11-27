@@ -45,7 +45,7 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 		workspaceSupport = workspacerunner.DefaultSupport
 	}
 	support := workspaceSupport()
-	support.Terminal = support.Terminal && support.TerminalIsolation() == workspacesession.IsolationSandbox
+	support.RequireSandbox = true
 	capabilities := workspaceLaneCapabilities(ctx, cfg.Global, support)
 	var serving atomic.Int64
 	var workspaceCapabilities func() workspacesession.Capabilities

@@ -35,6 +35,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
+	"github.com/digitaldrywood/detent/internal/workspaceterminal"
 )
 
 // Error is a refusal in the exec channel's own vocabulary. The code is what
@@ -75,12 +76,13 @@ type Service struct {
 	// shell is the project's configured shell. It is the project's choice and
 	// not the runner's guess: a command an author wrote for bash must not be
 	// handed to cmd because the runner defaulted.
-	shell  string
-	logger *slog.Logger
+	shell     string
+	sandboxed bool
+	logger    *slog.Logger
 }
 
 // New prepares a service for a worktree. It starts no process.
-func New(worktree string, shellName string, logger *slog.Logger) (*Service, error) {
+func New(worktree string, shellName string, sandboxed bool, logger *slog.Logger) (*Service, error) {
 	canonical, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %q: %w", worktree, err)
@@ -92,13 +94,19 @@ func New(worktree string, shellName string, logger *slog.Logger) (*Service, erro
 	if !info.IsDir() {
 		return nil, fmt.Errorf("worktree %q is not a directory", canonical)
 	}
+	if sandboxed {
+		if err := workspaceterminal.ValidateWorktreeSandbox(canonical); err != nil {
+			return nil, err
+		}
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Service{
-		worktree: canonical,
-		shell:    shell.Normalize(shellName),
-		logger:   logger.With("component", "workspace_exec"),
+		worktree:  canonical,
+		shell:     shell.Normalize(shellName),
+		sandboxed: sandboxed,
+		logger:    logger.With("component", "workspace_exec"),
 	}, nil
 }
 
@@ -152,7 +160,13 @@ func (s *Service) Run(ctx context.Context, command string, emit func(workspacese
 	// for cmd on Windows.
 	cmd := shell.Command(runCtx, trimmed, s.shell)
 	cmd.Dir = s.worktree
-	cmd.Env = scrubEnvironment(os.Environ(), s.worktree)
+	if s.sandboxed {
+		if err := workspaceterminal.ConfineActionCommand(cmd); err != nil {
+			return Result{}, refuse(workspacesession.CodeUnsupported, err)
+		}
+	} else {
+		cmd.Env = scrubEnvironment(os.Environ(), s.worktree)
+	}
 	// Stdin is left unset, which is the null device. An action runs with nobody
 	// watching (run-on-worktree-creation), so a command that decided to prompt
 	// must read EOF rather than wait for a person who is not there.

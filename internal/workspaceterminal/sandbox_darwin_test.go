@@ -121,7 +121,7 @@ func TestSandboxChildCannotDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(terminal.Close)
-	command := "GOCOVERDIR=" + shellQuote(root) + " " + shellQuote(helper) + " -test.run='^TestSandboxChildHelper$' -- terminal-sandbox-helper; exit $?\n"
+	command := "GOCOVERDIR=. ./helper -test.run='^TestSandboxChildHelper$' -- terminal-sandbox-helper; exit $?\n"
 	if err := terminal.Write([]byte(command)); err != nil {
 		t.Fatal(err)
 	}

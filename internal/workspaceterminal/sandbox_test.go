@@ -45,7 +45,7 @@ func TestSandboxEnvironment(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "runner-credential")
 	t.Setenv("SSH_AUTH_SOCK", "/runner/ssh-agent")
 	t.Setenv("BASH_ENV", "/runner/startup")
-	got := environmentMap(sandboxEnvironment("/worktree", 80, 24))
+	got := environmentMap(sandboxEnvironment("/worktree"))
 	for _, key := range []string{"GITHUB_TOKEN", "SSH_AUTH_SOCK", "BASH_ENV"} {
 		if _, found := got[key]; found {
 			t.Fatalf("sandbox inherited %s", key)
