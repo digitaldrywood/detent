@@ -141,15 +141,14 @@ func withCommandEnvironment(ctx context.Context, dir string, env []string, fileO
 }
 
 func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
-	return commandshell.RunCommand(ctx, cmd)
-}
-
-func PrepareLocalInspection(cmd *exec.Cmd) bool {
-	if len(cmd.Args) <= 3 || cmd.Args[0] != "git" || cmd.Args[1] != "-C" || !localInspection(cmd.Args[3:]) {
-		return false
+	if commandshell.HasCommandStarter(ctx) {
+		return commandshell.RunCommand(ctx, cmd)
 	}
-	prepareLocalInspection(cmd)
-	return true
+	runErr, cleanupErr := procgroup.RunOwned(ctx, cmd)
+	if runErr == exec.ErrWaitDelay && ctx.Err() == nil {
+		runErr = nil
+	}
+	return errors.Join(runErr, cleanupErr)
 }
 
 func prepareLocalInspection(cmd *exec.Cmd) {
@@ -220,98 +219,6 @@ func WithDiffInspection(ctx context.Context, path, index, head string, inspect f
 		cmd.Args = slices.Insert(cmd.Args, 3, options...)
 		return procgroup.StartLocalInspection(ctx, cmd)
 	}))
-}
-
-func localInspection(args []string) bool {
-	switch args[0] {
-	case "rev-parse", "merge-base", "show-ref", "check-ref-format":
-		return true
-	case "config":
-		return len(args) == 3 && args[1] == "--get"
-	case "remote":
-		return len(args) > 2 && args[1] == "get-url"
-	case "worktree":
-		return len(args) > 1 && args[1] == "list"
-	case "cat-file":
-		return len(args) == 3 && (args[1] == "-e" || args[1] == "-t" || args[1] == "-s" || args[1] == "blob") ||
-			len(args) == 2 && args[1] == "--batch-check=%(objectname) %(objecttype)"
-	case "rev-list":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--count", "--parents", "-n", "--not", "--branches", "--tags", "--remotes", "--single-worktree", "--all", "--objects", "--no-object-names", "--disk-usage":
-			default:
-				if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--exclude=refs/") {
-					return false
-				}
-			}
-		}
-		return true
-	case "for-each-ref":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--count=1", "--contains", "--format=%(objectname)", "--format=%(refname)", "--format=update %(refname) %(objectname)":
-			default:
-				if strings.HasPrefix(arg, "-") {
-					return false
-				}
-			}
-		}
-		return true
-	case "ls-files":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--others", "--exclude-standard", "--cached", "--stage", "-z":
-			case "--":
-				return true
-			default:
-				return false
-			}
-		}
-		return true
-	case "ls-tree":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "-z", "-r", "-t", "--name-only", "--format=%(objecttype)%x09%(objectname)%x09%(path)":
-			case "--":
-				return true
-			default:
-				if strings.HasPrefix(arg, "-") {
-					return false
-				}
-			}
-		}
-		return true
-	case "diff-tree":
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--root", "--no-commit-id", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "-r", "-m", "-z":
-			case "--":
-				return true
-			default:
-				if strings.HasPrefix(arg, "-") {
-					return false
-				}
-			}
-		}
-		return true
-	case "diff":
-		cached := false
-		for _, arg := range args[1:] {
-			switch arg {
-			case "--cached", "--staged":
-				cached = true
-			case "--no-ext-diff", "--no-textconv", "--name-only", "--stat", "--numstat", "--raw", "--no-renames", "-z":
-			case "--":
-				return cached
-			default:
-				if strings.HasPrefix(arg, "-") {
-					return false
-				}
-			}
-		}
-		return cached
-	}
-	return false
 }
 
 const DefaultRemote = "origin"
@@ -433,7 +340,7 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	stderr := &boundedLimitWriter{limit: 64 << 10}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	waitErr := commandshell.RunCommand(cmdCtx, cmd)
+	waitErr := RunCommand(cmdCtx, cmd)
 
 	output, truncated := stdout.snapshot()
 	if truncated {

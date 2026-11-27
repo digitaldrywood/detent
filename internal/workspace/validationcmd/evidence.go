@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
@@ -112,7 +113,13 @@ func (command Inputs) probe(ctx context.Context, text string) ([]byte, error) {
 		return nil, errors.New("validation shell arguments differ")
 	}
 	probe.Dir, probe.Env, probe.WaitDelay = command.Dir, slices.Clone(command.Env), gitexec.WaitDelay
-	return commandshell.CommandOutput(ctx, probe, false)
+	if commandshell.HasCommandStarter(ctx) {
+		return commandshell.CommandOutput(ctx, probe, false)
+	}
+	var out bytes.Buffer
+	probe.Stdout = &out
+	runErr, cleanupErr := procgroup.RunOwned(ctx, probe)
+	return out.Bytes(), errors.Join(runErr, cleanupErr)
 }
 
 func (command Inputs) Environment(ctx context.Context) *gate.CommandEvidence {

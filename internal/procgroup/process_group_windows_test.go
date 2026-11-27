@@ -209,33 +209,6 @@ func TestWindowsJobTree(t *testing.T) {
 	}
 }
 
-func TestWindowsOwnedLaunchReportsRollbackFailure(t *testing.T) {
-	refused := errors.New("registration refused")
-	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestWindowsJobHelper$")
-	var cleanupErr error
-	wait, err := startOwnedCommand(t.Context(), cmd, func(_ context.Context, _ *exec.Cmd, id Identity) (func(error, error) error, error) {
-		windowsJobs.Lock()
-		process := windowsJobs.byPID[id.GroupID].process
-		windowsJobs.Unlock()
-		if err := windows.CloseHandle(process); err != nil {
-			return nil, err
-		}
-		return func(launch, cleanup error) error {
-			cleanupErr = cleanup
-			if launch != refused && !errors.Is(launch, refused) {
-				t.Errorf("launch refusal = %v", launch)
-			}
-			if errors.Is(launch, windows.ERROR_INVALID_HANDLE) {
-				t.Errorf("cleanup failure was mixed into launch refusal: %v", launch)
-			}
-			return errors.Join(launch, cleanup)
-		}, refused
-	})
-	if wait != nil || !errors.Is(err, refused) || !errors.Is(cleanupErr, windows.ERROR_INVALID_HANDLE) {
-		t.Fatalf("launch = %v, owner cleanup = %v", err, cleanupErr)
-	}
-}
-
 func TestWindowsJobStart(t *testing.T) {
 	for _, mode := range []string{"assigned before resume", "assignment failure", "resume failure"} {
 		t.Run(mode, func(t *testing.T) {

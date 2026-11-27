@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/shell"
 )
 
 func TestRSSInspectionDoesNotRegisterCommand(t *testing.T) {
@@ -16,10 +18,10 @@ func TestRSSInspectionDoesNotRegisterCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithCommandOwner(t.Context(), func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error) {
+	ctx := shell.WithCommandStarter(t.Context(), func(context.Context, *exec.Cmd) (func() error, error) {
 		t.Error("RSS inspection registered a host command")
 		return nil, errors.New("unexpected host command")
-	}, func(*exec.Cmd) bool { return false })
+	})
 	if rss, err := RSS(ctx, identity); err != nil || rss == 0 {
 		t.Fatalf("RSS = %d, %v", rss, err)
 	}

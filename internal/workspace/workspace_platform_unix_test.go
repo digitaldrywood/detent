@@ -2043,14 +2043,7 @@ exit %d
 			}()
 			defer func() {
 				cancel()
-				defer func() { <-joined }()
-				if _, err := release.WriteString("release\n"); err != nil {
-					t.Errorf("release descendant: %v", err)
-				}
-				testenv.WaitUntil(t, t.Context(), func() error {
-					_, err := os.Stat(donePath)
-					return err
-				})
+				<-joined
 			}()
 
 			var got result
@@ -2121,8 +2114,10 @@ func TestGitQueriesCompleteWhenDescendantRetainsOutput(t *testing.T) {
 			}
 			defer release.Close()
 			donePath := filepath.Join(dir, "done")
+			pidPath := filepath.Join(dir, "descendant.pid")
 			script := fmt.Sprintf(`#!/bin/sh
 ( read -r release < "$DETENT_PIPE_RELEASE"; printf done > "$DETENT_PIPE_DONE" ) &
+printf '%%s\n' "$!" > "$DETENT_DESCENDANT_PID"
 printf '%%s\n' "$DETENT_COMMON_DIR"
 exit %d
 `, tt.exitCode)
@@ -2132,26 +2127,23 @@ exit %d
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("DETENT_PIPE_RELEASE", fifoPath)
 			t.Setenv("DETENT_PIPE_DONE", donePath)
+			t.Setenv("DETENT_DESCENDANT_PID", pidPath)
 			t.Setenv("DETENT_COMMON_DIR", dir)
 			scratchDir := t.TempDir()
 			t.Setenv("TMPDIR", scratchDir)
 
 			output, commandErr := tt.probe(t.Context(), dir)
-			if _, err := release.WriteString("release\n"); err != nil {
-				t.Fatal(err)
+			rawPID, err := os.ReadFile(pidPath)
+			if err != nil {
+				t.Fatalf("read descendant pid: %v", err)
 			}
-			deadline := time.After(10 * time.Second)
-			ticker := time.NewTicker(10 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				if _, err := os.Stat(donePath); err == nil {
-					break
-				}
-				select {
-				case <-deadline:
-					t.Fatal("descendant did not acknowledge release")
-				case <-ticker.C:
-				}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+			if err != nil || pid <= 0 {
+				t.Fatalf("invalid descendant pid %q: %v", string(rawPID), err)
+			}
+			assertProcessRetired(t, pid)
+			if _, err := os.Stat(donePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("descendant completed unexpectedly: %v", err)
 			}
 			if tt.exitCode != 0 {
 				var gitErr *CommandError

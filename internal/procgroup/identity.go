@@ -5,11 +5,9 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 	"github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -131,20 +129,6 @@ func StartRollbackCleanup(err error) error {
 	return nil
 }
 
-type CommandOwner func(context.Context, *exec.Cmd, Identity) (func(error, error) error, error)
-
-func WithCommandOwner(ctx context.Context, owner CommandOwner, prepareLocalInspection func(*exec.Cmd) bool) context.Context {
-	return shell.WithCommandStarter(ctx, func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
-		if owner == nil {
-			return nil, errors.New("native command has no process owner")
-		}
-		if prepareLocalInspection(cmd) {
-			return StartLocalInspection(ctx, cmd)
-		}
-		return startOwnedCommand(ctx, cmd, owner)
-	})
-}
-
 func StartLocalInspection(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
 	Configure(ctx, cmd)
 	if err := Start(cmd); err != nil {
@@ -153,32 +137,34 @@ func StartLocalInspection(ctx context.Context, cmd *exec.Cmd) (func() error, err
 	return func() error { return Wait(cmd) }, nil
 }
 
-func startOwnedCommand(ctx context.Context, cmd *exec.Cmd, owner CommandOwner) (func() error, error) {
+func StartOwned(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
 	Configure(ctx, cmd)
-	var finish func(error, error) error
-	var observed Identity
-	launch := WithStartAcknowledgement(ctx, func(id Identity) (err error) {
-		finish, err = owner(ctx, cmd, id)
-		observed = id
-		if err == nil && finish == nil {
-			return errors.New("native command has no registered session")
-		}
-		return err
+	var identity Identity
+	launch := WithStartAcknowledgement(ctx, func(observed Identity) error {
+		identity = observed
+		return nil
 	})
 	if err := StartAuthorized(launch, cmd); err != nil {
-		if finish != nil {
-			var rollback launchRollbackError
-			if errors.As(err, &rollback) {
-				err = finish(rollback.launch, rollback.cleanup)
-			} else {
-				err = finish(err, nil)
-			}
-		}
 		return nil, err
 	}
-	complete := sessiontimeout.ObserveOwnedCommand(ctx, strconv.Itoa(observed.PID)+"/"+strconv.FormatInt(observed.StartedAt.UnixNano(), 10))
 	return func() error {
-		defer complete()
-		return finish(WaitOwned(ctx, cmd, observed))
+		runErr, cleanupErr := WaitOwned(ctx, cmd, identity)
+		if runErr == exec.ErrWaitDelay && ctx.Err() == nil {
+			runErr = nil
+		}
+		return errors.Join(runErr, cleanupErr)
 	}, nil
+}
+
+func RunOwned(ctx context.Context, cmd *exec.Cmd) (error, error) {
+	Configure(ctx, cmd)
+	var identity Identity
+	launch := WithStartAcknowledgement(ctx, func(observed Identity) error {
+		identity = observed
+		return nil
+	})
+	if err := StartAuthorized(launch, cmd); err != nil {
+		return err, nil
+	}
+	return WaitOwned(ctx, cmd, identity)
 }

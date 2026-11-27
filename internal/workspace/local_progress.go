@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
@@ -292,18 +294,25 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 	diff.WaitDelay = workspaceCommandWaitDelay
 	var diffError bytes.Buffer
 	diff.Stderr = &diffError
-	patch, err := diff.StdoutPipe()
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		return "", err
 	}
-	wait, err := commandshell.StartCommand(ctx, diff)
+	diff.Stdout = pw
+	wait, err := procgroup.StartOwned(ctx, diff)
+	_ = pw.Close()
 	if err != nil {
+		_ = pr.Close()
 		return "", err
 	}
+	diffDone := make(chan error, 1)
+	go func() {
+		diffDone <- wait()
+	}()
 	identity := exec.CommandContext(ctx, "git", "patch-id", "--verbatim")
 	identity.Dir = path
 	identity.WaitDelay = workspaceCommandWaitDelay
-	bounded := &io.LimitedReader{R: patch, N: limit + 1}
+	bounded := &io.LimitedReader{R: pr, N: limit + 1}
 	identity.Stdin = bounded
 	output, patchErr := commandshell.CommandOutput(ctx, identity, false)
 	if bounded.N == 0 {
@@ -312,8 +321,8 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 	if patchErr != nil {
 		cancel()
 	}
-	closeErr := patch.Close()
-	diffErr := wait()
+	closeErr := pr.Close()
+	diffErr := <-diffDone
 	if err := errors.Join(patchErr, closeErr, diffErr); err != nil {
 		return "", fmt.Errorf("read local progress patch: %w: %s", err, strings.TrimSpace(diffError.String()))
 	}

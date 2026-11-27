@@ -3,7 +3,6 @@
 package procgroup
 
 import (
-	"context"
 	"errors"
 	"io"
 	"os"
@@ -12,10 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"testing/synctest"
-	"time"
-
-	"github.com/digitaldrywood/detent/internal/sessiontimeout"
 )
 
 func TestStartAuthorizedWaitsForAcknowledgement(t *testing.T) {
@@ -76,49 +71,6 @@ func TestStartAuthorizedWaitsForAcknowledgement(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestOwnedCommandSuspendsProviderIdleUntilItsDeadline(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		lifetime := sessiontimeout.Start(t.Context(), time.Minute, 5*time.Minute, nil)
-		defer lifetime.Close()
-		commandContext, cancel := context.WithTimeout(lifetime.Context(), 2*time.Minute)
-		defer cancel()
-		stdin, release, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer release.Close()
-		defer stdin.Close()
-		cmd := exec.CommandContext(commandContext, os.Args[0], "-test.run=^TestStartAuthorizedWorker$")
-		cmd.Env = append(os.Environ(), "DETENT_START_AUTHORIZED_TEST="+filepath.Join(t.TempDir(), "effect"), "GOCOVERDIR="+t.TempDir())
-		cmd.Stdin = stdin
-		var identity Identity
-		wait, err := startOwnedCommand(commandContext, cmd, func(_ context.Context, _ *exec.Cmd, id Identity) (func(error, error) error, error) {
-			identity = id
-			return func(err, cleanupErr error) error { return errors.Join(err, cleanupErr) }, nil
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() {
-			if cmd.ProcessState == nil {
-				cancel()
-				_ = wait()
-			}
-		}()
-		<-lifetime.Context().Done()
-		var timeout *sessiontimeout.Error
-		if err := lifetime.Result(nil); !errors.As(err, &timeout) || timeout.Kind != sessiontimeout.CommandDeadline || timeout.Limit != 2*time.Minute {
-			t.Fatalf("timeout = %v, want the two-minute command deadline", err)
-		}
-		if err := wait(); err == nil {
-			t.Fatal("deadline did not terminate the blocked process")
-		}
-		if alive, err := Alive(identity); alive || err != nil {
-			t.Fatalf("command was not retired: alive=%t error=%v", alive, err)
-		}
-	})
 }
 
 func TestStartAuthorizedWorker(t *testing.T) {
