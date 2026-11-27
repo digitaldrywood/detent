@@ -268,6 +268,32 @@ func localInspection(args []string) bool {
 			}
 		}
 		return true
+	case "ls-tree":
+		for _, arg := range args[1:] {
+			switch arg {
+			case "-z", "-r", "-t", "--name-only", "--format=%(objecttype)%x09%(objectname)%x09%(path)":
+			case "--":
+				return true
+			default:
+				if strings.HasPrefix(arg, "-") {
+					return false
+				}
+			}
+		}
+		return true
+	case "diff-tree":
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--root", "--no-commit-id", "--name-only", "--no-renames", "--no-ext-diff", "--no-textconv", "-r", "-m", "-z":
+			case "--":
+				return true
+			default:
+				if strings.HasPrefix(arg, "-") {
+					return false
+				}
+			}
+		}
+		return true
 	case "diff":
 		cached := false
 		for _, arg := range args[1:] {
@@ -315,10 +341,7 @@ func ErrorOutput(err error) string {
 
 func InitScratch(ctx context.Context, dir string, options ...string) error {
 	args := append([]string{"init", "--template="}, options...)
-	_, err := withCommandEnvironment(ctx, dir, nil, false, "", func(ctx context.Context, cmd *exec.Cmd) error {
-		procgroup.Configure(ctx, cmd)
-		return RunCommand(ctx, cmd)
-	}, args...)
+	_, err := withCommandEnvironment(ctx, dir, nil, false, "", runLocalInspection, args...)
 	return err
 }
 

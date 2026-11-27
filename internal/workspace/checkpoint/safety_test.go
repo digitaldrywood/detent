@@ -12,7 +12,7 @@ import (
 func TestCheckpointGitReadFailures(t *testing.T) {
 	t.Parallel()
 	synthetic := []string{"ghp_" + "abcdefghijklmnopqrstuvwxyz123456789", "AKIA" + "1234567890123456", "AKIA" + "1234567890ABCDEF"}
-	for _, scenario := range []string{"missing blob", "unreadable entry", "unreadable blob", "symlink history", "invalid entry", "empty remote", "invalid remote", "unreadable remote", "unrelated base", "unreadable history", "unreadable diff", "empty commit", "synthetic fixtures", "altered synthetic", "altered email aws fixture", "altered slack aws fixture", "synthetic and credential", "credential before synthetic", "private key", "github token", "github fine grained token", "aws key", "project key"} {
+	for _, scenario := range []string{"missing blob", "unreadable entry", "unreadable blob", "symlink history", "invalid entry", "unmerged index entry", "empty remote", "invalid remote", "unreadable remote", "unrelated base", "unreadable history", "unreadable diff", "empty commit", "synthetic fixtures", "altered synthetic", "altered email aws fixture", "altered slack aws fixture", "synthetic and credential", "credential before synthetic", "private key", "github token", "github fine grained token", "aws key", "project key"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			failure := errors.New("git unavailable")
@@ -28,9 +28,17 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 						return "120000 blob hash\tfile.go\x00", nil
 					case "invalid entry":
 						return "invalid", nil
+					case "unmerged index entry":
+						return "100644 hash 2\tfile.go\x00", nil
 					}
 					return "100644 blob hash\tfile.go\x00", nil
-				case "show":
+				case "cat-file":
+					if scenario == "unmerged index entry" {
+						t.Fatal("unmerged index entry must not call cat-file")
+					}
+					if len(args) != 3 || args[1] != "blob" || args[2] != "hash" {
+						t.Fatalf("unexpected cat-file args %v", args)
+					}
 					switch scenario {
 					case "synthetic fixtures":
 						return strings.Join(synthetic, "\n"), nil
@@ -89,8 +97,13 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 				_, err = RemoteHead(t.Context(), git, Plan{Info: model.Info{Branch: "owned"}, RemoteURL: "remote"})
 			case "unrelated base", "unreadable history", "unreadable diff", "empty commit":
 				err = History(t.Context(), git, "base", "head", []string{"file.go"})
+			case "unmerged index entry":
+				err = Blob(t.Context(), git, ":", "file.go")
 			default:
 				err = Blob(t.Context(), git, "commit:", "file.go")
+			}
+			if scenario == "unmerged index entry" && !errors.Is(err, ErrUnsafe) {
+				t.Fatalf("unmerged index entry error = %v, want ErrUnsafe", err)
 			}
 			wantOK := scenario == "missing blob" || scenario == "empty remote" || scenario == "empty commit" || scenario == "synthetic fixtures"
 			if (err == nil) != wantOK {
