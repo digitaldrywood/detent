@@ -889,6 +889,9 @@ func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim)
 	localWorker := false
 	if execution := claim.execution; execution != nil {
 		state, err := execution.ClaimState(ctx)
+		if state.Override < 0 && errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			return false, errors.Join(orchestrator.ErrSchedulingClaimLost, err)
+		}
 		if errors.Is(err, runner.ErrProviderSessionUnretired) && !s.now().Before(claim.deadline) {
 			if _, validateErr := claim.source.NativeClient().ValidateLease(ctx, claim.lease); validateErr != nil {
 				return false, validateErr
