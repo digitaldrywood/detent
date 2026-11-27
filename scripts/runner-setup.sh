@@ -42,21 +42,28 @@ case "${1:-}" in
 		binary="${4:?destination required}"
 		lint_module=github.com/golangci/golangci-lint/v2
 		heft_module=github.com/digitaldrywood/heft
-		build_dir=$(mktemp -d "${TMPDIR:-/tmp}/detent-gcl.XXXXXXXX")
-		trap 'rm -rf "$build_dir"' EXIT
-		mkdir -p "$(dirname "$binary")"
-		cd "$build_dir"
+		temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}"
+		mkdir -p "$temp_root" "$(dirname "$binary")"
+		build_dir=$(mktemp -d "$temp_root/detent-gcl.XXXXXXXX")
+		build_output=""
+		trap 'rm -rf "$build_dir"; if [[ -n "$build_output" ]]; then rm -f "$build_output"; fi' EXIT
+		printf 'Building golangci-lint %s with Heft %s from Go modules\n' "$version" "$heft_version"
 		export GOWORK=off
-		go mod init example.invalid/detent/golangci-lint-custom
-		go mod edit "-require=$lint_module@$version" "-require=$heft_module@$heft_version"
-		go mod download "$lint_module"
-		module_dir=$(go list -mod=mod -m -f '{{.Dir}}' "$lint_module")
-		cp "$module_dir"/cmd/golangci-lint/*.go .
-		printf 'package main\n\nimport _ "%s/plugin"\n' "$heft_module" > heft_plugin.go
-		go build -p "${TEST_PROCS:-4}" -mod=mod -buildvcs=false \
-			-ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-			-o golangci-lint-custom .
-		mv -f golangci-lint-custom "$binary"
+		(
+			cd "$build_dir"
+			go mod init example.invalid/detent/golangci-lint-custom
+			go mod edit "-require=$lint_module@$version" "-require=$heft_module@$heft_version"
+			go mod download "$lint_module"
+			module_dir=$(go list -mod=mod -m -f '{{.Dir}}' "$lint_module")
+			cp "$module_dir"/cmd/golangci-lint/*.go .
+			printf 'package main\n\nimport _ "%s/plugin"\n' "$heft_module" > heft_plugin.go
+			go build -p "${TEST_PROCS:-4}" -mod=mod -trimpath -buildvcs=false \
+				-ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+				-o golangci-lint-custom .
+		)
+		build_output=$(mktemp "$binary.XXXXXX")
+		install -m 0755 "$build_dir/golangci-lint-custom" "$build_output"
+		mv -f "$build_output" "$binary"
 		;;
 	node-deps)
 		cd "$2"
