@@ -223,6 +223,13 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 			}
 			continue
 		}
+		changed, changeErr := l.worktreeHasChanges(ctx, item.record.Path)
+		if changeErr != nil || changed {
+			release()
+			activeAttemptScopes[item.scope] = true
+			recordError(changeErr)
+			continue
+		}
 		removed, removeErr := l.removeExpiredWorkspaceLocked(ctx, root, item.record, &totals.Workspaces, &totals.Ownership)
 		release()
 		if !removed || removeErr != nil {
@@ -311,6 +318,12 @@ func (l *LocalGit) acquireAttemptScopeCleanup(paths ...string) (func(), bool) {
 			return nil, false
 		}
 		releases = append(releases, execRelease)
+		sessionRelease, ok := openSessions.TryCleanup(clean)
+		if !ok {
+			releaseAll()
+			return nil, false
+		}
+		releases = append(releases, sessionRelease)
 	}
 	return releaseAll, true
 }

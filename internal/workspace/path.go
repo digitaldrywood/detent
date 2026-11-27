@@ -10,13 +10,14 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
 
-type scratchLeaseRegistry struct {
+type pathLeaseRegistry struct {
 	mu       sync.Mutex
 	holders  map[string]int
 	cleaning map[string]chan struct{}
+	onWait   func(string)
 }
 
-func (r *scratchLeaseRegistry) Use(ctx context.Context, path string) (func(), error) {
+func (r *pathLeaseRegistry) Use(ctx context.Context, path string) (func(), error) {
 	clean := filepath.Clean(path)
 	for {
 		r.mu.Lock()
@@ -40,7 +41,11 @@ func (r *scratchLeaseRegistry) Use(ctx context.Context, path string) (func(), er
 				})
 			}, nil
 		}
+		onWait := r.onWait
 		r.mu.Unlock()
+		if onWait != nil {
+			onWait(clean)
+		}
 		select {
 		case <-ch:
 		case <-ctx.Done():
@@ -49,7 +54,14 @@ func (r *scratchLeaseRegistry) Use(ctx context.Context, path string) (func(), er
 	}
 }
 
-func (r *scratchLeaseRegistry) TryCleanup(path string) (func(), bool) {
+func (r *pathLeaseRegistry) Held(path string) bool {
+	clean := filepath.Clean(path)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.holders[clean] > 0
+}
+
+func (r *pathLeaseRegistry) TryCleanup(path string) (func(), bool) {
 	clean := filepath.Clean(path)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -72,7 +84,7 @@ func (r *scratchLeaseRegistry) TryCleanup(path string) (func(), bool) {
 	}, true
 }
 
-var executionUses scratchLeaseRegistry
+var executionUses pathLeaseRegistry
 
 const workerScratchBaseName = workpath.WorkerScratchBaseName
 

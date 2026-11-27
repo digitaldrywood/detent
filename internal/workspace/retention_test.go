@@ -630,6 +630,7 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		liveExec       bool
 		heldCheckout   bool
 		heldScratch    bool
+		heldSession    bool
 		dirtyCheckout  bool
 		unpushedCommit bool
 		completed      bool
@@ -654,6 +655,7 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		{name: "live process in execution dir preserves both", age: 2 * time.Hour, liveExec: true},
 		{name: "held checkout protects execution dir", age: 2 * time.Hour, heldCheckout: true},
 		{name: "acquired scratch protects checkout and execution dir", age: 2 * time.Hour, heldScratch: true},
+		{name: "held session protects checkout and execution dir", age: 2 * time.Hour, heldSession: true},
 		{name: "scan error in execution dir preserves both", age: 2 * time.Hour, scanErrExec: true, wantErr: true},
 		{name: "other organization preserved", age: 2 * time.Hour, otherOrg: true},
 		{name: "unscoped request preserved", age: 2 * time.Hour, unscoped: true},
@@ -746,6 +748,9 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 				if err := os.Chtimes(execDir, now.Add(-test.age), now.Add(-test.age)); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if test.heldSession {
+				defer HoldSession(info.Path)()
 			}
 			totals, err := backend.SweepRetention(t.Context(), request)
 			if (err != nil) != test.wantErr {
@@ -1021,6 +1026,94 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		}
 		if _, err := os.Stat(deferredExecDir); err != nil {
 			t.Fatalf("deferred dirty checkout lost sibling execution dir: %v", err)
+		}
+	})
+	t.Run("session admission blocks while attempt cleanup is in flight", func(t *testing.T) {
+		backend := retentionBackend(t)
+		attachBareOrigin(t, backend.sourceRoot)
+		attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: "attempt_33333333333333333333333333333333"}
+		issue := Issue{ID: "wi_sync", Identifier: "prj_example#333", AttemptWorkspace: attempt}
+		info, err := backend.Create(t.Context(), issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(info.Path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		inCleanup := make(chan struct{})
+		proceed := make(chan struct{})
+		sessionWaiting := make(chan struct{}, 1)
+		targetPath := filepath.Clean(info.Path)
+		openSessions.mu.Lock()
+		openSessions.onWait = func(path string) {
+			if path == targetPath {
+				select {
+				case sessionWaiting <- struct{}{}:
+				default:
+				}
+			}
+		}
+		openSessions.mu.Unlock()
+		t.Cleanup(func() {
+			openSessions.mu.Lock()
+			openSessions.onWait = nil
+			openSessions.mu.Unlock()
+			select {
+			case <-proceed:
+			default:
+				close(proceed)
+			}
+		})
+		backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+			if path == info.Path {
+				close(inCleanup)
+				<-proceed
+			}
+			return nil, nil
+		}
+		sweepDone := make(chan error, 1)
+		go func() {
+			_, sweepErr := backend.SweepRetention(t.Context(), RetentionRequest{Now: now, Organization: "org_first", Project: "prj_example"})
+			sweepDone <- sweepErr
+		}()
+		<-inCleanup
+		type admissionResult struct {
+			release func()
+			statErr error
+		}
+		sessionAcquired := make(chan admissionResult, 1)
+		go func() {
+			rel := HoldSession(info.Path)
+			_, statErr := os.Stat(info.Path)
+			sessionAcquired <- admissionResult{release: rel, statErr: statErr}
+		}()
+		select {
+		case <-sessionWaiting:
+		case res := <-sessionAcquired:
+			res.release()
+			close(proceed)
+			<-sweepDone
+			t.Fatal("HoldSession returned while attempt cleanup was in flight")
+		}
+		select {
+		case res := <-sessionAcquired:
+			res.release()
+			close(proceed)
+			<-sweepDone
+			t.Fatal("HoldSession returned while attempt cleanup was in flight")
+		default:
+		}
+		close(proceed)
+		res := <-sessionAcquired
+		res.release()
+		if err := <-sweepDone; err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(res.statErr, fs.ErrNotExist) {
+			t.Fatalf("HoldSession unblocked before checkout removal completed: statErr=%v", res.statErr)
 		}
 	})
 }

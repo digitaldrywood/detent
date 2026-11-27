@@ -410,3 +410,49 @@ func TestIndependentRetainedAttemptSelection(t *testing.T) {
 		})
 	}
 }
+
+type disappearingExistingBackend struct {
+	workspace.Backend
+	existing func(workspace.Issue) (workspace.Info, error)
+}
+
+func (b disappearingExistingBackend) Existing(issue workspace.Issue) (workspace.Info, error) {
+	return b.existing(issue)
+}
+
+func TestGitWorktreeRetainedDisappearsBeforeHold(t *testing.T) {
+	t.Parallel()
+	worktrees, backend, _, _ := newGitWorktree(t)
+	issue := workspace.Issue{
+		ProjectID:        "dogfood",
+		ID:               "wi_0c1e9fe3",
+		Identifier:       attemptIdentifier,
+		AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_1", Attempt: "attempt_22222222222222222222222222222222"},
+	}
+	if _, err := backend.Create(t.Context(), issue); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	worktrees.Backend = disappearingExistingBackend{
+		Backend: backend,
+		existing: func(in workspace.Issue) (workspace.Info, error) {
+			calls++
+			if calls == 1 {
+				return backend.Existing(in)
+			}
+			return workspace.Info{}, fs.ErrNotExist
+		},
+	}
+	checkout := hubclient.WorkspaceCheckout{
+		WorkItemID: issue.ID,
+		AttemptID:  issue.AttemptWorkspace.Attempt,
+		Worktree:   workspacesession.WorktreeRetained,
+	}
+	path, err := worktrees.Prepare(t.Context(), "ws_disappeared", checkout)
+	if !errors.Is(err, fs.ErrNotExist) || path != "" {
+		t.Fatalf("Prepare() = (%q, %v), want empty path and fs.ErrNotExist", path, err)
+	}
+	if calls != 2 {
+		t.Fatalf("Existing() called %d times, want 2", calls)
+	}
+}
