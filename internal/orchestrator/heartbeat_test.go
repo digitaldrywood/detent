@@ -81,7 +81,7 @@ func TestClaimHeartbeatPrecedesBlockedAttemptPersistence(t *testing.T) {
 		default:
 		}
 		retryDue := manager.targets["wi_example"].nextDue
-		if delay := retryDue.Sub(time.Now()); delay < 875*time.Millisecond || delay > time.Second {
+		if delay := time.Until(retryDue); delay < 875*time.Millisecond || delay > time.Second {
 			t.Fatalf("claim retry delay = %s, want jittered 1s", delay)
 		}
 		<-time.After(time.Until(retryDue))
