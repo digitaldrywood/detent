@@ -57,5 +57,5 @@ func (s *session) ReplaceRunnerProblems(ctx context.Context, runnerID string, pr
 	if _, err := s.db.Exec(ctx, `DELETE FROM runner_problem_reports WHERE organization_id=$1 AND runner_id=$2`, s.organization, runnerID); err != nil {
 		return mapError(ctx, err)
 	}
-	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
+	return s.insertRunnerCurrentRows(ctx, table)
 }

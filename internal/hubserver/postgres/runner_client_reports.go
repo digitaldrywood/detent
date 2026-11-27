@@ -99,7 +99,7 @@ func (s *session) ReplaceRunnerProjectSkills(ctx context.Context, runnerID strin
 	if _, err := s.db.Exec(ctx, `DELETE FROM runner_project_skills WHERE organization_id=$1 AND runner_id=$2 AND project_id=$3`, s.organization, runnerID, project); err != nil {
 		return mapError(ctx, err)
 	}
-	return s.insertRunnerCurrentRows(ctx, table.name, table.columns, rows)
+	return s.insertRunnerCurrentRows(ctx, table)
 }
 
 func (s *session) ReplaceRunnerCheckoutReport(ctx context.Context, report runnerstore.CheckoutReport) error {
@@ -180,48 +180,18 @@ func (s *session) runnerProviderReportRows(runnerID string, reports []providerca
 }
 
 func (s *session) runnerReportRowsMatch(ctx context.Context, runnerID string, project tracker.ProjectID, tables []runnerReportRows) (bool, error) {
-	arrayTypes := pgtype.NewMap()
 	for _, table := range tables {
-		names, types := strings.Split(table.columns, ","), strings.Split(table.types, ",")
 		args := []any{s.organization, runnerID}
 		predicate := "organization_id=$1 AND runner_id=$2"
 		if project != "" {
 			args = append(args, project)
 			predicate += " AND project_id=$3"
 		}
-		incoming := make([]string, len(names))
-		columns := make([]string, len(names))
-		for i, name := range names {
-			values := make([]*string, len(table.rows))
-			for j, row := range table.rows {
-				value := row[i]
-				switch typed := value.(type) {
-				case time.Time:
-					value = typed.Format(time.RFC3339Nano)
-				case *time.Time:
-					value = nil
-					if typed != nil {
-						value = typed.Format(time.RFC3339Nano)
-					}
-				case []string:
-					encoded, err := arrayTypes.Encode(pgtype.TextArrayOID, pgtype.TextFormatCode, typed, nil)
-					if err != nil {
-						return false, err
-					}
-					value = nil
-					if encoded != nil {
-						value = string(encoded)
-					}
-				}
-				if value != nil {
-					values[j] = new(fmt.Sprint(value))
-				}
-			}
-			args = append(args, values)
-			incoming[i] = fmt.Sprintf("$%d::text[]", len(args))
-			columns[i] = name + "::" + types[i]
+		input, args, err := table.input(args)
+		if err != nil {
+			return false, err
 		}
-		query := `SELECT sha256(convert_to(ARRAY(SELECT ROW(stored.*)::text FROM (SELECT ` + table.columns + ` FROM ` + table.name + ` WHERE ` + predicate + `) stored ORDER BY ROW(stored.*)::text)::text,'UTF8')) = sha256(convert_to(ARRAY(SELECT ROW(incoming.*)::text FROM (SELECT ` + strings.Join(columns, ",") + ` FROM unnest(` + strings.Join(incoming, ",") + `) AS input(` + table.columns + `)) incoming ORDER BY ROW(incoming.*)::text)::text,'UTF8'))`
+		query := `SELECT sha256(convert_to(ARRAY(SELECT ROW(stored.*)::text FROM (SELECT ` + table.columns + ` FROM ` + table.name + ` WHERE ` + predicate + `) stored ORDER BY ROW(stored.*)::text)::text,'UTF8')) = sha256(convert_to(ARRAY(SELECT ROW(incoming.*)::text FROM (` + input + `) incoming ORDER BY ROW(incoming.*)::text)::text,'UTF8'))`
 		var equal bool
 		if err := s.db.QueryRow(ctx, query, args...).Scan(&equal); err != nil {
 			return false, mapError(ctx, err)
@@ -231,4 +201,41 @@ func (s *session) runnerReportRowsMatch(ctx context.Context, runnerID string, pr
 		}
 	}
 	return true, nil
+}
+func (table runnerReportRows) input(args []any) (string, []any, error) {
+	arrayTypes := pgtype.NewMap()
+	names, types := strings.Split(table.columns, ","), strings.Split(table.types, ",")
+	incoming := make([]string, len(names))
+	columns := make([]string, len(names))
+	for i, name := range names {
+		values := make([]*string, len(table.rows))
+		for j, row := range table.rows {
+			value := row[i]
+			switch typed := value.(type) {
+			case time.Time:
+				value = typed.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
+			case *time.Time:
+				value = nil
+				if typed != nil {
+					value = typed.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
+				}
+			case []string:
+				encoded, err := arrayTypes.Encode(pgtype.TextArrayOID, pgtype.TextFormatCode, typed, nil)
+				if err != nil {
+					return "", nil, err
+				}
+				value = nil
+				if encoded != nil {
+					value = string(encoded)
+				}
+			}
+			if value != nil {
+				values[j] = new(fmt.Sprint(value))
+			}
+		}
+		args = append(args, values)
+		incoming[i] = fmt.Sprintf("$%d::text[]", len(args))
+		columns[i] = name + "::" + types[i]
+	}
+	return "SELECT " + strings.Join(columns, ",") + " FROM unnest(" + strings.Join(incoming, ",") + ") AS input(" + table.columns + ")", args, nil
 }

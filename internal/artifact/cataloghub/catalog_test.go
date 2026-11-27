@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testenv/pgtest"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -131,7 +132,8 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 	admin := catalogTemplate.Database(t)
 	role := "example_" + strings.TrimPrefix(artifact.NewID("role"), "role_")
 	quoted := pgx.Identifier{role}.Sanitize()
-	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN"); err != nil {
+	const password = "fixture-only"
+	if _, err := admin.ExecContext(t.Context(), "CREATE ROLE "+quoted+" LOGIN PASSWORD "+pgtransport.QuoteLiteral(password)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := admin.ExecContext(t.Context(), "GRANT detent_runtime_v2 TO "+quoted); err != nil {
@@ -147,7 +149,7 @@ func TestAuthenticatedCatalogSurvivesHubRestart(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	native := catalogTemplate.NativeConfig(t, admin, role, "")
+	native := catalogTemplate.NativeConfig(t, admin, role, password)
 	native.MaxConns = 3
 	openRepository := func() *postgres.Repository {
 		pool, err := pgxpool.NewWithConfig(t.Context(), native)

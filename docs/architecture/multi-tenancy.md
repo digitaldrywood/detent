@@ -201,7 +201,7 @@ config.MaxConns = int32(serving + background + 1)
 pools, err := pgtransport.Open(ctx, readerConfig, writerConfig)
 ```
 
-PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. The Detent client uses `QueryExecModeExec` (extended protocol without a statement cache) and transaction-local tenant binding, so it can run behind a transaction pooler such as PgBouncer. Whether to deploy one is a measured choice, not a requirement of having a second process. Under transaction pooling, session-level state is forbidden by rule 6 because it would leak to the next borrower.
+PostgreSQL sizes shared memory from `max_connections`, and pgx defaults `MaxConns` to the greater of 4 and the CPU count. Each direct Hub connection caches up to 512 server-side prepared statements. The cache key is parameterized SQL text. Each transaction binds its organization with `set_config(..., true)` so row security evaluates the current tenant on execution.
 
 Each tenant transaction sets its timeouts in the same batch that binds the organization (`internal/pgtransport` `BeginBatch`): `set_config('statement_timeout', $2, true)` and `set_config('lock_timeout', $3, true)`, with values from the existing policy owner. Request and job contexts carry the total deadline that covers pool acquisition and transaction lifetime. Shutdown cancels the scheduler context, waits for in-flight steps and jobs, then closes each pool once.
 
@@ -258,7 +258,7 @@ A change that touches hosted serving, tenancy, scheduling, connection pools or b
 - PostgreSQL 17, `max_connections`: https://www.postgresql.org/docs/17/runtime-config-connection.html
 - PostgreSQL 17, statement and lock timeouts: https://www.postgresql.org/docs/17/runtime-config-client.html
 - PostgreSQL 17, `set_config` with `is_local`: https://www.postgresql.org/docs/17/functions-admin.html
-- PgBouncer pooling modes and session features: https://www.pgbouncer.org/features.html
+- PostgreSQL 17, prepared statements and generic plans: https://www.postgresql.org/docs/17/sql-prepare.html
 - pgxpool configuration: https://pkg.go.dev/github.com/jackc/pgx/v5/pgxpool
 - pgx query execution modes: https://pkg.go.dev/github.com/jackc/pgx/v5#QueryExecMode
 - Go `context`: https://pkg.go.dev/context and https://go.dev/blog/context

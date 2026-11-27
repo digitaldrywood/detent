@@ -217,7 +217,7 @@ func entryScanRow(rows entryRows, queryErr error) entryRow {
 func (r nativeEntryRows) Scan(dest ...any) error {
 	fields := r.FieldDescriptions()
 	targets := append([]any(nil), dest...)
-	times := make(map[int]*time.Time)
+	var formatTimestamps []func()
 	for index, target := range dest {
 		if index >= len(fields) {
 			break
@@ -225,10 +225,22 @@ func (r nativeEntryRows) Scan(dest ...any) error {
 		if fields[index].DataTypeOID != pgtype.TimestamptzOID {
 			continue
 		}
-		if _, ok := target.(*string); ok {
+		switch target := target.(type) {
+		case *string:
 			value := new(time.Time)
-			times[index] = value
 			targets[index] = value
+			formatTimestamps = append(formatTimestamps, func() {
+				*target = formatTime(*value)
+			})
+		case **string:
+			value := new(*time.Time)
+			targets[index] = value
+			formatTimestamps = append(formatTimestamps, func() {
+				*target = nil
+				if *value != nil {
+					*target = new(formatTime(**value))
+				}
+			})
 		}
 	}
 	if err := r.Rows.Scan(targets...); err != nil {
@@ -237,12 +249,8 @@ func (r nativeEntryRows) Scan(dest ...any) error {
 		}
 		return err
 	}
-	for index, value := range times {
-		target, ok := dest[index].(*string)
-		if !ok {
-			return errors.New("invalid PostgreSQL timestamp destination")
-		}
-		*target = value.UTC().Format(time.RFC3339Nano)
+	for _, format := range formatTimestamps {
+		format()
 	}
 	return nil
 }

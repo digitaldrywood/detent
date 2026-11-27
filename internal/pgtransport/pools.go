@@ -16,9 +16,11 @@ import (
 
 type Pools struct{ reader, writer *pgxpool.Pool }
 
+const statementCacheCapacity = 512
+
 func Configure(config *pgxpool.Config) {
-	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
-	config.ConnConfig.StatementCacheCapacity = 0
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+	config.ConnConfig.StatementCacheCapacity = statementCacheCapacity
 	config.ConnConfig.DescriptionCacheCapacity = 0
 	previous := config.AfterConnect
 	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
@@ -99,7 +101,7 @@ func ValidatePool(pool *pgxpool.Pool) error {
 		return errors.New("PostgreSQL pool is required")
 	}
 	config := pool.Config().ConnConfig
-	if config.DefaultQueryExecMode != pgx.QueryExecModeExec || config.StatementCacheCapacity != 0 || config.DescriptionCacheCapacity != 0 {
+	if config.DefaultQueryExecMode != pgx.QueryExecModeCacheStatement || config.StatementCacheCapacity != statementCacheCapacity || config.DescriptionCacheCapacity != 0 {
 		return errors.New("PostgreSQL pools require configured native execution")
 	}
 	return nil

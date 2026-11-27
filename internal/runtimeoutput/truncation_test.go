@@ -159,12 +159,19 @@ func TestDiagnostic(t *testing.T) {
 			{name: "failure at EOF stays a complete line", input: strings.Repeat("ok example.org/passing\n", 4000) + "test timed out after 1m0s", want: []string{"test timed out after 1m0s\n"}},
 			{name: "failure overflow", input: strings.Repeat("--- FAIL: TestExample (0.01s)\n", limit), want: []string{"failure lines dropped]\n"}},
 			{name: "oversized failure before short failure", input: "panic: " + strings.Repeat("界", limit) + "\n--- FAIL: TestShort (0.01s)\n", want: []string{"--- FAIL: TestShort (0.01s)\n", "[1 failure lines dropped]\n"}},
+			{name: "build error survives sourcemap fallback warnings", input: strings.Repeat("src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
+				"Error: could not write build output\n" + strings.Repeat("build output\n", 8000) + "make: *** [check-landing] Error 2\n",
+				want: []string{"Error: could not write build output\n", "make: *** [check-landing] Error 2\n"}, chained: true},
+			{name: "go test assertion survives bounded gate output", input: strings.Repeat("src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
+				"--- FAIL: TestWriterHandoff (0.11s)\n    lifetime_test.go:180: replacement does not hold the FIFO\nFAIL\texample.org/hookproc\t1.369s\n" +
+				strings.Repeat("ok  \texample.org/passing\t0.412s\n", 8000) + "make: *** [check-landing] Error 1\n",
+				want: []string{"--- FAIL: TestWriterHandoff (0.11s)\n    lifetime_test.go:180: replacement does not hold the FIFO\n", "FAIL\texample.org/hookproc\t1.369s\n"}, chained: true},
 			{name: "go test failures outrank earlier sourcemap warnings", input: strings.Repeat("node_modules/@tanstack/query-core/build/modern/index.js (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
 				"Error: dashboard API is unreachable\n" + strings.Repeat("ok  \tgithub.com/example-org/example-project/internal/passing\t0.412s\n", 200) +
 				"--- FAIL: TestStoreRefresh (0.02s)\n" +
 				"panic: test timed out after 10m0s\n\trunning tests:\n\t\tTestProviderEligibility (6s)\n\t\tTestProviderEligibility/beyond_project_quota (6s)\n\ngoroutine 1 [running]:\n" +
 				"FAIL\tgithub.com/example-org/example-project/internal/hub\t601.021s\nFAIL\n",
-				want: []string{"--- FAIL: TestStoreRefresh (0.02s)\n", "panic: test timed out after 10m0s\n", "\trunning tests:\n", "\t\tTestProviderEligibility/beyond_project_quota (6s)\n", "FAIL\tgithub.com/example-org/example-project/internal/hub\t601.021s\n", "failure lines dropped]\n"}, chained: true},
+				want: []string{"Error: dashboard API is unreachable\n", "--- FAIL: TestStoreRefresh (0.02s)\n", "panic: test timed out after 10m0s\n", "\trunning tests:\n", "\t\tTestProviderEligibility/beyond_project_quota (6s)\n", "FAIL\tgithub.com/example-org/example-project/internal/hub\t601.021s\n"}, chained: true},
 		} {
 			t.Run(fmt.Sprintf("%s/%d", test.name, limit), func(t *testing.T) {
 				got, truncated := Diagnostic(test.input, limit)

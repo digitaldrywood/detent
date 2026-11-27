@@ -36,6 +36,28 @@ case "${1:-}" in
 			GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$(dirname "$binary")" go install -p "${TEST_PROCS:-4}" "$package@$version"
 		fi
 		;;
+	golangci-lint-custom)
+		version="${2:?golangci-lint version required}"
+		heft_version="${3:?heft version required}"
+		binary="${4:?destination required}"
+		lint_module=github.com/golangci/golangci-lint/v2
+		heft_module=github.com/digitaldrywood/heft
+		build_dir=$(mktemp -d "${TMPDIR:-/tmp}/detent-gcl.XXXXXXXX")
+		trap 'rm -rf "$build_dir"' EXIT
+		mkdir -p "$(dirname "$binary")"
+		cd "$build_dir"
+		export GOWORK=off
+		go mod init example.invalid/detent/golangci-lint-custom
+		go mod edit "-require=$lint_module@$version" "-require=$heft_module@$heft_version"
+		go mod download "$lint_module"
+		module_dir=$(go list -mod=mod -m -f '{{.Dir}}' "$lint_module")
+		cp "$module_dir"/cmd/golangci-lint/*.go .
+		printf 'package main\n\nimport _ "%s/plugin"\n' "$heft_module" > heft_plugin.go
+		go build -p "${TEST_PROCS:-4}" -mod=mod -buildvcs=false \
+			-ldflags "-s -w -X main.version=$version-custom-gcl -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+			-o golangci-lint-custom .
+		mv -f golangci-lint-custom "$binary"
+		;;
 	node-deps)
 		cd "$2"
 		[[ -f package.json ]] || exit 0

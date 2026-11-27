@@ -56,11 +56,14 @@ func TestReapDaemonizedPostgresAfterMissedWriterSnapshot(t *testing.T) {
 	const token = "example-hook-owner"
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", `
 initdb -A trust --no-locale -D data >/dev/null
-pg_ctl -D data -l postgres.log -o '-c listen_addresses= -c unix_socket_directories=.' -w start
+if ! pg_ctl -D data -l postgres.log -o '-c listen_addresses= -c unix_socket_directories=. -c max_connections=10 -c shared_buffers=16MB -c fsync=off' -w start; then
+    cat postgres.log >&2
+    exit 1
+fi
 printf 'export FIXTURE_READY=1\n' > .envrc
 `)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), HookOwnerKey+"="+token, "DETENT_WORKSPACE="+root)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C", "TMPDIR=" + root, HookOwnerKey + "=" + token, "DETENT_WORKSPACE=" + root}
 	(&Owner{descriptor: lifetime}).ConfigureCommand(cmd)
 	procgroup.Configure(t.Context(), cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -135,19 +138,19 @@ func TestWriterHandoffLeavesOriginalExitUnverified(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	replacementInput, retireReplacement, err := os.Pipe()
+	replacementInput, replacementControl, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer replacementInput.Close()
-	defer retireReplacement.Close()
+	defer replacementControl.Close()
 
 	const token = "example-hook-owner"
 	path := t.TempDir()
 	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-ec", `
 printf 'ready\n'
 IFS= read -r handoff
-/bin/cat <&3 >/dev/null &
+/bin/cat <&3 &
 replacement=$!
 exec 4>&-
 printf '%s\n' "$replacement"
@@ -172,7 +175,7 @@ IFS= read -r release || :
 		t.Fatal(err)
 	}
 	defer func() {
-		retireReplacement.Close()
+		replacementControl.Close()
 		input.Close()
 		if err := procgroup.Wait(cmd); err != nil && !t.Failed() {
 			t.Error(err)
@@ -204,6 +207,12 @@ IFS= read -r release || :
 		if err != nil || pid <= 1 || pid == original {
 			t.Fatalf("invalid replacement PID %q", status.Text())
 		}
+		if _, err := io.WriteString(replacementControl, "replacement ready\n"); err != nil {
+			t.Fatal(err)
+		}
+		if !status.Scan() || status.Text() != "replacement ready" {
+			t.Fatalf("replacement readiness: %q, %v", status.Text(), status.Err())
+		}
 		if writer, err := lifetime.holdsWriter(ctx, original); err != nil || writer {
 			t.Fatalf("original still holds the FIFO: %t, %v", writer, err)
 		}
@@ -216,7 +225,7 @@ IFS= read -r release || :
 	if pids, err := verified(ctx, path); err != nil || len(pids) != 1 || pids[0] == original {
 		t.Fatalf("verified replacement: %v, %v", pids, err)
 	}
-	if err := retireReplacement.Close(); err != nil {
+	if err := replacementControl.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if !status.Scan() || status.Text() != "retired" {

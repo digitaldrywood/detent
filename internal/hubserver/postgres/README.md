@@ -687,9 +687,9 @@ ambient credential discovery and other PostgreSQL major versions. It requires
 permission to provision test roles and clone/drop only its own databases; a
 provider equivalent must supply these disposable administrative capabilities as
 well as the three application authorities. Match the intended connection path
-for restricted logins. Session pooling is supported by the backend-PID reuse
-assertions. A transaction-pooling proxy must preserve the transaction contract;
-if it cannot satisfy the same suite, that deployment mode remains blocked.
+for restricted logins. The Hub connects directly to PostgreSQL and caches prepared statements per
+physical connection. The backend-PID reuse assertions exercise transaction-local
+tenant binding on that connection.
 Skipped tests are not evidence of compatibility.
 
 At INV-21 scale, validation queries only build-sized relation lists and role
