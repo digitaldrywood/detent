@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -526,6 +527,26 @@ func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {
 	return c.JSONBlob(http.StatusOK, raw)
 }
 
+func parseRunnerSessionIDs(raw string, maxIDs int) ([]int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > maxIDs {
+		return nil, corestore.ErrInvalidPage
+	}
+	ids := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil || id < 1 {
+			return nil, corestore.ErrInvalidPage
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func (d SessionDeps) GetRunnerSessionProcesses(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
@@ -533,8 +554,13 @@ func (d SessionDeps) GetRunnerSessionProcesses(c echo.Context) error {
 	if scope.Credential.Runner.RunnerID == "" {
 		return d.HTTPError(c, hubscope.RunnerUnauthorized())
 	}
+	const maxRunnerProcessPage = 200
+	sessionIDs, err := parseRunnerSessionIDs(c.QueryParam("sessions"), maxRunnerProcessPage)
+	if err != nil {
+		return d.HTTPError(c, err)
+	}
 	var records []runnersession.Record
-	err := d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+	err = d.Repository.ReadTenant(ctx, scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
 		if err := d.AuthorizeAccess(ctx, r, scope, false); err != nil {
 			return err
 		}
@@ -543,13 +569,17 @@ func (d SessionDeps) GetRunnerSessionProcesses(c echo.Context) error {
 			return hubapi.NativeRunEventStorageUnavailable()
 		}
 		var err error
-		records, err = reader.RunnerSessionProcesses(ctx, scope.Project, string(scope.Credential.Runner.MachineID), c.QueryParam("attempt"), 200)
+		records, err = reader.RunnerSessionProcesses(ctx, scope.Project, string(scope.Credential.Runner.MachineID), c.QueryParam("attempt"), sessionIDs, maxRunnerProcessPage+1)
 		return err
 	})
 	if err != nil {
 		return d.HTTPError(c, err)
 	}
-	result := runnersession.Processes{More: len(records) == 200}
+	more := len(records) > maxRunnerProcessPage
+	if more {
+		records = records[:maxRunnerProcessPage]
+	}
+	result := runnersession.Processes{More: more}
 	for _, record := range records {
 		value, err := d.ReadRunnerSessionPayload(ctx, record)
 		if err != nil {
