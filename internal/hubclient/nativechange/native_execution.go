@@ -850,6 +850,12 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	expectedState := e.Recovery().Issue.State
 	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
 	e.mu.Unlock()
+	finishCtx := ctx
+	if deadline, _, active := e.claimSnapshot(); active {
+		var cancel context.CancelFunc
+		finishCtx, cancel = context.WithTimeout(ctx, deadline.Sub(e.scheduler.now()))
+		defer cancel()
+	}
 	closeWorkers := func() error {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWorkerCloseTimeout)
 		defer cancel()
@@ -864,19 +870,21 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	var rejection *nativeCompletionRejection
 	var releasedAttempt *tracker.NativeAttempt
 	if outcome != "" && !finished {
-		if publicationUnavailable && expectedState != "" {
-			issue, err := e.claim.source.NativeClient().Issue(ctx, e.claim.lease.WorkItemID)
+		switch {
+		case !e.claimActive():
+			finishErr = runner.ErrExecutionAuthorityUnavailable
+		case finishCtx.Err() != nil:
+			finishErr = context.Cause(finishCtx)
+		case publicationUnavailable && expectedState != "":
+			issue, err := e.claim.source.NativeClient().Issue(finishCtx, e.claim.lease.WorkItemID)
 			if err != nil {
-				finishErr = e.executionError(ctx, err)
+				finishErr = e.executionError(finishCtx, err)
 			} else if !strings.EqualFold(expectedState, issue.State) {
 				outcome = "cancelled"
 			}
 		}
-		if finishErr == nil && !e.claimActive() {
-			finishErr = runner.ErrExecutionAuthorityUnavailable
-		}
 		if finishErr == nil {
-			finishErr = e.Finish(ctx, outcome)
+			finishErr = e.Finish(finishCtx, outcome)
 		}
 		if finishErr != nil {
 			if errors.As(finishErr, &rejection) {
@@ -920,7 +928,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 		return err
 	}
 	if rejection == nil && releasedAttempt == nil {
-		if err := e.publishAcceptedNoChangeVerdict(ctx); err != nil {
+		if err := e.publishAcceptedNoChangeVerdict(finishCtx); err != nil {
 			return err
 		}
 	}
@@ -934,7 +942,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	if releasedAttempt != nil {
 		attempt := *releasedAttempt
 		if attempt.CleanupAcknowledgedAt == nil && (attempt.Outcome == "" || attempt.Outcome == "interrupted" || attempt.Outcome == "cancelled") {
-			if err := cancelNativeReleasedAttempt(ctx, e.claim.source.NativeClient(), e.claim.lease.WorkItemID, attempt); err != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := cancelNativeReleasedAttempt(cleanup, e.claim.source.NativeClient(), e.claim.lease.WorkItemID, attempt); err != nil {
 				return errors.Join(finishErr, err)
 			}
 			attempt.Sequence++

@@ -262,6 +262,9 @@ if [ "$needs_assets" = "yes" ]; then
     printf 'Landing assets: building app, CSS and generated docs\n'
     asset_log=$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/detent-landing-assets.XXXXXX")
     make -j1 assets generate-docs TEST_PROCS="$procs" >"$asset_log" 2>&1
+    sed 's/Error when using sourcemap for reporting an error: /Sourcemap diagnostic warning: /' "$asset_log"
+    rm -f "$asset_log"
+    asset_log=""
 fi
 stage="build Go packages"
 go build -p "$procs" ./...

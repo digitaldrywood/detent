@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -2284,15 +2285,23 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 	for _, test := range []struct {
 		status    int
 		published bool
-		expires   bool
-	}{{502, false, false}, {503, false, false}, {0, false, false}, {502, true, false}, {503, true, false}, {0, true, false}, {503, true, true}} {
-		t.Run(fmt.Sprintf("%d/published=%t/expires=%t", test.status, test.published, test.expires), func(t *testing.T) {
+		boundary  string
+	}{{502, false, ""}, {503, false, ""}, {0, false, ""}, {502, true, ""}, {503, true, ""}, {0, true, ""},
+		{503, true, "expired before write"}, {503, true, "expires during write"}, {503, true, "caller cancelled"}} {
+		run := func(t *testing.T) {
 			status := test.status
 			start := time.Now()
+			var offset time.Duration
+			now := func() time.Time { return time.Now().Add(offset) }
 			descriptor := clientTestPolicy()
 			offline := true
 			var finished tracker.NativeRunEvent
-			client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+			var finishWrites int
+			const delay = 40 * time.Second
+			client, err := newTestClient(t, Config{URL: "http://hub.example", TokenSource: func() string { return "test" }, HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if err := request.Context().Err(); err != nil {
+					return nil, err
+				}
 				if offline {
 					if status == 0 {
 						return nil, errors.New("connection refused")
@@ -2317,6 +2326,12 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 						return nil, err
 					}
 					if event.Type == "run.finished" {
+						finishWrites++
+						select {
+						case <-request.Context().Done():
+							return nil, request.Context().Err()
+						case <-time.After(delay):
+						}
 						finished = event
 					}
 				}
@@ -2325,7 +2340,7 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, LeaseTTL: 10 * time.Minute, HeartbeatInterval: time.Second})
+			scheduler, err := newTestScheduler(client, SchedulerConfig{Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}, LeaseTTL: 10 * time.Minute, HeartbeatInterval: time.Second, Now: now})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2354,39 +2369,78 @@ func TestCompletedAttemptSurvivesHubOutage(t *testing.T) {
 			if deadline.IsZero() {
 				t.Fatal("completion outage did not retain its deadline")
 			}
-			fixtureSetNow(scheduler, start.Add(2*time.Minute))
+			if execution.pending == nil || execution.pending.Type != "run.finished" {
+				t.Fatal("completion outage did not retain the terminal event")
+			}
+			idempotencyKey := execution.pending.IdempotencyKey
+			offset = 2 * time.Minute
 			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); !nativeTransportUnavailable(err) {
 				t.Fatalf("retry outage = %v", err)
 			}
 			if !execution.completionOutageDeadline.Equal(deadline) {
 				t.Fatal("retry extended outage bound")
 			}
+			if execution.pending == nil || execution.pending.IdempotencyKey != idempotencyKey {
+				t.Fatal("completion retry replaced the pending event")
+			}
 			offline = false
-			if test.expires {
-				fixtureSetNow(scheduler, claim.deadline)
-				if err := execution.Finish(t.Context(), "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-					t.Fatalf("expired completion returned %v", err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var wantErr error
+			wantWrites := 1
+			switch test.boundary {
+			case "expired before write":
+				offset = time.Until(claim.deadline)
+				wantErr, wantWrites = runner.ErrExecutionAuthorityUnavailable, 0
+			case "expires during write":
+				offset = time.Until(claim.deadline) - 10*time.Second
+				wantErr = context.DeadlineExceeded
+			case "caller cancelled":
+				cancel()
+				wantErr, wantWrites = context.Canceled, 0
+			default:
+				if err := scheduler.Heartbeat(ctx); err != nil {
+					t.Fatal(err)
 				}
+				if _, err := scheduler.RenewClaim(ctx, "wi_test", now()); err != nil {
+					t.Fatalf("renew completed attempt: %v", err)
+				}
+			}
+			retryStarted := time.Now()
+			retryErr := scheduler.ReleaseClaim(ctx, "wi_test", "completed")
+			if !errors.Is(retryErr, wantErr) {
+				t.Fatalf("completion retry after %s = %v, want %v", time.Since(retryStarted), retryErr, wantErr)
+			}
+			if finishWrites != wantWrites {
+				t.Fatalf("terminal writes = %d, want %d", finishWrites, wantWrites)
+			}
+			if wantErr != nil {
 				if finished.Type != "" || execution.data.Outcome != "" || execution.publication == nil {
-					t.Fatal("expired completion wrote a terminal outcome or discarded the publication receipt")
+					t.Fatal("fenced completion wrote a terminal outcome or discarded the publication receipt")
+				}
+				if test.boundary == "expires during write" && time.Since(retryStarted) != 10*time.Second {
+					t.Fatalf("in-flight write ran for %s, want remaining 10s", time.Since(retryStarted))
+				}
+				if test.boundary == "expires during write" {
+					err := scheduler.ReleaseClaim(ctx, "wi_test", "completed")
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || finishWrites != wantWrites {
+						t.Fatalf("retry after expiry made %d terminal writes and returned %v", finishWrites, err)
+					}
 				}
 				return
 			}
-			if err := scheduler.Heartbeat(t.Context()); err != nil {
-				t.Fatal(err)
+			if time.Since(retryStarted) != delay {
+				t.Fatalf("completion took %s, want %s", time.Since(retryStarted), delay)
 			}
-			if _, err := scheduler.RenewClaim(t.Context(), "wi_test", time.Now()); err != nil {
-				t.Fatalf("renew completed attempt: %v", err)
-			}
-			if err := scheduler.ReleaseClaim(t.Context(), "wi_test", "completed"); err != nil {
-				t.Fatal(err)
-			}
-			if finished.Data.Outcome != "succeeded" || finished.Data.TerminalFailure != nil {
+			if finished.Data.Outcome != "succeeded" || finished.Data.TerminalFailure != nil || finished.IdempotencyKey != idempotencyKey {
 				t.Fatalf("completion lost: %+v", finished)
 			}
 			if len(fixtureClaims(scheduler)) != 0 {
 				t.Fatal("completed claim retained")
 			}
+		}
+		t.Run(fmt.Sprintf("%d/published=%t/%s", test.status, test.published, test.boundary), func(t *testing.T) {
+			synctest.Test(t, run)
 		})
 	}
 }
