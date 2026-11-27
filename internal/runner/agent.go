@@ -3187,6 +3187,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 			cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, result.TurnStarted)
 			repair, needsRepair := err.(*sourceRepair)
+			if needsRepair && repair.state != nil {
+				result.DiffStats = runobserve.DiffStatsFromWorkspace(repair.state.DiffStat)
+				result.DiffStats.ApplyRecoveryState(repair.state)
+			}
 			if turnErr == nil && needsRepair && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
 				err = errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx))
 				if err == nil {

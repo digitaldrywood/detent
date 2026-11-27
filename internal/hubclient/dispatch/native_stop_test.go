@@ -493,8 +493,8 @@ func testNativeStopDuringHostFinalization(t *testing.T, mode string) {
 	if err != nil || len(recovery.Attempts) != 1 || !interrupted.Load() || recovery.Attempts[0].ClaimReleasedAt == nil || recovery.Attempts[0].Outcome != "interrupted" && (recovery.Attempts[0].Outcome != "cancelled" || recovery.Attempts[0].CleanupAcknowledgedAt == nil) || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.HeadSHA == "" || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
 		t.Fatalf("stopped checkpoint or native outcome = %+v, %v", recovery.Attempts, err)
 	}
-	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation == nil || runtime.Validation.ExitCode != 0 || runtime.Validation.HeadSHA != recovery.Attempts[0].Checkpoint.HeadSHA {
-		t.Fatalf("in-flight successful validation receipt was lost: %+v", runtime)
+	if runtime := recovery.Attempts[0].Runtime; runtime == nil || runtime.Validation != nil {
+		t.Fatalf("cancelled validation recorded a receipt or lost its runtime observation: %+v", runtime)
 	}
 	h.scheduler.mu.Lock()
 	_, claimed := h.scheduler.nativeClaims[issue.ID]

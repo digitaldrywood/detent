@@ -66,6 +66,7 @@ type sourceRepair struct {
 	err        error
 	output     string
 	incomplete *workspace.SourceFinalizationIncomplete
+	state      *workspace.RecoveryState
 }
 
 func (e *sourceRepair) Error() string { return e.err.Error() }

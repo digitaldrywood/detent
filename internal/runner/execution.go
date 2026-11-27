@@ -1086,7 +1086,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 	cancellation := executionCancellation(req)
 	completionErr = errors.Join(completionErr, cancellation)
 	if incomplete != nil && cancellation == nil && ctx.Err() == nil {
-		return false, &sourceRepair{err: completionErr, incomplete: incomplete}
+		return false, &sourceRepair{err: completionErr, incomplete: incomplete, state: state}
 	}
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
 		return false, errors.Join(completionErr, context.Cause(ctx))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"io"
 	"log/slog"
 	"math"
@@ -40,9 +41,11 @@ func TestNativeRunnerE2EGateCreatesBranchDiffStatAndPostgresTokens(t *testing.T)
 	workspacesRoot := filepath.Join(t.TempDir(), "workspaces")
 	hub := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
-		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Done"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
+		{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken)})
+	hub.configureSourceOrigin(t, sourceRoot)
 	created, err := hub.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Record agent output", Body: "Write the requested output file." + issueContractTestSections, State: "Todo"})
 	if err != nil {
 		t.Fatal(err)

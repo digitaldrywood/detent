@@ -917,7 +917,9 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			runCtx, cancelRun := context.WithCancelCause(t.Context())
 			defer cancelRun(context.Canceled)
+			var beforeExpiry []tracker.ChangeRequest
 			if test.Expired {
+				beforeExpiry = h.changes(t, issue.ID)
 				provider.afterTurn = func() { cancelRun(context.DeadlineExceeded) }
 			}
 			transport := fixtureClient(h.native.Transport()).requests.Load()
@@ -1971,9 +1973,16 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if test.Expired {
 				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
-				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
-					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
+				if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "interrupted" || evidence.Attempt.Checkpoint == nil {
+					t.Fatalf("expired turn lost interruption or recovery checkpoint: attempt=%+v read=%v run=%v", evidence.Attempt, readErr, err)
 				}
+				if !reflect.DeepEqual(beforeExpiry, h.changes(t, issue.ID)) {
+					t.Fatal("expired execution changed the published source")
+				}
+				if _, err := os.Stat(filepath.Join(provider.workspace, "CHANGE.md")); err != nil {
+					t.Fatalf("retained work: %v", err)
+				}
+				return
 			}
 			if test.SSH && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()

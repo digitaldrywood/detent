@@ -551,13 +551,17 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				return response, err
 			}))
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+			if err != nil || len(issues) != 1 {
+				t.Fatalf("first provider handoff: %v, %v", issues, err)
+			}
+			failed, err := scheduler.FetchCandidateIssues(t.Context(), request)
+			if err == nil || len(failed) != 0 || len(acquired) != 2 || len(recoveryIDs) != 2 {
 				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
 			}
 			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
 				t.Fatal("partial batch did not retain only the successfully hydrated lease")
 			}
-			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 1 {
 				t.Fatal("partial batch retained claims outside the hydrated prefix")
 			}
 			for i, lease := range acquired {
@@ -583,7 +587,6 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 			}
 			evaluations = 0
 		}
-		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
 		want := 6
 		if unavailable == "provider slots" {
 			want = 2
@@ -591,8 +594,22 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		if unavailable == "mixed providers" {
 			want = 3
 		}
-		if err != nil || len(issues) != want || issues[0].State != "Rework" || evaluations > request.CandidateLimit {
-			t.Fatalf("provider batch = %d, %v, want %d with Rework first", len(issues), err, want)
+		fill := func() []connector.Issue {
+			t.Helper()
+			var result []connector.Issue
+			for range want {
+				evaluations = 0
+				issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
+				if err != nil || len(issues) != 1 || evaluations > request.CandidateLimit {
+					t.Fatalf("provider handoff after %d admissions: %v, %v", len(result), issues, err)
+				}
+				result = append(result, issues[0])
+			}
+			return result
+		}
+		issues := fill()
+		if issues[0].State != "Rework" {
+			t.Fatal("Rework was not selected first")
 		}
 		if unavailable == "stage slots" && admittedRework != 1 {
 			t.Fatalf("overcommitted Rework slots: %d", admittedRework)
@@ -641,9 +658,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 		admittedRework = 0
 		evaluations = 0
-		if again, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(again) != want {
-			t.Fatalf("released provider reservations retained slots: %d, %v", len(again), err)
-		}
+		fill()
 		return
 	}
 	if unavailable == "bounded" {
@@ -759,6 +774,8 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 1 {
 		t.Fatalf("start retries duplicated or lost the durable attempt: attempts=%#v error=%v", recovery.Attempts, err)
 	}
+	createIndependentNativeIssue(t, native, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "another compatible model", Body: "```detent-agent\nschema: 1\nmodel: sol\n```" + issueContractTestSections, State: "Todo"})
+	request.WorkflowStates = []string{"Todo"}
 	// This attempt already occupies the provider's only slot. An ordinary
 	// empty claim result keeps admission idle without inventing an outage.
 	next, err := scheduler.FetchCandidateIssues(t.Context(), request)
