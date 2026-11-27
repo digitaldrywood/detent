@@ -526,21 +526,32 @@ func (d SessionDeps) GetRunnerSessionHistory(c echo.Context) error {
 }
 
 func parseRunnerSessionIDs(raw string, maxIDs int) ([]int64, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	if len(raw) > maxIDs*20 {
+		return nil, corestore.ErrInvalidPage
+	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
 	}
-	parts := strings.Split(raw, ",")
-	if len(parts) > maxIDs {
-		return nil, corestore.ErrInvalidPage
-	}
-	ids := make([]int64, 0, len(parts))
-	for _, part := range parts {
+	var ids []int64
+	rest := raw
+	for {
+		part, after, found := strings.Cut(rest, ",")
+		if len(ids) >= maxIDs {
+			return nil, corestore.ErrInvalidPage
+		}
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil || id < 1 {
 			return nil, corestore.ErrInvalidPage
 		}
 		ids = append(ids, id)
+		if !found {
+			break
+		}
+		rest = after
 	}
 	return ids, nil
 }
