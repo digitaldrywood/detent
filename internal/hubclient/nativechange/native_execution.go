@@ -1206,13 +1206,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
 	}
-	publicationCtx := ctx
-	if e.pending.Type == "run.finished" {
-		publicationCtx = e.fenceRunPublication(ctx)
-	} else if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		return err
-	}
-	if err := e.claim.source.NativeClient().AppendEvent(publicationCtx, e.claim.lease.WorkItemID, *e.pending); err != nil {
+	if err := e.claim.source.NativeClient().AppendEvent(e.fenceRunPublication(ctx), e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
 		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
 			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)

@@ -25,8 +25,13 @@ import (
 )
 
 func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
-	for _, route := range []string{"phases", "progress", "events", "diff"} {
-		finishing := route == "events" || route == "diff"
+	for _, route := range []string{"phases", "progress", "events", "diff", "pending checkpoint"} {
+		event := route == "events" || route == "pending checkpoint"
+		finishing := event || route == "diff"
+		endpoint := route
+		if event {
+			endpoint = "events"
+		}
 		for _, scenario := range []struct {
 			name     string
 			revoked  bool
@@ -61,7 +66,7 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 							io.WriteString(response, `{"code":"stale_fencing_token"}`)
 						case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/validate"):
 							io.WriteString(response, "{}")
-						case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/"+route):
+						case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/"+endpoint):
 							calls++
 							if calls == 1 {
 								response.Header().Set("Retry-After", "60")
@@ -143,12 +148,20 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 						err = execution.RecordRoundVerdict(finalization, progresscheck.RoundInput{RoundID: "round"})
 					} else {
 						execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "triage", Backend: "codex", Model: "example"}
-						if route == "events" {
+						if event {
 							execution.storedSeq = execution.data.Sequence + 1
 						} else {
 							wantCalls = 0
 							execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
 							client.DeferRequestBudget("/diff", start.Add(time.Minute))
+						}
+						if route == "pending checkpoint" {
+							data := execution.data
+							data.Sequence++
+							execution.pending = &tracker.NativeRunEvent{
+								Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":1"},
+								Type:     "run.checkpointed", SchemaVersion: 1, Data: data,
+							}
 						}
 						err = execution.Finish(finalization, "succeeded")
 					}
