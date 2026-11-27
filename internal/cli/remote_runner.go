@@ -172,15 +172,15 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 			workers.Wait()
 		}()
 		workers.Go(func() { update.Run(runCtx) })
-		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
-			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
-		}
 		for _, lane := range newWorkspaceLanes(runCtx, cfg.Global, scheduling, logger, support) {
 			workspaceWorkers.Go(func() {
 				serving.Add(1)
 				defer serving.Add(-1)
 				runWorkspaceLane(runCtx, lane, logger)
 			})
+		}
+		if heartbeat, ok := scheduling.(remoterunner.Heartbeater); ok {
+			workers.Go(func() { remoterunner.RunHeartbeats(runCtx, heartbeat, cfg.remoteHeartbeatTicker, logger) })
 		}
 		<-runCtx.Done()
 		return context.Cause(runCtx)

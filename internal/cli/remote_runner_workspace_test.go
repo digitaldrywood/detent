@@ -66,7 +66,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 
 			ticks := make(chan time.Time, 2)
 			tick := func() { ticks <- time.Now() }
-			tick()
+			heartbeatStarted := make(chan struct{})
 			want := workspacesession.Capabilities{}
 			var supportSource func() workspacerunner.Support
 			isolationLevel := workspacerunner.DefaultSupport().TerminalIsolation()
@@ -101,6 +101,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 					Global: cfg, Headless: true, Version: "dev", RuntimeDBPath: statePath,
 					Shutdown: NewShutdownController(),
 					remoteHeartbeatTicker: func(time.Duration) (<-chan time.Time, func()) {
+						close(heartbeatStarted)
 						return ticks, func() {}
 					},
 					remoteWorkspaceSupport: supportSource,
@@ -112,6 +113,8 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 				<-done
 			})
 			waitCtx := testenv.WaitContext(t, t.Context())
+			awaitRemoteRunnerEvent(t, waitCtx, done, heartbeatStarted)
+			tick()
 			for {
 				got := awaitRemoteRunnerEvent(t, waitCtx, done, hub.reports)
 				if got == nil {
