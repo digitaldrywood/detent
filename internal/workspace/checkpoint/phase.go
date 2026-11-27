@@ -148,7 +148,7 @@ func (s *phaseScan) walkTrees(before, after string) error {
 
 func (s *phaseScan) readTree(tree string) (map[string]phaseTreeEntry, error) {
 	if tree == "" {
-		return nil, nil
+		return map[string]phaseTreeEntry{}, nil
 	}
 	output, err := s.read(phaseMetadataBytes, "tree entries", "ls-tree", "-z", tree)
 	if err != nil {
