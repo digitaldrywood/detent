@@ -19,8 +19,8 @@ func (f *runnerEventSession) FindRunnerSession(ctx context.Context, p tracker.Pr
 func (f *runnerEventSession) RunnerSessionHistory(ctx context.Context, p tracker.ProjectID, id, after int64, limit int) ([]runnersession.History, error) {
 	return f.sessions.RunnerSessionHistory(ctx, p, id, after, limit)
 }
-func (f *runnerEventSession) RunnerSessionProcesses(ctx context.Context, p tracker.ProjectID, machine, attempt string, limit int) ([]runnersession.Record, error) {
-	return f.sessions.RunnerSessionProcesses(ctx, p, machine, attempt, limit)
+func (f *runnerEventSession) RunnerSessionProcesses(ctx context.Context, p tracker.ProjectID, machine, attempt string, sessionIDs []int64, limit int) ([]runnersession.Record, error) {
+	return f.sessions.RunnerSessionProcesses(ctx, p, machine, attempt, sessionIDs, limit)
 }
 
 func (f *runnerEventSession) CreateRunnerSession(ctx context.Context, r runnersession.Record, h runnersession.History) (runnersession.Record, error) {

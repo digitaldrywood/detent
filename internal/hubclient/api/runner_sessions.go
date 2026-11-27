@@ -9,7 +9,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -400,23 +402,37 @@ func (s *RunnerSessions) UpdateSessionWorkerProcess(ctx context.Context, id int6
 	return err
 }
 func (s *RunnerSessions) ListActiveWorkerProcesses(ctx context.Context) ([]store.WorkerProcess, error) {
-	result, err := s.runnerProcesses(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	if result.More {
-		return nil, errors.New("hub process registrations are incomplete")
-	}
 	s.workersMu.Lock()
-	defer s.workersMu.Unlock()
-	workers := make([]store.WorkerProcess, 0, len(result.Workers))
-	for _, worker := range result.Workers {
-		local, ok := s.workers[worker.SessionID]
-		if !ok {
-			continue
+	ids := make([]int64, 0, len(s.workers))
+	for id := range s.workers {
+		ids = append(ids, id)
+	}
+	s.workersMu.Unlock()
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	slices.Sort(ids)
+	const chunkSize = 200
+	var workers []store.WorkerProcess
+	for start := 0; start < len(ids); start += chunkSize {
+		end := min(start+chunkSize, len(ids))
+		result, err := s.runnerProcessesForSessions(ctx, ids[start:end])
+		if err != nil {
+			return nil, err
 		}
-		worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
-		workers = append(workers, worker)
+		if result.More {
+			return nil, errors.New("hub process registrations are incomplete")
+		}
+		s.workersMu.Lock()
+		for _, worker := range result.Workers {
+			local, ok := s.workers[worker.SessionID]
+			if !ok {
+				continue
+			}
+			worker.WorkerProcessIdentity, worker.CleanupRoot, worker.CleanupPath = local.WorkerProcessIdentity, local.CleanupRoot, local.CleanupPath
+			workers = append(workers, worker)
+		}
+		s.workersMu.Unlock()
 	}
 	return workers, nil
 }
@@ -433,6 +449,16 @@ func (s *RunnerSessions) MarkSessionWorkerProcessReaped(ctx context.Context, id 
 func (c *NativeClient) runnerProcesses(ctx context.Context, attempt string) (runnersession.Processes, error) {
 	var result runnersession.Processes
 	err := c.client.Request(ctx, http.MethodGet, c.base()+"/runner-processes?attempt="+url.QueryEscape(attempt), nil, &result)
+	return result, err
+}
+
+func (c *NativeClient) runnerProcessesForSessions(ctx context.Context, sessionIDs []int64) (runnersession.Processes, error) {
+	parts := make([]string, len(sessionIDs))
+	for i, id := range sessionIDs {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+	var result runnersession.Processes
+	err := c.client.Request(ctx, http.MethodGet, c.base()+"/runner-processes?sessions="+url.QueryEscape(strings.Join(parts, ",")), nil, &result)
 	return result, err
 }
 

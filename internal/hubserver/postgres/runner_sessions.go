@@ -89,11 +89,19 @@ func (s *session) UpdateRunnerSession(ctx context.Context, record runnersession.
 	return s.insertRunnerSessionHistory(ctx, history)
 }
 
-func (s *session) RunnerSessionProcesses(ctx context.Context, project tracker.ProjectID, machine, attempt string, limit int) ([]runnersession.Record, error) {
-	if limit < 1 || limit > 200 {
+func (s *session) RunnerSessionProcesses(ctx context.Context, project tracker.ProjectID, machine, attempt string, sessionIDs []int64, limit int) ([]runnersession.Record, error) {
+	if limit < 1 || limit > 201 {
 		return nil, corestore.ErrInvalidPage
 	}
-	rows, err := s.db.Query(ctx, `SELECT `+runnerSessionColumns+` FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id IN (SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id WHERE a.organization_id=$1 AND l.machine_id=$3 AND ($4='' OR a.id=$4)) AND worker_reaped_at IS NULL AND (worker_pid>0 OR completed_at IS NULL) ORDER BY id LIMIT $5`, s.organization, project, machine, attempt, limit)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if len(sessionIDs) > 0 {
+		rows, err = s.db.Query(ctx, `SELECT `+runnerSessionColumns+` FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND id=ANY($6::bigint[]) AND attempt_id IN (SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id WHERE a.organization_id=$1 AND l.machine_id=$3 AND ($4='' OR a.id=$4)) AND worker_reaped_at IS NULL AND (worker_pid>0 OR completed_at IS NULL) ORDER BY id LIMIT $5`, s.organization, project, machine, attempt, limit, sessionIDs)
+	} else {
+		rows, err = s.db.Query(ctx, `SELECT `+runnerSessionColumns+` FROM runner_sessions WHERE organization_id=$1 AND project_id=$2 AND attempt_id IN (SELECT a.id FROM native_attempts a JOIN leases l ON l.organization_id=a.organization_id AND l.lease_id=a.lease_id WHERE a.organization_id=$1 AND l.machine_id=$3 AND ($4='' OR a.id=$4)) AND worker_reaped_at IS NULL AND (worker_pid>0 OR completed_at IS NULL) ORDER BY id LIMIT $5`, s.organization, project, machine, attempt, limit)
+	}
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

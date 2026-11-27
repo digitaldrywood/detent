@@ -807,3 +807,110 @@ func TestPostgresRunnerSessionRestartRetainsFencedEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestPostgresRunnerSessionProcessesExcludesStaleDeadLeases(t *testing.T) {
+	f := hubfixture.NewLeasedRunners(t)
+	native, ctx := f.Client(t, 0)
+	sessions := api.NewRunnerSessions(native)
+	sessionID, err := sessions.StartSession(ctx, store.SessionStart{
+		IssueID:   string(f.Leases[0].WorkItemID),
+		StartedAt: time.Now().UTC(),
+		Model:     "example-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sessions.UpdateSessionWorkerProcess(ctx, sessionID, store.WorkerProcessRegistration{
+		WorkerProcessIdentity: store.WorkerProcessIdentity{PID: 4242, GroupID: 4242, StartedAt: time.Now().UTC()},
+		CleanupRoot:           t.TempDir(),
+		CleanupPath:           "scratch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	machineID := string(f.Bindings[0].MachineID)
+	attemptID := f.Data[0].AttemptID
+
+	tests := []struct {
+		name               string
+		updateSQL          string
+		wantInMachineQuery bool
+		wantInAttemptQuery bool
+		wantInClientList   bool
+	}{
+		{
+			name:               "live lease included",
+			updateSQL:          `UPDATE leases SET acquired_at = now() - interval '30 minutes', renewed_at = now() - interval '1 minute', released_at = NULL, expires_at = now() + interval '10 minutes' WHERE organization_id = $1 AND lease_id = $2`,
+			wantInMachineQuery: true,
+			wantInAttemptQuery: true,
+			wantInClientList:   true,
+		},
+		{
+			name:               "recently ended lease included during reap grace",
+			updateSQL:          `UPDATE leases SET acquired_at = now() - interval '30 minutes', renewed_at = now() - interval '5 minutes', released_at = now() - interval '2 minutes', expires_at = now() - interval '2 minutes' WHERE organization_id = $1 AND lease_id = $2`,
+			wantInMachineQuery: true,
+			wantInAttemptQuery: true,
+			wantInClientList:   true,
+		},
+		{
+			name:               "stale dead lease preserved for legacy machine query, attempt query, and delayed client cleanup",
+			updateSQL:          `UPDATE leases SET acquired_at = now() - interval '30 minutes', renewed_at = now() - interval '20 minutes', released_at = now() - interval '15 minutes', expires_at = now() - interval '15 minutes' WHERE organization_id = $1 AND lease_id = $2`,
+			wantInMachineQuery: true,
+			wantInAttemptQuery: true,
+			wantInClientList:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := f.Admin.ExecContext(t.Context(), tt.updateSQL, string(f.Organization), string(f.Leases[0].ID)); err != nil {
+				t.Fatal(err)
+			}
+			var gotMachine, gotAttempt bool
+			if err := f.Hub.Config.TenantRepository.ReadTenant(t.Context(), f.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				reader := r.(runnersession.Reader)
+				machineRows, err := reader.RunnerSessionProcesses(t.Context(), "prj_runner", machineID, "", nil, 201)
+				if err != nil {
+					return err
+				}
+				for _, rec := range machineRows {
+					if rec.ID == sessionID {
+						gotMachine = true
+					}
+				}
+				attemptRows, err := reader.RunnerSessionProcesses(t.Context(), "prj_runner", machineID, attemptID, nil, 201)
+				if err != nil {
+					return err
+				}
+				for _, rec := range attemptRows {
+					if rec.ID == sessionID {
+						gotAttempt = true
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if gotMachine != tt.wantInMachineQuery {
+				t.Fatalf("machine query found session %d = %t, want %t", sessionID, gotMachine, tt.wantInMachineQuery)
+			}
+			if gotAttempt != tt.wantInAttemptQuery {
+				t.Fatalf("attempt query found session %d = %t, want %t", sessionID, gotAttempt, tt.wantInAttemptQuery)
+			}
+			workers, err := sessions.ListActiveWorkerProcesses(ctx)
+			if err != nil {
+				t.Fatalf("ListActiveWorkerProcesses() error = %v", err)
+			}
+			gotClient := false
+			for _, worker := range workers {
+				if worker.SessionID == sessionID {
+					gotClient = true
+				}
+			}
+			if gotClient != tt.wantInClientList {
+				t.Fatalf("client ListActiveWorkerProcesses found session %d = %t, want %t", sessionID, gotClient, tt.wantInClientList)
+			}
+		})
+	}
+}
