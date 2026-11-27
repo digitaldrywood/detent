@@ -105,7 +105,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 				{method: http.MethodGet, path: path, response: map[string]any{"id": 123, "run_attempt": 1, "path": test.workflow, "head_sha": sha, "head_branch": test.branch, "event": "schedule", "repository": map[string]string{"full_name": runRepository}, "head_repository": map[string]string{"full_name": headRepository}}},
 			}}
 			if test.state == "Todo" {
-				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
+				client.steps = append(client.steps, restStep{method: http.MethodGet, path: "/repos/" + repository + "/actions/jobs/456", response: map[string]any{"id": 456, "run_id": 123, "run_attempt": 1, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}})
 			}
 			service, err := openGitHubService(t, hubserver.Config{InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: hubgithub.NewImporter(client), ReconcileBackend: hubgithub.NewReconciler(client), Content: newContentStore(), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {

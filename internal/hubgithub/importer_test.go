@@ -168,11 +168,14 @@ func TestImportScheduledOccurrence(t *testing.T) {
 		conclusion string
 		jobName    string
 		fullName   string
-		secondPage bool
+		jobPage    int
 	}{
-		{name: "failed job while workflow is running", valid: true},
+		{name: "repair verifies a failed job by ID while workflow is running", valid: true},
 		{name: "classification verifies a cancelled job", stage: githubcontract.ScheduledClassificationStage, conclusion: "cancelled", valid: true},
-		{name: "classification verifies a job on the second page", stage: githubcontract.ScheduledClassificationStage, secondPage: true, valid: true},
+		{name: "classification verifies a job beyond the page cutoff by ID", stage: githubcontract.ScheduledClassificationStage, valid: true},
+		{name: "repair verifies a job with no attempt field from the first page", jobPage: 1, valid: true},
+		{name: "repair does not page for an unverified job", jobPage: 1},
+		{name: "classification verifies a job with no attempt field from the second page", stage: githubcontract.ScheduledClassificationStage, jobPage: 2, valid: true},
 		{name: "classification verifies a 257-byte job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 257), valid: true},
 		{name: "classification verifies a 512-byte job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 512), valid: true},
 		{name: "classification verifies a truncated job name", stage: githubcontract.ScheduledClassificationStage, jobName: strings.Repeat("x", 512), fullName: "y" + strings.Repeat("x", 512), valid: true},
@@ -189,6 +192,7 @@ func TestImportScheduledOccurrence(t *testing.T) {
 		{name: "pull request event", changeRun: func(r map[string]any) { r["event"] = "pull_request" }},
 		{name: "job absent from attempt", changeJob: func(j map[string]any) { j["id"] = 457 }},
 		{name: "job from other run", changeJob: func(j map[string]any) { j["run_id"] = 124 }},
+		{name: "job from other attempt of the same run and commit", changeJob: func(j map[string]any) { j["run_attempt"] = 2 }},
 		{name: "job head mismatch", changeJob: func(j map[string]any) { j["head_sha"] = strings.Repeat("b", 40) }},
 		{name: "job name mismatch", changeJob: func(j map[string]any) { j["name"] = "Deploy" }},
 		{name: "running job", changeJob: func(j map[string]any) { j["status"] = "in_progress" }},
@@ -201,7 +205,7 @@ func TestImportScheduledOccurrence(t *testing.T) {
 			sha := strings.Repeat("a", 40)
 			evidence := gate.ScheduledEvidence{Schema: 1, Repository: "org/repo", OccurrenceKey: strings.Repeat("a", 64), RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Coverage", RunURL: "https://github.com/org/repo/actions/runs/123/attempts/1", JobURL: "https://github.com/org/repo/actions/jobs/456", HeadSHA: sha, Conclusion: "failure"}
 			run := map[string]any{"id": 123, "run_attempt": 1, "path": ".github/workflows/ci.yml", "head_sha": sha, "head_branch": "develop", "event": "schedule", "status": "in_progress", "repository": map[string]any{"full_name": "org/repo"}, "head_repository": map[string]any{"full_name": "org/repo"}}
-			job := map[string]any{"id": 456, "run_id": 123, "name": "Coverage", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-11T12:00:00Z", "completed_at": "2026-10-11T12:01:00Z"}
+			job := map[string]any{"id": 456, "run_id": 123, "run_attempt": 1, "name": "Coverage", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-11T12:00:00Z", "completed_at": "2026-10-11T12:01:00Z"}
 			if test.jobName != "" {
 				evidence.JobName, job["name"] = test.jobName, test.jobName
 			}
@@ -223,16 +227,20 @@ func TestImportScheduledOccurrence(t *testing.T) {
 				steps[0].err = &connectorgithub.StatusError{StatusCode: test.status}
 			}
 			if test.changeRun == nil && test.status == 0 {
-				jobsPath := path + "/jobs?per_page=100"
-				if test.secondPage {
-					first := make([]map[string]any, 100)
-					for i := range first {
-						first[i] = map[string]any{"id": i + 1, "run_id": 123}
+				steps = append(steps, restStep{method: http.MethodGet, path: "/repos/org/repo/actions/jobs/456", response: job})
+				if test.jobPage > 0 {
+					delete(job, "run_attempt")
+					jobsPath := path + "/jobs?per_page=100"
+					firstID := 457
+					if test.valid && test.jobPage == 1 {
+						firstID = 456
 					}
-					steps = append(steps, restStep{method: http.MethodGet, path: jobsPath, response: map[string]any{"jobs": first}, next: jobsPath + "&page=2"})
-					jobsPath += "&page=2"
+					secondPath := jobsPath + "&page=2"
+					steps = append(steps, restStep{method: http.MethodGet, path: jobsPath, response: map[string]any{"jobs": []map[string]any{{"id": firstID}}}, next: secondPath})
+					if test.jobPage == 2 {
+						steps = append(steps, restStep{method: http.MethodGet, path: secondPath, response: map[string]any{"jobs": []map[string]any{{"id": 456}}}})
+					}
 				}
-				steps = append(steps, restStep{method: http.MethodGet, path: jobsPath, response: map[string]any{"jobs": []map[string]any{job}}})
 			}
 			client := &scriptedRESTClient{t: t, steps: steps}
 			stage := test.stage

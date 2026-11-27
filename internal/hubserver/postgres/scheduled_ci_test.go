@@ -9,6 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
+	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres/pgstoretest"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -173,8 +174,16 @@ func TestScheduledDecisionTenantReplay(t *testing.T) {
 
 func TestScheduledDecisionProjectDeletionReleasesStorage(t *testing.T) {
 	t.Parallel()
-	repository, _ := pgstoretest.RepositoryFor(t, pgstoretest.Template.Database(t), pgstoretest.SmallPool())
+	admin := pgstoretest.Template.Database(t)
+	repository, _ := pgstoretest.RepositoryFor(t, admin, pgstoretest.SmallPool())
 	ctx := t.Context()
+	var directDelete bool
+	if err := admin.QueryRowContext(ctx, "SELECT has_table_privilege($1, 'scheduled_ci_decisions', 'DELETE')", postgres.RuntimeRoleName).Scan(&directDelete); err != nil {
+		t.Fatal(err)
+	}
+	if directDelete {
+		t.Error("runtime can directly delete a scheduled CI decision")
+	}
 	now := pgstoretest.HistoryAt()
 	input := progresscheck.CIFailure{Repository: "owner/repository", HeadSHA: "head", RunID: "run", RunAttempt: "1", JobID: "job", JobName: "test", ExitStatus: "failure"}
 	decision := progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "test", Reason: "assertion failed"}
