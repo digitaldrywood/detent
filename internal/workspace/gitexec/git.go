@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -353,49 +354,77 @@ var HandoffDiffExcludes = []string{
 	".detent/worker-tmp/",
 }
 
-// WithinLimit streams one git diff invocation through a byte cap.
-// The arguments are explicit so a caller that needs different diff options --
-// the per-file attempt diff pins --find-renames -- gets the
-// same bounded read instead of a second copy of it.
+type boundedLimitWriter struct {
+	mu         sync.Mutex
+	buf        bytes.Buffer
+	limit      int
+	truncated  bool
+	onTruncate func()
+}
+
+func (w *boundedLimitWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.truncated {
+		return len(p), nil
+	}
+	remaining := w.limit - w.buf.Len()
+	if len(p) > remaining {
+		if remaining > 0 {
+			_, _ = w.buf.Write(p[:remaining])
+		}
+		w.truncated = true
+		if w.onTruncate != nil {
+			w.onTruncate()
+		}
+		return len(p), nil
+	}
+	_, _ = w.buf.Write(p)
+	return len(p), nil
+}
+
+func (w *boundedLimitWriter) snapshot() (string, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String(), w.truncated
+}
+
+// WithinLimit streams one git invocation through a byte cap on stdout and
+// caps captured stderr so an untrusted remote cannot exhaust runner memory.
 func WithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
+	cmdCtx, cancelCmd := context.WithCancel(ctx)
+	defer cancelCmd()
+
 	gitArgs := append([]string{"git", "-C", workspacePath}, args...)
-	cmd := exec.CommandContext(ctx, "git")
+	cmd := exec.CommandContext(cmdCtx, "git")
 	cmd.Args = gitArgs
 	cmd.WaitDelay = WaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", false, fmt.Errorf("git diff stdout pipe: %w", err)
+	stdout := &boundedLimitWriter{
+		limit:      maxBytes,
+		onTruncate: cancelCmd,
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	wait, err := commandshell.StartCommand(ctx, cmd)
-	if err != nil {
-		return "", false, fmt.Errorf("git diff start: %w", err)
-	}
+	stderr := &boundedLimitWriter{limit: 64 << 10}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	waitErr := commandshell.RunCommand(cmdCtx, cmd)
 
-	output, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
-	truncated := len(output) > maxBytes
-	var killErr error
-	if truncated && cmd.Process != nil {
-		killErr = cmd.Process.Kill()
-	}
-	waitErr := wait()
-
-	if readErr != nil {
-		return "", false, fmt.Errorf("git diff read: %w", readErr)
-	}
+	output, truncated := stdout.snapshot()
 	if truncated {
-		if err := gitDiffStopError(killErr, waitErr); err != nil {
-			return "", false, err
+		ownerErr := nonTruncationCommandError(waitErr)
+		if ctx.Err() != nil {
+			return "", false, errors.Join(ctx.Err(), ownerErr)
+		}
+		if ownerErr != nil {
+			return "", false, ownerErr
 		}
 		return "", true, nil
 	}
-	if waitErr == nil {
-		return string(output), false, nil
+	if waitErr == nil || (waitErr == exec.ErrWaitDelay && ctx.Err() == nil) {
+		return output, false, nil
 	}
 
 	exitCode := -1
@@ -403,17 +432,45 @@ func WithinLimit(ctx context.Context, workspacePath string, env []string, maxByt
 	if errors.As(waitErr, &exitErr) {
 		exitCode = exitErr.ExitCode()
 	}
-	if ctx.Err() != nil {
-		waitErr = ctx.Err()
+	if ctx.Err() != nil && !errors.Is(waitErr, ctx.Err()) {
+		waitErr = errors.Join(ctx.Err(), waitErr)
 	}
-	combined := append(output, stderr.Bytes()...)
+	stderrText, _ := stderr.snapshot()
 	return "", false, &CommandError{
 		Command:  "git",
 		Args:     gitArgs[1:],
 		ExitCode: exitCode,
-		Output:   string(combined),
+		Output:   output + stderrText,
 		Err:      waitErr,
 	}
+}
+
+func nonTruncationCommandError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var kept []error
+		for _, sub := range joined.Unwrap() {
+			if rem := nonTruncationCommandError(sub); rem != nil {
+				kept = append(kept, rem)
+			}
+		}
+		return errors.Join(kept...)
+	}
+	if err == exec.ErrWaitDelay || err == context.Canceled {
+		return nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return nil
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		if rem := nonTruncationCommandError(wrapped.Unwrap()); rem != nil {
+			return err
+		}
+		return nil
+	}
+	return err
 }
 
 func gitDiffStopError(killErr error, waitErr error) error {
