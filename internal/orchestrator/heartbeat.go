@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -472,7 +472,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		}
 	}
 	if retry {
-		delay -= rand.N(delay/8 + 1)
+		delay = runpkg.JitteredFailureRetryDelay(delay)
 	} else {
 		current.failures = 0
 	}

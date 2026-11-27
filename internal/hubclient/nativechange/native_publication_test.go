@@ -168,7 +168,7 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 						}
 						var event tracker.NativeRunEvent
 						if err := json.Unmarshal(body, &event); err != nil || event.Type != "run.checkpointed" || event.IdempotencyKey == "" ||
-							event.Mutation.LeaseID != "" || event.Mutation.FencingToken != 0 || event.Data.LeaseID != lease.ID || event.Data.FencingToken != lease.FencingToken {
+							event.LeaseID != "" || event.FencingToken != 0 || event.Data.LeaseID != lease.ID || event.Data.FencingToken != lease.FencingToken {
 							t.Fatalf("checkpoint = %+v, %v", event, err)
 						}
 						if calls == 1 {

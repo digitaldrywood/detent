@@ -45,7 +45,8 @@ type nativeExecution struct {
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
 	reviewDone        <-chan struct{}
-	supervisor        context.Context
+	supervisorDone    <-chan struct{}
+	supervisorLost    func() bool
 	supervisionLost   bool
 	unretiredProvider bool
 	workers           []func(context.Context) error
@@ -229,6 +230,11 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}
 	live, cancel := context.WithCancelCause(ctx)
 	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error { return context.Cause(ctx) })
+	guardDone := guarded.Done()
+	guardLost := func() bool {
+		cause := context.Cause(guarded)
+		return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause) && !runner.UnretiredProviderSession(cause)
+	}
 	e.cancelMu.Lock()
 	if e.unretiredProvider {
 		e.cancelMu.Unlock()
@@ -241,7 +247,8 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		return guarded, func() {}, runner.ErrExecutionAuthorityUnavailable
 	}
 	e.cancel = cancel
-	e.supervisor = guarded
+	e.supervisorDone = guardDone
+	e.supervisorLost = guardLost
 	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -285,7 +292,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			}
 			timer := time.NewTimer(wait)
 			select {
-			case <-guarded.Done():
+			case <-guardDone:
 				timer.Stop()
 				return
 			case <-leaseChanged:
@@ -298,9 +305,10 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}()
 	return guarded, func() {
 		e.cancelMu.Lock()
-		if e.supervisor == guarded {
-			e.supervisionLost = e.supervisionLost || supervisorLost(guarded)
-			e.supervisor = nil
+		if e.supervisorDone == guardDone {
+			e.supervisionLost = e.supervisionLost || guardLost()
+			e.supervisorDone = nil
+			e.supervisorLost = nil
 			e.cancel = nil
 		}
 		cancel(context.Canceled)
@@ -308,11 +316,6 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		<-done
 		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	}, nil
-}
-
-func supervisorLost(ctx context.Context) bool {
-	cause := context.Cause(ctx)
-	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause) && !runner.UnretiredProviderSession(cause)
 }
 
 func (e *nativeExecution) unavailable(err error) error {
