@@ -607,6 +607,16 @@ func TestIndependentScopeForRetention(t *testing.T) {
 	}
 }
 
+func attachBareOrigin(t *testing.T, sourceRoot string) {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	branch := strings.TrimSpace(runGit(t, sourceRoot, "rev-parse", "--abbrev-ref", "HEAD"))
+	runGit(t, filepath.Dir(bare), "init", "--bare", "-b", branch, bare)
+	runGit(t, sourceRoot, "remote", "add", "origin", bare)
+	runGit(t, sourceRoot, "push", "-u", "origin", branch)
+	runGit(t, sourceRoot, "remote", "set-head", "origin", "-a")
+}
+
 func TestAttemptWorkspaceRetention(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
@@ -620,6 +630,9 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		liveExec       bool
 		heldCheckout   bool
 		heldScratch    bool
+		dirtyCheckout  bool
+		unpushedCommit bool
+		completed      bool
 		scanErrExec    bool
 		otherOrg       bool
 		unscoped       bool
@@ -631,6 +644,9 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		{name: "expired attempt removed with execution dir", age: 2 * time.Hour, wantRemoved: true, wantExecRemove: true},
 		{name: "boundary age removed", age: time.Hour, wantRemoved: true, wantExecRemove: true},
 		{name: "recent attempt preserved", age: time.Hour - time.Second},
+		{name: "dirty open attempt preserved", age: 2 * time.Hour, dirtyCheckout: true},
+		{name: "unpushed open attempt preserved", age: 2 * time.Hour, unpushedCommit: true},
+		{name: "dirty completed attempt removed", age: 2 * time.Hour, dirtyCheckout: true, completed: true, wantRemoved: true, wantExecRemove: true},
 		{name: "active attempt workspace preserved", age: 2 * time.Hour, activeIssue: true},
 		{name: "active foreign issue preserved", age: 2 * time.Hour, activeForeign: true},
 		{name: "active running path preserved", age: 2 * time.Hour, activePath: true},
@@ -646,6 +662,7 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			backend := retentionBackend(t)
+			attachBareOrigin(t, backend.sourceRoot)
 			org := "org_first"
 			if test.otherOrg {
 				org = "org_second"
@@ -664,6 +681,18 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 				execDir = filepath.Join(backend.root, strings.TrimSuffix(attempt.Key(), "11111111111111111111111111111111")+"not-hex-execution")
 			}
 			retentionFixture(t, filepath.Join(execDir, "worker-1", "scratch.txt"), now.Add(-test.age))
+			if test.dirtyCheckout {
+				if err := os.WriteFile(filepath.Join(info.Path, "unpublished.txt"), []byte("wip"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.unpushedCommit {
+				if err := os.WriteFile(filepath.Join(info.Path, "local.txt"), []byte("local commit"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, info.Path, "add", "local.txt")
+				runGit(t, info.Path, "commit", "-m", "local unpushed commit")
+			}
 			if err := os.Chtimes(info.Path, now.Add(-test.age), now.Add(-test.age)); err != nil {
 				t.Fatal(err)
 			}
@@ -683,6 +712,11 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 				return nil, nil
 			}
 			request := RetentionRequest{Now: now}
+			if test.completed {
+				request.Completed = func(context.Context, []Issue) (map[string]time.Time, error) {
+					return map[string]time.Time{issue.ID: now.Add(-test.age)}, nil
+				}
+			}
 			if !test.unscoped {
 				request.Organization = "org_first"
 				request.Project = "prj_example"
@@ -867,6 +901,7 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 	t.Run("busy execution-only dirs do not starve later idle checkout", func(t *testing.T) {
 		t.Parallel()
 		backend := retentionBackend(t)
+		attachBareOrigin(t, backend.sourceRoot)
 		var scans int
 		idleAttempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", maxAttemptRetentionScans/2)}
 		idleIssue := Issue{ID: "wi_idle", Identifier: "prj_example#999", AttemptWorkspace: idleAttempt}
@@ -931,6 +966,61 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		}
 		if _, err := os.Stat(idleInfo.Path); !errors.Is(err, fs.ErrNotExist) || totals.Workspaces.Count != 1 {
 			t.Fatalf("idle checkout starved by busy execution dirs: err=%v totals=%+v", err, totals)
+		}
+	})
+	t.Run("deferred dirty checkout preserves sibling execution dir and bounds completion lookup", func(t *testing.T) {
+		t.Parallel()
+		backend := retentionBackend(t)
+		var completedBatchSize int
+		for i := range maxAttemptRetentionScans/2 + 2 {
+			attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", i+1)}
+			issue := Issue{ID: fmt.Sprintf("wi_%d", i), Identifier: fmt.Sprintf("prj_example#%d", i+1), AttemptWorkspace: attempt}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			if i >= maxAttemptRetentionScans/2 {
+				if err := os.WriteFile(filepath.Join(info.Path, "unpublished.txt"), []byte("wip"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				execDir := filepath.Join(backend.root, attempt.Key()+"-execution")
+				retentionFixture(t, filepath.Join(execDir, "worker-1", "scratch.txt"), now.Add(-2*time.Hour))
+				if err := os.Chtimes(execDir, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chtimes(info.Path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		deferredAttempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", maxAttemptRetentionScans/2+1)}
+		deferredExecDir := filepath.Join(backend.root, deferredAttempt.Key()+"-execution")
+		backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+			if strings.Contains(path, deferredAttempt.Key()) {
+				return nil, nil
+			}
+			return []int{4242}, nil
+		}
+		req := RetentionRequest{
+			Now:          now,
+			Organization: "org_first",
+			Project:      "prj_example",
+			Completed: func(_ context.Context, issues []Issue) (map[string]time.Time, error) {
+				completedBatchSize = len(issues)
+				return map[string]time.Time{}, nil
+			},
+		}
+		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		if completedBatchSize > maxAttemptRetentionScans/2 {
+			t.Fatalf("completed lookup size = %d, want <= %d", completedBatchSize, maxAttemptRetentionScans/2)
+		}
+		if _, err := os.Stat(deferredExecDir); err != nil {
+			t.Fatalf("deferred dirty checkout lost sibling execution dir: %v", err)
 		}
 	})
 }
