@@ -11,6 +11,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/hubserver/claimapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/claimstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
@@ -35,7 +36,13 @@ func (s *Service) previewProviderCandidates(c echo.Context) error {
 	if request.LandingCapacity < 0 {
 		return s.nativeAPIError(c, hubapi.NativePublicInvalid("Landing capacity must be non-negative"))
 	}
-	page, err := s.previewProviderCandidatesTenant(c.Request().Context(), hubscope.NativeRequestScope(c), request, s.config.Clock().UTC())
+	ctx := c.Request().Context()
+	if request.CheckCapacity {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, hubapi.ReadTimeout)
+		defer cancel()
+	}
+	page, err := s.previewProviderCandidatesTenant(ctx, hubscope.NativeRequestScope(c), request, s.config.Clock().UTC())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -54,6 +61,7 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	var openBlockers map[tracker.NativeWorkItemID]int
 	var projectPolicy policystore.Revision
 	var identity runnerstore.Identity
+	var capacityFull bool
 	snapshotRepository, ok := s.config.TenantRepository.(tenantstore.SnapshotRepository)
 	if !ok {
 		return nil, hubapi.NativeRunEventStorageUnavailable()
@@ -76,6 +84,12 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		}
 		if !allowed {
 			return tracker.ErrMachineNotFound
+		}
+		if request.CheckCapacity {
+			capacityFull, err = nativeClaimPreviewCapacityFull(ctx, r, identity, scope.Project, now)
+			if err != nil || capacityFull {
+				return err
+			}
 		}
 		project, err := r.ProjectRecord(ctx, scope.Project)
 		if err != nil {
@@ -173,6 +187,9 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 	})
 	if err != nil {
 		return nil, err
+	}
+	if capacityFull {
+		return nativeClaimPreviewPage(`{"items":[],"capacity_full":true}`), nil
 	}
 	if err := s.prepareNativeClaimLegacyAuditFacts(ctx, scope, plans); err != nil {
 		return nil, err
@@ -294,6 +311,28 @@ func (s *Service) previewProviderCandidatesTenant(ctx context.Context, scope hub
 		return page.finish(tracker.WorkItemID(candidates[len(candidates)-1].ID))
 	}
 	return page.finish(0)
+}
+
+func nativeClaimPreviewCapacityFull(ctx context.Context, r tenantstore.Reader, identity runnerstore.Identity, project tracker.ProjectID, now time.Time) (bool, error) {
+	runnerLimit, projectLimit, projectConfigured, err := claimapi.RunnerClaimCapacity(identity, project, now)
+	if err != nil {
+		return false, err
+	}
+	if runnerLimit <= 0 || projectConfigured && projectLimit <= 0 {
+		return true, nil
+	}
+	machine, err := r.Machine(ctx, string(identity.MachineID))
+	if err != nil {
+		return false, err
+	}
+	if machine.Capacity <= 0 {
+		return true, nil
+	}
+	usage, err := r.ClaimCapacityUsage(ctx, machine.ID, identity.RunnerID, project, now)
+	if err != nil {
+		return false, err
+	}
+	return usage.Host >= machine.Capacity || usage.Runner >= int64(runnerLimit) || projectConfigured && usage.Project >= int64(projectLimit), nil
 }
 
 func (s *Service) nativeClaimLandingCapacityAvailable(ctx context.Context, organization tracker.OrganizationID, project tracker.ProjectID, requested int, now time.Time) (bool, error) {

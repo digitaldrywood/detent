@@ -28,6 +28,7 @@ const NativeDispatchPriorityCapability = "dispatch_priority"
 const NativeLandingCapacityCapability = "project_landing_capacity"
 
 const NativeDispatchWaitCapability = "native_dispatch_wait"
+const NativeClaimPreviewCapacityCapability = "native_claim_preview_capacity"
 const NativeHostMetricsCapability = "runner_host_metrics"
 
 const NativeHeartbeatChangesCapability = "native_heartbeat_changes"
@@ -602,13 +603,15 @@ type NativeCapacityCandidate struct {
 
 type NativeCapacityPreview struct {
 	NativeClaim
-	After WorkItemID `json:"after,omitempty"`
-	Limit int        `json:"limit,omitempty"`
+	After         WorkItemID `json:"after,omitempty"`
+	Limit         int        `json:"limit,omitempty"`
+	CheckCapacity bool       `json:"check_capacity,omitempty"`
 }
 
 type NativeCapacityPage struct {
-	Items []NativeIssue `json:"items"`
-	Next  WorkItemID    `json:"next,omitempty"`
+	Items        []NativeIssue `json:"items"`
+	Next         WorkItemID    `json:"next,omitempty"`
+	CapacityFull bool          `json:"capacity_full,omitempty"`
 }
 
 type NativeLeaseMutation struct {
