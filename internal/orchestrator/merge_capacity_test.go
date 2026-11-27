@@ -181,7 +181,7 @@ func TestMergeControlClaimAuthority(t *testing.T) {
 					tracker.mu.Lock()
 					tracker.updateErr = nil
 					tracker.mu.Unlock()
-					<-time.NewTimer(retry.DueAt.Sub(time.Now())).C
+					<-time.NewTimer(time.Until(retry.DueAt)).C
 					if !orch.retryDeferredCompletion(ctx, &state, issue.ID, time.Now()) {
 						t.Fatal("completion owner did not finish the retained lane write")
 					}
