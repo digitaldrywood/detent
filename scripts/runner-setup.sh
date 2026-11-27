@@ -36,6 +36,33 @@ case "${1:-}" in
 			GOTOOLCHAIN="${toolchain:-${GOTOOLCHAIN:-auto}}" GOBIN="$(dirname "$binary")" go install -p "${TEST_PROCS:-4}" "$package@$version"
 		fi
 		;;
+	heft-linter)
+		lint_version="${2:?golangci-lint version required}"
+		heft_version="${3:?heft version required}"
+		binary="${4:?linter output path required}"
+		module=github.com/golangci/golangci-lint/v2
+		export GOWORK=off
+		temp_root="${TMPDIR:-${TMP:-${TEMP:-$PWD/tmp}}}"
+		mkdir -p "$temp_root" "$(dirname "$binary")"
+		build_dir="$(mktemp -d "$temp_root/detent-heft-linter.XXXXXX")"
+		build_output=""
+		trap 'rm -rf "$build_dir"; if [[ -n "$build_output" ]]; then rm -f "$build_output"; fi' EXIT
+		printf 'Building golangci-lint %s with Heft %s from Go modules\n' "$lint_version" "$heft_version"
+		(
+			cd "$build_dir"
+			go mod init detent-linter
+			go mod edit -require "$module@$lint_version" -require "github.com/digitaldrywood/heft@$heft_version"
+			go mod download "$module"
+			cp "$(go env GOMODCACHE)/$module@$lint_version/cmd/golangci-lint/main.go" main.go
+			printf 'package main\n\nimport _ "github.com/digitaldrywood/heft/plugin"\n' > plugins.go
+			go build -p "${TEST_PROCS:-4}" -mod=mod -trimpath \
+				-ldflags "-s -w -X main.version=$lint_version-custom-heft-$heft_version -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+				-o golangci-lint-custom .
+		)
+		build_output="$(mktemp "$binary.XXXXXX")"
+		install -m 0755 "$build_dir/golangci-lint-custom" "$build_output"
+		mv -f "$build_output" "$binary"
+		;;
 	node-deps)
 		cd "$2"
 		[[ -f package.json ]] || exit 0
