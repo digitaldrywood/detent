@@ -646,7 +646,7 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		{name: "recent attempt preserved", age: time.Hour - time.Second},
 		{name: "dirty open attempt preserved", age: 2 * time.Hour, dirtyCheckout: true},
 		{name: "unpushed open attempt preserved", age: 2 * time.Hour, unpushedCommit: true},
-		{name: "dirty completed attempt removed", age: 2 * time.Hour, dirtyCheckout: true, completed: true, wantRemoved: true, wantExecRemove: true},
+		{name: "dirty terminal attempt preserved", age: 2 * time.Hour, dirtyCheckout: true, completed: true},
 		{name: "active attempt workspace preserved", age: 2 * time.Hour, activeIssue: true},
 		{name: "active foreign issue preserved", age: 2 * time.Hour, activeForeign: true},
 		{name: "active running path preserved", age: 2 * time.Hour, activePath: true},
@@ -1016,8 +1016,8 @@ func TestAttemptWorkspaceRetention(t *testing.T) {
 		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
 			t.Fatal(err)
 		}
-		if completedBatchSize > maxAttemptRetentionScans/2 {
-			t.Fatalf("completed lookup size = %d, want <= %d", completedBatchSize, maxAttemptRetentionScans/2)
+		if completedBatchSize != 0 {
+			t.Fatalf("attempt retention unexpectedly called Completed with %d issues", completedBatchSize)
 		}
 		if _, err := os.Stat(deferredExecDir); err != nil {
 			t.Fatalf("deferred dirty checkout lost sibling execution dir: %v", err)
