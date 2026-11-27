@@ -102,6 +102,31 @@ func TestDescribeUsesPublishedGitObjects(t *testing.T) {
 	}
 }
 
+func TestDescribeRendersTextIndependentlyOfDiffAttributes(t *testing.T) {
+	source := gitfixture.SourceRepo(t)
+	gitfixture.WriteFile(t, source, ".gitattributes", "README.md -diff\n")
+	gitfixture.WriteFile(t, source, "nested/.gitattributes", "notes.txt -diff\n")
+	gitfixture.WriteFile(t, source, "nested/notes.txt", "original notes\n")
+	gitfixture.Git(t, source, "add", ".gitattributes", "nested")
+	gitfixture.Git(t, source, "commit", "-m", "add review fixtures")
+	base := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	gitfixture.WriteFile(t, source, "README.md", "updated readme\n")
+	gitfixture.WriteFile(t, source, "nested/notes.txt", "updated notes\n")
+	gitfixture.WriteFile(t, source, "image.bin", "\x00\x01\x02")
+	gitfixture.Git(t, source, "add", "README.md", "nested/notes.txt", "image.bin")
+	gitfixture.Git(t, source, "commit", "-m", "update review fixtures")
+	head := strings.TrimSpace(gitfixture.Git(t, source, "rev-parse", "HEAD"))
+	got, err := Describe(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"+updated readme\n", "-original notes\n", "+updated notes\n", "Binary files /dev/null and b/image.bin differ\n"} {
+		if !strings.Contains(got.Patch, line) {
+			t.Errorf("retained patch is missing %q", line)
+		}
+	}
+}
+
 func TestDescribeWithholdsPatchForDeniedSourcePaths(t *testing.T) {
 	for _, test := range []struct{ before, after string }{
 		{before: ".env.example", after: "released example"},

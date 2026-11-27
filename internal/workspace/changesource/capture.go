@@ -163,9 +163,6 @@ func Describe(ctx context.Context, directory, base, head string) (tracker.Change
 			}
 			metadata = next
 		}
-		if _, err := gitexec.ReadPublicationSource(ctx, scratch, "read-tree", head); err != nil {
-			return fmt.Errorf("prepare review attributes from the finalized tree: %w", err)
-		}
 		patch, truncated, err := gitexec.PublicationDiffWithinLimit(ctx, scratch, tracker.MaxChangeDiffBytes,
 			"--no-ext-diff", "--no-textconv", "--find-renames", base, head, "--")
 		if err != nil {
