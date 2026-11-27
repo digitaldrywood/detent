@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -38,6 +39,7 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 			callback bool
 			expired  bool
 			bare     bool
+			routing  bool
 		}{
 			{name: "renewal rejected"},
 			{name: "revoked", revoked: true},
@@ -46,6 +48,7 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 			{name: "expired", expired: true},
 			{name: "host finalization revoked", revoked: true, bare: true},
 			{name: "host finalization expired after guard stops", expired: true, bare: true},
+			{name: "host finalization after routing authority loss and guard cleanup", bare: true, routing: true},
 		} {
 			if finishing && scenario.callback || !finishing && scenario.bare {
 				continue
@@ -99,20 +102,47 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 					}
 					execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: fixtureConnector(native), Lease: lease}).(*nativeExecution)
 					fixtureInstallClaim(t, scheduler, nativeClaim{source: fixtureConnector(native), lease: lease, deadline: deadline, execution: execution}, descriptor, "project")
+					if scenario.routing {
+						enrolled, err := newTestClient(t, Config{
+							URL: "https://hub.example.test", TokenSource: func() string { return "fixture" },
+							Enrollment: api.NewRunnerState(filepath.Join(t.TempDir(), "identity.json")),
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+						execution.scheduler.client = enrolled
+					}
 					guarded, stop, err := execution.Guard(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
-					if scenario.bare && scenario.expired {
+					var routingLoss error
+					if scenario.routing {
+						<-guarded.Done()
+						routingLoss = context.Cause(guarded)
+						if !errors.Is(routingLoss, runner.ErrExecutionAuthorityUnavailable) {
+							t.Fatalf("invalid routing state stopped the guard with %v", routingLoss)
+						}
+						stop()
+						if !execution.claimActive() {
+							t.Fatal("routing loss invalidated the fixture's Hub lease")
+						}
+					} else if scenario.bare && scenario.expired {
 						stop()
 					} else {
 						defer stop()
 					}
+					var rejected <-chan error
 					if scenario.revoked {
 						timer := time.AfterFunc(10*time.Second, func() { execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, lost)) })
 						defer timer.Stop()
-					} else if !scenario.expired {
-						timer := time.AfterFunc(10*time.Second, func() { _, _ = scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()) })
+					} else if !scenario.expired && !scenario.routing {
+						renewed := make(chan error, 1)
+						rejected = renewed
+						timer := time.AfterFunc(10*time.Second, func() {
+							_, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now())
+							renewed <- err
+						})
 						defer timer.Stop()
 					}
 					parent := context.WithoutCancel(guarded)
@@ -123,10 +153,16 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 							wantElapsed = time.Minute
 						}
 					}
+					if scenario.routing {
+						wantElapsed = 0
+					}
 					finalization, cancel := context.WithTimeout(parent, 3*time.Minute)
 					defer cancel()
 					var peerContext context.Context
 					wantCalls := 1
+					if scenario.routing {
+						wantCalls = 0
+					}
 					if scenario.callback {
 						left, right := net.Pipe()
 						defer left.Close()
@@ -165,17 +201,24 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 						}
 						err = execution.Finish(finalization, "succeeded")
 					}
-					observedLoss := errors.Is(err, lost)
-					if scenario.expired {
-						observedLoss = errors.Is(err, runner.ErrExecutionAuthorityUnavailable)
-					} else if !scenario.revoked {
-						observedLoss = errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && strings.Contains(err.Error(), scenario.name)
-					}
-					if scenario.callback {
-						observedLoss = err != nil && strings.Contains(err.Error(), lost.Error())
-						if peerContext.Err() != nil {
-							t.Fatalf("callback peer ended: %v", peerContext.Err())
+					if rejected != nil {
+						renewalErr := <-rejected
+						var refusal *APIError
+						if !errors.As(renewalErr, &refusal) || refusal.Code != "stale_fencing_token" {
+							t.Fatalf("renewal returned %v, want stale fencing token", renewalErr)
 						}
+					}
+					observedLoss := true
+					if scenario.routing {
+						observedLoss = errors.Is(err, routingLoss)
+					} else if scenario.revoked {
+						observedLoss = errors.Is(err, lost)
+						if scenario.callback {
+							observedLoss = err != nil && strings.Contains(err.Error(), lost.Error())
+						}
+					}
+					if scenario.callback && peerContext.Err() != nil {
+						t.Fatalf("callback peer ended: %v", peerContext.Err())
 					}
 					if !observedLoss || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || calls != wantCalls || time.Since(start) != wantElapsed || finalization.Err() != nil {
 						t.Fatalf("publication returned %v after %s and %d POSTs, finalization error = %v", err, time.Since(start), calls, finalization.Err())

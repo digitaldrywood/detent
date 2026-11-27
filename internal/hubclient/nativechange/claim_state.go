@@ -18,7 +18,7 @@ func (e *nativeExecution) ClaimState(ctx context.Context) (executioncontract.Exe
 		return executioncontract.ExecutionState{}, runner.ErrProviderSessionUnretired
 	}
 	controller := e.supervisorCause != nil
-	lost := e.supervisionLost || controller && supervisorLost(e.supervisorCause())
+	lost := e.authorityLoss != nil || e.supervisionLost || controller && supervisorLost(e.supervisorCause())
 	select {
 	case <-e.reviewDone:
 		e.reviewDone = nil
