@@ -20,6 +20,7 @@ type Lifecycle struct {
 	routingState string
 	mu           sync.Mutex
 	report       runnerauth.LifecycleReport
+	activation   runnerauth.LifecycleCommand
 	send         func(context.Context, runnerauth.LifecycleCommand) error
 }
 
@@ -85,6 +86,13 @@ func (l *Lifecycle) Shutdown(ctx context.Context, reason string) error {
 }
 
 func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.LifecycleState, reason, target, requestID string) error {
+	if state == runnerauth.LifecycleUpdating && l.activation.State == state && l.activation.Reason == reason &&
+		l.activation.TargetVersion == target && l.activation.UpdateRequestID == requestID {
+		if err := l.send(ctx, l.activation); err != nil {
+			return fmt.Errorf("recheck runner update authorization: %w", err)
+		}
+		return nil
+	}
 	next := l.report
 	next.Sequence++
 	next.State, next.Reason, next.TargetVersion = state, reason, target
@@ -107,6 +115,10 @@ func (l *Lifecycle) reportLocked(ctx context.Context, state runnerauth.Lifecycle
 		return fmt.Errorf("report runner lifecycle: %w", err)
 	}
 	l.report = next
+	l.activation = runnerauth.LifecycleCommand{}
+	if state == runnerauth.LifecycleUpdating {
+		l.activation = command
+	}
 	return nil
 }
 

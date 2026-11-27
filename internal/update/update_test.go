@@ -538,7 +538,8 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 		{name: "Hub-selected exact release below latest", current: "1.2.3", exact: true},
 		{name: "Hub holds an older signed release", current: "1.2.5", exact: true},
 		{name: "authorized after drain", current: "1.2.3", exact: true, activate: "authorize"},
-		{name: "target withdrawn during drain", current: "1.2.3", exact: true, activate: "withdraw"},
+		{name: "target withdrawn during drain", current: "1.2.3", exact: true, activate: "withdraw during drain"},
+		{name: "target withdrawn during preflight", current: "1.2.3", exact: true, activate: "withdraw during preflight"},
 
 		{name: "same version CLI repair", current: "1.2.4"},
 		{name: "same version Hub repair", current: "1.2.4", follow: true},
@@ -681,6 +682,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				return recorder.Result(), nil
 			})}
 
+			candidateProbes := 0
 			service := NewService(Config{
 				CurrentVersion: test.current,
 				HomeDir:        legacyHome,
@@ -693,7 +695,10 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					HTTPClient: httpClient,
 				}),
 				Env: installEnv,
-				BinaryVerifier: func(context.Context, string) (string, error) {
+				BinaryVerifier: func(_ context.Context, path string) (string, error) {
+					if path != binary {
+						candidateProbes++
+					}
 					return "version: v" + version + "\ncommit: " + testUpdatedCommit + "\n", nil
 				},
 			})
@@ -742,7 +747,7 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 				scheduler, err := NewScheduler(SchedulerConfig{
 					CheckInterval: time.Hour, Updater: service, RunningBuild: running, ApplyOptions: applyOptions,
 					ReserveDrain: func(context.Context) (func(), error) {
-						withdrawn = test.activate == "withdraw"
+						withdrawn = test.activate == "withdraw during drain"
 						drained, reserved = true, true
 						return func() { reserved = false }, nil
 					},
@@ -760,10 +765,11 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					}
 					authorizations++
 					installed, err := os.ReadFile(binary)
-					if !drained || !reserved || preflightPath == "" || err != nil || string(installed) != "old" || target != version || requestID != "signed-update" {
+					if !drained || !reserved || candidateProbes != authorizations-1 || (preflightPath != "") != (authorizations == 2) || err != nil || string(installed) != "old" || target != version || requestID != "signed-update" {
 						t.Fatalf("activation ran out of order: drained=%t reserved=%t candidate=%q installed=%q error=%v request=%q target=%q", drained, reserved, preflightPath, installed, err, requestID, target)
 					}
-					if withdrawn {
+					if withdrawn || test.activate == "withdraw during preflight" && preflightPath != "" {
+						withdrawn = true
 						return ErrRefused
 					}
 					return nil
@@ -774,11 +780,15 @@ func TestServiceAppliesHubPinnedReleaseWithMinisignSignature(t *testing.T) {
 					ExpectedBuildRevision: initial.Revision, RequestedAt: now,
 				})
 				wantBinary, wantStatus, wantRestarts := "updated", "restart_requested", 1
-				if withdrawn {
+				wantAuthorizations, wantProbes := 2, 1
+				if test.activate != "authorize" {
 					wantBinary, wantStatus, wantRestarts = "old", "refused", 0
 				}
+				if test.activate == "withdraw during drain" {
+					wantAuthorizations, wantProbes = 1, 0
+				}
 				installed, err := os.ReadFile(binary)
-				if err != nil || string(installed) != wantBinary || restarts != wantRestarts || authorizations != 1 ||
+				if err != nil || string(installed) != wantBinary || restarts != wantRestarts || authorizations != wantAuthorizations || candidateProbes != wantProbes ||
 					result == nil || result.Receipt == nil || result.Receipt.Status != wantStatus || reserved == withdrawn {
 					t.Fatalf("installed=%q error=%v restarts=%d authorizations=%d receipt=%+v reserved=%t", installed, err, restarts, authorizations, result, reserved)
 				}

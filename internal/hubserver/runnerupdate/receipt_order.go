@@ -24,7 +24,7 @@ func (s *Service) acceptStoredReceipt(ctx context.Context, reader tenantstore.Re
 	var offer *runnerauth.UpdateRequest
 	if state.Observation != nil && state.Observation.Receipt != nil && !state.Observation.Receipt.Request.Matches(next.Request) {
 		runner := runnerauth.Runner{Binding: runnerauth.Binding{RunnerID: runnerID}, Update: state.Observation}
-		if err := ApplyAvailableRouting(ctx, reader, &runner, state, urgent, running.Version, next.Request.Version); err != nil {
+		if err := ApplyAvailableRouting(ctx, reader, &runner, state, urgent, running.Version, s.deps.Version); err != nil {
 			return false, false, err
 		}
 		offer = runner.UpdateRequest

@@ -428,8 +428,16 @@ func TestPostgresRunnerTargetOffers(t *testing.T) {
 			peer.Sequence++
 			activation := lifecycleUpdateCommand{peer, initialOffer.ID}
 			report(1, activation, http.StatusNoContent)
+			accepted := read(1).Lifecycle
+			if accepted == nil || accepted.LifecycleReport != peer {
+				t.Fatalf("activation did not become current: %+v", accepted)
+			}
+			report(1, activation, http.StatusNoContent)
 			hubVersion = build.Version
 			report(1, activation, http.StatusConflict)
+			if current := read(1).Lifecycle; current == nil || *current != *accepted {
+				t.Fatalf("activation rechecks changed current transition: got %+v want %+v", current, accepted)
+			}
 			hubVersion = "1.3.0"
 			peer.Sequence, peer.State, peer.TargetVersion = 6, runnerauth.LifecycleReady, ""
 			report(1, peer, http.StatusNoContent)

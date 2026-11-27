@@ -604,6 +604,13 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 	}
 
 	if opts.authorizeActivation != nil {
+		preflight := replacement.Preflight
+		replacement.Preflight = func(ctx context.Context, path string) error {
+			if err := opts.authorizeActivation(ctx); err != nil {
+				return fmt.Errorf("authorize candidate preflight: %w", err)
+			}
+			return preflight(ctx, path)
+		}
 		beforeReplace := replacement.BeforeReplace
 		replacement.BeforeReplace = func(ctx context.Context, target, previous string) error {
 			if beforeReplace != nil {

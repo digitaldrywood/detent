@@ -139,6 +139,35 @@ func TestPostgresRunnerUpdateReceiptMonotonic(t *testing.T) {
 	}
 }
 
+func TestPostgresRunnerUpdateReceiptFollowsCurrentHubTarget(t *testing.T) {
+	for _, hubVersion := range []string{"1.2.4", "1.2.3"} {
+		t.Run(hubVersion, func(t *testing.T) {
+			version := "1.2.4"
+			f := newReceiptFixtureAtVersion(t, &version, 2)
+			now := time.Now().UTC().Truncate(time.Microsecond)
+			for index := range f.bindings {
+				build := runnerauth.BuildEvidence{Version: "1.2.3", Commit: strings.Repeat("a", 40), SHA256: strings.Repeat("b", 64), Source: "release", VerifiedRelease: true, OS: "linux", Architecture: "amd64", ObservedAt: now}
+				prior := runnerauth.UpdateRequest{ID: fmt.Sprintf("update_prior_%d", index), RequestedAt: now, Service: "detent", Version: build.Version, Release: true, ExpectedBuildRevision: strings.Repeat("c", 64)}
+				seedMonotonicRequest(t, f, index, prior)
+				current := runnerauth.UpdateReceipt{Request: prior, Status: "applied", Applied: &build, ObservedAt: now.Add(time.Second)}
+				writeMonotonicReceipt(t, f, index, "store current receipt", current, build)
+				offer := prior
+				offer.ID, offer.Version, offer.FollowHub, offer.FromRelease = fmt.Sprintf("update_offer_%d", index), "1.2.4", true, true
+				seedMonotonicRequest(t, f, index, offer)
+				version = hubVersion
+				report := runnerauth.UpdateReceipt{Request: offer, Status: "draining", ObservedAt: now}
+				writeMonotonicReceipt(t, f, index, "report automatic offer", report, build)
+				want := current
+				if hubVersion == offer.Version {
+					want = report
+				}
+				assertMonotonicReceipt(t, f, index, want)
+				version = offer.Version
+			}
+		})
+	}
+}
+
 func seedMonotonicRequest(t *testing.T, f receiptFixture, index int, request runnerauth.UpdateRequest) {
 	t.Helper()
 	err := f.service.Repository.WriteTenant(t.Context(), "org_startup", corestore.Serving, func(w tenantstore.Writer) error {

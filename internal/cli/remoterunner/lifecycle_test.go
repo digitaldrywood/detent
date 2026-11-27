@@ -77,6 +77,29 @@ func TestLifecycleReportsRoutingTransitions(t *testing.T) {
 	}
 }
 
+func TestLifecycleRechecksUpdateWithSameReceipt(t *testing.T) {
+	var reports []runnerauth.LifecycleCommand
+	owner := NewLifecycle("1.2.3", "revision", func(_ context.Context, command runnerauth.LifecycleCommand) error {
+		reports = append(reports, command)
+		if len(reports) == 2 {
+			return &api.APIError{Status: http.StatusConflict}
+		}
+		return nil
+	})
+	for _, wantRefused := range []bool{false, true} {
+		err := owner.ReportTransition(t.Context(), runnerauth.LifecycleUpdating, "", "1.2.4", "update_example")
+		if (err != nil) != wantRefused {
+			t.Fatalf("report error = %v, want refusal = %t", err, wantRefused)
+		}
+	}
+	if err := owner.Report(t.Context(), runnerauth.LifecycleReady, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 3 || reports[0] != reports[1] || reports[2].Sequence != reports[0].Sequence+1 {
+		t.Fatalf("update authorization changed the transition sequence: %+v", reports)
+	}
+}
+
 func TestLifecycleReportsShutdownOnce(t *testing.T) {
 	for _, reason := range []string{"signal", "update"} {
 		t.Run(reason, func(t *testing.T) {
