@@ -33,8 +33,9 @@ type SSHExecutionSources struct {
 }
 
 type sshDiff struct {
-	Request tracker.AttemptDiffRequest
-	Present bool
+	Request     tracker.AttemptDiffRequest
+	Present     bool
+	CommitBound bool `json:",omitempty"`
 }
 
 func (s *SSHExecutionSources) BindWorkerProcesses(ctx context.Context, project string, sessions SessionStore, req RunRequest) context.Context {
@@ -118,7 +119,7 @@ func (s *SSHExecutionSources) Handle(ctx context.Context, method string, args []
 			return sshDiff{}, nil
 		}
 		request, present := diff(ctx)
-		return sshDiff{Request: request, Present: present}, nil
+		return sshDiff{Request: request, Present: present, CommitBound: request.CommitBound}, nil
 	case "source.capture":
 		if directory == "" {
 			return nil, errors.New("SSH artifact workspace is unavailable")
@@ -253,6 +254,7 @@ func (c *SSHCallbacks) BindExecutionSources(peer *SSHPeer, journalRoot string) {
 			if err := peer.Call(ctx, "source.diff", &result); err != nil {
 				return tracker.AttemptDiffRequest{}, false
 			}
+			result.Request.CommitBound = result.CommitBound
 			return result.Request, result.Present
 		})
 	}

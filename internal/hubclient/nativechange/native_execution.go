@@ -74,9 +74,7 @@ type nativeExecution struct {
 	// every checkpoint and before the finish. It is
 	// nil for a run with no worktree to describe.
 	diffSource runner.AttemptDiffSource
-	// lastDiff is the most recent diff the source produced. It stands in for
-	// the finish generation when the worktree is gone by then: the agent has
-	// stopped, so nothing changed after the last diff that could be read.
+	// lastDiff is the most recent diff the source produced.
 	lastDiff *tracker.AttemptDiffRequest
 	// storedSeq is the run event sequence whose diff the hub last stored, so
 	// the finish can tell its final diff was received.
@@ -494,6 +492,7 @@ func (e *nativeExecution) start(ctx context.Context, identity tracker.NativeExec
 func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.invalidateCommitDiff()
 	checkpoint.Publication = nil
 	if e.data.Identity == nil {
 		e.captureCheckpointDiff(ctx)
@@ -986,18 +985,25 @@ func (e *nativeExecution) NativeChange() *runner.NativeChange {
 func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.invalidateCommitDiff()
 	e.diffSource = source
+}
+
+func (e *nativeExecution) invalidateCommitDiff() {
+	if e.lastDiff != nil && e.lastDiff.CommitBound {
+		diff := *e.lastDiff
+		diff.CommitBound = false
+		e.lastDiff = &diff
+	}
 }
 
 func (e *nativeExecution) captureDiff(ctx context.Context) error {
 	finalized := e.worktreeState == "clean" || e.worktreeState == "unpushed"
-	if e.diffSource == nil {
-		if e.lastDiff != nil && (e.worktreeHead == "" || e.worktreeHead == e.lastDiff.HeadSHA) {
-			return nil
-		}
-		return errors.New("the run's final attempt diff source is unavailable")
+	var request tracker.AttemptDiffRequest
+	var ok bool
+	if e.diffSource != nil {
+		request, ok = e.diffSource(ctx)
 	}
-	request, ok := e.diffSource(ctx)
 	switch {
 	case ok:
 		e.lastDiff = &request
@@ -1006,7 +1012,7 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 		return errors.New("worktree HEAD moved after the attempt diff was captured")
 	case ctx.Err() != nil:
 		return ctx.Err()
-	case !finalized || e.worktreeHead == "" || e.lastDiff == nil:
+	case !finalized || e.worktreeHead == "" || e.lastDiff == nil || !e.lastDiff.CommitBound || e.lastDiff.BaseSHA == "":
 		return errors.New("the run's final attempt diff is unavailable")
 	case e.lastDiff.HeadSHA != e.worktreeHead:
 		return errors.New("the attempt diff does not match the final checkpoint head")
