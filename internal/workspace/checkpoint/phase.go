@@ -2,6 +2,8 @@ package checkpoint
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -31,63 +33,180 @@ func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) err
 	if len(commits) > phaseCommitLimit {
 		return fmt.Errorf("%w: phase history exceeds the commit limit", ErrUnsafe)
 	}
-	remaining := tracker.MaxChangeDiffBytes - len(rawCommits)
-	pathsRemaining := phasePathLimit
+	scan := phaseScan{git: git, remaining: tracker.MaxChangeDiffBytes - len(rawCommits), paths: phasePathLimit}
 	for _, commit := range commits {
 		if !gitexec.ValidHead(commit) {
 			return fmt.Errorf("%w: invalid phase commit identity", ErrUnsafe)
 		}
-		raw, err := readPhaseOutput(git, min(remaining, phaseCommitBytes), "commit object", "cat-file", "commit", commit)
+		raw, err := scan.read(phaseCommitBytes, "commit object", "cat-file", "commit", commit)
 		if err != nil {
 			return err
 		}
-		remaining -= len(raw)
-		if !strings.Contains(raw, "\n\n") {
-			return fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
-		}
-		if err := ScreenCredentials(raw); err != nil {
+		if err := scan.commit(raw); err != nil {
 			return err
 		}
-		changed, err := readPhaseOutput(git, min(remaining, phaseMetadataBytes), "changed paths",
-			"diff-tree", "--root", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-r", "-t", "-m", "-z", commit)
+	}
+	return scan.screenBlobs()
+}
+
+type phaseScan struct {
+	git       gitexec.BoundedRead
+	remaining int
+	paths     int
+	blobs     []string
+}
+
+func (s *phaseScan) read(limit int, step string, args ...string) (string, error) {
+	output, err := readPhaseOutput(s.git, min(s.remaining, limit), step, args...)
+	s.remaining -= len(output)
+	return output, err
+}
+
+func (s *phaseScan) commit(raw string) error {
+	headers, _, ok := strings.Cut(raw, "\n\n")
+	treeLine, parents, _ := strings.Cut(headers, "\n")
+	tree, hasTree := strings.CutPrefix(treeLine, "tree ")
+	if !ok || !hasTree || !gitexec.ValidHead(tree) {
+		return fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
+	}
+	if err := ScreenCredentials(raw); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(parents, "parent ") {
+		return s.walkTrees("", tree)
+	}
+	for strings.HasPrefix(parents, "parent ") {
+		line, rest, _ := strings.Cut(parents, "\n")
+		parents = rest
+		parent := strings.TrimPrefix(line, "parent ")
+		if !gitexec.ValidHead(parent) {
+			return fmt.Errorf("%w: invalid phase parent identity", ErrUnsafe)
+		}
+		parentTree, err := s.read(65, "parent tree", "rev-parse", "--verify", parent+"^{tree}")
 		if err != nil {
 			return err
 		}
-		remaining -= len(changed)
-		if err := screenPhasePaths(git, changed, &pathsRemaining, &remaining); err != nil {
+		parentTree = strings.TrimSuffix(parentTree, "\n")
+		if !gitexec.ValidHead(parentTree) {
+			return fmt.Errorf("%w: invalid phase parent tree identity", ErrUnsafe)
+		}
+		if err := s.walkTrees(parentTree, tree); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func screenPhasePaths(git gitexec.BoundedRead, changed string, pathsRemaining, remaining *int) error {
-	for changed != "" {
-		if *pathsRemaining == 0 {
-			return fmt.Errorf("%w: phase history exceeds the changed path limit", ErrUnsafe)
+type phaseTreePair struct {
+	before string
+	after  string
+	prefix string
+}
+
+type phaseTreeEntry struct {
+	mode   string
+	object string
+}
+
+func (e phaseTreeEntry) tree() string {
+	if e.mode == "040000" {
+		return e.object
+	}
+	return ""
+}
+
+func (s *phaseScan) walkTrees(before, after string) error {
+	pending := []phaseTreePair{{before: before, after: after}}
+	for len(pending) > 0 {
+		pair := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if pair.before == pair.after {
+			continue
 		}
-		*pathsRemaining--
-		header, rest, hasHeader := strings.Cut(changed, "\x00")
-		path, next, hasPath := strings.Cut(rest, "\x00")
-		changed = next
-		fields := strings.Fields(header)
-		if !hasHeader || !hasPath || len(fields) != 5 || !strings.HasPrefix(fields[0], ":") {
-			return fmt.Errorf("%w: invalid phase changed path record", ErrUnsafe)
-		}
-		if !PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
-			return fmt.Errorf("%w: commit contains an unapproved path", ErrUnsafe)
-		}
-		if err := ScreenCredentials(path); err != nil {
+		oldEntries, err := s.readTree(pair.before)
+		if err != nil {
 			return err
 		}
-		switch fields[1] {
-		case "000000", "040000":
-			continue
-		case "100644", "100755":
-		default:
-			return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+		newEntries, err := s.readTree(pair.after)
+		if err != nil {
+			return err
 		}
-		if err := screenPhaseBlob(git, fields[3], remaining); err != nil {
+		for _, name := range slices.Sorted(maps.Keys(newEntries)) {
+			if err := s.changePath(&pending, pair.prefix, name, oldEntries[name], newEntries[name]); err != nil {
+				return err
+			}
+			delete(oldEntries, name)
+		}
+		for _, name := range slices.Sorted(maps.Keys(oldEntries)) {
+			if err := s.changePath(&pending, pair.prefix, name, oldEntries[name], phaseTreeEntry{}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *phaseScan) readTree(tree string) (map[string]phaseTreeEntry, error) {
+	if tree == "" {
+		return nil, nil
+	}
+	output, err := s.read(phaseMetadataBytes, "tree entries", "ls-tree", "-z", tree)
+	if err != nil {
+		return nil, err
+	}
+	entries := make(map[string]phaseTreeEntry)
+	for output != "" {
+		record, rest, terminated := strings.Cut(output, "\x00")
+		output = rest
+		header, name, separated := strings.Cut(record, "\t")
+		fields := strings.Fields(header)
+		if !terminated || !separated || len(fields) != 3 || name == "" || strings.Contains(name, "/") || !gitexec.ValidHead(fields[2]) {
+			return nil, fmt.Errorf("%w: invalid phase tree entry", ErrUnsafe)
+		}
+		if _, duplicate := entries[name]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate phase tree entry", ErrUnsafe)
+		}
+		entries[name] = phaseTreeEntry{mode: fields[0], object: fields[2]}
+	}
+	return entries, nil
+}
+
+func (s *phaseScan) changePath(pending *[]phaseTreePair, prefix, name string, before, after phaseTreeEntry) error {
+	if before == after {
+		return nil
+	}
+	if s.paths == 0 {
+		return fmt.Errorf("%w: phase history exceeds the changed path limit", ErrUnsafe)
+	}
+	s.paths--
+	cost := len(prefix) + len(name) + 1
+	if cost > s.remaining {
+		return fmt.Errorf("%w: phase source exceeds the aggregate scan limit", ErrUnsafe)
+	}
+	s.remaining -= cost
+	path := prefix + name
+	if !PathAllowed(path) || strings.HasPrefix(strings.ToLower(path), ".detent/") {
+		return fmt.Errorf("%w: commit contains an unapproved path", ErrUnsafe)
+	}
+	if err := ScreenCredentials(path); err != nil {
+		return err
+	}
+	switch after.mode {
+	case "", "040000":
+	case "100644", "100755":
+		s.blobs = append(s.blobs, after.object)
+	default:
+		return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+	}
+	if oldTree, newTree := before.tree(), after.tree(); oldTree != newTree {
+		*pending = append(*pending, phaseTreePair{before: oldTree, after: newTree, prefix: path + "/"})
+	}
+	return nil
+}
+
+func (s *phaseScan) screenBlobs() error {
+	for _, blob := range s.blobs {
+		if err := screenPhaseBlob(s.git, blob, &s.remaining); err != nil {
 			return err
 		}
 	}

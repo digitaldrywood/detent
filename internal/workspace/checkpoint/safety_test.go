@@ -3,6 +3,7 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -37,11 +38,8 @@ func TestPhaseHistoryStopsBeforeReadingOverBudgetBlob(t *testing.T) {
 				t.Fatalf("unexpected git command %v", args)
 				return "", false, nil
 			}
-			remaining := 2 * (phaseBlobOverhead + len("ok"))
-			pathsRemaining := 2
-			changed := ":100644 100644 " + second + " " + first + " M\x00file.txt\x00" +
-				":100644 100644 " + first + " " + second + " M\x00file.txt\x00"
-			err := screenPhasePaths(git, changed, &pathsRemaining, &remaining)
+			scan := phaseScan{git: git, remaining: 2 * (phaseBlobOverhead + len("ok")), blobs: []string{first, second}}
+			err := scan.screenBlobs()
 			if scenario.wantError == "" && err != nil || scenario.wantError != "" && (!errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), scenario.wantError)) {
 				t.Fatalf("scan error = %v, want %q", err, scenario.wantError)
 			}
@@ -54,16 +52,22 @@ func TestPhaseHistoryStopsBeforeReadingOverBudgetBlob(t *testing.T) {
 
 func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 	commit := strings.Repeat("1", 40)
+	tree := strings.Repeat("2", 40)
+	subtree := strings.Repeat("3", 40)
+	blob := strings.Repeat("4", 40)
+	previousCommit := strings.Repeat("5", 40)
 	for _, tc := range []struct {
 		name string
 		want string
 	}{
 		{name: "commit count", want: "commit limit"},
 		{name: "commit object output", want: "commit object exceeds the output limit"},
-		{name: "changed paths output", want: "changed paths exceeds the output limit"},
+		{name: "tree entries output", want: "tree entries exceeds the output limit"},
 		{name: "changed paths across commits", want: "changed path limit"},
+		{name: "reused subtrees exhaust the budget during traversal", want: "changed path limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			sharedTreeReads := 0
 			git := func(limit int, args ...string) (string, bool, error) {
 				switch args[0] {
 				case "rev-list":
@@ -73,18 +77,45 @@ func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 					if tc.name == "commit count" {
 						return strings.Repeat(commit+"\n", 2049), false, nil
 					}
-					return strings.Repeat(commit+"\n", 2), false, nil
+					if tc.name == "reused subtrees exhaust the budget during traversal" {
+						return commit + "\n", false, nil
+					}
+					return commit + "\n" + previousCommit + "\n", false, nil
 				case "cat-file":
 					if args[1] != "commit" || limit != 1<<20 {
 						t.Fatalf("unexpected commit read: %d, %v", limit, args)
 					}
-					return "tree example\n\nmessage\n", tc.name == "commit object output", nil
-				case "diff-tree":
-					if limit != 4<<20 {
-						t.Fatalf("unexpected changed paths output limit: %d", limit)
+					return "tree " + tree + "\n\nmessage\n", tc.name == "commit object output", nil
+				case "ls-tree":
+					if limit != 4<<20 || len(args) != 3 || args[1] != "-z" {
+						t.Fatalf("unexpected single-tree read: %d, %v", limit, args)
 					}
-					path := ":100644 000000 " + commit + " " + strings.Repeat("0", 40) + " D\x00deleted.txt\x00"
-					return strings.Repeat(path, 4097), tc.name == "changed paths output", nil
+					if tc.name == "reused subtrees exhaust the budget during traversal" {
+						var entries strings.Builder
+						switch args[len(args)-1] {
+						case tree:
+							for i := range 100 {
+								fmt.Fprintf(&entries, "040000 tree %s\tdir-%03d\x00", subtree, i)
+							}
+						case subtree:
+							sharedTreeReads++
+							for i := range 100 {
+								fmt.Fprintf(&entries, "100644 blob %s\tfile-%03d\x00", blob, i)
+							}
+						}
+						return entries.String(), false, nil
+					}
+					if tc.name == "tree entries output" {
+						return "", true, nil
+					}
+					if args[2] == subtree {
+						return "", false, nil
+					}
+					var entries strings.Builder
+					for i := range 4097 {
+						fmt.Fprintf(&entries, "040000 tree %s\tdir-%04d\x00", subtree, i)
+					}
+					return entries.String(), false, nil
 				}
 				t.Fatalf("unexpected git command %v", args)
 				return "", false, nil
@@ -93,22 +124,31 @@ func TestPhaseHistoryBoundsMetadata(t *testing.T) {
 			if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("scan error = %v, want %q", err, tc.want)
 			}
+			if tc.name == "reused subtrees exhaust the budget during traversal" && (sharedTreeReads == 0 || sharedTreeReads >= 100) {
+				t.Fatalf("read %d reused trees, want traversal to stop within the path budget", sharedTreeReads)
+			}
 		})
 	}
 }
 
 func TestPhaseHistoryScreensPublicationMetadata(t *testing.T) {
 	commit := strings.Repeat("1", 40)
+	parent := strings.Repeat("2", 40)
+	firstParent := strings.Repeat("5", 40)
+	before := strings.Repeat("3", 40)
+	after := strings.Repeat("4", 40)
 	credential := "ghp_" + strings.Repeat("Z", 36)
 	for _, tc := range []struct {
 		name   string
 		author string
 		path   string
+		merge  bool
 		unsafe bool
 	}{
 		{name: "ordinary metadata", author: "Test", path: "file.txt"},
 		{name: "credential in commit author", author: credential, path: "file.txt", unsafe: true},
 		{name: "credential in deleted path", author: "Test", path: credential + ".txt", unsafe: true},
+		{name: "credential in path deleted from the second parent", author: "Test", path: credential + ".txt", merge: true, unsafe: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			git := func(_ int, args ...string) (string, bool, error) {
@@ -116,9 +156,25 @@ func TestPhaseHistoryScreensPublicationMetadata(t *testing.T) {
 				case "rev-list":
 					return commit + "\n", false, nil
 				case "cat-file":
-					return "tree " + commit + "\nauthor " + tc.author + " <test@example.test> 1 +0000\n\nmessage\n", false, nil
-				case "diff-tree":
-					return ":100644 000000 " + commit + " " + strings.Repeat("0", 40) + " D\x00" + tc.path + "\x00", false, nil
+					parents := "parent " + parent + "\n"
+					if tc.merge {
+						parents = "parent " + firstParent + "\n" + parents
+					}
+					return "tree " + after + "\n" + parents + "author " + tc.author + " <test@example.test> 1 +0000\n\nmessage\n", false, nil
+				case "rev-parse":
+					switch args[2] {
+					case firstParent + "^{tree}":
+						return after + "\n", false, nil
+					case parent + "^{tree}":
+						return before + "\n", false, nil
+					}
+				case "ls-tree":
+					if args[2] == before {
+						return "100644 blob " + commit + "\t" + tc.path + "\x00", false, nil
+					}
+					if args[2] == after {
+						return "", false, nil
+					}
 				}
 				t.Fatalf("unexpected git command %v", args)
 				return "", false, nil
