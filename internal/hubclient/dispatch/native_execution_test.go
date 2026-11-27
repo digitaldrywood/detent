@@ -970,14 +970,23 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 }
 
 func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
-	for _, outcome := range []string{"rejected during admission", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "capacity renewal after replacement", "revoked", "expired runtime"} {
+	for _, outcome := range []string{"rejected during admission", "revoked during active work", "rejected after replacement", "acknowledged after replacement", "acknowledged after newer renewal", "capacity renewal after replacement", "revoked", "expired runtime"} {
 		t.Run(outcome, func(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{{Name: "In Progress", Dispatchable: true}}, true)
 			issue := h.createInProgress(t, "Fenced renewal")
 			h.claim(t, issue.ID)
-			h.scheduler.RunExecution(issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID)
 			claim := h.scheduler.nativeClaims[issue.ID]
-			if outcome == "revoked" {
+			var guarded context.Context
+			if outcome == "revoked during active work" {
+				ctx, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				guarded = ctx
+			}
+			if outcome == "revoked" || outcome == "revoked during active work" {
 				if err := h.native.Release(t.Context(), claim.lease, "cancelled"); err != nil {
 					t.Fatal(err)
 				}
@@ -987,7 +996,7 @@ func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
 					state.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: "implementation", HeartbeatAt: time.Now().Add(-2 * h.scheduler.leaseTTL)}
 				})
 			}
-			if outcome == "rejected during admission" {
+			if outcome == "rejected during admission" || guarded != nil {
 				claim.lifecycle.Lock()
 				defer claim.lifecycle.Unlock()
 			}
@@ -1055,6 +1064,12 @@ func TestDedicatedClaimRenewalPreservesFencingDuringReadmission(t *testing.T) {
 			}))
 			renewed, err := h.scheduler.RenewClaimHeartbeat(t.Context(), issue.ID, time.Now())
 			switch outcome {
+			case "revoked during active work":
+				var cause *runner.CancellationCause
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) ||
+					!errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
+					t.Fatalf("revoked active claim survived renewal rejection: renewal=%v cause=%v", err, context.Cause(guarded))
+				}
 			case "rejected during admission":
 				if !errors.Is(err, ErrUnavailable) || errors.Is(err, orchestrator.ErrSchedulingClaimLost) || h.scheduler.nativeClaims[issue.ID].lost {
 					t.Fatalf("in-flight admission lost its claim: %v", err)

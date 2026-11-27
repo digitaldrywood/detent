@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -397,7 +398,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				holdRenewal := make(chan struct{})
 				var diff tracker.AttemptDiffRequest
 				var finished tracker.NativeRunEvent
-				diffWrites, completions := 0, 0
+				diffWrites, completionRequests, completions := 0, 0, 0
 				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
 					switch {
@@ -431,10 +432,19 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 						}
 						io.WriteString(response, "{}")
 					case strings.HasSuffix(request.URL.Path, "/events"):
-						if err := json.NewDecoder(request.Body).Decode(&finished); err != nil {
+						var event tracker.NativeRunEvent
+						if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
 							return nil, err
 						}
-						completions++
+						completionRequests++
+						if completions == 0 {
+							finished = event
+							completions++
+							return nil, io.ErrUnexpectedEOF
+						}
+						if !reflect.DeepEqual(event, finished) {
+							t.Fatalf("completion retry changed the committed event: first=%+v retry=%+v", finished, event)
+						}
 						response.WriteHeader(http.StatusNoContent)
 					case strings.HasSuffix(request.URL.Path, "/release"):
 						response.WriteHeader(http.StatusNoContent)
@@ -470,7 +480,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); !errors.Is(err, api.ErrUnavailable) || guarded.Err() != nil {
 					t.Fatalf("renewal outage stopped an active lease: renewal=%v guard=%v", err, context.Cause(guarded))
 				}
-				if err := execution.Finish(detached, tc.outcome); !tc.expire && (!nativeTransportUnavailable(err) || completions != 0 || diffWrites != 1) {
+				if err := execution.Finish(detached, tc.outcome); !nativeTransportUnavailable(err) || completionRequests != 0 || diffWrites != 1 {
 					t.Fatalf("published without final diff: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
 				}
 				offline = false
@@ -501,13 +511,16 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); err != nil {
 					t.Fatal(err)
 				}
+				if err := execution.Finish(detached, tc.outcome); !nativeTransportUnavailable(err) || completions != 1 {
+					t.Fatalf("lost completion response: error=%v completions=%d", err, completions)
+				}
 				for range 2 {
 					if err := execution.Finish(detached, tc.outcome); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if completions != 1 || diffWrites != 2 || diff.HeadSHA != head || diff.Generation.Seq != finished.Data.Sequence || finished.Data.Outcome != tc.outcome || finished.IdempotencyKey != finished.Data.AttemptID+":1" {
-					t.Fatalf("diff was not reconciled with one terminal event: diff=%+v event=%+v completions=%d", diff, finished, completions)
+				if completionRequests != 2 || completions != 1 || diffWrites != 2 || diff.HeadSHA != head || diff.Generation.Seq != finished.Data.Sequence || finished.Data.Outcome != tc.outcome || finished.IdempotencyKey != finished.Data.AttemptID+":1" {
+					t.Fatalf("diff was not reconciled with one terminal event: diff=%+v event=%+v requests=%d completions=%d", diff, finished, completionRequests, completions)
 				}
 			})
 		})

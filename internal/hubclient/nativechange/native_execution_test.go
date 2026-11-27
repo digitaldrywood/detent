@@ -50,10 +50,31 @@ func TestPreparedPublicationRequiresCurrentCompletion(t *testing.T) {
 		{name: "refused version retains its failure", head: "published-head", effect: "confirmed", versionError: "version refused"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			now := time.Now()
+			descriptor := clientTestPolicy()
+			lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", FencingToken: 1, PolicyID: descriptor.ID}
+			client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+				return nil, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scheduler, err := newTestScheduler(client, SchedulerConfig{Now: func() time.Time { return now }, HeartbeatInterval: time.Second, LeaseTTL: time.Minute, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := fixtureConnector(native)
+			fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: now.Add(time.Minute)}, descriptor, "project")
 			publication := &tracker.NativePRPublication{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}
 			checkpoint := &tracker.NativeCheckpoint{HeadSHA: "published-head", ExternalEffect: "pr_create", EffectState: test.effect, EffectID: publication.EffectID("pr_create"), Change: &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published-head"}}
 			execution := &nativeExecution{
-				scheduler: &executionAuthority{now: time.Now},
+				scheduler: authority(scheduler),
+				claim:     nativeClaim{source: source, lease: lease},
 				settled:   !test.unsettled, storedSeq: 2,
 				data:          tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: runner.RoleCode}, Handoff: checkpoint},
 				change:        &runner.NativeChange{Changed: !test.unchanged, ChangeID: "change", VersionID: "version", HeadSHA: "published-head", Error: test.sourceError, VersionError: test.versionError},

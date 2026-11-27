@@ -325,10 +325,11 @@ func (s *Scheduler) RenewClaimHeartbeat(ctx context.Context, issueID string, now
 	}
 	s.signalExpiredLease(claim.lease)
 	if claim.lifecycle != nil {
-		if !claim.lifecycle.TryLock() {
+		if claim.lifecycle.TryLock() {
+			defer claim.lifecycle.Unlock()
+		} else if !isDefinitiveAuthorityLoss(err) || claim.execution == nil || !claim.execution.OwnsWork() {
 			return orchestrator.Claimed{}, errors.Join(ErrUnavailable, err)
 		}
-		defer claim.lifecycle.Unlock()
 	}
 	s.mu.Lock()
 	current, found := s.nativeClaims[issueID]
