@@ -22,7 +22,10 @@ type restCoreQuota struct {
 }
 
 func (c *Client) chargeRESTCore(ctx context.Context, key string, now time.Time) error {
-	reserve, _ := ctx.Value(restCoreReserveKey{}).(int64)
+	var reserve int64
+	if requested, ok := ctx.Value(restCoreReserveKey{}).(int64); ok {
+		reserve = requested
+	}
 	probe, err := c.restBackoffs.chargeCoreQuota(key, now, reserve, true)
 	if err != nil || !probe {
 		return err
