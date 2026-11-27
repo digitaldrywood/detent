@@ -75,8 +75,8 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 				isolationLevel = workspacesession.IsolationUser
 			}
 			if test.serves {
-				want = workspacesession.Capabilities{Files: true, Exec: true, Git: true,
-					Terminal: isolationLevel == workspacesession.IsolationSandbox}
+				sandboxed := isolationLevel == workspacesession.IsolationSandbox
+				want = workspacesession.Capabilities{Files: true, Git: true, Exec: sandboxed, Terminal: sandboxed}
 			}
 			hub, serveHub := newRemoteWorkspaceHub(t, identity.Identity, head, want, isolationLevel, !test.userFallback, tick)
 			handler.Store(&serveHub)
@@ -289,6 +289,9 @@ func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head stri
 				}
 				if expected := want.Terminal && !readOnly; heartbeat.Capabilities.Terminal != expected {
 					t.Errorf("ready terminal capability = %t, want %t", heartbeat.Capabilities.Terminal, expected)
+				}
+				if heartbeat.Capabilities.Exec != want.Exec {
+					t.Errorf("ready exec capability = %t, want %t", heartbeat.Capabilities.Exec, want.Exec)
 				}
 				select {
 				case hub.ready <- struct{}{}:

@@ -66,7 +66,7 @@ const actionReportTimeout = 15 * time.Second
 
 // runCreationActions runs the project's run-on-worktree-creation set.
 func (s *Session) runCreationActions(ctx context.Context, checkout hubclient.WorkspaceCheckout, actions []workspacesession.Action) {
-	if len(actions) == 0 {
+	if len(actions) == 0 || s.exec == nil {
 		return
 	}
 	if checkout.Worktree != workspacesession.WorktreeFresh {

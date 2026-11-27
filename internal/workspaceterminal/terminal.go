@@ -227,7 +227,8 @@ func (s *Service) Open(
 		if err := validateSandboxRoot(s.worktree); err != nil {
 			return nil, refuse(workspacesession.CodeUnsupported, err)
 		}
-		cmd.Env = sandboxEnvironment(s.worktree, options.Cols, options.Rows)
+		cmd.Env = append(sandboxEnvironment(s.worktree), "TERM=xterm-256color",
+			fmt.Sprintf("COLUMNS=%d", options.Cols), fmt.Sprintf("LINES=%d", options.Rows))
 	}
 	file, err := startPTY(cmd, options.Cols, options.Rows, s.isolation, s.worktree, s.aliases)
 	if err != nil {

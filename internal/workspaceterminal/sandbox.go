@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +29,21 @@ var measuredIsolation = sync.OnceValue(func() string {
 })
 
 func AvailableIsolation() string { return measuredIsolation() }
+
+func ValidateWorktreeSandbox(root string) error {
+	if AvailableIsolation() != workspacesession.IsolationSandbox {
+		return ErrSandboxIsolation
+	}
+	return validateSandboxRoot(root)
+}
+
+func ConfineActionCommand(cmd *exec.Cmd) error {
+	if err := ValidateWorktreeSandbox(cmd.Dir); err != nil {
+		return err
+	}
+	cmd.Env = sandboxEnvironment(cmd.Dir)
+	return sandboxActionCommand(cmd)
+}
 
 func ProbeSandbox(ctx context.Context) (result error) {
 	if !sandboxSupported {
@@ -93,15 +109,12 @@ func ProbeSandbox(ctx context.Context) (result error) {
 	return nil
 }
 
-func sandboxEnvironment(root string, cols, rows int) []string {
+func sandboxEnvironment(root string) []string {
 	return []string{
 		"PATH=/usr/bin:/bin",
 		"HOME=" + root,
 		"TMPDIR=" + root,
 		"DETENT_WORKSPACE=" + root,
-		"TERM=xterm-256color",
-		fmt.Sprintf("COLUMNS=%d", cols),
-		fmt.Sprintf("LINES=%d", rows),
 		"LANG=C",
 	}
 }

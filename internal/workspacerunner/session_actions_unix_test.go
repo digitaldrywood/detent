@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,66 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
+
+func TestSessionActionIsolation(t *testing.T) {
+	t.Parallel()
+	type scenario struct {
+		name      string
+		isolation string
+		wantExec  bool
+	}
+	tests := []scenario{
+		{name: "user isolation disables both action paths", isolation: workspacesession.IsolationUser},
+	}
+	if runtime.GOOS == "darwin" {
+		tests = append(tests, scenario{name: "confines both action paths to the worktree", isolation: workspacesession.IsolationSandbox, wantExec: true})
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := t.TempDir()
+			root := filepath.Join(parent, "worktree")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(parent, "outside.txt"), []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			reporter := &recordingReporter{}
+			command := "printf ran > creation.txt; ! cat ../outside.txt >/dev/null 2>&1"
+			f := startSessionOver(t, root, creationCheckout(workspacesession.WorktreeFresh), []workspacesession.Action{
+				{ID: "act_setup", Name: "Setup", Command: command, RunOnWorktreeCreation: true},
+			}, func(config *workspacerunner.Config) {
+				config.Shell = "/bin/sh"
+				config.Support = workspacerunner.Support{RequireSandbox: true, Isolation: test.isolation}
+				config.Reporter = reporter
+			})
+			reported := reporter.snapshot()
+			created, err := os.ReadFile(filepath.Join(root, "creation.txt"))
+			f.send(t, execRunFrame(t, "conn:1", "test \"$(cat creation.txt)\" = ran && ! cat ../outside.txt >/dev/null 2>&1 && printf confined"))
+			if !test.wantExec {
+				if len(reported) != 0 || !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("creation action ran without a sandbox")
+				}
+				frame := f.receive(t)
+				var payload workspacesession.ErrorPayload
+				if err := json.Unmarshal(frame.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if frame.Type != workspacesession.TypeError || payload.Code != workspacesession.CodeUnsupported {
+					t.Fatalf("manual action response = %q / %q, want unsupported", frame.Type, payload.Code)
+				}
+				return
+			}
+			if err != nil || string(created) != "ran" || len(reported) != 2 || reported[1].Status != workspacesession.RunSucceeded {
+				t.Fatalf("creation action did not complete inside the sandbox: %v, %v", err, reported)
+			}
+			frames := f.receiveUntil(t, workspacesession.TypeClosed)
+			if got := execOutput(t, frames); !strings.HasSuffix(got, "confined") || execExited(t, frames).Code != 0 {
+				t.Fatalf("manual action did not complete inside the sandbox: %q", got)
+			}
+		})
+	}
+}
 
 func TestSessionRunsAnActionOnTheExecChannel(t *testing.T) {
 	t.Parallel()

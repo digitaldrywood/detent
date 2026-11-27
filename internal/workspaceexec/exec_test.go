@@ -26,7 +26,7 @@ func discardLogger() *slog.Logger {
 func newService(t *testing.T) (*Service, string) {
 	t.Helper()
 	root := t.TempDir()
-	service, err := New(root, "", discardLogger())
+	service, err := New(root, "", false, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,10 +247,10 @@ func TestNewRefusesAWorktreeThatIsNotADirectory(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
 	writeWorktreeFile(t, root, "file", []byte("not a worktree"))
-	if _, err := New(file, "", discardLogger()); err == nil {
+	if _, err := New(file, "", false, discardLogger()); err == nil {
 		t.Fatal("a file is not a worktree and must be refused")
 	}
-	if _, err := New(filepath.Join(root, "missing"), "", discardLogger()); err == nil {
+	if _, err := New(filepath.Join(root, "missing"), "", false, discardLogger()); err == nil {
 		t.Fatal("a worktree that is not there must be refused")
 	}
 }

@@ -80,6 +80,16 @@ func sandboxCommand(cmd *exec.Cmd, root string, aliases []string, tty string) er
 	return nil
 }
 
+func sandboxActionCommand(cmd *exec.Cmd) error {
+	if cmd.Err != nil {
+		return cmd.Err
+	}
+	args := []string{"/usr/bin/sandbox-exec", "-p", sandboxProfile(cmd.Dir, nil, ""), cmd.Path}
+	cmd.Args = append(args, cmd.Args[1:]...)
+	cmd.Path = "/usr/bin/sandbox-exec"
+	return nil
+}
+
 func sandboxProfile(root string, aliases []string, tty string) string {
 	var profile strings.Builder
 	profile.WriteString(`(version 1)
@@ -113,6 +123,9 @@ func sandboxProfile(root string, aliases []string, tty string) string {
 	profile.WriteString(`(allow file-read* file-write-data
  (literal "/dev/null") (literal "/dev/zero"))
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom"))
-(allow file-read* file-write-data file-ioctl (literal "/dev/tty") (literal ` + strconv.Quote(tty) + "))\n")
+`)
+	if tty != "" {
+		profile.WriteString("(allow file-read* file-write-data file-ioctl (literal \"/dev/tty\") (literal " + strconv.Quote(tty) + "))\n")
+	}
 	return profile.String()
 }

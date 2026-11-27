@@ -110,8 +110,9 @@ type Support struct {
 	// Terminal is whether this runner offers the terminal channel at all. It is
 	// ANDed with what the platform can actually do, so a caller cannot turn on
 	// a surface the build has no way to serve.
-	Terminal  bool
-	Isolation string
+	Terminal       bool
+	Isolation      string
+	RequireSandbox bool
 }
 
 // DefaultSupport is what the runner process serves unless a caller narrows it.
@@ -150,9 +151,10 @@ func (s Support) TerminalIsolation() string {
 // unclaimed workspace fails with no_runner and says so, while a claimed one
 // that cannot serve its channel looks broken.
 func Capabilities(support Support) workspacesession.Capabilities {
+	processes := !support.RequireSandbox || support.TerminalIsolation() == workspacesession.IsolationSandbox
 	return workspacesession.Capabilities{
-		Files: true, Exec: true, Git: true,
-		Terminal: support.Terminal && workspaceterminal.Supported,
+		Files: true, Exec: processes, Git: true,
+		Terminal: processes && support.Terminal && workspaceterminal.Supported,
 	}
 }
 
@@ -369,12 +371,18 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	// The exec service is opened from the same path the files service serves,
 	// because an action's working directory is the tree the reader is looking
 	// at and not one of its own.
-	runner, err := workspaceexec.New(path, s.config.Shell, s.logger)
-	if err != nil {
-		reason = workspacesession.ReasonWorktreeMissing
-		return fmt.Errorf("open workspace exec: %w", err)
+	s.path = path
+	if s.served().Exec {
+		runner, err := workspaceexec.New(path, s.config.Shell, s.config.Support.RequireSandbox, s.logger)
+		if errors.Is(err, workspaceterminal.ErrSandboxIsolation) {
+			s.logger.Info("workspace.exec_unavailable", "error", err)
+		} else if err != nil {
+			reason = workspacesession.ReasonWorktreeMissing
+			return fmt.Errorf("open workspace exec: %w", err)
+		} else {
+			s.exec = runner
+		}
 	}
-	s.path, s.exec = path, runner
 
 	// The heartbeat starts before anything runs in the worktree, so a long
 	// setup action renews the lease like any other run and stops when it is
@@ -424,7 +432,7 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	// for does: it reports the capability it can serve and the card stays
 	// disabled with the reason. A read-only workspace opens no service at all,
 	// because a terminal is refused there whatever the runner can do.
-	if s.config.Support.Terminal && !bound.Checkout.ReadOnly {
+	if s.served().Terminal && !bound.Checkout.ReadOnly {
 		terminal, err := workspaceterminal.New(sessionCtx, path, s.config.Shell, s.config.Support.TerminalIsolation(), s.logger)
 		if err != nil {
 			s.logger.Info("workspace.terminal_unavailable", "path", path, "error", err)
@@ -562,6 +570,7 @@ func (s *Session) heartbeat(ctx context.Context, state, reason string) error {
 func (s *Session) capabilities() workspacesession.Capabilities {
 	set := s.served()
 	set.Git = set.Git && s.git != nil
+	set.Exec = set.Exec && s.exec != nil
 	// A terminal this worktree cannot actually open is not a terminal. The
 	// service is nil when the platform has none, when the operator asked for
 	// none, or when the organization requires an isolation level this runner
@@ -1059,6 +1068,11 @@ func (s *Session) handleExec(ctx context.Context, socket *websocket.Conn, frame 
 			workspacesession.CodeUnknownFrame, "The exec channel does not define "+frame.Type))
 		return
 	}
+	if s.exec == nil {
+		s.answer(ctx, socket, workspacesession.ErrorFrame(frame.Channel, frame.Stream,
+			workspacesession.CodeUnsupported, execRefusalMessage(workspacesession.CodeUnsupported)))
+		return
+	}
 	var request workspacesession.ExecRun
 	if len(frame.Payload) > 0 {
 		if err := json.Unmarshal(frame.Payload, &request); err != nil {
@@ -1263,7 +1277,7 @@ func execRefusalMessage(code string) string {
 	case workspacesession.CodeTooLarge:
 		return "The command is longer than this surface runs"
 	case workspacesession.CodeUnsupported:
-		return "This runner cannot run the project's shell"
+		return "This runner cannot run the action in this workspace"
 	default:
 		return "The action could not be run"
 	}
