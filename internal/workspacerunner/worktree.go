@@ -44,7 +44,10 @@ type GitWorktree struct {
 
 // hold marks path as served until Release.
 func (g *GitWorktree) hold(path string) {
-	release := workspace.HoldSession(path)
+	g.recordHold(path, workspace.HoldSession(path))
+}
+
+func (g *GitWorktree) recordHold(path string, release func()) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.holds == nil {
@@ -220,11 +223,17 @@ func (g *GitWorktree) retained(ctx context.Context, checkout hubclient.Workspace
 	if attempt.Key() == "" {
 		return "", errors.New("retained worktree requires the bound organization, project and attempt")
 	}
-	info, err := existing.Existing(workspace.Issue{ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier, AttemptWorkspace: attempt})
+	issue := workspace.Issue{ProjectID: g.ProjectID, ID: checkout.WorkItemID, Identifier: identifier, AttemptWorkspace: attempt}
+	info, err := existing.Existing(issue)
 	if err != nil {
 		return "", fmt.Errorf("find retained worktree for %s: %w", identifier, err)
 	}
-	g.hold(info.Path)
+	release := workspace.HoldSession(info.Path)
+	if _, err := existing.Existing(issue); err != nil {
+		release()
+		return "", fmt.Errorf("retained worktree for %s unavailable: %w", identifier, err)
+	}
+	g.recordHold(info.Path, release)
 	return info.Path, nil
 }
 
