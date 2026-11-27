@@ -169,3 +169,40 @@ func TestWithinLimitPreservesOwnerErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalInspectionAllowsReadOnlyTreeAndScratchInit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "ls-tree blob lookup", args: []string{"ls-tree", "-z", "HEAD", "--", "file.go"}, want: true},
+		{name: "ls-tree rejects unknown flag", args: []string{"ls-tree", "--full-tree", "HEAD"}, want: false},
+		{name: "diff-tree checkpoint scan", args: []string{"diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", "HEAD"}, want: true},
+		{name: "diff-tree rejects patch output", args: []string{"diff-tree", "-p", "HEAD"}, want: false},
+		{name: "cat-file blob", args: []string{"cat-file", "blob", "deadbeef"}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := localInspection(tt.args); got != tt.want {
+				t.Fatalf("localInspection(%v) = %t, want %t", tt.args, got, tt.want)
+			}
+		})
+	}
+
+	ownerCalled := false
+	ctx := commandshell.WithCommandStarter(t.Context(), func(_ context.Context, _ *exec.Cmd) (func() error, error) {
+		ownerCalled = true
+		return nil, errors.New("command owner must not run for local scratch init")
+	})
+	if err := InitScratch(ctx, t.TempDir(), "--bare", "--object-format=sha1"); err != nil {
+		t.Fatalf("InitScratch() error = %v", err)
+	}
+	if ownerCalled {
+		t.Fatal("InitScratch() invoked command owner instead of local inspection")
+	}
+}

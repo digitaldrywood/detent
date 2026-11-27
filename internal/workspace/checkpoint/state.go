@@ -171,7 +171,16 @@ func Blob(ctx context.Context, git GitRunner, prefix, path string) error {
 	if !ok || name != path || len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") {
 		return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
 	}
-	blob, err := git(ctx, "show", prefix+path)
+	oid := fields[2]
+	if prefix == ":" {
+		if fields[2] != "0" {
+			return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+		}
+		oid = fields[1]
+	} else if fields[1] != "blob" {
+		return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+	}
+	blob, err := git(ctx, "cat-file", "blob", oid)
 	if err != nil {
 		return err
 	}
