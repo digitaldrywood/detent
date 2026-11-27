@@ -178,6 +178,27 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 			attemptRecords = append(attemptRecords[pivot:], attemptRecords[:pivot]...)
 		}
 	}
+	var completedAttempts map[string]time.Time
+	if len(attemptRecords) > 0 && request.Completed != nil {
+		limit := min(len(attemptRecords), checkoutScans)
+		attemptIssues := make([]Issue, 0, limit)
+		seenIssue := make(map[string]struct{}, limit)
+		for _, item := range attemptRecords[:limit] {
+			if item.record.IssueID == "" || activeAttemptScopes[item.scope] {
+				continue
+			}
+			if _, dup := seenIssue[item.record.IssueID]; dup {
+				continue
+			}
+			seenIssue[item.record.IssueID] = struct{}{}
+			attemptIssues = append(attemptIssues, Issue{ProjectID: item.record.ProjectID, ID: item.record.IssueID, Identifier: item.record.Identifier})
+		}
+		if len(attemptIssues) > 0 {
+			var compErr error
+			completedAttempts, compErr = request.Completed(ctx, attemptIssues)
+			recordError(compErr)
+		}
+	}
 	var lastScannedScope string
 	attemptBudgetStopped := false
 	for _, item := range attemptRecords {
@@ -213,6 +234,19 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 			release()
 			activeAttemptScopes[item.scope] = true
 			continue
+		}
+		since, completedOK := completedAttempts[item.record.IssueID]
+		isCompleted := completedOK && !since.IsZero() && !request.Now.Before(since.Add(time.Hour))
+		if !isCompleted {
+			checkErr := l.checkWorkspaceCleanup(ctx, Info{Path: item.record.Path, Key: item.record.Key, Branch: item.record.Branch}, item.record.issue())
+			if checkErr != nil {
+				release()
+				activeAttemptScopes[item.scope] = true
+				if !errors.Is(checkErr, ErrWorkspacePreserved) {
+					recordError(checkErr)
+				}
+				continue
+			}
 		}
 		removed, removeErr := l.removeExpiredWorkspaceLocked(ctx, root, item.record, &totals.Workspaces, &totals.Ownership)
 		release()
@@ -385,7 +419,7 @@ func (l *LocalGit) sweepAttemptExecutionDirs(ctx context.Context, root *os.Root,
 			stopped = true
 			break
 		}
-		if activeAttemptScopes[candidate.scope] {
+		if activeAttemptScopes[candidate.scope] || len(checkoutByScope[candidate.scope]) > 0 {
 			continue
 		}
 		info, err := root.Lstat(candidate.name)
