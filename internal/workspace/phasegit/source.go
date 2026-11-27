@@ -71,14 +71,11 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		if _, err := read("check-ref-format", ref); err != nil {
 			return fmt.Errorf("validate phase publication branch: %w", err)
 		}
-		if err := validationcmd.VerifyPublicationTree(ctx, path, read); err != nil {
-			return err
-		}
-		var err error
-		head, tree, err = readHead(read)
+		rawHead, err := read("rev-parse", "--verify", "HEAD")
 		if err != nil {
 			return err
 		}
+		head = strings.TrimSpace(rawHead)
 		previous, _, err := gitexec.PublicationBranchHead(ctx, repository, branch)
 		if err != nil {
 			return err
@@ -90,6 +87,19 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		if previous != expected && previous != head {
 			return moved()
 		}
+		if previous != head {
+			if err := verifyHistory(readBounded, head, previous); err != nil {
+				return err
+			}
+		}
+		if err := validationcmd.VerifyPublicationTree(ctx, path, read); err != nil {
+			return err
+		}
+		rawTree, err := read("rev-parse", head+"^{tree}")
+		if err != nil {
+			return fmt.Errorf("read phase tree: %w", err)
+		}
+		tree = strings.TrimSpace(rawTree)
 		if expected != "" && expected != head {
 			if _, err := read("merge-base", "--is-ancestor", expected, head); err != nil {
 				if ctx.Err() != nil {
@@ -100,9 +110,6 @@ func Push(ctx context.Context, path, owner, branch, repository string, expectedR
 		}
 		if previous == head {
 			return authorize(ctx)
-		}
-		if err := verifyHistory(readBounded, head, previous); err != nil {
-			return err
 		}
 		refspec, lease := head+":"+ref, "--force-with-lease="+ref+":"+expected
 		var pushErr error

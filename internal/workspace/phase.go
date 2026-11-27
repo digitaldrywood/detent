@@ -35,7 +35,7 @@ func (l *LocalGit) PushItemPhase(ctx context.Context, info Info, issue Issue, au
 		return "", "", "", refuse(LandRefusalHeadMoved, "cannot publish an item phase while a rebase is in progress")
 	}
 	if !issue.NoChangeNeeded && issue.Source != nil {
-		headNow, headErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD^{commit}")
+		headNow, headErr := gitexec.ReadPublicationSource(ctx, info.Path, "rev-parse", "--verify", "HEAD")
 		if headErr != nil {
 			return "", "", "", headErr
 		}
