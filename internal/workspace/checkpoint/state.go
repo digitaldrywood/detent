@@ -134,21 +134,48 @@ func History(ctx context.Context, git GitRunner, base, head string, paths []stri
 	if err != nil {
 		return err
 	}
+	scanned := make(map[string]struct{})
 	for _, commit := range strings.Fields(commits) {
-		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--name-only", "--no-renames", "-r", "-m", "-z", commit)
+		changed, err := git(ctx, "diff-tree", "--root", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-r", "-m", "-z", commit)
 		if err != nil {
 			return err
 		}
-		for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
+		if changed == "" {
+			continue
+		}
+		tokens := strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00")
+		if len(tokens)%2 != 0 {
+			return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+		}
+		for i := 0; i < len(tokens); i += 2 {
+			header, path := tokens[i], tokens[i+1]
 			if path == "" {
 				continue
 			}
 			if !PathAllowed(path) || !slices.Contains(paths, path) {
 				return fmt.Errorf("%w: commit contains an unapproved path %q", ErrUnsafe, path)
 			}
-			if err := Blob(ctx, git, commit+":", path); err != nil {
+			if !strings.HasPrefix(header, ":") {
+				return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+			}
+			fields := strings.Fields(strings.TrimPrefix(header, ":"))
+			if len(fields) < 5 {
+				return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+			}
+			newMode, newOID := fields[1], fields[3]
+			if newMode == "000000" {
+				continue
+			}
+			if newMode != "100644" && newMode != "100755" {
+				return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
+			}
+			if _, ok := scanned[newOID]; ok {
+				continue
+			}
+			if err := scanBlob(ctx, git, newOID); err != nil {
 				return err
 			}
+			scanned[newOID] = struct{}{}
 		}
 	}
 	return nil
@@ -180,6 +207,10 @@ func Blob(ctx context.Context, git GitRunner, prefix, path string) error {
 	} else if fields[1] != "blob" {
 		return fmt.Errorf("%w: selected history must contain regular files", ErrUnsafe)
 	}
+	return scanBlob(ctx, git, oid)
+}
+
+func scanBlob(ctx context.Context, git GitRunner, oid string) error {
 	blob, err := git(ctx, "cat-file", "blob", oid)
 	if err != nil {
 		return err
