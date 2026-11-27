@@ -36,8 +36,18 @@ func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now tim
 	}
 	active := activeWorkspaceIssues(state, o.cfg.TerminalStates)
 	request := workspace.RetentionRequest{Now: now}
+	if scoped, ok := o.connector.(interface{ NativeWorkspaceScope() (string, string) }); ok {
+		request.Organization, request.Project = scoped.NativeWorkspaceScope()
+	}
 	for _, issue := range active {
 		request.Active = append(request.Active, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: issue.ID, Identifier: issue.Identifier})
+	}
+	if state != nil {
+		for _, running := range state.Running {
+			if strings.TrimSpace(running.WorkspacePath) != "" {
+				request.ActivePaths = append(request.ActivePaths, running.WorkspacePath)
+			}
+		}
 	}
 	foreign, err := o.liveForeignWorkspaceIssues(ctx)
 	if err != nil {
@@ -126,7 +136,7 @@ func (o *Orchestrator) liveForeignWorkspaceIssues(ctx context.Context) ([]worksp
 	var issues []workspace.Issue
 	for _, attempt := range attempts {
 		if slices.Contains(foreign, attempt.OwnerGeneration) {
-			issues = append(issues, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: attempt.IssueID, Identifier: attempt.Identifier})
+			issues = append(issues, workspace.Issue{ProjectID: o.cfg.Project.ID, ID: attempt.IssueID, Identifier: attempt.Identifier, CleanupInUse: true})
 		}
 	}
 	return issues, nil

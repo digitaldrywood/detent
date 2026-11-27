@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -604,6 +605,334 @@ func TestIndependentScopeForRetention(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(second.Path, "unpublished.txt")); err != nil {
 		t.Errorf("issue-only completion removed the other organization's unpublished file: %v", err)
 	}
+}
+
+func TestAttemptWorkspaceRetention(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name           string
+		age            time.Duration
+		activeIssue    bool
+		activeForeign  bool
+		activePath     bool
+		liveCheckout   bool
+		liveExec       bool
+		heldCheckout   bool
+		heldScratch    bool
+		scanErrExec    bool
+		otherOrg       bool
+		unscoped       bool
+		malformedExec  bool
+		wantRemoved    bool
+		wantExecRemove bool
+		wantErr        bool
+	}{
+		{name: "expired attempt removed with execution dir", age: 2 * time.Hour, wantRemoved: true, wantExecRemove: true},
+		{name: "boundary age removed", age: time.Hour, wantRemoved: true, wantExecRemove: true},
+		{name: "recent attempt preserved", age: time.Hour - time.Second},
+		{name: "active attempt workspace preserved", age: 2 * time.Hour, activeIssue: true},
+		{name: "active foreign issue preserved", age: 2 * time.Hour, activeForeign: true},
+		{name: "active running path preserved", age: 2 * time.Hour, activePath: true},
+		{name: "live process in checkout preserves both", age: 2 * time.Hour, liveCheckout: true},
+		{name: "live process in execution dir preserves both", age: 2 * time.Hour, liveExec: true},
+		{name: "held checkout protects execution dir", age: 2 * time.Hour, heldCheckout: true},
+		{name: "acquired scratch protects checkout and execution dir", age: 2 * time.Hour, heldScratch: true},
+		{name: "scan error in execution dir preserves both", age: 2 * time.Hour, scanErrExec: true, wantErr: true},
+		{name: "other organization preserved", age: 2 * time.Hour, otherOrg: true},
+		{name: "unscoped request preserved", age: 2 * time.Hour, unscoped: true},
+		{name: "malformed execution dir preserved", age: 2 * time.Hour, malformedExec: true, wantRemoved: true, wantExecRemove: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			backend := retentionBackend(t)
+			org := "org_first"
+			if test.otherOrg {
+				org = "org_second"
+			}
+			attempt := AttemptWorkspace{Organization: org, Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"}
+			issue := Issue{ID: "wi_example", Identifier: "prj_example#1", AttemptWorkspace: attempt}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			execDir := filepath.Join(backend.root, attempt.Key()+"-execution")
+			if test.malformedExec {
+				execDir = filepath.Join(backend.root, strings.TrimSuffix(attempt.Key(), "11111111111111111111111111111111")+"not-hex-execution")
+			}
+			retentionFixture(t, filepath.Join(execDir, "worker-1", "scratch.txt"), now.Add(-test.age))
+			if err := os.Chtimes(info.Path, now.Add(-test.age), now.Add(-test.age)); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(execDir, now.Add(-test.age), now.Add(-test.age)); err != nil {
+				t.Fatal(err)
+			}
+			backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+				if test.liveCheckout && path == info.Path {
+					return []int{4242}, nil
+				}
+				if test.liveExec && path == execDir {
+					return []int{4243}, nil
+				}
+				if test.scanErrExec && path == execDir {
+					return nil, errors.New("scan failed")
+				}
+				return nil, nil
+			}
+			request := RetentionRequest{Now: now}
+			if !test.unscoped {
+				request.Organization = "org_first"
+				request.Project = "prj_example"
+			}
+			if test.activeIssue {
+				request.Active = []Issue{issue}
+			}
+			if test.activeForeign {
+				request.Active = []Issue{{ProjectID: "prj_example", ID: "wi_example", Identifier: "prj_example#1", CleanupInUse: true}}
+			}
+			if test.activePath {
+				request.ActivePaths = []string{info.Path}
+			}
+			if test.heldCheckout {
+				release, err := backend.Use(t.Context(), issue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			if test.heldScratch {
+				_, release, err := attempt.AcquireScratch(t.Context(), backend.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+				if err := os.Chtimes(execDir, now.Add(-test.age), now.Add(-test.age)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			totals, err := backend.SweepRetention(t.Context(), request)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, test.wantErr)
+			}
+			_, wsErr := os.Stat(info.Path)
+			if errors.Is(wsErr, fs.ErrNotExist) != test.wantRemoved {
+				t.Fatalf("workspace removed=%v err=%v totals=%+v", !errors.Is(wsErr, fs.ErrNotExist), wsErr, totals)
+			}
+			_, execErr := os.Stat(execDir)
+			if errors.Is(execErr, fs.ErrNotExist) != test.wantExecRemove {
+				t.Fatalf("execution dir removed=%v err=%v totals=%+v", !errors.Is(execErr, fs.ErrNotExist), execErr, totals)
+			}
+			if test.wantRemoved && test.wantExecRemove && (totals.Workspaces.Count != 1 || totals.Ownership.Count != 1 || totals.Attempts.Count != 1) {
+				t.Fatalf("unexpected totals: %+v", totals)
+			}
+		})
+	}
+	t.Run("overlapping scratch leases exclude cleanup until last releases", func(t *testing.T) {
+		t.Parallel()
+		backend := retentionBackend(t)
+		attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: "attempt_22222222222222222222222222222222"}
+		execDir := filepath.Join(backend.root, attempt.Key()+"-execution")
+		_, release1, err := attempt.AcquireScratch(t.Context(), backend.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, release2, err := attempt.AcquireScratch(t.Context(), backend.root)
+		if err != nil {
+			release1()
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(execDir, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			release2()
+			release1()
+			t.Fatal(err)
+		}
+		req := RetentionRequest{Now: now, Organization: "org_first", Project: "prj_example"}
+		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
+			release2()
+			release1()
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(execDir); err != nil {
+			release2()
+			release1()
+			t.Fatalf("execDir removed while both leases held: %v", err)
+		}
+		release1()
+		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
+			release2()
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(execDir); err != nil {
+			release2()
+			t.Fatalf("execDir removed while second lease still held: %v", err)
+		}
+		release2()
+		totals, err := backend.SweepRetention(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(execDir); !errors.Is(err, fs.ErrNotExist) || totals.Attempts.Count != 1 {
+			t.Fatalf("execDir not removed after last lease released: err=%v totals=%+v", err, totals)
+		}
+	})
+	t.Run("busy candidate scans are bounded per sweep without starving later dirs", func(t *testing.T) {
+		t.Parallel()
+		backend := retentionBackend(t)
+		var scans int
+		idleAttempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", maxAttemptRetentionScans+1)}
+		idleExecDir := filepath.Join(backend.root, idleAttempt.Key()+"-execution")
+		backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+			scans++
+			if path == idleExecDir {
+				return nil, nil
+			}
+			return []int{4242}, nil
+		}
+		for i := range maxAttemptRetentionScans + 1 {
+			attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", i+1)}
+			execDir := filepath.Join(backend.root, attempt.Key()+"-execution")
+			retentionFixture(t, filepath.Join(execDir, "worker-1", "scratch.txt"), now.Add(-2*time.Hour))
+			if err := os.Chtimes(execDir, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		req := RetentionRequest{Now: now, Organization: "org_first", Project: "prj_example"}
+		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		if scans != maxAttemptRetentionScans {
+			t.Fatalf("first sweep scans = %d, want %d", scans, maxAttemptRetentionScans)
+		}
+		if _, err := os.Stat(idleExecDir); err != nil {
+			t.Fatalf("idle dir unexpectedly removed on first sweep: %v", err)
+		}
+		scans = 0
+		totals, err := backend.SweepRetention(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scans > maxAttemptRetentionScans {
+			t.Fatalf("second sweep scans = %d, exceeds %d", scans, maxAttemptRetentionScans)
+		}
+		if _, err := os.Stat(idleExecDir); !errors.Is(err, fs.ErrNotExist) || totals.Attempts.Count != 1 {
+			t.Fatalf("idle dir starved on second sweep: err=%v totals=%+v", err, totals)
+		}
+	})
+	t.Run("busy checkouts do not starve execution-only dirs within scan budget", func(t *testing.T) {
+		t.Parallel()
+		backend := retentionBackend(t)
+		var scans int
+		idleAttempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: "attempt_ffffffffffffffffffffffffffffffff"}
+		idleExecDir := filepath.Join(backend.root, idleAttempt.Key()+"-execution")
+		backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+			scans++
+			if path == idleExecDir {
+				return nil, nil
+			}
+			return []int{4242}, nil
+		}
+		for i := range maxAttemptRetentionScans {
+			attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", i+1)}
+			issue := Issue{ID: fmt.Sprintf("wi_%d", i), Identifier: fmt.Sprintf("prj_example#%d", i+1), AttemptWorkspace: attempt}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(info.Path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		retentionFixture(t, filepath.Join(idleExecDir, "worker-1", "scratch.txt"), now.Add(-2*time.Hour))
+		if err := os.Chtimes(idleExecDir, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		req := RetentionRequest{Now: now, Organization: "org_first", Project: "prj_example"}
+		totals, err := backend.SweepRetention(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scans > maxAttemptRetentionScans {
+			t.Fatalf("scans = %d, exceeds %d", scans, maxAttemptRetentionScans)
+		}
+		if _, err := os.Stat(idleExecDir); !errors.Is(err, fs.ErrNotExist) || totals.Attempts.Count != 1 {
+			t.Fatalf("execution-only dir starved by busy checkouts: err=%v totals=%+v", err, totals)
+		}
+	})
+	t.Run("busy execution-only dirs do not starve later idle checkout", func(t *testing.T) {
+		t.Parallel()
+		backend := retentionBackend(t)
+		var scans int
+		idleAttempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", maxAttemptRetentionScans/2)}
+		idleIssue := Issue{ID: "wi_idle", Identifier: "prj_example#999", AttemptWorkspace: idleAttempt}
+		idleInfo, err := backend.Create(t.Context(), idleIssue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := backend.recordCleanupOwnership(t.Context(), idleInfo, idleIssue, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(idleInfo.Path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		idlePairedExec := filepath.Join(backend.root, idleAttempt.Key()+"-execution")
+		retentionFixture(t, filepath.Join(idlePairedExec, "worker-1", "scratch.txt"), now.Add(-2*time.Hour))
+		if err := os.Chtimes(idlePairedExec, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		for i := range maxAttemptRetentionScans/2 - 1 {
+			attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", i+1)}
+			issue := Issue{ID: fmt.Sprintf("wi_%d", i), Identifier: fmt.Sprintf("prj_example#%d", i+1), AttemptWorkspace: attempt}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(info.Path, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for i := range maxAttemptRetentionScans/2 + 1 {
+			attempt := AttemptWorkspace{Organization: "org_first", Project: "prj_example", Attempt: fmt.Sprintf("attempt_%032x", 1000+i)}
+			execDir := filepath.Join(backend.root, attempt.Key()+"-execution")
+			retentionFixture(t, filepath.Join(execDir, "worker-1", "scratch.txt"), now.Add(-2*time.Hour))
+			if err := os.Chtimes(execDir, now.Add(-2*time.Hour), now.Add(-2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		backend.scanWorkspacePaths = func(_ context.Context, path string) ([]int, error) {
+			scans++
+			if path == idleInfo.Path || path == idlePairedExec {
+				return nil, nil
+			}
+			return []int{4242}, nil
+		}
+		req := RetentionRequest{Now: now, Organization: "org_first", Project: "prj_example"}
+		if _, err := backend.SweepRetention(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+		if scans > maxAttemptRetentionScans {
+			t.Fatalf("first sweep scans = %d, exceeds %d", scans, maxAttemptRetentionScans)
+		}
+		scans = 0
+		totals, err := backend.SweepRetention(t.Context(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scans > maxAttemptRetentionScans {
+			t.Fatalf("second sweep scans = %d, exceeds %d", scans, maxAttemptRetentionScans)
+		}
+		if _, err := os.Stat(idleInfo.Path); !errors.Is(err, fs.ErrNotExist) || totals.Workspaces.Count != 1 {
+			t.Fatalf("idle checkout starved by busy execution dirs: err=%v totals=%+v", err, totals)
+		}
+	})
 }
 func TestIndependentFilesystemKeyOmitted(t *testing.T) {
 	backend, err := NewFilesystem(FilesystemOptions{Root: t.TempDir(), OutputRoot: t.TempDir()})

@@ -166,12 +166,21 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	}
 	scratchRoot := strings.TrimSpace(workflow.Config.Workspace.Root)
 	var scratch string
+	var releaseScratch func()
+	releaseScratchLease := func() {
+		if releaseScratch != nil {
+			fn := releaseScratch
+			releaseScratch = nil
+			fn()
+		}
+	}
 	defer func() {
 		if artifact != nil {
 			runErr = errors.Join(runErr, artifact.Release(), releaseCache())
 			if scratch != "" {
 				runErr = errors.Join(runErr, workspace.CleanupOwnedPath(scratchRoot, scratch))
 			}
+			releaseScratchLease()
 		}
 	}()
 	if scratchRoot == "" {
@@ -186,7 +195,7 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 	}
 	if fenced {
 		request.AttemptWorkspace = workerExecution.AttemptWorkspace()
-		scratch, err = request.AttemptWorkspace.PrepareScratch(scratchRoot)
+		scratch, releaseScratch, err = request.AttemptWorkspace.AcquireScratch(ctx, scratchRoot)
 	} else {
 		scratch, err = os.MkdirTemp(scratchRoot, "execution-")
 	}
@@ -282,13 +291,14 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 				r.logger.Warn("execution worker exited", "issue", request.Issue.Identifier, "error", waitErr)
 			}
 		})
-		if err := callbacks.Finish(closeCtx, time.Now()); err != nil {
-			return errors.Join(closeErr, err)
-		}
+		finishErr := callbacks.Finish(closeCtx, time.Now())
 		if groupErr != nil {
 			groupErr = procgroup.Cleanup(groupID)
 		}
-		if err := errors.Join(closeErr, groupErr); err != nil {
+		if closeErr == nil && groupErr == nil {
+			defer releaseScratchLease()
+		}
+		if err := errors.Join(closeErr, finishErr, groupErr); err != nil {
 			return err
 		}
 		if err := workspace.CleanupOwnedPath(scratchRoot, scratch); err != nil {
