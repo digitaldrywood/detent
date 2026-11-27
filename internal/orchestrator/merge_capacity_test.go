@@ -2,9 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -77,6 +79,173 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMergeControlClaimAuthority(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		wait      time.Duration
+		successor bool
+		stall     bool
+		cancel    bool
+		laneRetry bool
+		wantMerge bool
+	}{
+		{name: "renewed during slow completion", wait: 70 * time.Second, wantMerge: true},
+		{name: "lane write retried after merge", wait: 11 * time.Second, laneRetry: true, wantMerge: true},
+		{name: "successor before next heartbeat", wait: time.Second, successor: true},
+		{name: "successor detected by heartbeat", wait: 11 * time.Second, successor: true},
+		{name: "expires during slow heartbeat read", wait: time.Minute, stall: true},
+		{name: "caller canceled", wait: time.Second, cancel: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				now := time.Now()
+				cfg := claimTestConfig("alpha", "alpha")
+				cfg.ActiveStates = []string{"Merging"}
+				cfg.PollInterval = time.Second
+				cfg.MergeFastPathEnabled = true
+				cfg = normalizeConfig(cfg)
+				issue := readyMergeCapacityIssue("ready", 1)
+				issue.Identifier = "example-org/example-project#1"
+				issue.PRRepository = "example-org/example-project"
+				issue.PullRequest.URL = "https://github.test/example-org/example-project/pull/1"
+				issue.AssigneeID = "alpha"
+				tracker := &mergeControlClaimConnector{
+					autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+						autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+					},
+				}
+				readStarted, releaseRead := make(chan context.Context, 1), make(chan struct{})
+				tracker.hydrate = func(ctx context.Context) {
+					select {
+					case readStarted <- ctx:
+						<-releaseRead
+					default:
+					}
+				}
+				releaseRenewal := make(chan struct{})
+				manager := newHeartbeatManager(cfg, tracker, nil, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				orch := &Orchestrator{cfg: cfg, connector: tracker, heartbeats: manager, now: time.Now, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), logger: manager.logger}
+				state := newState(cfg)
+				managerDone, dispatchDone := make(chan struct{}), make(chan struct{})
+				go func() {
+					defer close(managerDone)
+					manager.Run(ctx)
+				}()
+				go func() {
+					defer close(dispatchDone)
+					orch.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
+				}()
+				synctest.Wait()
+				var completionCtx context.Context
+				select {
+				case completionCtx = <-readStarted:
+				default:
+					close(releaseRead)
+					close(releaseRenewal)
+					t.Fatal("merge completion did not reach the pre-merge read")
+				}
+				tracker.mu.Lock()
+				if tt.successor {
+					tracker.stateIssues[0].AssigneeID = "beta"
+					tracker.stateIssues[0].Fields[cfg.Claiming.LeaseField] = formatClaimTime(now.Add(time.Minute))
+				}
+				if tt.stall {
+					tracker.fetch = func() { <-releaseRenewal }
+				}
+				if tt.laneRetry {
+					tracker.updateErr = errors.New("temporary lane write failure")
+				}
+				tracker.mu.Unlock()
+				if tt.cancel {
+					cancel()
+				}
+				timer := time.NewTimer(tt.wait)
+				<-timer.C
+				synctest.Wait()
+				tracker.mu.Lock()
+				leaseWrites := len(tracker.setFields)
+				tracker.mu.Unlock()
+				cause := context.Cause(completionCtx)
+				close(releaseRead)
+				close(releaseRenewal)
+				<-dispatchDone
+				if tt.laneRetry {
+					retry, ok := state.Retry[issue.ID]
+					if !ok || !retry.CompletionDeferred || len(tracker.merges) != 1 || tracker.stateIssues[0].State != "Merging" {
+						t.Fatal("failed lane write did not retain the already-merged completion")
+					}
+					tracker.mu.Lock()
+					tracker.updateErr = nil
+					tracker.mu.Unlock()
+					<-time.NewTimer(retry.DueAt.Sub(time.Now())).C
+					if !orch.retryDeferredCompletion(ctx, &state, issue.ID, time.Now()) {
+						t.Fatal("completion owner did not finish the retained lane write")
+					}
+				}
+				cancel()
+				<-managerDone
+				if (tt.stall || tt.successor && tt.wait > cfg.Claiming.HeartbeatInterval) && !errors.Is(cause, ErrSchedulingClaimLost) {
+					t.Errorf("blocked completion cause = %v, want claim loss", cause)
+				}
+				if tt.wantMerge {
+					if len(tracker.merges) != 1 || tracker.stateIssues[0].State != "Done" || leaseWrites <= 1 || len(state.Completed) != 1 {
+						t.Fatalf("merges=%v lane=%s lease writes=%d, want merge and renewed lease", tracker.merges, tracker.stateIssues[0].State, leaseWrites)
+					}
+				} else if len(tracker.merges) != 0 || len(tracker.updates) != 0 || len(tracker.setFields) != leaseWrites {
+					t.Fatalf("writes after loss of authority: merges=%v lanes=%v lease writes before=%d after=%d", tracker.merges, tracker.updates, leaseWrites, len(tracker.setFields))
+				}
+			})
+		})
+	}
+}
+
+type mergeControlClaimConnector struct {
+	*autoPromoteTickMergeConnector
+	mu      sync.Mutex
+	hydrate func(context.Context)
+	fetch   func()
+}
+
+func (c *mergeControlClaimConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	c.mu.Lock()
+	refreshed, err := c.autoPromoteTickMergeConnector.HydratePullRequest(ctx, issue)
+	c.mu.Unlock()
+	c.hydrate(ctx)
+	return refreshed, err
+}
+
+func (c *mergeControlClaimConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	c.mu.Lock()
+	fetch := c.fetch
+	c.mu.Unlock()
+	if fetch != nil {
+		fetch()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.autoPromoteTickMergeConnector.FetchIssueStatesByIDs(ctx, ids)
+}
+
+func (c *mergeControlClaimConnector) SetField(ctx context.Context, id, field, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.autoPromoteTickMergeConnector.SetField(ctx, id, field, value)
+}
+
+func (c *mergeControlClaimConnector) MergePullRequest(ctx context.Context, repository string, number int, head, method string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method)
+}
+
+func (c *mergeControlClaimConnector) UpdateIssueState(ctx context.Context, id, state string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.autoPromoteTickMergeConnector.UpdateIssueState(ctx, id, state)
 }
 
 func TestCheckedMergeUnderForgeCondition(t *testing.T) {

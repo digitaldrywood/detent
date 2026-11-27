@@ -116,6 +116,20 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
+	if mergeControl {
+		var unbind func()
+		ctx, unbind = o.heartbeats.bindCompletion(ctx, event.IssueID)
+		defer unbind()
+		defer func() {
+			if ctx.Err() != nil {
+				o.releaseClaim(state, event.IssueID)
+			}
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+	}
 	if o.trimHostCache != nil {
 		o.startWorkspaceCleanup(ctx, state, o.clockNow())
 	}
@@ -152,6 +166,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	if running.Generation > 0 {
 		refreshed, err := o.refreshCompletionLane(ctx, running)
+		if mergeControl && ctx.Err() != nil {
+			return
+		}
 		if err != nil {
 			if !errors.Is(event.Err, runpkg.ErrWorkerGitHubTokenResolution) {
 				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
@@ -375,6 +392,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if running.Mode != runpkg.RunModeTriage && !deliverableLookup.reconciles() && workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+		if mergeControl && o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
+			return
+		}
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
 			tokens = running.Tokens
@@ -892,7 +912,14 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return false
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if event.Result.Output == mergeControlCheckedHeadOutput && ctx.Err() != nil {
+		return true
+	}
 	if err != nil {
+		if event.Result.Output == mergeControlCheckedHeadOutput {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_terminal_state_refresh_failed",
@@ -910,6 +937,19 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		issue = mergeIssueTrackerFields(running.Issue, issue)
 		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
+		}
+		if event.Result.Output == mergeControlCheckedHeadOutput {
+			if !o.confirmMergeControlClaim(ctx, state, event, running) {
+				return true
+			}
+			if mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
+				target := doneStateName(o.cfg.TerminalStates)
+				if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), "merge_worker_programmatic_merge"); err != nil {
+					o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+					return true
+				}
+				issue.State = target
+			}
 		}
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
@@ -952,6 +992,9 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return false
 	}
 	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
+	if ctx.Err() != nil {
+		return true
+	}
 	if err != nil {
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
@@ -1109,7 +1152,17 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	repository := pullRequestRepository(issue)
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
+	if mergeControl && !o.confirmMergeControlClaim(ctx, state, event, running) {
+		return true
+	}
+	if ctx.Err() != nil {
+		return true
+	}
 	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
+		if ctx.Err() != nil {
+			return true
+		}
 		if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) {
 			o.refreshMergeWorkerBase(ctx, state, event, running, issue, "merge_api_rejected_out_of_date_base")
 			return true
@@ -1118,12 +1171,22 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true
 	}
+	if ctx.Err() != nil {
+		return true
+	}
 
 	targetState := doneStateName(o.cfg.TerminalStates)
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
+	if mergeControl && !o.confirmMergeControlClaim(ctx, state, event, running) {
+		return true
+	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
-		running.Issue = mergedIssue
-		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+		if mergeControl {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		} else {
+			running.Issue = mergedIssue
+			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+		}
 		return true
 	}
 
