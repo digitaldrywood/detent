@@ -12,41 +12,19 @@ import (
 )
 
 const (
-	phaseCommitLimit   = 2048
-	phasePathLimit     = 8192
-	phaseCommitBytes   = 1 << 20
-	phaseMetadataBytes = 4 << 20
-	phaseBlobLimit     = 32 << 20
-	phaseBlobOverhead  = 1 << 10
+	phaseCommitLimit    = 2048
+	phaseParentLimit    = 4096
+	phasePublishedLimit = 8192
+	phasePathLimit      = 8192
+	phaseCommitBytes    = 1 << 20
+	phaseMetadataBytes  = 4 << 20
+	phaseBlobLimit      = 32 << 20
+	phaseBlobOverhead   = 1 << 10
 )
 
 func PhaseHistory(git gitexec.BoundedRead, head string, published ...string) error {
-	args := []string{"rev-list", "--max-count=" + strconv.Itoa(phaseCommitLimit+1), head}
-	if len(published) != 0 {
-		args = append(append(args, "--not"), published...)
-	}
-	rawCommits, err := readPhaseOutput(git, (phaseCommitLimit+1)*65, "commit list", args...)
-	if err != nil {
-		return err
-	}
-	commits := strings.Fields(rawCommits)
-	if len(commits) > phaseCommitLimit {
-		return fmt.Errorf("%w: phase history exceeds the commit limit", ErrUnsafe)
-	}
-	scan := phaseScan{git: git, remaining: tracker.MaxChangeDiffBytes - len(rawCommits), paths: phasePathLimit}
-	for _, commit := range commits {
-		if !gitexec.ValidHead(commit) {
-			return fmt.Errorf("%w: invalid phase commit identity", ErrUnsafe)
-		}
-		raw, err := scan.read(phaseCommitBytes, "commit object", "cat-file", "commit", commit)
-		if err != nil {
-			return err
-		}
-		if err := scan.commit(raw); err != nil {
-			return err
-		}
-	}
-	return scan.screenBlobs()
+	scan := phaseScan{git: git, remaining: tracker.MaxChangeDiffBytes, paths: phasePathLimit}
+	return scan.history(head, published)
 }
 
 type phaseScan struct {
@@ -62,37 +40,142 @@ func (s *phaseScan) read(limit int, step string, args ...string) (string, error)
 	return output, err
 }
 
-func (s *phaseScan) commit(raw string) error {
+func (s *phaseScan) history(head string, published []string) error {
+	if !gitexec.ValidHead(head) {
+		return fmt.Errorf("%w: invalid phase commit identity", ErrUnsafe)
+	}
+	seen := make(map[string]bool)
+	for _, tip := range published {
+		if !gitexec.ValidHead(tip) {
+			return fmt.Errorf("%w: invalid published phase commit identity", ErrUnsafe)
+		}
+		seen[tip] = true
+	}
+	if seen[head] {
+		return nil
+	}
+	if len(published) != 0 {
+		args := append([]string{"rev-list", "--max-count=" + strconv.Itoa(phasePublishedLimit)}, published...)
+		raw, err := s.read(phasePublishedLimit*65, "published commit list", args...)
+		if err != nil {
+			return err
+		}
+		for oid := range strings.FieldsSeq(raw) {
+			if !gitexec.ValidHead(oid) {
+				return fmt.Errorf("%w: invalid published phase commit identity", ErrUnsafe)
+			}
+			seen[oid] = true
+		}
+	}
+	commits := make([]phaseCommit, 0)
+	trees := make(map[string]string)
+	pending := []string{head}
+	edges := 0
+	for len(pending) != 0 {
+		oid := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if seen[oid] {
+			continue
+		}
+		if len(commits) == phaseCommitLimit {
+			return fmt.Errorf("%w: phase history exceeds the commit limit", ErrUnsafe)
+		}
+		commit, err := s.readCommit(oid, true)
+		if err != nil {
+			return err
+		}
+		edges += len(commit.parents)
+		if edges > phaseParentLimit {
+			return fmt.Errorf("%w: phase history exceeds the parent edge limit", ErrUnsafe)
+		}
+		seen[oid] = true
+		trees[oid] = commit.tree
+		commits = append(commits, commit)
+		pending = append(pending, commit.parents...)
+	}
+	for _, commit := range commits {
+		if len(commit.parents) == 0 {
+			if err := s.walkTrees("", commit.tree); err != nil {
+				return err
+			}
+		}
+		for _, parent := range commit.parents {
+			parentTree, ok := trees[parent]
+			if !ok {
+				metadata, err := s.readCommit(parent, false)
+				if err != nil {
+					return err
+				}
+				parentTree = metadata.tree
+				trees[parent] = parentTree
+			}
+			if err := s.walkTrees(parentTree, commit.tree); err != nil {
+				return err
+			}
+		}
+	}
+	return s.screenBlobs()
+}
+
+type phaseCommit struct {
+	tree    string
+	parents []string
+}
+
+func (s *phaseScan) readCommit(oid string, unpublished bool) (phaseCommit, error) {
+	if err := s.checkObject(oid, "commit", phaseCommitBytes); err != nil {
+		return phaseCommit{}, err
+	}
+	raw, err := s.read(phaseCommitBytes, "commit object", "cat-file", "commit", oid)
+	if err != nil {
+		return phaseCommit{}, err
+	}
 	headers, _, ok := strings.Cut(raw, "\n\n")
 	treeLine, parents, _ := strings.Cut(headers, "\n")
 	tree, hasTree := strings.CutPrefix(treeLine, "tree ")
 	if !ok || !hasTree || !gitexec.ValidHead(tree) {
-		return fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
+		return phaseCommit{}, fmt.Errorf("%w: invalid phase commit object", ErrUnsafe)
+	}
+	commit := phaseCommit{tree: tree}
+	if !unpublished {
+		return commit, nil
 	}
 	if err := ScreenCredentials(raw); err != nil {
-		return err
-	}
-	if !strings.HasPrefix(parents, "parent ") {
-		return s.walkTrees("", tree)
+		return phaseCommit{}, err
 	}
 	for strings.HasPrefix(parents, "parent ") {
 		line, rest, _ := strings.Cut(parents, "\n")
 		parents = rest
 		parent := strings.TrimPrefix(line, "parent ")
 		if !gitexec.ValidHead(parent) {
-			return fmt.Errorf("%w: invalid phase parent identity", ErrUnsafe)
+			return phaseCommit{}, fmt.Errorf("%w: invalid phase parent identity", ErrUnsafe)
 		}
-		parentTree, err := s.read(65, "parent tree", "rev-parse", "--verify", parent+"^{tree}")
-		if err != nil {
-			return err
-		}
-		parentTree = strings.TrimSuffix(parentTree, "\n")
-		if !gitexec.ValidHead(parentTree) {
-			return fmt.Errorf("%w: invalid phase parent tree identity", ErrUnsafe)
-		}
-		if err := s.walkTrees(parentTree, tree); err != nil {
-			return err
-		}
+		commit.parents = append(commit.parents, parent)
+	}
+	return commit, nil
+}
+
+func (s *phaseScan) checkObject(oid, kind string, limit int) error {
+	if !gitexec.ValidHead(oid) {
+		return fmt.Errorf("%w: invalid phase object identity", ErrUnsafe)
+	}
+	sizeText, err := s.read(32, "object size", "cat-file", "-s", oid)
+	if err != nil {
+		return err
+	}
+	size, err := strconv.Atoi(strings.TrimSpace(sizeText))
+	if err != nil || size < 0 {
+		return fmt.Errorf("%w: invalid phase %s object size", ErrUnsafe, kind)
+	}
+	if size > min(limit, s.remaining) {
+		return fmt.Errorf("%w: phase %s object exceeds the size limit", ErrUnsafe, kind)
+	}
+	typeText, err := s.read(16, "object type", "cat-file", "-t", oid)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(typeText) != kind {
+		return fmt.Errorf("%w: invalid phase %s object type", ErrUnsafe, kind)
 	}
 	return nil
 }
@@ -149,6 +232,9 @@ func (s *phaseScan) walkTrees(before, after string) error {
 func (s *phaseScan) readTree(tree string) (map[string]phaseTreeEntry, error) {
 	if tree == "" {
 		return map[string]phaseTreeEntry{}, nil
+	}
+	if err := s.checkObject(tree, "tree", phaseMetadataBytes); err != nil {
+		return nil, err
 	}
 	output, err := s.read(phaseMetadataBytes, "tree entries", "ls-tree", "-z", tree)
 	if err != nil {

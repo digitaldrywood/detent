@@ -51,76 +51,122 @@ func TestPhaseHistoryStopsBeforeReadingOverBudgetBlob(t *testing.T) {
 }
 
 func TestPhaseHistoryBoundsMetadata(t *testing.T) {
-	commit := strings.Repeat("1", 40)
+	head := strings.Repeat("1", 40)
 	tree := strings.Repeat("2", 40)
 	subtree := strings.Repeat("3", 40)
 	blob := strings.Repeat("4", 40)
-	previousCommit := strings.Repeat("5", 40)
+	base := strings.Repeat("5", 40)
+	parent := strings.Repeat("6", 40)
+	parentTree := strings.Repeat("7", 40)
+
 	for _, tc := range []struct {
 		name string
 		want string
 	}{
 		{name: "commit count", want: "commit limit"},
-		{name: "commit object output", want: "commit object exceeds the output limit"},
+		{name: "large commit", want: "commit object exceeds the size limit"},
+		{name: "large tree", want: "tree object exceeds the size limit"},
+		{name: "incorrect tree type", want: "invalid phase tree object type"},
 		{name: "tree entries output", want: "tree entries exceeds the output limit"},
+		{name: "parent edges across commits", want: "parent edge limit"},
 		{name: "changed paths across commits", want: "changed path limit"},
 		{name: "reused subtrees exhaust the budget during traversal", want: "changed path limit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sharedTreeReads := 0
-			git := func(limit int, args ...string) (string, bool, error) {
+			git := func(_ int, args ...string) (string, bool, error) {
 				switch args[0] {
 				case "rev-list":
-					if args[1] != "--max-count=2049" || limit != 2049*65 {
-						t.Fatalf("rev-list bounds = %d, %v", limit, args)
+					if !slices.Equal(args[2:], []string{base}) {
+						t.Fatalf("commit traversal received unpublished input: %v", args)
 					}
-					if tc.name == "commit count" {
-						return strings.Repeat(commit+"\n", 2049), false, nil
-					}
-					if tc.name == "reused subtrees exhaust the budget during traversal" {
-						return commit + "\n", false, nil
-					}
-					return commit + "\n" + previousCommit + "\n", false, nil
+					return base + "\n", false, nil
 				case "cat-file":
-					if args[1] != "commit" || limit != 1<<20 {
-						t.Fatalf("unexpected commit read: %d, %v", limit, args)
-					}
-					return "tree " + tree + "\n\nmessage\n", tc.name == "commit object output", nil
-				case "ls-tree":
-					if limit != 4<<20 || len(args) != 3 || args[1] != "-z" {
-						t.Fatalf("unexpected single-tree read: %d, %v", limit, args)
-					}
-					if tc.name == "reused subtrees exhaust the budget during traversal" {
-						var entries strings.Builder
-						switch args[len(args)-1] {
-						case tree:
-							for i := range 100 {
-								fmt.Fprintf(&entries, "040000 tree %s\tdir-%03d\x00", subtree, i)
+					oid := args[2]
+					switch args[1] {
+					case "-s":
+						if tc.name == "large commit" && oid == head {
+							return "1048577\n", false, nil
+						}
+						if tc.name == "large tree" && oid == tree {
+							return "4194305\n", false, nil
+						}
+						return "128\n", false, nil
+					case "-t":
+						if oid == tree || oid == subtree || oid == parentTree {
+							if tc.name == "incorrect tree type" {
+								return "tag\n", false, nil
 							}
-						case subtree:
+							return "tree\n", false, nil
+						}
+						return "commit\n", false, nil
+					case "commit":
+						if tc.name == "large commit" || tc.name == "parent edges across commits" && oid == base {
+							t.Fatalf("unexpected commit content read for %s", oid)
+						}
+						var parents string
+						switch tc.name {
+						case "commit count":
+							next := 1
+							if oid != head {
+								if _, err := fmt.Sscanf(oid, "%x", &next); err != nil {
+									t.Fatal(err)
+								}
+								next++
+							}
+							parents = fmt.Sprintf("parent %040x\n", next)
+						case "parent edges across commits":
+							parents = strings.Repeat("parent "+base+"\n", 2048)
+							if oid == head {
+								parents += "parent " + parent + "\n"
+							}
+						case "changed paths across commits":
+							if oid == head {
+								return "tree " + tree + "\nparent " + parent + "\n\nmessage\n", false, nil
+							}
+							return "tree " + parentTree + "\n\nmessage\n", false, nil
+						}
+						return "tree " + tree + "\n" + parents + "\nmessage\n", false, nil
+					}
+				case "ls-tree":
+					if len(args) != 3 || args[1] != "-z" {
+						t.Fatalf("expected a non-recursive tree read, got %v", args)
+					}
+					var entries strings.Builder
+					switch tc.name {
+					case "tree entries output":
+						return "", true, nil
+					case "reused subtrees exhaust the budget during traversal":
+						if args[2] == subtree {
 							sharedTreeReads++
 							for i := range 100 {
 								fmt.Fprintf(&entries, "100644 blob %s\tfile-%03d\x00", blob, i)
 							}
+						} else {
+							for i := range 100 {
+								fmt.Fprintf(&entries, "040000 tree %s\tdir-%03d\x00", subtree, i)
+							}
 						}
-						return entries.String(), false, nil
-					}
-					if tc.name == "tree entries output" {
-						return "", true, nil
-					}
-					if args[2] == subtree {
-						return "", false, nil
-					}
-					var entries strings.Builder
-					for i := range 4097 {
-						fmt.Fprintf(&entries, "040000 tree %s\tdir-%04d\x00", subtree, i)
+					case "changed paths across commits":
+						switch args[2] {
+						case tree:
+							for i := range 2731 {
+								fmt.Fprintf(&entries, "040000 tree %s\tdir-%04d\x00", subtree, i)
+							}
+						case parentTree:
+							for i := range 2731 {
+								fmt.Fprintf(&entries, "040000 tree %s\tother-%04d\x00", subtree, i)
+							}
+						}
+					default:
+						t.Fatalf("unexpected tree content read for %s", args[2])
 					}
 					return entries.String(), false, nil
 				}
 				t.Fatalf("unexpected git command %v", args)
 				return "", false, nil
 			}
-			err := PhaseHistory(git, commit, strings.Repeat("2", 40))
+			err := PhaseHistory(git, head, base)
 			if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("scan error = %v, want %q", err, tc.want)
 			}
@@ -154,20 +200,28 @@ func TestPhaseHistoryScreensPublicationMetadata(t *testing.T) {
 			git := func(_ int, args ...string) (string, bool, error) {
 				switch args[0] {
 				case "rev-list":
-					return commit + "\n", false, nil
+					return parent + "\n" + firstParent + "\n", false, nil
 				case "cat-file":
+					switch args[1] {
+					case "-s":
+						return "128\n", false, nil
+					case "-t":
+						if args[2] == before || args[2] == after {
+							return "tree\n", false, nil
+						}
+						return "commit\n", false, nil
+					}
+					switch args[2] {
+					case parent:
+						return "tree " + before + "\n\nmessage\n", false, nil
+					case firstParent:
+						return "tree " + after + "\n\nmessage\n", false, nil
+					}
 					parents := "parent " + parent + "\n"
 					if tc.merge {
 						parents = "parent " + firstParent + "\n" + parents
 					}
 					return "tree " + after + "\n" + parents + "author " + tc.author + " <test@example.test> 1 +0000\n\nmessage\n", false, nil
-				case "rev-parse":
-					switch args[2] {
-					case firstParent + "^{tree}":
-						return after + "\n", false, nil
-					case parent + "^{tree}":
-						return before + "\n", false, nil
-					}
 				case "ls-tree":
 					if args[2] == before {
 						return "100644 blob " + commit + "\t" + tc.path + "\x00", false, nil
@@ -179,7 +233,7 @@ func TestPhaseHistoryScreensPublicationMetadata(t *testing.T) {
 				t.Fatalf("unexpected git command %v", args)
 				return "", false, nil
 			}
-			err := PhaseHistory(git, commit)
+			err := PhaseHistory(git, commit, firstParent)
 			if tc.unsafe {
 				if !errors.Is(err, ErrUnsafe) || !strings.Contains(err.Error(), "possible credential") || strings.Contains(err.Error(), credential) {
 					t.Fatalf("expected a redacted credential refusal")
