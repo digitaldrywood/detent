@@ -45,11 +45,12 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 
 	var previousSession string
 	for _, test := range []struct {
-		name   string
-		serves bool
+		name         string
+		serves       bool
+		userFallback bool
 	}{
 		{name: "unresolvable workspace workflow"},
-		{name: "workspace served", serves: true},
+		{name: "writable workspace served with user isolation fallback", serves: true, userFallback: true},
 		{name: "workspace served after restart", serves: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,7 +67,18 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 			ticks := make(chan time.Time, 2)
 			tick := func() { ticks <- time.Now() }
 			tick()
-			hub, serveHub := newRemoteWorkspaceHub(t, identity.Identity, head, test.serves, tick)
+			want := workspacesession.Capabilities{}
+			var supportSource func() workspacerunner.Support
+			isolationLevel := workspacerunner.DefaultSupport().TerminalIsolation()
+			if test.userFallback {
+				supportSource = testWorkspaceSupport
+				isolationLevel = workspacesession.IsolationUser
+			}
+			if test.serves {
+				want = workspacesession.Capabilities{Files: true, Exec: true, Git: true,
+					Terminal: isolationLevel == workspacesession.IsolationSandbox}
+			}
+			hub, serveHub := newRemoteWorkspaceHub(t, identity.Identity, head, want, isolationLevel, !test.userFallback, tick)
 			handler.Store(&serveHub)
 			cfg, err := globalconfig.DefaultAt(filepath.Join(root, "runner.yaml"), globalconfig.WithHome(root))
 			if err != nil {
@@ -91,6 +103,7 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 					remoteHeartbeatTicker: func(time.Duration) (<-chan time.Time, func()) {
 						return ticks, func() {}
 					},
+					remoteWorkspaceSupport: supportSource,
 				})
 			}()
 			t.Cleanup(func() {
@@ -99,10 +112,6 @@ func TestRemoteRunnerWorkspaceLane(t *testing.T) {
 				<-done
 			})
 			waitCtx := testenv.WaitContext(t, t.Context())
-			want := workspacesession.Capabilities{}
-			if test.serves {
-				want = workspacerunner.Capabilities(workspacerunner.DefaultSupport())
-			}
 			for {
 				got := awaitRemoteRunnerEvent(t, waitCtx, done, hub.reports)
 				if got == nil {
@@ -177,7 +186,7 @@ type remoteWorkspaceHub struct {
 	allowUnbind    func()
 }
 
-func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head string, offerWorkspace bool, requestHeartbeat func()) (*remoteWorkspaceHub, http.HandlerFunc) {
+func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head string, want workspacesession.Capabilities, isolationLevel string, readOnly bool, requestHeartbeat func()) (*remoteWorkspaceHub, http.HandlerFunc) {
 	t.Helper()
 	const workspaceID = "ws_000000000000000000000000000000ff"
 	reported := make(chan struct{})
@@ -234,7 +243,7 @@ func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head stri
 			decodeWorkspaceHubRequest(t, r, &claim)
 			if slices.Contains(claim.Capabilities, tracker.NativeWorkspaceCapability) {
 				firstWorkspaceClaim()
-				if !offerWorkspace {
+				if !want.Files {
 					t.Error("runner attempted a workspace claim without a usable workflow")
 				}
 				if claim.TTLSeconds != int64(workspacesession.LeaseTTL/time.Second) {
@@ -265,11 +274,11 @@ func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head stri
 		case strings.HasSuffix(r.URL.Path, "/workspaces/"+workspaceID+"/worker/bind"):
 			var bind hubclient.WorkspaceBindRequest
 			decodeWorkspaceHubRequest(t, r, &bind)
-			if want := workspacerunner.Capabilities(workspacerunner.DefaultSupport()); bind.Capabilities != want {
-				t.Errorf("workspace bind capabilities = %+v, want %+v", bind.Capabilities, want)
+			if bind.Capabilities != want || bind.Isolation != isolationLevel {
+				t.Errorf("workspace bind = %+v / %q, want %+v / %q", bind.Capabilities, bind.Isolation, want, isolationLevel)
 			}
 			response = hubclient.WorkspaceBindResponse{Session: session, Checkout: hubclient.WorkspaceCheckout{
-				WorkItemID: "wi_workspace", Worktree: workspacesession.WorktreeFresh, HeadSHA: head, ReadOnly: true,
+				WorkItemID: "wi_workspace", Worktree: workspacesession.WorktreeFresh, HeadSHA: head, ReadOnly: readOnly,
 			}}
 		case strings.HasSuffix(r.URL.Path, "/workspaces/"+workspaceID+"/worker/heartbeat"):
 			var heartbeat hubclient.WorkspaceHeartbeatRequest
@@ -277,6 +286,9 @@ func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head stri
 			if heartbeat.State == workspacesession.StateReady {
 				if !heartbeat.Capabilities.Git {
 					t.Error("workspace did not report a Git worktree")
+				}
+				if expected := want.Terminal && !readOnly; heartbeat.Capabilities.Terminal != expected {
+					t.Errorf("ready terminal capability = %t, want %t", heartbeat.Capabilities.Terminal, expected)
 				}
 				select {
 				case hub.ready <- struct{}{}:
@@ -299,8 +311,12 @@ func newRemoteWorkspaceHub(t *testing.T, identity runnerauth.Identity, head stri
 		case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 			var report struct {
 				Capabilities *workspacesession.Capabilities `json:"workspace_capabilities"`
+				Isolation    string                         `json:"workspace_isolation"`
 			}
 			decodeWorkspaceHubRequest(t, r, &report)
+			if report.Isolation != isolationLevel {
+				t.Errorf("runner workspace isolation = %q, want %q", report.Isolation, isolationLevel)
+			}
 			if report.Capabilities != nil && report.Capabilities.Files {
 				reportServing()
 			}
