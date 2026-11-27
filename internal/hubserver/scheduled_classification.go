@@ -2,10 +2,13 @@ package hubserver
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	connectorgithub "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
@@ -50,6 +53,9 @@ func (s *Service) verifyScheduledClassification(ctx context.Context, scope hubsc
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, connectorgithub.ErrRESTBudgetReserved) {
+			return &hubapi.NativeError{Code: "limit_reached", Status: http.StatusTooManyRequests, PublicMessage: true, Message: "GitHub verification budget is reserved for other operations"}
 		}
 		return invalid
 	}

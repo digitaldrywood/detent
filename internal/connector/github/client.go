@@ -570,6 +570,11 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 
 	family := restEndpointFamily(method, path)
 	trackerRead := restTrackerRead(method, family)
+	if restEndpointRateLimitResource(family) == "core" {
+		if err := c.chargeRESTCore(ctx, backoffKey, time.Now()); err != nil {
+			return nil, err
+		}
+	}
 	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
 	resp, finishHTTP, err := timedHTTPAttempt(attribution, c.httpClient, req, true, true)
 	if err != nil {
@@ -1225,6 +1230,9 @@ func (c *Client) recordRESTRateLimitFromHeaders(ctx context.Context, backoffKey 
 	var resetAt time.Time
 	if hasReset {
 		resetAt = time.Unix(reset, 0).UTC()
+	}
+	if resource == "core" && hasLimit && hasRemaining && hasReset && limit > 0 && remaining >= 0 && remaining <= limit && resetAt.After(now) {
+		c.restBackoffs.observeCoreQuota(backoffKey, remaining, resetAt)
 	}
 
 	c.mu.Lock()
@@ -2404,10 +2412,11 @@ type restBackoffRegistry struct {
 	untils    map[string]time.Time
 	failures  map[string]*restRecoveryEvidence
 	secondary map[string]*graphQLSecondaryState
+	core      map[string]restCoreQuota
 }
 
 func newRESTBackoffRegistry() *restBackoffRegistry {
-	return &restBackoffRegistry{untils: map[string]time.Time{}, failures: map[string]*restRecoveryEvidence{}, secondary: map[string]*graphQLSecondaryState{}}
+	return &restBackoffRegistry{untils: map[string]time.Time{}, failures: map[string]*restRecoveryEvidence{}, secondary: map[string]*graphQLSecondaryState{}, core: map[string]restCoreQuota{}}
 }
 
 func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {

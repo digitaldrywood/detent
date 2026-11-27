@@ -144,58 +144,121 @@ func TestSharedTransportBackoffAndRequestCounts(t *testing.T) {
 			}
 		})
 	}
-	t.Run("Actions permission denial permits unrelated outbox write", func(t *testing.T) {
-		const actionsRepository = "example-org/private-project"
-		const actionsPath = "/repos/" + actionsRepository + "/actions/runs/123/attempts/1"
-		const issuePath = "/repos/example-org/other-project/issues/17"
-		var writes atomic.Int32
-		mux := http.NewServeMux()
-		mux.HandleFunc("GET "+actionsPath, func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("X-RateLimit-Remaining", "4999")
-			w.Header().Set("X-RateLimit-Reset", "2082758400")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
+	for _, test := range []struct {
+		name       string
+		permission bool
+		remaining  string
+		want       error
+		pages      int32
+		runs       int32
+	}{
+		{"Actions permission denial permits unrelated outbox write", true, "5000", connectorgithub.ErrAuthenticationFailed, 0, 1},
+		{"verification preserves the reserve during pagination", false, "1003", connectorgithub.ErrRESTBudgetReserved, 1, 1},
+		{"verification completes pagination with allowance", false, "1004", nil, 2, 1},
+		{"verification refuses to spend the reserve on the first request", false, "1000", connectorgithub.ErrRESTBudgetReserved, 0, 0},
+		{"verification defers without a quota observation", false, "", connectorgithub.ErrRESTBudgetReserved, 0, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const actionsRepository = "example-org/private-project"
+			const actionsPath = "/repos/" + actionsRepository + "/actions/runs/123/attempts/1"
+			const issuePath = "/repos/example-org/other-project/issues/17"
+			sha := strings.Repeat("a", 40)
+			var writes, pages, probes, runs atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /rate_limit", func(w http.ResponseWriter, _ *http.Request) {
+				probes.Add(1)
+				w.Header().Set("X-RateLimit-Limit", "5000")
+				w.Header().Set("X-RateLimit-Remaining", test.remaining)
+				w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+				w.Header().Set("X-RateLimit-Resource", "core")
+				_, _ = io.WriteString(w, "{}")
+			})
+			mux.HandleFunc("GET "+actionsPath, func(w http.ResponseWriter, _ *http.Request) {
+				runs.Add(1)
+				if test.permission {
+					w.Header().Set("X-RateLimit-Remaining", "4999")
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"id":123,"run_attempt":1,"path":".github/workflows/ci.yml","head_sha":"`+sha+`","head_branch":"develop","event":"schedule","repository":{"full_name":"`+actionsRepository+`"},"head_repository":{"full_name":"`+actionsRepository+`"}}`)
+			})
+			mux.HandleFunc("GET /repos/"+actionsRepository+"/actions/jobs/456", func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, `{"id":456,"run_id":123,"head_sha":"`+sha+`","name":"Tests","status":"completed","conclusion":"failure"}`)
+			})
+			mux.HandleFunc("GET "+actionsPath+"/jobs", func(w http.ResponseWriter, r *http.Request) {
+				pages.Add(1)
+				if r.URL.Query().Get("page") == "2" {
+					_, _ = io.WriteString(w, `{"jobs":[{"id":456}]}`)
+					return
+				}
+				w.Header().Set("Link", "<"+actionsPath+"/jobs?per_page=100&page=2>; rel=\"next\"")
+				_, _ = io.WriteString(w, `{"jobs":[{"id":457}]}`)
+			})
+			mux.HandleFunc("GET "+issuePath, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, `{"labels":[]}`)
+			})
+			mux.HandleFunc("PUT "+issuePath+"/labels", func(w http.ResponseWriter, _ *http.Request) {
+				writes.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			config := connectorgithub.ClientConfig{
+				Endpoint: server.URL + "/graphql", TokenSource: connectorgithub.StaticTokenSource("example-token"), HTTPClient: server.Client(),
+			}
+			client, err := connectorgithub.NewClient(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := NewTransport(client)
+			evidence := gate.ScheduledEvidence{
+				Schema: 1, Repository: actionsRepository, OccurrenceKey: strings.Repeat("a", 64),
+				RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Tests", HeadSHA: sha, Conclusion: "failure",
+				RunURL: "https://github.com/" + actionsRepository + "/actions/runs/123/attempts/1",
+				JobURL: "https://github.com/" + actionsRepository + "/actions/jobs/456",
+			}
+			request := githubcontract.GitHubImportRequest{Profile: "native", Repository: actionsRepository, Stage: githubcontract.ScheduledClassificationStage, Scheduled: &evidence}
+			result, err := NewImporter(transport).FetchImportPage(t.Context(), request)
+			if !errors.Is(err, test.want) || test.want == nil && result.Scheduled == nil {
+				t.Fatalf("Actions verification returned %v, want %v", err, test.want)
+			}
+			if test.permission {
+				var status *connectorgithub.StatusError
+				if !errors.As(err, &status) || status.StatusCode != http.StatusForbidden {
+					t.Fatalf("Actions verification returned %v, want HTTP 403", err)
+				}
+			}
+			if test.want == connectorgithub.ErrRESTBudgetReserved {
+				otherClient, err := connectorgithub.NewClient(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := NewImporter(NewTransport(otherClient)).FetchImportPage(t.Context(), request); !errors.Is(err, test.want) {
+					t.Fatalf("verification on a second client with the same credential returned %v, want %v", err, test.want)
+				}
+			}
+			if got := pages.Load(); got != test.pages {
+				t.Fatalf("Actions job pages = %d, want %d", got, test.pages)
+			}
+			if got := runs.Load(); got != test.runs {
+				t.Fatalf("Actions run requests = %d, want %d", got, test.runs)
+			}
+			if got := probes.Load(); got != 1 {
+				t.Fatalf("credential quota probes = %d, want 1", got)
+			}
+			item := testOutboxItem(t, githubcontract.MutationWorkflowLabel, githubcontract.WorkflowLabelDesired{Label: "detent:todo", ManagedPrefix: "detent:"})
+			item.OrganizationID, item.RepositoryOwner, item.RepositoryName = "org_example", "example-org", "other-project"
+			item.BeforeWrite = func(context.Context) error { return nil }
+			outbox, err := NewWriter(transport).Step(t.Context(), item)
+			if err != nil || !outbox.Done {
+				t.Fatalf("unrelated outbox write after Actions verification: done=%t, error=%v", outbox.Done, err)
+			}
+			if got := writes.Load(); got != 1 {
+				t.Fatalf("outbox writes at issue endpoint = %d, want 1", got)
+			}
 		})
-		mux.HandleFunc("GET "+issuePath, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, `{"labels":[]}`)
-		})
-		mux.HandleFunc("PUT "+issuePath+"/labels", func(w http.ResponseWriter, _ *http.Request) {
-			writes.Add(1)
-			w.WriteHeader(http.StatusNoContent)
-		})
-		server := httptest.NewServer(mux)
-		t.Cleanup(server.Close)
-		client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{
-			Endpoint: server.URL + "/graphql", TokenSource: connectorgithub.StaticTokenSource("example-token"), HTTPClient: server.Client(),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		transport := NewTransport(client)
-		evidence := gate.ScheduledEvidence{
-			Schema: 1, Repository: actionsRepository, OccurrenceKey: strings.Repeat("a", 64),
-			RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Tests", HeadSHA: strings.Repeat("a", 40), Conclusion: "failure",
-			RunURL: "https://github.com/" + actionsRepository + "/actions/runs/123/attempts/1",
-			JobURL: "https://github.com/" + actionsRepository + "/actions/jobs/456",
-		}
-		_, err = NewImporter(transport).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{
-			Profile: "native", Repository: actionsRepository, Stage: githubcontract.ScheduledClassificationStage, Scheduled: &evidence,
-		})
-		var status *connectorgithub.StatusError
-		if !errors.As(err, &status) || status.StatusCode != http.StatusForbidden || !errors.Is(err, connectorgithub.ErrAuthenticationFailed) {
-			t.Fatalf("Actions verification returned %v, want HTTP 403 permission denial", err)
-		}
-		item := testOutboxItem(t, githubcontract.MutationWorkflowLabel, githubcontract.WorkflowLabelDesired{Label: "detent:todo", ManagedPrefix: "detent:"})
-		item.OrganizationID, item.RepositoryOwner, item.RepositoryName = "org_example", "example-org", "other-project"
-		item.BeforeWrite = func(context.Context) error { return nil }
-		result, err := NewWriter(transport).Step(t.Context(), item)
-		if err != nil || !result.Done {
-			t.Fatalf("unrelated outbox write after Actions denial: done=%t, error=%v", result.Done, err)
-		}
-		if got := writes.Load(); got != 1 {
-			t.Fatalf("outbox writes at issue endpoint = %d, want 1", got)
-		}
-	})
+	}
 }
 
 func TestReconcileNativeProfileDoesNotFetchIssues(t *testing.T) {

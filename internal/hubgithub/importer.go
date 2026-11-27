@@ -24,6 +24,8 @@ type Importer struct{ client restClient }
 
 func NewImporter(client restClient) *Importer { return &Importer{client: client} }
 
+const scheduledClassificationRESTReserve = 1000
+
 func (i *Importer) FetchImportPage(ctx context.Context, request githubcontract.GitHubImportRequest) (result githubcontract.GitHubImportPage, resultErr error) {
 	defer func() {
 		var status *connectorgithub.StatusError
@@ -35,6 +37,9 @@ func (i *Importer) FetchImportPage(ctx context.Context, request githubcontract.G
 		}
 	}()
 	ctx = scopedRequests(ctx, request.Profile, "import", request.Repository)
+	if request.Stage == githubcontract.ScheduledClassificationStage {
+		ctx = connectorgithub.WithRESTCoreReserve(ctx, scheduledClassificationRESTReserve)
+	}
 	if i == nil || i.client == nil {
 		return result, errors.New("github importer is not configured")
 	}
