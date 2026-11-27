@@ -1646,7 +1646,7 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 				machine := fixtureSchedulerMachine(h.scheduler)
 				client := h.scheduler.Transport()
 				if test.PublicationFault == "foreign_source" || test.ForeignRunner || genuinePublication {
-					client, machine = hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, h.failChanges)
+					client, machine = hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, h.failChanges, 1)
 					h.native, err = client.Native(h.organization, h.project)
 					if err != nil {
 						t.Fatal(err)
@@ -2723,6 +2723,11 @@ func (t *changeFailingTransport) RoundTrip(request *http.Request) (*http.Respons
 }
 
 func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, config hubserver.Config, constructors Constructors, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
+	t.Helper()
+	return newNativeChangeHubWithRunnerCapacity(t, review, states, inMemory, requireDependencies, config, constructors, 1, repositoryBackend...)
+}
+
+func newNativeChangeHubWithRunnerCapacity(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, config hubserver.Config, constructors Constructors, capacity int, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	newTestClient := func(t testing.TB, config Config) (*Client, error) { return createTestClient(t, config, constructors) }
 	t.Helper()
 	if config.Clock == nil {
@@ -2823,7 +2828,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	}
 	h.otherWorker = func(t *testing.T) *NativeClient {
 		t.Helper()
-		client, _ := hubclientEnrolledRunner(t, admin, h.organization, h.project, httpClient.Transport)
+		client, _ := hubclientEnrolledRunner(t, admin, h.organization, h.project, httpClient.Transport, 1)
 		native, err := client.Native(h.organization, h.project)
 		if err != nil {
 			t.Fatal(err)
@@ -2831,7 +2836,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		return native
 	}
 	h.failChanges = &changeFailingTransport{next: httpClient.Transport}
-	worker, machine := hubclientEnrolledRunner(t, admin, h.organization, h.project, h.failChanges)
+	worker, machine := hubclientEnrolledRunner(t, admin, h.organization, h.project, h.failChanges, capacity)
 	if h.native, err = worker.Native(h.organization, h.project); err != nil {
 		t.Fatal(err)
 	}

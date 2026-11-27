@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	sessionmodel "github.com/digitaldrywood/detent/internal/runnersession/model"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -100,7 +101,20 @@ func (a *recoveringReviewAgent) RunTurn(ctx context.Context, request runner.Agen
 		return runner.AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"}, nil
 	}
 	if stage == "security" {
-		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: reviewFixturePID, GroupID: reviewFixturePID, StartedAt: time.Now()}}); err != nil {
+		cmd := exec.CommandContext(ctx, "git", "hash-object", "--stdin")
+		procgroup.Configure(ctx, cmd)
+		input, err := cmd.StdinPipe()
+		if err != nil {
+			return runner.AgentTurnResult{}, err
+		}
+		if err := procgroup.Start(cmd); err != nil {
+			return runner.AgentTurnResult{}, errors.Join(err, input.Close())
+		}
+		id, err := procgroup.Inspect(cmd)
+		if err == nil {
+			err = update(runner.AgentUpdate{Type: runner.AgentUpdateProcessStarted, WorkerProcess: id})
+		}
+		if err := errors.Join(err, input.Close(), procgroup.Wait(cmd)); err != nil {
 			return runner.AgentTurnResult{}, err
 		}
 		output := `{"verdict":"pass","summary":"Reviewed immutable source","findings":[]}`
@@ -133,6 +147,23 @@ type legacyReviewSessions struct {
 
 func (s *legacyReviewSessions) ReconcileSessionFinalization(ctx context.Context, id int64, value *sessionmodel.Finalization) error {
 	return s.complete(ctx, id, value)
+}
+
+type reviewWorker struct{ *runner.Runner }
+
+func (w reviewWorker) Run(ctx context.Context, req runner.RunRequest) (runner.RunResult, error) {
+	owner, ok := Underlying(req.Execution).(runner.AttemptWorkerExecution)
+	if !ok {
+		return runner.RunResult{}, runner.ErrExecutionAuthorityUnavailable
+	}
+	if req.NativeReviewContinuation == nil {
+		identity := tracker.NativeExecutionIdentity{Role: runworkspace.RunRole(req.Mode, req.Issue), Backend: "codex", Model: "provider_default"}
+		if err := req.Execution.Start(ctx, identity); err != nil {
+			return runner.RunResult{}, err
+		}
+	}
+	req.AttemptWorkspace = owner.AttemptWorkspace()
+	return w.Runner.Run(ctx, req)
 }
 
 func RunReviewRecovery(t *testing.T, factories Constructors) {
@@ -172,7 +203,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			clock, advanceToReplacement := scenariohooks.ReviewRecoveryClock(test.stopped)
-			h := newNativeChangeHubConfigured(t, "In Review", []tracker.NativeState{
+			h := newNativeChangeHubWithRunnerCapacity(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Blocked", "Merging", "Rework"}},
 				{Name: "In Review", Transitions: []string{"In Progress"}},
@@ -180,7 +211,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Review"}},
 				{Name: "Done", Terminal: true},
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress", "Merging"}},
-			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories)
+			}, true, false, hubserver.Config{InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}, Clock: clock}, factories, 32)
 			gateCommand := "true"
 			gateMarker := filepath.Join(t.TempDir(), "source-gate")
 			if test.hostHandoff || test.name == "healthy" {
@@ -303,6 +334,19 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 							if !test.committedFinalization {
 								return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
 							}
+							receipt, attempt := pendingFinalization.Load(), pendingAttempt.Load()
+							if receipt == nil || receipt.Validator == nil || attempt == nil {
+								return nil, errors.New("finalization probe has no verified review receipt")
+							}
+							probingFinalization.Store(true)
+							_, probeErr := h.native.ReviewChange(request.Context(), tracker.NativeWorkItemID(issue.ID), receipt.Change.ChangeID, receipt.Validator.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":early-finalization-review", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, ExpectedVersionID: receipt.Validator.VersionID, Decision: "approved", Body: "Verified review result", ImplementationReview: receipt.Validator})
+							probingFinalization.Store(false)
+							var refusal *api.APIError
+							if !errors.As(probeErr, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "stale_fencing_token" {
+								t.Errorf("Hub did not reject unreconciled publication at its session boundary: %v", probeErr)
+							} else {
+								rejectedEarlyPublication.Store(true)
+							}
 							response, err := transport.RoundTrip(request)
 							if err != nil {
 								return response, err
@@ -315,18 +359,6 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 							}
 							if err := response.Body.Close(); err != nil {
 								return nil, err
-							}
-							receipt, attempt := pendingFinalization.Load(), pendingAttempt.Load()
-							if receipt == nil || receipt.Validator == nil || attempt == nil {
-								return nil, errors.New("finalization probe has no verified review receipt")
-							}
-							probingFinalization.Store(true)
-							_, probeErr := h.native.ReviewChange(request.Context(), tracker.NativeWorkItemID(issue.ID), receipt.Change.ChangeID, receipt.Validator.VersionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":early-finalization-review", LeaseID: attempt.LeaseID, FencingToken: attempt.FencingToken}, ExpectedVersionID: receipt.Validator.VersionID, Decision: "approved", Body: "Verified review result", ImplementationReview: receipt.Validator})
-							probingFinalization.Store(false)
-							if probeErr == nil || !strings.Contains(probeErr.Error(), "session finalization is incomplete") {
-								t.Errorf("Hub did not reject unreconciled publication at its session boundary: %v", probeErr)
-							} else {
-								rejectedEarlyPublication.Store(true)
 							}
 
 							return nil, errors.New("committed session finalization response unavailable")
@@ -463,7 +495,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				provider.releaseRetry()
 			}
 			var logs bytes.Buffer
-			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 			t.Cleanup(func() {
 				if t.Failed() {
 					t.Log(logs.String())
@@ -530,7 +562,7 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			}
 			finalizationRoot, cancelFinalization := context.WithCancel(context.WithoutCancel(t.Context()))
 			t.Cleanup(cancelFinalization)
-			agent, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, ReapWorkerProcess: reapReviewFixtureProcess, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
+			backendRunner, err := runner.NewRunner(runner.Dependencies{ProcessSource: emptyProcessSource, Logger: logger, Store: sessionStore, ProjectID: "local", Workspace: backend, AgentBackend: provider, Workflow: config.Workflow{Config: config.Config{Policy: h.descriptor, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: gateCommand, AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, FinalizationContext: func(ctx context.Context, _ time.Duration, _ error) (context.Context, context.CancelFunc) {
 				finalization, cancel := context.WithCancel(testenv.WaitContext(t, ctx))
 				done := make(chan struct{})
 				stop := context.AfterFunc(finalizationRoot, func() {
@@ -547,7 +579,9 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review", "Merging", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)}}
+			agent := reviewWorker{backendRunner}
+			cfg := orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: 250 * time.Millisecond, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Blocked", "In Review", "Merging", "Rework"}, TerminalStates: []string{"Done"}, AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false)}}
+			cfg.OverloadRetryDelay, cfg.MaxRetryBackoff = time.Millisecond, time.Millisecond
 			if test.hostHandoff || test.refusal == "source" {
 				cfg.ActiveStates = append(cfg.ActiveStates, "Rework")
 			}
@@ -557,7 +591,6 @@ func RunReviewRecovery(t *testing.T, factories Constructors) {
 				dependencies.Now = sync.OnceValue(clock)
 			}
 			if test.expiredHeartbeat || test.refusal == "source" {
-				cfg.OverloadRetryDelay, cfg.MaxRetryBackoff = time.Millisecond, time.Millisecond
 				dependencies.Runner = scenariohooks.NewReviewDispatch(agent)
 			}
 			orch, err := orchestrator.New(cfg, dependencies)

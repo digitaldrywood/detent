@@ -2,15 +2,13 @@ package workspace
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/workspace/checkpoint"
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint/checkpointtest"
 )
 
 func publishLegacyCheckpointFixture(t *testing.T, info Info, issue Issue) CheckpointRef {
@@ -61,45 +59,8 @@ func TestLegacyPausedRebaseCheckpointRestoresOnReplacement(t *testing.T) {
 	runGit(t, old.Path, "add", "README.md")
 	writeCheckpointFile(t, old.Path, "README.md", "unstaged follow-up\n")
 
-	tx, err := checkpoint.CaptureTransaction(ctx, old.Path, old.Branch, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := json.Marshal(tx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scratch := t.TempDir()
-	manifest := filepath.Join(scratch, "transaction.json")
-	if err := os.WriteFile(manifest, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	digest := strings.TrimSpace(runGit(t, old.Path, "hash-object", "-w", manifest))
-	indexEnv := "GIT_INDEX_FILE=" + filepath.Join(scratch, "index")
-	git := checkpoint.RefGit(old.Path, indexEnv)
-	if _, err := git(ctx, "read-tree", "--empty"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := git(ctx, "update-index", "--add", "--cacheinfo", "100644,"+digest+",transaction.json"); err != nil {
-		t.Fatal(err)
-	}
-	var alternatives strings.Builder
-	for i, entry := range tx.Index {
-		fmt.Fprintf(&alternatives, "100644 %s\talternatives/%d\x00", entry.Blob, i)
-	}
-	if _, err := runGitAtWithInput(ctx, old.Path, []string{indexEnv}, false, alternatives.String(), "update-index", "-z", "--index-info"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := git(ctx, "read-tree", "--prefix=worktree/", tx.Worktree); err != nil {
-		t.Fatal(err)
-	}
-	wrapper, err := git(ctx, "write-tree")
-	if err != nil {
-		t.Fatal(err)
-	}
-	commit := strings.TrimSpace(runGit(t, old.Path, "commit-tree", strings.TrimSpace(wrapper), "-p", tx.Head, "-p", tx.Original, "-m", "legacy paused rebase"))
 	ref := CheckpointRefName(issue)
-	runGit(t, old.Path, "push", "origin", commit+":"+ref)
+	commit, digest := checkpointtest.PublishPaused(t, old.Path, old.Branch, ref)
 
 	replacementSource := initSourceRepo(t)
 	runGit(t, replacementSource, "remote", "add", "origin", remote)

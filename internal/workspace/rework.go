@@ -67,18 +67,26 @@ func reworkPreparationError(err error) error {
 	return &ReworkPreparationError{Reason: reason, Err: err}
 }
 
+func reworkStatus(ctx context.Context, path string) (string, error) {
+	return runGitAtWithEnv(ctx, path, []string{"GIT_OPTIONAL_LOCKS=0"}, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=normal", "--ignore-submodules=none")
+}
+
 func reworkWorktreeDirty(ctx context.Context, path string) (bool, error) {
-	status, err := runGitAtWithEnv(ctx, path, []string{"GIT_OPTIONAL_LOCKS=0"}, "status", "--porcelain=v1", "-z", "--untracked-files=normal", "--ignore-submodules=none")
+	status, err := reworkStatus(ctx, path)
 	return status != "", err
 }
 
 func reworkHasUnstagedChanges(ctx context.Context, path string) (bool, error) {
-	unstaged, err := runGitAt(ctx, path, "diff", "--ignore-submodules=none", "--name-only", "-z")
-	if err != nil || unstaged != "" {
-		return unstaged != "", err
+	status, err := reworkStatus(ctx, path)
+	if err != nil {
+		return false, err
 	}
-	untracked, err := runGitAt(ctx, path, "ls-files", "--others", "--exclude-standard", "-z")
-	return untracked != "", err
+	for entry := range strings.SplitSeq(status, "\x00") {
+		if len(entry) >= 2 && entry[1] != ' ' {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (l *LocalGit) PrepareRework(ctx context.Context, info Info, issue Issue, opts MergePrepareOptions, validate func(context.Context) error) (result MergePrepareResult, err error) {
@@ -1923,7 +1931,7 @@ func (l *LocalGit) verifyReworkBranch(ctx context.Context, info Info, issue Issu
 }
 
 func reworkConflictPaths(ctx context.Context, path string) ([]string, error) {
-	output, err := runGitAt(ctx, path, "diff", "--name-only", "--diff-filter=U", "-z")
+	output, err := runGitAt(ctx, path, "diff", "--cached", "--name-only", "--diff-filter=U", "-z")
 	if err != nil {
 		return nil, err
 	}

@@ -736,7 +736,7 @@ func TestCompletedNativeTurnFinalization(t *testing.T) {
 				}
 				agent := &completedTurnBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: test.message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}, afterTurn: func() {
 					if test.expired {
-						time.Sleep(time.Second)
+						<-ctx.Done()
 					}
 					if test.cancelled {
 						cancel()

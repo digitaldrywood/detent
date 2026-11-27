@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/workspace/checkpoint/checkpointtest"
 )
 
 func TestReworkPreparationOutcome(t *testing.T) {
@@ -112,14 +113,6 @@ func (a *resolvingReworkAgent) RunTurn(ctx context.Context, req AgentTurnRequest
 	}
 	a.beforeHead = strings.TrimSpace(string(head))
 	if a.preserved {
-		conflicts, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "diff", "--name-only", "--diff-filter=U").Output()
-		if err != nil {
-			return AgentTurnResult{}, err
-		}
-		_, targetErr := os.Stat(filepath.Join(req.Workspace, "target-fix.md"))
-		if len(conflicts) != 0 || targetErr != nil {
-			return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, Delta: "\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: stale_base\nblockers: []\nhuman_action: null\n```"})
-		}
 		return AgentTurnResult{ThreadID: "native-rework", TurnID: "1"}, nil
 	}
 	if !a.unresolved {
@@ -713,7 +706,17 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			var retryBackend workspace.Backend = backend
 			var saved tracker.NativeCheckpoint
 			if test.checkpointRetry != "" {
-				saved = publishReworkCheckpoint(t, backend, info, ownedIssue)
+				if test.resolvedPause {
+					state, err := backend.RecoveryState(t.Context(), info, ownedIssue)
+					if err != nil {
+						t.Fatal(err)
+					}
+					saved = executionCheckpoint(&state)
+					saved.Storage, saved.Ref, saved.BaseSHA = "git_ref", workspace.CheckpointRefName(ownedIssue), base
+					saved.CommitSHA, saved.TreeSHA = checkpointtest.PublishPaused(t, info.Path, info.Branch, saved.Ref)
+				} else {
+					saved = publishReworkCheckpoint(t, backend, info, ownedIssue)
+				}
 				execution.recovery.Attempts = []tracker.NativeAttempt{
 					{Status: "interrupted", NativeRunData: tracker.NativeRunData{AttemptID: "source", Identity: &tracker.NativeExecutionIdentity{Role: RoleRework}}, Checkpoint: &saved},
 					{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "workspace_failure"}},
@@ -1079,10 +1082,10 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					t.Fatalf("provider started at %q, want current source %s: %v", agent.beforeHead, target, err)
 				}
 				published := strings.TrimSpace(runRunnerGit(t, remote, "rev-parse", saved.Ref))
-				if published == saved.CommitSHA {
-					t.Fatal("retry did not publish a new checkpoint")
+				if published != saved.CommitSHA || execution.checkpoint == nil || execution.checkpoint.HeadSHA == "" {
+					t.Fatalf("retry lost its checkpoint: ref=%s receipt=%+v", published, execution.checkpoint)
 				}
-				runRunnerGit(t, remote, "merge-base", "--is-ancestor", saved.CommitSHA, published)
+				runRunnerGit(t, agent.request.Workspace, "merge-base", "--is-ancestor", target, execution.checkpoint.HeadSHA)
 				return
 			}
 			if test.checkpointRetry != "" {

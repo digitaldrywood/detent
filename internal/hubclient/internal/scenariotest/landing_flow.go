@@ -841,7 +841,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh b
 		}
 	}
 	if otherMachine != "" {
-		otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport)
+		otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport, 1)
 		other, err := newTestScheduler(otherClient, SchedulerConfig{
 			OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
 			Machine: otherHost, LeaseTTL: 90 * time.Second, HeartbeatInterval: time.Second,
@@ -986,7 +986,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh b
 			if err := claim.Source.NativeClient().Release(t.Context(), claim.Lease, "released"); err != nil && !api.ClaimLost(err) {
 				t.Fatalf("relinquishing interrupted runner authority: %v", err)
 			}
-			otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport)
+			otherClient, otherHost := hubclientEnrolledRunner(t, h.admin.Transport(), h.organization, h.project, fixtureClient(h.native.Transport()).httpClient.Transport, 1)
 			otherHost.Hostname = machine
 			other, err := newTestScheduler(otherClient, SchedulerConfig{
 				OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project},
