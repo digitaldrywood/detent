@@ -45,7 +45,8 @@ type nativeExecution struct {
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
 	reviewDone        <-chan struct{}
-	supervisor        context.Context
+	supervisorDone    <-chan struct{}
+	supervisorCause   func() error
 	supervisionLost   bool
 	unretiredProvider bool
 	workers           []func(context.Context) error
@@ -253,7 +254,8 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		return guarded, func() {}, runner.ErrExecutionAuthorityUnavailable
 	}
 	e.cancel = cancel
-	e.supervisor = guarded
+	e.supervisorDone = guarded.Done()
+	e.supervisorCause = func() error { return context.Cause(guarded) }
 	e.cancelMu.Unlock()
 	done := make(chan struct{})
 	go func() {
@@ -310,9 +312,10 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}()
 	return guarded, func() {
 		e.cancelMu.Lock()
-		if e.supervisor == guarded {
-			e.supervisionLost = e.supervisionLost || supervisorLost(guarded)
-			e.supervisor = nil
+		if e.supervisorDone == guarded.Done() {
+			e.supervisionLost = e.supervisionLost || supervisorLost(context.Cause(guarded))
+			e.supervisorDone = nil
+			e.supervisorCause = nil
 			e.cancel = nil
 		}
 		cancel(context.Canceled)
@@ -322,8 +325,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}, nil
 }
 
-func supervisorLost(ctx context.Context) bool {
-	cause := context.Cause(ctx)
+func supervisorLost(cause error) bool {
 	return cause != nil && !errors.Is(cause, runner.ErrOperatorStopped) && !runner.IsAvailabilityInterruption(cause) && !runner.UnretiredProviderSession(cause)
 }
 

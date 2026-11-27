@@ -917,7 +917,12 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			runCtx, cancelRun := context.WithCancelCause(t.Context())
 			defer cancelRun(context.Canceled)
+			var expiryRefsBefore []byte
 			if test.Expired {
+				expiryRefsBefore, err = exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)").Output()
+				if err != nil {
+					t.Fatal(err)
+				}
 				provider.afterTurn = func() { cancelRun(context.DeadlineExceeded) }
 			}
 			transport := fixtureClient(h.native.Transport()).requests.Load()
@@ -1971,9 +1976,31 @@ func Run(t *testing.T, scenarios []Scenario, factories Constructors, checks Chec
 			}
 			if test.Expired {
 				evidence, readErr := h.latestRuntimeEvidence(t, tracker.NativeWorkItemID(issue.ID))
-				if !errors.Is(context.Cause(runCtx), context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "succeeded" {
-					t.Fatalf("completed turn lost after parent expiry: attempt=%+v error=%v", evidence.Attempt, readErr)
+				if !errors.Is(err, context.DeadlineExceeded) || readErr != nil || evidence.Attempt == nil || evidence.Attempt.Status != "interrupted" {
+					t.Fatalf("parent expiry did not interrupt finalization: attempt=%+v read=%v run=%v", evidence.Attempt, readErr, err)
 				}
+				blob := ":CHANGE.md"
+				if test.Commit {
+					blob = "HEAD:CHANGE.md"
+				}
+				content, readErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "show", blob).Output()
+				if readErr != nil || string(content) != "changed\n" {
+					t.Fatalf("parent expiry lost local source: content=%q error=%v", content, readErr)
+				}
+				refs, readErr := exec.CommandContext(t.Context(), "git", "-C", remote, "for-each-ref", "--format=%(objectname) %(refname)").Output()
+				if readErr != nil || !bytes.Equal(refs, expiryRefsBefore) || provider.calls != 1 {
+					t.Fatalf("parent expiry allowed remote publication or another turn: turns=%d refs=%q error=%v", provider.calls, refs, readErr)
+				}
+				if h.state(t, issue.ID) != test.WantState || len(h.changes(t, issue.ID)) != test.WantChanges {
+					t.Fatal("parent expiry changed the lane or opened a Change")
+				}
+				if expected != nil {
+					detail, readErr := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
+					if readErr != nil || !reflect.DeepEqual(detail, *expected) {
+						t.Fatalf("parent expiry changed published Rework: %v", readErr)
+					}
+				}
+				return
 			}
 			if test.SSH && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()
