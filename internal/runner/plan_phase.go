@@ -45,6 +45,14 @@ func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow conf
 	return plan, wait, admission, err
 }
 
+func (req RunRequest) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
+	execution, ok := req.Execution.(phasedProviderExecution)
+	if !ok {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return execution.SetPhaseProvider(ctx, requirement)
+}
+
 func (r *Runner) planPhaseAgent(ctx context.Context, req RunRequest, workflow config.Workflow, runtime agentRuntime, info workspace.Info, checker BudgetChecker, estimator DispatchEstimator) (func(context.Context, string) (string, error), RunResult, error) {
 	req.Mode, req.ResumeState = RunModePlan, store.AgentResumeState{}
 	selection, backend, provider, err := runtime.selectRequestBackend(req, runworkspace.SelectorContext(req.SelectorContext, workflow), RolePlan)
@@ -82,7 +90,7 @@ func (r *Runner) planPhaseAgent(ctx context.Context, req RunRequest, workflow co
 		}
 		projection = admission.budgetProjection
 	}
-	if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, requirement); err != nil {
+	if err := req.setPhaseProvider(ctx, requirement); err != nil {
 		return nil, RunResult{}, err
 	}
 	agentConfig := workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, selected.Selection.Level)

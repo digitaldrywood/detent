@@ -9,8 +9,8 @@ import (
 
 func TestRunnerExpiredCompletion(t *testing.T) {
 	scenariotest.Run(t, []scenariotest.Scenario{
-		{Name: "expired parent publishes completed staged code", Expired: true, Staged: true, WantChanged: true, WantState: "In Review", WantChanges: 1},
-		{Name: "expired parent publishes with native validation", Expired: true, Staged: true, Validator: "pass", Land: true, WantChanged: true, WantState: "Merging", WantChanges: 1},
-		{Name: "expired parent publishes completed Rework commits", Expired: true, Rework: true, Formal: true, Commit: true, WantChanged: true, WantState: "Human Review", WantChanges: 1},
+		{Name: "expired parent preserves staged code", Expired: true, Staged: true, WantState: "In Progress"},
+		{Name: "expired parent skips native validation and landing", Expired: true, Staged: true, Validator: "pass", Land: true, WantState: "In Progress"},
+		{Name: "expired parent preserves Rework commits", Expired: true, Rework: true, Formal: true, Commit: true, WantState: "Rework", WantChanges: 1},
 	}, scenariotest.Constructors{New: nativechange.NewExecution, Recovered: nativechange.NewRecoveredExecution}, scenariotest.Checks{})
 }

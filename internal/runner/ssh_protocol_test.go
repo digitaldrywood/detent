@@ -48,6 +48,7 @@ func TestSSHErrorRoundTrip(t *testing.T) {
 			return err.Error() == "setup: "+ErrWorkspacePreparation.Error()
 		}},
 		{"not found", store.ErrNotFound, store.ErrNotFound, nil},
+		{"unsupported phase receipts", ErrPhaseReceiptsUnsupported, ErrPhaseReceiptsUnsupported, nil},
 		{"superseded checklist", errors.Join(progresscheck.ErrChecklistSuperseded, errors.New("issue revision changed")), progresscheck.ErrChecklistSuperseded, nil},
 		{"superseded Change source", ErrChangeSourceVersionSuperseded, ErrChangeSourceVersionSuperseded, nil},
 		{"superseded Change source identities", fmt.Errorf("%w (Change %q, selected version %q, current version %q)", ErrChangeSourceVersionSuperseded, "change_example", "version_selected", "version_current"), ErrChangeSourceVersionSuperseded, func(err error) bool {

@@ -259,8 +259,8 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
-	authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-	var guard context.Context
+	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	var guard requestGuard
 	if replayPublication {
 		guard = authority.guard
 		fenced = publication
@@ -279,7 +279,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	sessionRequest := target == sessionPath || strings.HasPrefix(target, sessionPath+"/")
 	itemPath := authority.scope + "/work-items/" + url.PathEscape(string(authority.lease.WorkItemID)) + "/"
 	publicationRequest := authority.publications && strings.HasPrefix(target, itemPath)
-	if authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
+	if hasAuthority && authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
 		if method == http.MethodGet || method == http.MethodHead ||
 			method == http.MethodPost && fenced.IdempotencyKey != "" && fenced.LeaseID == authority.lease.ID &&
 				fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken {
@@ -471,7 +471,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, nil, http.MethodGet, target, false, func() error {
+	err := c.withinRequestBudget(ctx, requestGuard{}, http.MethodGet, target, false, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err
