@@ -13,7 +13,7 @@ const automaticOfferSQL = `(d.automatic_offer_slot IS NOT NULL OR d.follow_hub)`
 const currentAutomaticOfferSQL = `(d.automatic_offer_slot IS NULL
  OR (d.automatic_organization_revision=COALESCE(o.revision,0)
  AND d.automatic_runner_revision=CASE WHEN COALESCE(o.version,'')='' THEN COALESCE(t.revision,0) ELSE 0 END
- AND d.expected_build_revision=b.revision))`
+ AND d.expected_build_revision=b.revision AND NOT d.automatic_offer_withdrawn))`
 
 func (s *Store) EnsureAutomaticRunnerOffer(ctx context.Context, record runnerstore.UpdateRequestRecord, policy runnerstore.AutomaticOfferPolicy) (string, error) {
 	if err := s.checkOrganization(record.OrganizationID); err != nil {
@@ -22,10 +22,10 @@ func (s *Store) EnsureAutomaticRunnerOffer(ctx context.Context, record runnersto
 	request := record.Request
 	var requestID string
 	var nextSlot int16
-	err := s.db.QueryRow(ctx, `SELECT COALESCE(max(request_id) FILTER (WHERE expected_build_revision=$6),''), COALESCE(max(automatic_offer_slot)+1,0)
+	err := s.db.QueryRow(ctx, `SELECT COALESCE(max(request_id) FILTER (WHERE expected_build_revision=$6 AND follow_hub=$7 AND NOT automatic_offer_withdrawn),''), COALESCE(max(automatic_offer_slot)+1,0)
  FROM runner_update_requests WHERE organization_id=$1 AND runner_id=$2 AND version=$3
  AND automatic_organization_revision=$4 AND automatic_runner_revision=$5 AND automatic_offer_slot IS NOT NULL`,
-		s.organization, record.RunnerID, request.Version, policy.OrganizationRevision, policy.RunnerRevision, request.ExpectedBuildRevision).Scan(&requestID, &nextSlot)
+		s.organization, record.RunnerID, request.Version, policy.OrganizationRevision, policy.RunnerRevision, request.ExpectedBuildRevision, request.FollowHub).Scan(&requestID, &nextSlot)
 	if err != nil {
 		return "", s.mapError(ctx, err)
 	}
@@ -39,9 +39,15 @@ func (s *Store) EnsureAutomaticRunnerOffer(ctx context.Context, record runnersto
 }
 
 func (s *Store) InvalidateAutomaticRunnerOffer(ctx context.Context, id, requestID string) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM runner_update_desired desired USING runner_update_requests d
+	_, err := s.db.Exec(ctx, `WITH withdrawn AS (
+ DELETE FROM runner_update_desired desired USING runner_update_requests d
  WHERE desired.organization_id=$1 AND desired.runner_id=$2 AND desired.request_id=$3
- AND d.organization_id=desired.organization_id AND d.request_id=desired.request_id AND `+automaticOfferSQL,
+	AND d.organization_id=desired.organization_id AND d.request_id=desired.request_id AND `+automaticOfferSQL+`
+ RETURNING desired.organization_id,desired.request_id
+ )
+ UPDATE runner_update_requests d SET automatic_offer_withdrawn=true FROM withdrawn w
+ WHERE (d.organization_id,d.request_id)=(w.organization_id,w.request_id)
+ AND d.follow_hub AND d.automatic_offer_slot IS NOT NULL`,
 		s.organization, id, requestID)
 	return s.mapError(ctx, err)
 }

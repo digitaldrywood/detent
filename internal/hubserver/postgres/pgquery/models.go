@@ -5609,6 +5609,7 @@ type RunnerUpdateRequest struct {
 	AutomaticOfferSlot            pgtype.Int2
 	AutomaticOrganizationRevision int64
 	AutomaticRunnerRevision       int64
+	AutomaticOfferWithdrawn       bool
 }
 
 type RunnerUpdateTarget struct {

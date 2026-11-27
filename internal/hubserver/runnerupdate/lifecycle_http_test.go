@@ -243,6 +243,85 @@ func TestPostgresRunnerLifecycleHistoryIsBounded(t *testing.T) {
 	}
 }
 
+func TestPostgresLegacyRunnerOfferBudget(t *testing.T) {
+	for _, mode := range []string{"runner hold", "organization hold", "follow Hub"} {
+		t.Run(mode, func(t *testing.T) {
+			version := "1.3.0"
+			f := newReceiptFixtureAtVersion(t, &version, 2)
+			service := New(Deps{Repository: f.service.Repository, Now: time.Now, Version: version})
+			heartbeat, ok := f.service.Repository.(interface {
+				WriteRunnerHeartbeat(context.Context, tracker.OrganizationID, string, string, func(context.Context, tenantstore.Writer) error) error
+			})
+			if !ok {
+				t.Fatal("runner heartbeat owner unavailable")
+			}
+			admin := f.service.AdminKey(t)
+			followHub := mode == "follow Hub"
+			for index, binding := range f.bindings {
+				path := "/api/v2/organizations/org_startup/runners/" + binding.RunnerID + "/update"
+				if mode == "runner hold" {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, path+"/target", admin.Token, runnerstore.UpdateTarget{Version: version}), http.StatusOK)
+				}
+				if mode == "organization hold" && index == 0 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, "/api/v2/organizations/org_startup/runner-update/target", admin.Token, runnerstore.UpdateTarget{Version: version}), http.StatusOK)
+				}
+				now := time.Now().UTC().Truncate(time.Microsecond)
+				var receipt *runnerauth.UpdateReceipt
+				observe := func(build int) *runnerauth.UpdateRequest {
+					t.Helper()
+					now = now.Add(time.Microsecond)
+					running := runnerauth.BuildEvidence{Version: version, Commit: strings.Repeat("a", 40), SHA256: fmt.Sprintf("%064x", build), Source: "release", OS: "linux", Architecture: "amd64", ObservedAt: now}
+					observation := runnerauth.UpdateObservation{Protocol: 1, Service: "detent", Discovery: "unknown", Supported: true, Running: running, ObservedAt: now, Receipt: receipt}
+					observation.Revision = observation.BuildRevision()
+					if err := heartbeat.WriteRunnerHeartbeat(t.Context(), "org_startup", f.credentials[index].ID, binding.RunnerID, func(ctx context.Context, w tenantstore.Writer) error {
+						identity, err := w.RunnerIdentity(ctx, binding.RunnerID)
+						if err != nil {
+							return err
+						}
+						return service.StoreObservation(ctx, w, identity, &observation, 2, version, running.OS, running.Architecture, now, true)
+					}); err != nil {
+						t.Fatal(err)
+					}
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path, admin.Token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var view runnerauth.UpdateView
+					if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+						t.Fatal(err)
+					}
+					if view.Lifecycle != nil || view.Observation == nil || view.Observation.Revision != observation.Revision {
+						t.Fatalf("unexpected legacy observation: %+v", view)
+					}
+					if request := view.Desired; request != nil && (request.FollowHub != followHub || request.Version != version || request.ExpectedBuildRevision != observation.Revision || !request.Release || !request.FromRelease) {
+						t.Fatalf("legacy request for build %d: %+v", build, request)
+					}
+					return view.Desired
+				}
+				var first runnerauth.UpdateRequest
+				requests := make(map[string]bool)
+				for build := range 8 {
+					offer := observe(build)
+					if offer == nil || requests[offer.ID] {
+						t.Fatalf("expected a distinct offer for build %d, got %+v", build, offer)
+					}
+					requests[offer.ID] = true
+					if build == 0 {
+						first = *offer
+					}
+					receipt = &runnerauth.UpdateReceipt{Request: *offer, Status: "refused", FailureReason: "Running build changed", ObservedAt: now}
+				}
+				for build := 8; build < 11; build++ {
+					if offer := observe(build); offer != nil {
+						t.Fatalf("build %d received an offer beyond the per-runner budget: %+v", build, offer)
+					}
+				}
+				if offer := observe(0); offer == nil || !offer.Matches(first) {
+					t.Errorf("known build did not recover its original offer: %+v", offer)
+				}
+			}
+		})
+	}
+}
+
 func TestPostgresRunnerTargetOffers(t *testing.T) {
 	for _, scope := range []string{"runner", "organization"} {
 		t.Run(scope, func(t *testing.T) {

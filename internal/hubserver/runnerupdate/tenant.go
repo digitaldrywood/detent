@@ -149,22 +149,16 @@ func (s *Service) reconcileTarget(ctx context.Context, writer tenantstore.Writer
 			record.HoldRevision = policy.organization.Revision
 		}
 	}
-	if lifecycle {
-		owner, ok := writer.(runnerstore.AutomaticOfferWriter)
-		if !ok {
-			return hubapi.RunEventStorageUnavailable()
-		}
-		revisions := runnerstore.AutomaticOfferPolicy{OrganizationRevision: policy.organization.Revision, RunnerRevision: policy.runner.Revision}
-		requestID, err := owner.EnsureAutomaticRunnerOffer(ctx, record, revisions)
-		if err != nil || requestID == "" {
-			return err
-		}
-		return writer.SetRunnerUpdateDesired(ctx, identity.RunnerID, identity.Revision, requestID)
+	owner, ok := writer.(runnerstore.AutomaticOfferWriter)
+	if !ok {
+		return hubapi.RunEventStorageUnavailable()
 	}
-	if err := writer.CreateRunnerUpdateRequest(ctx, record); err != nil {
+	revisions := runnerstore.AutomaticOfferPolicy{OrganizationRevision: policy.organization.Revision, RunnerRevision: policy.runner.Revision}
+	requestID, err := owner.EnsureAutomaticRunnerOffer(ctx, record, revisions)
+	if err != nil || requestID == "" {
 		return err
 	}
-	return writer.SetRunnerUpdateDesired(ctx, identity.RunnerID, identity.Revision, request.ID)
+	return writer.SetRunnerUpdateDesired(ctx, identity.RunnerID, identity.Revision, requestID)
 }
 
 func (s *Service) View(ctx context.Context, scope hubapi.Scope, runnerID string) (runnerauth.UpdateView, error) {
