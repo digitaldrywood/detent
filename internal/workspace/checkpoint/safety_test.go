@@ -112,3 +112,81 @@ func TestCheckpointGitReadFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestHistoryDeduplicatesBlobsAndValidatesRawModes(t *testing.T) {
+	t.Parallel()
+	const blobOID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const zeroOID = "0000000000000000000000000000000000000000"
+	tests := []struct {
+		name         string
+		commits      string
+		diffByCommit map[string]string
+		wantErr      error
+		wantCatFiles int
+	}{
+		{
+			name:    "deduplicates identical blob across commits",
+			commits: "c1\nc2\n",
+			diffByCommit: map[string]string{
+				"c1": ":000000 100644 " + zeroOID + " " + blobOID + " A\x00file.go\x00",
+				"c2": ":100644 100644 " + blobOID + " " + blobOID + " M\x00file.go\x00",
+			},
+			wantCatFiles: 1,
+		},
+		{
+			name:    "deleted file skips blob scan",
+			commits: "c1\n",
+			diffByCommit: map[string]string{
+				"c1": ":100644 000000 " + blobOID + " " + zeroOID + " D\x00file.go\x00",
+			},
+			wantCatFiles: 0,
+		},
+		{
+			name:    "symlink mode rejected without reading blob",
+			commits: "c1\n",
+			diffByCommit: map[string]string{
+				"c1": ":000000 120000 " + zeroOID + " " + blobOID + " A\x00file.go\x00",
+			},
+			wantErr:      ErrUnsafe,
+			wantCatFiles: 0,
+		},
+		{
+			name:    "malformed raw output rejected",
+			commits: "c1\n",
+			diffByCommit: map[string]string{
+				"c1": "not-a-raw-header\x00file.go\x00",
+			},
+			wantErr:      ErrUnsafe,
+			wantCatFiles: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			catFiles := 0
+			git := func(_ context.Context, args ...string) (string, error) {
+				switch args[0] {
+				case "merge-base":
+					return "", nil
+				case "rev-list":
+					return tt.commits, nil
+				case "diff-tree":
+					return tt.diffByCommit[args[len(args)-1]], nil
+				case "cat-file":
+					catFiles++
+					return "package example\n", nil
+				default:
+					t.Fatalf("unexpected git command %v", args)
+					return "", nil
+				}
+			}
+			err := History(t.Context(), git, "base", "head", []string{"file.go"})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("History() error = %v, want %v", err, tt.wantErr)
+			}
+			if catFiles != tt.wantCatFiles {
+				t.Fatalf("cat-file calls = %d, want %d", catFiles, tt.wantCatFiles)
+			}
+		})
+	}
+}
