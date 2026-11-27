@@ -1060,6 +1060,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			diffErr = failedStep("publication", fmt.Errorf("capture finalized diff: %w", err))
 		} else {
 			request := attemptDiffRequest(finalDiff)
+			request.CommitBound = true
 			var superseded atomic.Pointer[string]
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 				if head := superseded.Load(); head != nil {

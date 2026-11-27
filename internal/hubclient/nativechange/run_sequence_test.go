@@ -146,6 +146,48 @@ func TestCaptureDiffRejectsPreviousHead(t *testing.T) {
 	}
 }
 
+func TestFinalDiffFallbackRequiresCommitSource(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		commit   bool
+		replaced bool
+		want     bool
+	}{
+		{name: "worktree diff with matching head"},
+		{name: "commit diff bound to checkpoint", commit: true, want: true},
+		{name: "replaced source at the same head", commit: true, replaced: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, head := nativeChangeFixtureHead("a"), nativeChangeFixtureHead("b")
+			checkpoint := &tracker.NativeCheckpoint{HeadSHA: head, WorktreeState: "clean"}
+			execution := &nativeExecution{
+				worktreeHead: head, worktreeState: "clean",
+				data: tracker.NativeRunData{Handoff: checkpoint},
+			}
+			available := true
+			source := func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				if !available {
+					return tracker.AttemptDiffRequest{}, false
+				}
+				return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: head, CommitBound: tc.commit}, true
+			}
+			execution.SetDiffSource(source)
+			if err := execution.captureDiff(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			available = false
+			if tc.replaced {
+				execution.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
+					return tracker.AttemptDiffRequest{}, false
+				})
+			}
+			if err := execution.captureDiff(t.Context()); (err == nil) != tc.want {
+				t.Fatalf("reuse final diff with unchanged HEAD: error=%v, want success=%t", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmptyReworkRequiresMatchingPhaseReceiptOrBundle(t *testing.T) {
 	for _, tc := range []struct {
 		name, phase string

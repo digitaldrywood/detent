@@ -90,6 +90,7 @@ type AttemptDiffFile struct {
 // carries no idempotency key: the generation is the idempotency record, and a
 // seq at or below the stored one is refused as stale_generation.
 type AttemptDiffRequest struct {
+	CommitBound bool              `json:"-"`
 	PostedBytes int64             `json:"posted_bytes,omitempty"`
 	Producer    DiffProducer      `json:"producer"`
 	Generation  DiffGeneration    `json:"generation"`
