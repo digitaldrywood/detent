@@ -278,6 +278,9 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	running Running,
 	fenceErr error,
 ) {
+	if event.Result.Output == mergeControlCheckedHeadOutput && ctx.Err() != nil {
+		return
+	}
 	// A retired native lease is an obsolete completion, not a tracker outage.
 	// Reuse completion rejection rather than enqueueing the same dead token.
 	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
