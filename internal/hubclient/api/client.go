@@ -260,7 +260,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
 	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-	var guard requestGuard
+	guard := requestFence(ctx)
 	if replayPublication {
 		guard = authority.guard
 		fenced = publication
@@ -355,6 +355,9 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	request.Header.Set("Accept", "application/json")
 	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	if err := requestFence(ctx).err(); err != nil {
+		return err
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {

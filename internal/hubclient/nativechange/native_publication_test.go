@@ -25,17 +25,26 @@ import (
 )
 
 func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
-	for _, route := range []string{"phases", "progress"} {
+	for _, route := range []string{"phases", "progress", "events", "diff"} {
+		finishing := route == "events" || route == "diff"
 		for _, scenario := range []struct {
 			name     string
 			revoked  bool
 			callback bool
+			expired  bool
+			bare     bool
 		}{
 			{name: "renewal rejected"},
 			{name: "revoked", revoked: true},
 			{name: "callback renewal rejected", callback: true},
 			{name: "callback revoked", revoked: true, callback: true},
+			{name: "expired", expired: true},
+			{name: "host finalization revoked", revoked: true, bare: true},
+			{name: "host finalization expired after guard stops", expired: true, bare: true},
 		} {
+			if finishing && scenario.callback || !finishing && scenario.bare {
+				continue
+			}
 			t.Run(route+"/"+scenario.name, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					start := time.Now()
@@ -80,23 +89,39 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 					descriptor := clientTestPolicy()
 					lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 1, PolicyID: descriptor.ID}
 					deadline := start.Add(time.Hour)
+					if scenario.expired {
+						deadline = start.Add(10 * time.Second)
+					}
 					execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: fixtureConnector(native), Lease: lease}).(*nativeExecution)
 					fixtureInstallClaim(t, scheduler, nativeClaim{source: fixtureConnector(native), lease: lease, deadline: deadline, execution: execution}, descriptor, "project")
 					guarded, stop, err := execution.Guard(t.Context())
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer stop()
+					if scenario.bare && scenario.expired {
+						stop()
+					} else {
+						defer stop()
+					}
 					if scenario.revoked {
 						timer := time.AfterFunc(10*time.Second, func() { execution.Cancel(errors.Join(runner.ErrExecutionAuthorityUnavailable, lost)) })
 						defer timer.Stop()
-					} else {
+					} else if !scenario.expired {
 						timer := time.AfterFunc(10*time.Second, func() { _, _ = scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()) })
 						defer timer.Stop()
 					}
-					finalization, cancel := context.WithTimeout(context.WithoutCancel(guarded), 3*time.Minute)
+					parent := context.WithoutCancel(guarded)
+					wantElapsed := 10 * time.Second
+					if scenario.bare {
+						parent = t.Context()
+						if scenario.expired {
+							wantElapsed = time.Minute
+						}
+					}
+					finalization, cancel := context.WithTimeout(parent, 3*time.Minute)
 					defer cancel()
 					var peerContext context.Context
+					wantCalls := 1
 					if scenario.callback {
 						left, right := net.Pipe()
 						defer left.Close()
@@ -114,11 +139,23 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 						}
 					} else if route == "phases" {
 						err = execution.RecordPhaseReceipt(finalization, "project_gate", "branch", "head", "tree", "gate")
-					} else {
+					} else if route == "progress" {
 						err = execution.RecordRoundVerdict(finalization, progresscheck.RoundInput{RoundID: "round"})
+					} else {
+						execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "triage", Backend: "codex", Model: "example"}
+						if route == "events" {
+							execution.storedSeq = execution.data.Sequence + 1
+						} else {
+							wantCalls = 0
+							execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+							client.DeferRequestBudget("/diff", start.Add(time.Minute))
+						}
+						err = execution.Finish(finalization, "succeeded")
 					}
 					observedLoss := errors.Is(err, lost)
-					if !scenario.revoked {
+					if scenario.expired {
+						observedLoss = errors.Is(err, runner.ErrExecutionAuthorityUnavailable)
+					} else if !scenario.revoked {
 						observedLoss = errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && strings.Contains(err.Error(), scenario.name)
 					}
 					if scenario.callback {
@@ -127,7 +164,7 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 							t.Fatalf("callback peer ended: %v", peerContext.Err())
 						}
 					}
-					if !observedLoss || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || calls != 1 || time.Since(start) != 10*time.Second || finalization.Err() != nil {
+					if !observedLoss || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || calls != wantCalls || time.Since(start) != wantElapsed || finalization.Err() != nil {
 						t.Fatalf("publication returned %v after %s and %d POSTs, finalization error = %v", err, time.Since(start), calls, finalization.Err())
 					}
 				})

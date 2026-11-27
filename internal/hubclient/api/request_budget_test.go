@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/progresscheck"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -148,6 +149,21 @@ func TestClientRequestBudgetContinuesAfterRepeatedRefusals(t *testing.T) {
 			t.Fatalf("elapsed=%s", elapsed)
 		}
 	})
+}
+
+func TestFencedRequestRechecksAuthorityAfterTokenResolution(t *testing.T) {
+	client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) {
+		response.WriteHeader(http.StatusNoContent)
+	})
+	var fenceErr error
+	client.tokenSource = func() string {
+		fenceErr = runner.ErrExecutionAuthorityUnavailable
+		return "token"
+	}
+	ctx := WithRequestFence(t.Context(), nil, func() error { return fenceErr })
+	if err := client.request(ctx, http.MethodPost, "/attempts/attempt_example/diff", nil, nil); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || *calls != 0 {
+		t.Fatalf("request reached transport %d times, error = %v", *calls, err)
+	}
 }
 
 func TestFencedPublicationRequestBudget(t *testing.T) {

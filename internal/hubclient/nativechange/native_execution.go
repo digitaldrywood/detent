@@ -222,6 +222,26 @@ func (e *nativeExecution) claimActive() bool {
 	return ok && e.scheduler.now().Before(deadline)
 }
 
+func (e *nativeExecution) fenceRunPublication(ctx context.Context) context.Context {
+	e.cancelMu.Lock()
+	done, cause := e.supervisorDone, e.supervisorCause
+	e.cancelMu.Unlock()
+	return api.WithRequestFence(ctx, done, func() error {
+		if cause != nil {
+			if err := cause(); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				return err
+			}
+		}
+		if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			return err
+		}
+		if !e.claimActive() {
+			return runner.ErrExecutionAuthorityUnavailable
+		}
+		return nil
+	})
+}
+
 func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	if err := e.Validate(ctx); err != nil {
 		return ctx, func() {}, err
@@ -1045,13 +1065,7 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
 	}
 	request.Generation = tracker.DiffGeneration{Source: tracker.DiffSourceAttempt, Seq: sequence}
-	if !e.claimActive() {
-		return runner.ErrExecutionAuthorityUnavailable
-	}
-	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		return err
-	}
-	if _, err := e.claim.source.NativeClient().PostAttemptDiff(ctx, e.data.AttemptID, request); err != nil {
+	if _, err := e.claim.source.NativeClient().PostAttemptDiff(e.fenceRunPublication(ctx), e.data.AttemptID, request); err != nil {
 		return err
 	}
 	e.storedSeq = sequence
@@ -1192,13 +1206,13 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("encode pending runtime: %w", err)
 	}
-	if e.pending.Type == "run.finished" && !e.claimActive() {
-		return runner.ErrExecutionAuthorityUnavailable
-	}
-	if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+	publicationCtx := ctx
+	if e.pending.Type == "run.finished" {
+		publicationCtx = e.fenceRunPublication(ctx)
+	} else if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return err
 	}
-	if err := e.claim.source.NativeClient().AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
+	if err := e.claim.source.NativeClient().AppendEvent(publicationCtx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
 		if e.preparedOutcome != "" && errors.As(err, &refusal) && refusal.Status == http.StatusConflict && (refusal.Code == "run_sequence_conflict" || refusal.Code == "idempotency_conflict") {
 			path, pathErr := nativeItemPath(e.claim.lease.WorkItemID)
