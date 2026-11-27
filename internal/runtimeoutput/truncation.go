@@ -68,7 +68,7 @@ var diagnosticFailure = regexp.MustCompile(`(?m)^[\t ]*(?:` +
 
 var diagnosticSummary = regexp.MustCompile(`^[\t ]*(?:--- FAIL|FAIL\t|panic:|fatal error:|test timed out|[^\s:]+:[0-9]+:[0-9]+:)`)
 
-var goTestFailure = regexp.MustCompile(`^[\t ]*(?:--- FAIL:|FAIL(?:[\t ]|$)|panic:|fatal error:|WARNING: DATA RACE|test timed out)`)
+var goTestFailure = regexp.MustCompile(`^[\t ]*(?:--- FAIL:|FAIL(?:[\t ]|$)|panic:|fatal error:|WARNING: DATA RACE|test timed out)|^[\t ]+[^\s:]+\.go:[0-9]+:`)
 
 func Diagnostic(value string, maxBytes int) (string, bool) {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
@@ -98,13 +98,14 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			timeout = false
 		}
 		sourcemapFallback := strings.HasSuffix(trimmed, "): Error when using sourcemap for reporting an error: Can't resolve original location of error.")
-		if running || !sourcemapFallback && (diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line)) {
+		isGoFailure := running || goTestFailure.MatchString(line)
+		if isGoFailure || !sourcemapFallback && (diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line)) {
 			if !strings.HasSuffix(line, "\n") {
 				lines[i] += "\n"
 			}
 			failures = append(failures, i)
 			selected[i] = true
-			goFailure[i] = running || goTestFailure.MatchString(line)
+			goFailure[i] = isGoFailure
 		}
 		if strings.Contains(line, "test timed out") {
 			timeout = true

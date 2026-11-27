@@ -162,6 +162,10 @@ func TestDiagnostic(t *testing.T) {
 			{name: "build error survives sourcemap fallback warnings", input: strings.Repeat("src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
 				"Error: could not write build output\n" + strings.Repeat("build output\n", 8000) + "make: *** [check-landing] Error 2\n",
 				want: []string{"Error: could not write build output\n", "make: *** [check-landing] Error 2\n"}, chained: true},
+			{name: "go test assertion survives bounded gate output", input: strings.Repeat("src/components/ui/button.tsx (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
+				"--- FAIL: TestWriterHandoff (0.11s)\n    lifetime_test.go:180: replacement does not hold the FIFO\nFAIL\texample.org/hookproc\t1.369s\n" +
+				strings.Repeat("ok  \texample.org/passing\t0.412s\n", 8000) + "make: *** [check-landing] Error 1\n",
+				want: []string{"--- FAIL: TestWriterHandoff (0.11s)\n    lifetime_test.go:180: replacement does not hold the FIFO\n", "FAIL\texample.org/hookproc\t1.369s\n"}, chained: true},
 			{name: "go test failures outrank earlier sourcemap warnings", input: strings.Repeat("node_modules/@tanstack/query-core/build/modern/index.js (1:0): Error when using sourcemap for reporting an error: Can't resolve original location of error.\n", limit/64) +
 				"Error: dashboard API is unreachable\n" + strings.Repeat("ok  \tgithub.com/example-org/example-project/internal/passing\t0.412s\n", 200) +
 				"--- FAIL: TestStoreRefresh (0.02s)\n" +
