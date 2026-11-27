@@ -48,6 +48,7 @@ type nativeExecution struct {
 	supervisorDone    <-chan struct{}
 	supervisorCause   func() error
 	supervisionLost   bool
+	authorityLoss     error
 	unretiredProvider bool
 	workers           []func(context.Context) error
 	workerLauncher    func(context.Context, runner.RunRequest) (runner.RunResult, error)
@@ -222,21 +223,41 @@ func (e *nativeExecution) claimActive() bool {
 	return ok && e.scheduler.now().Before(deadline)
 }
 
+func (e *nativeExecution) localAuthorityLoss() error {
+	e.cancelMu.Lock()
+	loss, cause := e.authorityLoss, e.supervisorCause
+	e.cancelMu.Unlock()
+	if loss != nil {
+		return loss
+	}
+	if cause != nil {
+		if err := cause(); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *nativeExecution) executionAuthorityError() error {
+	if err := e.localAuthorityLoss(); err != nil {
+		return err
+	}
+	if !e.claimActive() {
+		return runner.ErrExecutionAuthorityUnavailable
+	}
+	return nil
+}
+
 func (e *nativeExecution) fenceRunPublication(ctx context.Context) context.Context {
 	e.cancelMu.Lock()
-	done, cause := e.supervisorDone, e.supervisorCause
+	done := e.supervisorDone
 	e.cancelMu.Unlock()
 	return api.WithRequestFence(ctx, done, func() error {
-		if cause != nil {
-			if err := cause(); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-				return err
-			}
+		if err := e.executionAuthorityError(); err != nil {
+			return err
 		}
 		if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 			return err
-		}
-		if !e.claimActive() {
-			return runner.ErrExecutionAuthorityUnavailable
 		}
 		return nil
 	})
@@ -248,15 +269,17 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	}
 	live, cancelLive := context.WithCancelCause(ctx)
 	cancel := func(cause error) {
-		if errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
-			cause = errors.Join(runner.NewCancellationCause(cause, "runner.execution_lease"), cause)
-		}
+		e.cancelMu.Lock()
+		cause = e.retainAuthorityLossLocked(cause)
+		e.cancelMu.Unlock()
 		cancelLive(cause)
 	}
 	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
 		cause := context.Cause(live)
-		if !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) && !e.claimActive() {
-			return errors.Join(runner.ErrExecutionAuthorityUnavailable, cause)
+		if !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
+			if err := e.executionAuthorityError(); err != nil {
+				return errors.Join(err, cause)
+			}
 		}
 		return cause
 	})
@@ -266,12 +289,16 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		cancel(runner.ErrProviderSessionUnretired)
 		return guarded, func() {}, runner.ErrProviderSessionUnretired
 	}
-	if e.supervisionLost {
+	if e.supervisionLost || e.authorityLoss != nil {
+		cause := e.authorityLoss
 		e.cancelMu.Unlock()
-		cancel(runner.ErrExecutionAuthorityUnavailable)
-		return guarded, func() {}, runner.ErrExecutionAuthorityUnavailable
+		if cause == nil {
+			cause = errors.Join(runner.NewCancellationCause(runner.ErrExecutionAuthorityUnavailable, "runner.execution_lease"), runner.ErrExecutionAuthorityUnavailable)
+		}
+		cancelLive(cause)
+		return guarded, func() {}, cause
 	}
-	e.cancel = cancel
+	e.cancel = cancelLive
 	e.supervisorDone = guarded.Done()
 	e.supervisorCause = func() error { return context.Cause(guarded) }
 	e.cancelMu.Unlock()
@@ -331,12 +358,14 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	return guarded, func() {
 		e.cancelMu.Lock()
 		if e.supervisorDone == guarded.Done() {
-			e.supervisionLost = e.supervisionLost || supervisorLost(context.Cause(guarded))
+			cause := context.Cause(guarded)
+			e.retainAuthorityLossLocked(cause)
+			e.supervisionLost = e.supervisionLost || supervisorLost(cause)
 			e.supervisorDone = nil
 			e.supervisorCause = nil
 			e.cancel = nil
 		}
-		cancel(context.Canceled)
+		cancelLive(context.Canceled)
 		e.cancelMu.Unlock()
 		<-done
 		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
@@ -355,11 +384,22 @@ func (e *nativeExecution) unavailable(err error) error {
 
 func (e *nativeExecution) cancelExecution(cause error) {
 	e.cancelMu.Lock()
+	cause = e.retainAuthorityLossLocked(cause)
 	cancel := e.cancel
 	e.cancelMu.Unlock()
 	if cancel != nil {
 		cancel(cause)
 	}
+}
+
+func (e *nativeExecution) retainAuthorityLossLocked(cause error) error {
+	if !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
+		return cause
+	}
+	if e.authorityLoss == nil {
+		e.authorityLoss = errors.Join(runner.NewCancellationCause(cause, "runner.execution_lease"), cause)
+	}
+	return e.authorityLoss
 }
 
 func (e *nativeExecution) executionError(ctx context.Context, err error) error {
@@ -375,6 +415,9 @@ func (e *nativeExecution) executionError(ctx context.Context, err error) error {
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return e.validationError(ctx, errors.Join(err, context.Cause(ctx)))
+	}
+	if err := e.localAuthorityLoss(); err != nil {
+		return err
 	}
 	if !e.claimActive() {
 		return e.validationError(ctx, runner.ErrExecutionAuthorityUnavailable)
@@ -625,8 +668,11 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 }
 
 func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
-	if e.data.Outcome == "" && !e.claimActive() {
-		return runner.ErrExecutionAuthorityUnavailable
+	if e.data.Outcome == "" {
+		if err := e.executionAuthorityError(); err != nil {
+			return err
+		}
+		ctx = e.fenceRunPublication(ctx)
 	}
 	if err := e.flush(ctx); err != nil {
 		return err
