@@ -26,7 +26,7 @@ import (
 
 func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 	t.Parallel()
-	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+	db, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261109002731)
 	pgstoretest.SeedCore(t, db)
 	payloads := map[string][]byte{}
 	for _, org := range []string{"org_first", "org_second"} {
@@ -112,7 +112,8 @@ func TestCoreWorkEventObjectsConvertPopulatedUpgrade(t *testing.T) {
 	if !errors.As(rollbackErr, &rejected) || rejected.Code != "P0001" {
 		t.Fatalf("core work event rollback was not rejected: %v", rollbackErr)
 	}
-	if version, err := provider.GetDBVersion(t.Context()); err != nil || version != 20261109182156 {
+	var version int64
+	if err := db.QueryRowContext(t.Context(), "SELECT max(version_id) FROM goose_db_version WHERE version_id <= 20261109184650 AND is_applied").Scan(&version); err != nil || version != 20261109182156 {
 		t.Fatalf("rollback did not retain core work event migration: version=%d error=%v", version, err)
 	}
 	var retained int
@@ -180,7 +181,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"rejected", "uncertain", "corrupt", "corrupt-object", "interrupted"} {
 		t.Run(mode, func(t *testing.T) {
-			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+			db, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261109002731)
 			pgstoretest.SeedCore(t, db)
 			for _, org := range []string{"org_first", "org_second"} {
 				for _, id := range []int64{7, 8} {
@@ -238,7 +239,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 	for _, aggregates := range []int{1, 3} {
 		t.Run(fmt.Sprintf("interrupted progress/%d aggregates", aggregates), func(t *testing.T) {
 			t.Parallel()
-			db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+			db, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261109002731)
 			pgstoretest.SeedCore(t, db)
 			payloads := map[int64][]byte{}
 			for _, org := range []string{"org_first", "org_second"} {
@@ -374,7 +375,7 @@ func TestCoreWorkEventObjectsRetainSourcesUntilVerifiedReplay(t *testing.T) {
 
 func TestCoreWorkEventObjectsFenceConcurrentReplay(t *testing.T) {
 	t.Parallel()
-	db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109002731)
+	db, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261109002731)
 	pgstoretest.SeedCore(t, db)
 	for _, org := range []string{"org_first", "org_second"} {
 		for _, id := range []int64{7, 8} {

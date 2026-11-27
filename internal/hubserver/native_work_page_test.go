@@ -317,9 +317,9 @@ func indexNativeWorkPageFixtureIssues(t *testing.T, f nativeFixture, _ []tracker
 
 func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
-	fixtureNow := time.Now().UTC().Truncate(time.Microsecond)
+	now := time.Now().UTC().Truncate(time.Second).Add(500 * time.Millisecond)
 	details := &memoryRunDetails{keyReads: make(map[string]int)}
-	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return fixtureNow }, WebhookMaintenanceInterval: time.Hour, RunDetails: details, Postgres: &postgres.Config{Pool: postgres.PoolConfig{SearchBudget: time.Hour}}})
+	f := newDefaultNativeFixture(t, Config{Clock: func() time.Time { return now }, WebhookMaintenanceInterval: time.Hour, RunDetails: details, Postgres: &postgres.Config{Pool: postgres.PoolConfig{SearchBudget: time.Hour}}})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	scope := hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID}
 	history := seedArchiveIssues(t, f.service, scope, 130, "Done")
@@ -333,7 +333,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		start.IdempotencyKey = string(issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
 		if index == 0 {
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$3,renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.Organization, lease.ID, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour)); err != nil {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=$3,renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.Organization, lease.ID, now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 		} else {
@@ -583,24 +583,18 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 	if first.NextCursor == "" || first.Items[0].WorkItemID != todo[0].WorkItemID || first.Work.Items[0].WorkItemID != ip[1].WorkItemID || !slices.ContainsFunc(first.Work.Items, func(issue tracker.NativeIssue) bool { return issue.WorkItemID == todo[0].WorkItemID }) {
 		t.Fatal("default lane page omitted operational work")
 	}
-	now := time.Now().Truncate(time.Second).Add(500 * time.Millisecond)
-	f.service.config.Clock = func() time.Time { return now }
 	for _, test := range []struct {
 		name             string
 		renewed, expires time.Time
 		running          int
 	}{
 		{"mixed timestamp precision", now.Truncate(time.Second), now.Add(time.Hour), 1},
-		{"expiry boundary", now.Add(-time.Minute), time.Time{}, 0},
+		{"expiry boundary", now.Add(-time.Minute), now, 0},
 		{"unexpired despite clock skew", now.Add(time.Minute), now.Add(time.Hour), 1},
 		{"restore current lease", now.Add(-time.Second), now.Add(time.Hour), 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var expiry *time.Time
-			if !test.expires.IsZero() {
-				expiry = &test.expires
-			}
-			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$3),renewed_at=$3,expires_at=coalesce($4::timestamptz,transaction_timestamp()) WHERE organization_id=$1 AND lease_id=$2", scope.Organization, activeLease.ID, test.renewed, expiry); err != nil {
+			if _, err := usagePostgresAdmin(t, f.service).ExecContext(t.Context(), "UPDATE leases SET acquired_at=LEAST(acquired_at,$3),renewed_at=$3,expires_at=$4 WHERE organization_id=$1 AND lease_id=$2", scope.Organization, activeLease.ID, test.renewed, test.expires); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.service.refreshBoardRecord(t.Context(), scope.Organization, viewstore.BoardCandidate{ProjectID: scope.Project, WorkItemID: ip[1].WorkItemID}, now); err != nil {

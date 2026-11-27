@@ -18,7 +18,7 @@ import (
 func TestWorkItemTerminalStreakSurvivesEditsAndRestartsOnReopen(t *testing.T) {
 	t.Parallel()
 	t.Run("populated restore provenance", func(t *testing.T) {
-		db, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261111225811)
+		db, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261111225811)
 		pgstoretest.SeedCore(t, db)
 		if _, err := db.ExecContext(t.Context(), `INSERT INTO project_settings (organization_id,project_id) SELECT organization_id,id FROM projects ON CONFLICT DO NOTHING`); err != nil {
 			t.Fatal(err)
