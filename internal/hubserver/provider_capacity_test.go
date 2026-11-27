@@ -354,9 +354,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 	}{
 		{name: "single provider candidate honors project rank and selectors", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
-		{name: "reviewed merging beats higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
-		{name: "merging lane lands before newer work of the same priority", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Merging"}, want: []int{1, 0, 2}, winner: 1},
-		{name: "merging then rework precede configured lane preference", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{0, 2, 1}},
+		{name: "native landing follows higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{0, 2, 1}, winner: 0},
+		{name: "native landing uses creation order at equal priority", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Merging"}, want: []int{0, 1, 2}, winner: 0},
+		{name: "rework precedes native landing at equal priority", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{2, 0, 1}, winner: 2},
 		{name: "rework then in progress precede older todo", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
 		{name: "rework then in progress precede higher priority todo", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
 		{name: "rework precedes configured labels and older todo", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{1, 0, 2}, winner: 1},

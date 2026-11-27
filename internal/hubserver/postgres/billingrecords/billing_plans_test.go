@@ -127,7 +127,7 @@ func TestBillingPlansKeepHistoricalTermsAndTenantScope(t *testing.T) {
 		}
 	}
 	t.Run("historical storage floors preserve catalog and tenant terms", func(t *testing.T) {
-		admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261112124957)
+		admin, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261112124957)
 		var database string
 		if err := admin.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&database); err != nil {
 			t.Fatal(err)

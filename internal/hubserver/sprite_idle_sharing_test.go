@@ -153,7 +153,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 		{"opted in shares", true, false, true, true, false, "", http.StatusOK},
 		{"highest ranked fallback", true, false, true, true, false, "", http.StatusConflict},
 		{"own ready work takes precedence", true, true, true, true, false, "", http.StatusConflict},
-		{"shared merging beats own todo", true, true, true, true, false, "", http.StatusOK},
+		{"own todo precedes shared native landing", true, true, true, true, false, "", http.StatusConflict},
 		{"own budget exhaustion permits sharing", true, true, true, true, false, "own monthly", http.StatusOK},
 		{"grants remain required", true, false, false, true, false, "", http.StatusNotFound},
 		{"target checkout remains required", true, false, true, false, false, "", http.StatusConflict},
@@ -165,7 +165,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			var other nativeFixture
 			var landing landingCapacityFixture
-			if test.name == "shared merging beats own todo" {
+			if test.name == "own todo precedes shared native landing" {
 				landing = newLandingCapacityFixture(t, f.service, "other-landings", false)
 				other = landing.nativeFixture
 			} else {
@@ -248,7 +248,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if ranked.service != nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, ranked.base+"/claims", r.redemption.Credential, providerClaim(r, rankedIssue, "ranked")), http.StatusOK)
 			}
-			if test.ownReady && test.budget != "own monthly" && landing.service == nil {
+			if test.ownReady && test.budget != "own monthly" {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
 			allocation, err := readSpriteAllocationFixture(t, f, hubscope.NativeScope{Organization: f.project.OrganizationID, Project: f.project.ID})

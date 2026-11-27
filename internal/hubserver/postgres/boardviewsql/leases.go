@@ -1,24 +1,32 @@
 package boardviewsql
 
-const UnexpiredLease = "l.released_at IS NULL AND l.expires_at>transaction_timestamp()"
+func unexpiredLease(clock string) string {
+	return "l.released_at IS NULL AND l.expires_at>coalesce(" + clock + "::timestamptz,transaction_timestamp())"
+}
 
-const matchingLease = `EXISTS(
+func matchingLease(clock string) string {
+	return `EXISTS(
  SELECT 1 FROM issues i JOIN leases l ON l.organization_id=i.organization_id AND l.issue_id=i.id
  WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id
- AND l.fencing_token=b.execution_fence AND ` + UnexpiredLease + `)`
+ AND l.fencing_token=b.execution_fence AND ` + unexpiredLease(clock) + `)`
+}
 
-const RunningCard = "(CASE WHEN b.running THEN " + matchingLease + " ELSE false END)"
+func RunningCard(clock string) string {
+	return "(CASE WHEN b.running THEN " + matchingLease(clock) + " ELSE false END)"
+}
 
-const CurrentCardLease = `CASE WHEN b.running OR b.card_attempt_status='running' OR b.card_execution_stage<>'' THEN ` + matchingLease + ` ELSE false END`
+func CurrentCardLease(clock string) string {
+	return `CASE WHEN b.running OR b.card_attempt_status='running' OR b.card_execution_stage<>'' THEN ` + matchingLease(clock) + ` ELSE false END`
+}
 
-func LiveItems(organization, projects string) string {
+func LiveItems(organization, projects, clock string) string {
 	return `live_items AS MATERIALIZED (
  SELECT b.project_id,b.work_item_id,b.state,b.archived,b.terminal,b.running,
   b.actor_principal_id,i.actor_principal_id AS current_actor,
   'detent:workspace'=ANY(coalesce(b.page_labels,'{}')) AS workspace
  FROM leases l JOIN issues i ON i.organization_id=l.organization_id AND i.id=l.issue_id
  JOIN native_board_items b ON b.organization_id=i.organization_id AND b.project_id=i.project_id AND b.work_item_id=i.native_id
- WHERE l.organization_id=` + organization + ` AND i.project_id IN (` + projects + `) AND ` + UnexpiredLease + `
+ WHERE l.organization_id=` + organization + ` AND i.project_id IN (` + projects + `) AND ` + unexpiredLease(clock) + `
  AND l.fencing_token=b.execution_fence AND b.page_ready AND (b.running OR b.card_attempt_status='running' OR b.card_execution_stage<>'')
 )`
 }

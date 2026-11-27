@@ -69,14 +69,35 @@ func (f heldFixture) scanAs(t *testing.T, r hubfixture.Runner, session string) (
 	return lease, response
 }
 
+func (f heldFixture) unreviewedLandings(t *testing.T, count int) {
+	t.Helper()
+	hubfixture.RequireStatus(t, f.Hub.Request(t, http.MethodPut, f.Base+"/change-review-policy", string(f.Hub.Config.InitialAdminToken), tracker.ApproveChangeReviewPolicy{
+		Mutation: tracker.Mutation{IdempotencyKey: "require-review"}, Policy: tracker.ChangeReviewPolicy{PolicyID: hubfixture.Policy().ID, RequireReview: true},
+	}), http.StatusOK)
+	var linked []tracker.NativeWorkItemID
+	for index := range count {
+		issue := f.createIn(t, fmt.Sprintf("Unreviewed landing %d", index), 0, "Merging")
+		linked = append(linked, issue.WorkItemID)
+		if len(linked) < 32 && index+1 < count {
+			continue
+		}
+		path := f.Base + "/work-items/" + string(linked[0]) + "/changes"
+		response := f.Request(t, http.MethodPost, path, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change-" + string(linked[0])}, Title: "Pending review", LinkedIssues: linked[1:]})
+		hubfixture.RequireStatus(t, response, http.StatusOK)
+		var change tracker.ChangeRequest
+		hubfixture.Decode(t, response, &change)
+		c := hubfixture.Change{Native: f.Native, Change: change, Path: path + "/" + change.ID}
+		c.Publish(t, "version-"+change.ID, "")
+		linked = linked[:0]
+	}
+}
+
 func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 	t.Parallel()
 	const refused = 230
 	h := hubfixture.Open(t, hubfixture.Config{})
 	f := newHeldProject(t, h, "", hubserver.HostedProjectStates())
-	for index := range refused {
-		f.createIn(t, fmt.Sprintf("Unreviewed landing %d", index), 0, "Merging")
-	}
+	f.unreviewedLandings(t, refused)
 	target := f.create(t, "Eligible after the landing prefix", 3)
 	other := f.enroll(t)
 	pages := (refused + 99) / 100
@@ -117,9 +138,7 @@ func TestScanCursorProgressesPastHydrationRefusals(t *testing.T) {
 		t.Fatalf("second runner moved the first runner's cursor: %+v -> %+v", before, after)
 	}
 	tenant := newHeldProject(t, h, hubfixture.Secondary, hubserver.HostedProjectStates())
-	for index := range 5 {
-		tenant.createIn(t, fmt.Sprintf("Tenant landing %d", index), 0, "Merging")
-	}
+	tenant.unreviewedLandings(t, 5)
 	tenant.scanAs(t, tenant.runner, "tenant-runner")
 	if after, _ := f.cursor(t, f.runner); after != before {
 		t.Fatalf("another tenant moved the cursor: %+v -> %+v", before, after)

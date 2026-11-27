@@ -310,7 +310,7 @@ func checkBoardWorkPlan(t *testing.T, f hubfixture.LeasedRunners) {
 			t.Fatal("work page did not record its serving statement")
 		}
 		var raw string
-		if err := f.Admin.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+servingSQL, f.Organization, project, false, false, 1).Scan(&raw); err != nil {
+		if err := f.Admin.QueryRowContext(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "+servingSQL, f.Organization, project, false, false, 1, nil).Scan(&raw); err != nil {
 			t.Fatal(err)
 		}
 		var plans []struct{ Plan boardWorkPlanNode }

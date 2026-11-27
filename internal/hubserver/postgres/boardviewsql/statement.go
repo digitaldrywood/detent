@@ -205,7 +205,7 @@ completion AS MATERIALIZED (SELECT v.id AS project_id,w.* FROM visible v
  CROSS JOIN LATERAL (` + CompletionCountsSQL("v.id", "$4", "true", "$18") + `) w` + affected + `),
 linked AS MATERIALIZED (SELECT project_id,work_item_id FROM cards WHERE has_links UNION SELECT project_id,work_item_id FROM closed WHERE has_links),
 evaluated AS MATERIALIZED (SELECT project_id,change_policy_id,change_review_policy_id FROM cards WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'
- UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'),` + LiveItems("$1", "SELECT id FROM visible") + `,
+ UNION SELECT project_id,change_policy_id,change_review_policy_id FROM closed WHERE change_id<>'' AND change_version_id<>'' AND change_base_status<>'landed'),` + LiveItems("$1", "SELECT id FROM visible", "$19") + `,
 ` + ScopedCounts("SELECT id FROM visible", "$4", "$5::text", "true") + `
 `
 	readiness := `(EXISTS(SELECT 1 FROM native_board_dirty d WHERE d.organization_id=$1 AND d.project_id=v.id OFFSET ` + strconv.Itoa(dirtyOverlayLimit) + `)

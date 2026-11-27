@@ -32,7 +32,7 @@ func TestShellPageMigrationsResumeInterruptedDDL(t *testing.T) {
 			var db *sql.DB
 			owner := fixture
 			if tc.usage {
-				_, older := pgstoretest.MigrationDatabaseAtVersion(t, 20261112031629)
+				_, older := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261112031629)
 				db = older.Database(t)
 				owner = older
 			} else {

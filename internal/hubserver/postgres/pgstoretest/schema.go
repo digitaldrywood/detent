@@ -39,10 +39,20 @@ func MigrationProvider(db *sql.DB) (*goose.Provider, error) {
 		return nil, err
 	}
 	return goose.NewProvider(goose.DialectPostgres, db, postgres.RoleMigrations(migrations),
-		goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
+		goose.WithAllowOutofOrder(true), goose.WithGoMigrations(postgres.ConversationMigrations(migrations)...), goose.WithDisableGlobalRegistry(true), goose.WithSlog(slog.New(slog.DiscardHandler)))
 }
 
 func MigrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.Template) {
+	t.Helper()
+	return migrationDatabase(t, version, false)
+}
+
+func RuntimeMigrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.Template) {
+	t.Helper()
+	return migrationDatabase(t, version, true)
+}
+
+func migrationDatabase(t *testing.T, version int64, runtime bool) (*sql.DB, *pgtest.Template) {
 	t.Helper()
 	fixture := pgtest.NewTemplate(func(ctx context.Context, db *sql.DB) error {
 		if _, err := db.ExecContext(ctx, postgres.RolesSQL()); err != nil {
@@ -59,8 +69,19 @@ func MigrationDatabaseAtVersion(t *testing.T, version int64) (*sql.DB, *pgtest.T
 		if err != nil {
 			return err
 		}
-		_, err = provider.UpTo(ctx, version)
-		return err
+		if _, err := provider.UpTo(ctx, version); err != nil {
+			return err
+		}
+		if runtime {
+			for _, required := range []int64{20261117223946, 20261117224903, 20261117235300, 20261118005350} {
+				if required > version {
+					if _, err := provider.ApplyVersion(ctx, required, true); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return nil
 	})
 	t.Cleanup(func() {
 		deadline, _ := t.Deadline()

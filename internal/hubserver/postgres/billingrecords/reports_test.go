@@ -989,7 +989,7 @@ func TestPostgresReportsReadTypedWorkItemFacts(t *testing.T) {
 		}
 	})
 	const processEvidenceVersion = 20261109184650
-	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, 20261109182156)
+	admin, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, 20261109182156)
 	pool := pgstoretest.RolePoolFromTemplate(t, fixture, admin, "detent_runtime_v2", "")
 	repository, err := postgres.NewRepository(t.Context(), pool, pgstoretest.SmallPool())
 	if err != nil {

@@ -57,6 +57,11 @@ func (s *session) boardModelWhere(f viewstore.BoardSelection) (string, []any, er
 	return where, args, nil
 }
 
+func (s *session) bindBoardLeaseClock(args *[]any) string {
+	*args = append(*args, s.leaseClockValue())
+	return "$" + strconv.Itoa(len(*args))
+}
+
 func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (string, []any, error) {
 	if f.Limit < 1 || f.Limit > 2001 {
 		return "", nil, corestore.ErrInvalidPage
@@ -97,6 +102,7 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (str
 	}
 	args = append(args, f.Limit)
 	limit := fmt.Sprintf("$%d", len(args))
+	clock := s.bindBoardLeaseClock(&args)
 	page := "SELECT b.* FROM native_board_items b WHERE " + where + " ORDER BY " + order + " LIMIT " + limit
 	cte, running := "", "b.running"
 	laneRank, state, dispatchable := "b.lane_rank", "b.state", "b.dispatchable"
@@ -106,7 +112,7 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (str
 	}
 	if overlay || f.WorkOrder {
 		cte = boardviewsql.ProjectDirtyItems + ","
-		page, order = boardModelOverlayPage(f.WorkOrder, where, order, limit)
+		page, order = boardModelOverlayPage(f.WorkOrder, where, order, limit, clock)
 		laneRank, state, dispatchable = "b.effective_lane_rank", "b.effective_state", "b.effective_dispatchable"
 		running = "b.effective_running"
 		columns = strings.NewReplacer(
@@ -118,7 +124,7 @@ func (s *session) boardModelQuery(f viewstore.BoardSelection, overlay bool) (str
 	model := "true AS access_allowed,b.source_revision,b.source_event_sequence,b.source_project_revision," +
 		laneRank + " AS lane_rank," + state + " AS state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at," +
 		running + " AS running," + dispatchable + " AS dispatchable,b.issue_number,b.page_list_bytes," + boardModelDisplayColumns + "," +
-		columns + "," + publicActorNameSQL("b.organization_id", "b.page_actor_principal_id") + "," + boardviewsql.CurrentCardLease
+		columns + "," + publicActorNameSQL("b.organization_id", "b.page_actor_principal_id") + "," + boardviewsql.CurrentCardLease(clock)
 	query := "WITH " + cte + "page AS MATERIALIZED (" + page + ") SELECT " + model + " FROM page b ORDER BY " + order
 	return query, args, nil
 }
@@ -133,7 +139,7 @@ var boardModelEffectiveFields = strings.NewReplacer(
 	"b.dispatchable", "b.effective_dispatchable",
 )
 
-func boardModelOverlayPage(work bool, where, order, limit string) (string, string) {
+func boardModelOverlayPage(work bool, where, order, limit, clock string) (string, string) {
 	const fields = "b.lane_rank AS effective_lane_rank,b.state AS effective_state,b.archived AS effective_archived,b.terminal AS effective_terminal,b.dispatchable AS effective_dispatchable"
 	dirtyWhere := boardviewsql.EffectiveDirtyFields(where)
 	clean := " FROM native_board_items b WHERE " + where + boardModelClean
@@ -144,7 +150,7 @@ func boardModelOverlayPage(work bool, where, order, limit string) (string, strin
 	prefix := ""
 	if work {
 		order = boardModelWorkOrder
-		running = boardviewsql.RunningCard
+		running = boardviewsql.RunningCard(clock)
 	}
 	dirty := "(" + dirtyColumns + running + " AS effective_running FROM dirty d JOIN native_board_items b ON " +
 		boardviewsql.DirtyItemMatch + " WHERE " + dirtyWhere + " ORDER BY " + boardviewsql.EffectiveDirtyFields(order) + tail + ")"
@@ -152,7 +158,7 @@ func boardModelOverlayPage(work bool, where, order, limit string) (string, strin
 	if work {
 		const liveMatch = "l.project_id=b.project_id AND l.work_item_id=b.work_item_id"
 		const inventoryOrder = " ORDER BY b.dispatchable DESC,b.issue_number DESC,b.identifier"
-		prefix = "WITH " + boardviewsql.LiveItems("$1", "$2::text") + ", live_page AS MATERIALIZED (" +
+		prefix = "WITH " + boardviewsql.LiveItems("$1", "$2::text", clock) + ", live_page AS MATERIALIZED (" +
 			cleanColumns + "true AS effective_running FROM live_items l JOIN native_board_items b ON " + liveMatch +
 			" WHERE " + where + boardModelClean + " AND l.running" + inventoryOrder + tail + ") "
 		remaining := " LIMIT (SELECT greatest(" + limit + "-count(*),0) FROM live_page)"
@@ -228,7 +234,7 @@ func (s *session) BoardModelPages(ctx context.Context, selection viewstore.Board
 			return result, err
 		}
 		laneSQL := "WITH " + boardviewsql.ProjectDirtyItems + " SELECT " + boardviewsql.EffectiveDirtyFields("b.state") +
-			",count(*),count(*) FILTER (WHERE " + boardviewsql.RunningCard + " AND NOT " + boardviewsql.EffectiveDirtyFields("b.terminal") +
+			",count(*),count(*) FILTER (WHERE " + boardviewsql.RunningCard(s.bindBoardLeaseClock(&laneArgs)) + " AND NOT " + boardviewsql.EffectiveDirtyFields("b.terminal") +
 			") FROM native_board_items b LEFT JOIN dirty d ON " + boardviewsql.DirtyItemMatch + " WHERE " +
 			boardviewsql.EffectiveDirtyFields(where) + " GROUP BY 1 ORDER BY 1 LIMIT 201"
 		batch.Queue(laneSQL, laneArgs...).Query(func(rows pgx.Rows) error {

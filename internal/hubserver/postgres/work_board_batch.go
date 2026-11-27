@@ -28,7 +28,7 @@ func (r *Repository) ReadBoardRequest(ctx context.Context, organization tracker.
 		return err
 	}
 	defer release()
-	s := &session{projectReads: projectreads.New(ctx, r.pool, true), organization: organization, readOnly: true, searchBudget: r.searchBudget, projectGrants: map[projectAccessKey]accessstore.ProjectGrant{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}, credentials: map[string]accessstore.Credential{}, members: map[string]accessstore.Member{}}
+	s := &session{projectReads: projectreads.New(ctx, r.pool, true), organization: organization, readOnly: true, leaseClock: r.leaseClock, searchBudget: r.searchBudget, projectGrants: map[projectAccessKey]accessstore.ProjectGrant{}, tokenGrants: map[projectAccessKey]accessstore.TokenGrant{}, credentials: map[string]accessstore.Credential{}, members: map[string]accessstore.Member{}}
 	s.projectReads.BeginSnapshot()
 	batch := &pgx.Batch{}
 	credential := accessstore.Credential{}

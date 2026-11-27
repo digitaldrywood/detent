@@ -642,7 +642,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false, "", "", false, false, false},
 		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, false, false},
 		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false, false, false},
-		{"reviewed landing then P2 rework then P0 todo", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true, false, false},
+		{"P2 rework then P0 todo then native landing", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true, false, false},
 		{"higher project todo beats lower project landing", 3, 1, 3, 1, -time.Hour, time.Hour, "both", false, "reviewed", "", false, false, false},
 		{"higher project rework beats lower project landing", 3, 1, 3, 1, -time.Hour, time.Hour, "both", false, "reviewed", "", false, false, true},
 		{"landings follow project rank", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
@@ -777,7 +777,10 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					priority int
 				}{{"Rework", 2}, {"Todo", 0}} {
 					issue := first.create(t, work.state)
-					setSelectionFixtureState(t, first, issue.WorkItemID, work.state)
+					issue = setSelectionFixtureState(t, first, issue.WorkItemID, work.state)
+					if work.state == "Rework" {
+						issues[first.project.ID] = issue
+					}
 					if _, err := usagePostgresAdmin(t, first.service).ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=$1 WHERE work_item_id=$2", work.priority, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
@@ -786,7 +789,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					runner bool
 					want   []string
 				}{
-					{true, []string{"ready", "Rework", "Todo"}},
+					{true, []string{"Rework", "Todo", "ready"}},
 					{false, []string{"Todo", "ready", "Rework"}},
 				} {
 					scope := hubscope.NativeScope{Organization: first.project.OrganizationID, Project: first.project.ID}

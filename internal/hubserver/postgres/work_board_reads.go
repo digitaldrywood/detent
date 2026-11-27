@@ -270,9 +270,10 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 	if err != nil {
 		return nil, err
 	}
-	currentLease := "true"
+	clock, currentLease := "", "true"
 	if typed {
-		currentLease = boardviewsql.CurrentCardLease
+		clock = s.bindBoardLeaseClock(&args)
+		currentLease = boardviewsql.CurrentCardLease(clock)
 		where += " AND b.page_ready"
 		if f.Compact {
 			where += " AND b.list_ready"
@@ -300,7 +301,7 @@ func (s *session) boardPage(ctx context.Context, f viewstore.BoardSelection, typ
 		}
 		running := "b.running"
 		if typed {
-			running = boardviewsql.RunningCard
+			running = boardviewsql.RunningCard(clock)
 		}
 		order = running + " DESC,b.dispatchable DESC,i.number DESC,b.identifier"
 		if projectedWorkOrder {
@@ -379,7 +380,7 @@ func (s *session) BoardLanes(ctx context.Context, f viewstore.BoardSelection, _ 
 	if err != nil {
 		return nil, err
 	}
-	current := boardviewsql.RunningCard
+	current := boardviewsql.RunningCard(s.bindBoardLeaseClock(&args))
 	statement := "SELECT b.state,count(*),count(*) FILTER (WHERE " + current + ") FROM native_board_items b WHERE " + where + " GROUP BY b.state ORDER BY b.state LIMIT 201"
 	filtered := f.SearchText != "" || f.WorkItemIDs != nil || f.Reporter || f.ActorPrincipalID != "" || f.Fingerprint != "" || len(f.Types)+len(f.Verification)+len(f.Labels)+len(f.Assignees)+len(f.Priorities) > 0 || f.CreatedAfter != nil || f.CreatedBefore != nil || f.UpdatedAfter != nil || f.NativeCreatedAfter != nil || f.NativeCreatedBefore != nil || f.NativeUpdatedAfter != nil || f.CompletedFrom != nil || f.CompletedTo != nil
 	if !filtered && f.ExcludeWorkspace {
@@ -625,7 +626,7 @@ func (s *session) BoardView(ctx context.Context, selection viewstore.BoardViewSe
 	}
 	rows, err := s.db.Query(ctx, boardviewsql.Statement(selection.Reporter != ""), s.organization, selection.ProjectStrings(), selection.AllowedStrings(), selection.Reporter, selection.Archived,
 		selection.CredentialID, selection.PrincipalID, selection.UserID, selection.ClosedPage+1, selection.ItemStrings(), len(selection.Items) > 0,
-		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...), selection.WindowAsOf)
+		selection.LanePreset, after, identifier, selection.ClosedAfter != nil, append([]string{}, selection.IncludeLanes...), append([]string{}, selection.ExcludeLanes...), selection.WindowAsOf, s.leaseClockValue())
 	if err != nil {
 		return result, mapError(ctx, err)
 	}
@@ -640,9 +641,10 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 	if err != nil {
 		return nil, err
 	}
-	currentLease := "true"
+	clock, currentLease := "", "true"
 	if typed {
-		currentLease = boardviewsql.CurrentCardLease
+		clock = s.bindBoardLeaseClock(&args)
+		currentLease = boardviewsql.CurrentCardLease(clock)
 		where += " AND b.page_ready"
 		if f.Compact {
 			where += " AND b.list_ready"
@@ -650,7 +652,7 @@ func (s *session) boardSearchPage(ctx context.Context, f viewstore.BoardSelectio
 	}
 	running := "b.running"
 	if typed && f.WorkOrder {
-		running = boardviewsql.RunningCard
+		running = boardviewsql.RunningCard(clock)
 	}
 	query, args, err := searchsql.Ranked(f, where, args, boardColumns+","+currentLease, running, typed)
 	if err != nil {

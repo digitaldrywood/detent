@@ -152,7 +152,7 @@ func seedIdentityMigrationIssues(t *testing.T, admin *sql.DB, organization track
 func TestWorkItemDeletionRetainsMigratedIdentities(t *testing.T) {
 	t.Parallel()
 	const migrationVersion = 20261107060339
-	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
+	admin, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestWorkItemDeletionRemovesOnlyLiveAttachmentReferences(t *testing.T) {
 func TestRetainedIdentityMigrationIncludesConcurrentIssueCreation(t *testing.T) {
 	t.Parallel()
 	const migrationVersion = 20261107060339
-	admin, fixture := pgstoretest.MigrationDatabaseAtVersion(t, migrationVersion-1)
+	admin, fixture := pgstoretest.RuntimeMigrationDatabaseAtVersion(t, migrationVersion-1)
 	provider, err := pgstoretest.MigrationProvider(admin)
 	if err != nil {
 		t.Fatal(err)

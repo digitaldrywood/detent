@@ -139,16 +139,26 @@ func TestPostgresNativeExecutionRestartUsesHubReceipts(t *testing.T) {
 			t.Fatal(err)
 		}
 		observed := tracker.NativeUsage{Provider: "example", Model: "example-model", SourceID: fmt.Sprintf("session_%d", sessionID), UsageKind: "incremental", Revision: 1, From: time.Now().UTC(), Input: 10, Output: 2, Currency: "USD", BillingMode: "metered"}
-		fault.drop.Store(true)
-		if err := first.(runner.UsageExecution).RecordUsage(t.Context(), observed); err == nil {
-			t.Fatal("lost publication acknowledgment was treated as durable success")
+		checkpoint := *hubfixture.Checkpoint()
+		checkpoint.WorktreeState = "clean"
+		publish := func() {
+			t.Helper()
+			if err := first.(runner.UsageExecution).RecordUsage(t.Context(), observed); err != nil {
+				t.Fatal(err)
+			}
+			fault.drop.Store(true)
+			if err := first.Checkpoint(t.Context(), checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			if fault.drop.Load() {
+				t.Fatal("checkpoint did not publish a usage event")
+			}
 		}
+		publish()
 		observed.Input, observed.Output, observed.Revision = 15, 3, 2
-		fault.drop.Store(true)
-		if err := first.(runner.UsageExecution).RecordUsage(t.Context(), observed); err == nil {
-			t.Fatal("earlier flush did not exercise lost acknowledgement")
-		}
-		if err := first.(runner.RuntimeExecution).ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: time.Now().UTC()}); err != nil {
+		checkpoint.WorktreeState = "dirty"
+		publish()
+		if err := first.Checkpoint(t.Context(), checkpoint); err != nil {
 			t.Fatal(err)
 		}
 		retained, err := native.IssueTokenSpend(t.Context(), store.IssueIdentity{IssueID: string(lease.WorkItemID)})

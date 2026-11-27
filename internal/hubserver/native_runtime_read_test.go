@@ -53,7 +53,7 @@ func TestNativeRuntimeReadPreservesCurrentEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1})
+	repository, err := postgres.NewRepository(t.Context(), pool, postgres.PoolConfig{MaxConnections: 3, ServingConnections: 2, BackgroundConnections: 1}, func() time.Time { return f.service.config.Clock() })
 	if err != nil {
 		pool.Close()
 		t.Fatal(err)

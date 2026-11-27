@@ -36,8 +36,8 @@ import (
 
 func TestPostgresRuntimeEvidenceReadsSelectedFencedAttemptWithoutLegacyDatabase(t *testing.T) {
 	t.Parallel()
-	repository, adminDB := projectRecordPostgresWithAdmin(t, 3)
 	clock := &leaseTestClock{value: time.Now().UTC().Truncate(time.Microsecond)}
+	repository, adminDB := projectRecordPostgresWithClock(t, 3, clock.Now)
 	service := openPostgresHubTestService(t, repository, Config{
 		RunDetails: &memoryRunDetails{}, Clock: clock.Now,
 		NativeRunEvents: tenantNativeRunEventParticipant{}, SecretKeys: secretTestKeys(t, "1", "1"),

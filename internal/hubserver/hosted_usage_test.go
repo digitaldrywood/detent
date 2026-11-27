@@ -280,7 +280,7 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 				}
 				step(feature)
 				var unknown int
-				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND usage_input_total IS NULL`, organization, claimed.attempt).Scan(&unknown); err != nil || unknown != 1 {
+				if err := admin.QueryRowContext(t.Context(), `SELECT count(*) FROM attempt_usage WHERE organization_id=$1 AND attempt_id=$2 AND usage_input_total IS NULL`, organization, claimed.attempt).Scan(&unknown); err != nil || unknown != 100 {
 					t.Fatalf("first bounded prefix unknown=%d error=%v", unknown, err)
 				}
 				imported := reportstore.UsageRecord{OrganizationID: organization, UsageFact: reportstore.UsageFact{ProjectID: fixture.project.ID, WorkItemID: claimed.issue.WorkItemID, AttemptID: claimed.attempt, Period: base.Truncate(time.Hour).Add(-102 * time.Hour), Provider: "codex", Model: "legacy-model", Input: 7 * weight, Cost: 0.007 * float64(weight), Currency: "USD"}, UpdatedAt: base}

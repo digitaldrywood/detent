@@ -88,7 +88,7 @@ func (s *session) boardSummaryQuery(selection viewstore.BoardSelection, includeM
 		}
 	}
 	query := `WITH metadata AS MATERIALIZED (` + boardModelMetadataSQL + `),
- ` + boardviewsql.LiveItems("$1", "$2::text") + `,
+ ` + boardviewsql.LiveItems("$1", "$2::text", "$7") + `,
  ` + boardviewsql.DirtyItems("SELECT $2::text AS id WHERE NOT (SELECT pending FROM metadata)") + `,
  ` + boardviewsql.ScopedCounts("SELECT $2::text WHERE NOT (SELECT pending FROM metadata)", "$3", "$4", "$5") + `,
 counts AS MATERIALIZED (
@@ -122,7 +122,7 @@ windows AS MATERIALIZED (` + boardviewsql.CompletionCountsSQL("(SELECT $2::text 
 		query += `SELECT * FROM summary
 UNION ALL SELECT '','',0,0,0,0,0,0,0,0,'0001-01-01'::timestamptz,-1 WHERE (SELECT pending FROM metadata)`
 	}
-	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace, selection.WindowAsOf}, nil
+	return query, []any{s.organization, selection.ProjectID, audience, archive, selection.ExcludeWorkspace, selection.WindowAsOf, s.leaseClockValue()}, nil
 }
 
 func (s *session) BoardSummaryModel(ctx context.Context, selection viewstore.BoardSelection) ([]viewstore.BoardSummaryRecord, error) {
@@ -157,7 +157,7 @@ func (s *session) BoardStatusModel(ctx context.Context, selection viewstore.Boar
 	for index, id := range selection.WorkItemIDs {
 		ids[index] = string(id)
 	}
-	rows, err := s.db.Query(ctx, "SELECT b.work_item_id,b.page_projected_at,coalesce(seq.sequence,0),b.card_change_principal_id,"+boardModelDisplayColumns+","+boardviewsql.CurrentCardLease+" FROM native_board_items b LEFT JOIN native_board_sequences seq ON seq.organization_id=b.organization_id AND seq.project_id=b.project_id WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=ANY($3::text[]) AND b.page_ready AND (NOT $4::boolean OR (b.actor_principal_id=$5 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$5))) ORDER BY b.work_item_id", s.organization, selection.ProjectID, ids, selection.Reporter, selection.ReporterPrincipalID)
+	rows, err := s.db.Query(ctx, "SELECT b.work_item_id,b.page_projected_at,coalesce(seq.sequence,0),b.card_change_principal_id,"+boardModelDisplayColumns+","+boardviewsql.CurrentCardLease("$6")+" FROM native_board_items b LEFT JOIN native_board_sequences seq ON seq.organization_id=b.organization_id AND seq.project_id=b.project_id WHERE b.organization_id=$1 AND b.project_id=$2 AND b.work_item_id=ANY($3::text[]) AND b.page_ready AND (NOT $4::boolean OR (b.actor_principal_id=$5 AND EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND i.native_id=b.work_item_id AND i.actor_principal_id=$5))) ORDER BY b.work_item_id", s.organization, selection.ProjectID, ids, selection.Reporter, selection.ReporterPrincipalID, s.leaseClockValue())
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}
