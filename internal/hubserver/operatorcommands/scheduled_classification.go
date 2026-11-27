@@ -273,7 +273,7 @@ func (s ScheduledCIDeps) Classify(c echo.Context) error {
 		}
 		return c.JSON(http.StatusOK, result)
 	}
-	receiptID := hubapi.NewID("scheduled_ci")
+	receiptID := hubapi.NewID(billingstore.ScheduledClassificationReceiptKind)
 	if err := s.reserveClassification(ctx, scope, input, jobKey, receiptID); err != nil {
 		return s.Error(c, err)
 	}

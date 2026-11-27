@@ -15,7 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
-	"github.com/digitaldrywood/detent/internal/hubserver/githubcontract"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubtest"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
@@ -68,7 +67,7 @@ type scheduledClassificationImporter struct{ calls int }
 
 func (i *scheduledClassificationImporter) FetchImportPage(_ context.Context, request hubserver.GitHubImportRequest) (hubserver.GitHubImportPage, error) {
 	i.calls++
-	if request.Stage != githubcontract.ScheduledClassificationStage || request.Scheduled == nil || request.Scheduled.RunID != "1" || request.Scheduled.JobID == "999" {
+	if request.Scheduled == nil || request.Scheduled.RunID != "1" || request.Scheduled.JobID == "999" {
 		return hubserver.GitHubImportPage{}, errors.New("unknown run or job")
 	}
 	return hubserver.GitHubImportPage{Scheduled: request.Scheduled}, nil
@@ -93,13 +92,18 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 		{"Go test", "--- FAIL: TestExample (0s)", progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "TestExample", Reason: "assertion failed"}, false},
 		{"timeout with location", "internal/client.go:42:3: network timeout", progresscheck.CIDecision{Outcome: progresscheck.CIInfrastructure, Target: "download timeout", Reason: "external network unavailable"}, false},
 		{"unknown", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
+		{"project budget", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
 		{"interrupted request", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
 		{"storage denial", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CISource, Target: "TestExample", Reason: strings.Repeat("assertion failed ", 20)}, false},
 		{"provider unavailable", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown}, true},
+		{"organization budget", "Exit status 1", progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "evidence insufficient"}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			*backend = ciDecisionBackend{t: t, decision: test.decision, fail: test.fail}
 			hub := local
+			if test.name == "organization budget" {
+				hub = hubfixture.Open(t, cfg)
+			}
 			var hosted *hubfixture.Hosted
 			if test.name == "storage denial" {
 				hostedConfig := cfg
@@ -154,6 +158,36 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				return response
 			}
 			input := progresscheck.CIFailure{Repository: repository, HeadSHA: strings.Repeat("a", 40), RunID: "1", RunAttempt: "1", JobID: "2", JobName: test.name, Step: "Run check", ExitStatus: "failure", LogTail: test.log, ChangedFiles: []string{"internal/example.go"}}
+			if test.name == "project budget" {
+				const wantDecisions = 120
+				beforeImports, beforeCalls := importer.calls, backend.calls
+				for n := range 125 {
+					job := input
+					job.JobID = fmt.Sprint(n + 100)
+					backend.expected = true
+					want := http.StatusTooManyRequests
+					if n < wantDecisions {
+						want = http.StatusOK
+					}
+					if response := request(firstProject, job); response.Code != want {
+						t.Errorf("project job request %d status=%d want=%d", n, response.Code, want)
+					}
+				}
+				var rows int
+				if err := hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1 AND project_id=$2`, org, firstProject).Scan(&rows); err != nil {
+					t.Fatal(err)
+				}
+				if imports, calls := importer.calls-beforeImports, backend.calls-beforeCalls; imports != wantDecisions || calls != wantDecisions || rows != wantDecisions {
+					t.Fatalf("project budget made %d importer calls and %d model calls and retained %d decisions, want %d of each", imports, calls, rows, wantDecisions)
+				}
+				backend.expected = false
+				replay := input
+				replay.JobID = "100"
+				call(firstProject, replay, http.StatusOK)
+				backend.expected = true
+				call(secondProject, replay, http.StatusOK)
+				return
+			}
 			if test.name == "timeout with location" {
 				backend.onCall = func() {
 					before := importer.calls
@@ -239,37 +273,44 @@ func TestScheduledCIClassificationPersistsOneDecision(t *testing.T) {
 				for range 2 {
 					call(firstProject, unknownJob, http.StatusUnprocessableEntity)
 				}
-
-				const wantNewDecisions = 116
-				beforeImports, beforeCalls := importer.calls, backend.calls
-				for n := range 125 {
-					job := input
-					job.JobID = fmt.Sprint(n + 100)
-					want := http.StatusTooManyRequests
-					if n < wantNewDecisions {
-						backend.expected = true
-						want = http.StatusOK
+			}
+			if test.name == "organization budget" {
+				const limit = 6000
+				const metric = "scheduled-ci"
+				if err := storage.WriteTenant(t.Context(), org, corestore.Serving, func(w tenantstore.Writer) error {
+					used, err := w.BillingUsage(t.Context(), hub.Now(), metric)
+					if err != nil && !errors.Is(err, corestore.ErrNotFound) {
+						return err
 					}
-					if response := request(firstProject, job); response.Code != want {
-						t.Errorf("project job request %d status=%d want=%d", n, response.Code, want)
+					usage, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: org, ID: "existing-classification-usage", WindowStart: hub.Now(), Metric: metric, Amount: limit - used - 1}, limit)
+					if err == nil && !usage.Applied {
+						t.Fatal("failed to seed existing classification usage")
 					}
-				}
-				backend.expected = false
-				for range 8 {
-					call(firstProject, unknownJob, http.StatusTooManyRequests)
-				}
-				call(firstProject, input, http.StatusOK)
-				var rows int
-				if err := hub.Admin.QueryRowContext(t.Context(), `SELECT count(*) FROM scheduled_ci_decisions WHERE organization_id=$1 AND project_id=$2`, org, firstProject).Scan(&rows); err != nil {
+					return err
+				}); err != nil {
 					t.Fatal(err)
 				}
-				if imports, calls := importer.calls-beforeImports, backend.calls-beforeCalls; imports != wantNewDecisions || calls != wantNewDecisions || rows != wantNewDecisions+1 {
-					t.Fatalf("project budget made %d importer calls and %d model calls and retained %d decisions, want %d, %d and %d", imports, calls, rows, wantNewDecisions, wantNewDecisions, wantNewDecisions+1)
+				const countReceipts = `SELECT count(*) FROM hosted_usage_receipts
+					WHERE organization_id=$1 AND starts_with(receipt_id,'scheduled_ci_')`
+				var beforeReceipts, afterReceipts int
+				if err := hub.Admin.QueryRowContext(t.Context(), countReceipts, org).Scan(&beforeReceipts); err != nil {
+					t.Fatal(err)
 				}
-				backend.expected = true
-				anotherJob := input
-				anotherJob.JobID = "3"
-				call(secondProject, anotherJob, http.StatusOK)
+				beforeImports, beforeCalls := importer.calls, backend.calls
+				unknown := input
+				unknown.RunID = "2"
+				call(firstProject, unknown, http.StatusUnprocessableEntity)
+				projects := [...]tracker.ProjectID{firstProject, secondProject}
+				for n := range 30 {
+					unknown.JobID = fmt.Sprint(n + 100)
+					call(projects[n%len(projects)], unknown, http.StatusTooManyRequests)
+				}
+				if err := hub.Admin.QueryRowContext(t.Context(), countReceipts, org).Scan(&afterReceipts); err != nil {
+					t.Fatal(err)
+				}
+				if imports, calls, receipts := importer.calls-beforeImports, backend.calls-beforeCalls, afterReceipts-beforeReceipts; imports != 1 || calls != 0 || receipts != 1 {
+					t.Fatalf("organization budget made %d GitHub verifications and %d model calls and added %d receipts, want 1, 0 and 1", imports, calls, receipts)
+				}
 			}
 			if !test.fail {
 				return

@@ -99,6 +99,6 @@ type BillingOwner struct {
 func (o *BillingOwner) PruneUsage(ctx context.Context, plans *BillingPlan, now time.Time) error {
 	cutoff := requestUsageCutoff(plans, now)
 	return o.Repository.WriteTenant(ctx, o.Organization, corestore.Background, func(w tenantstore.Writer) error {
-		return w.PruneRequestBillingUsage(ctx, cutoff, 128)
+		return w.PruneRequestBillingUsage(ctx, cutoff, billingstore.RequestBillingPruneBatch)
 	})
 }

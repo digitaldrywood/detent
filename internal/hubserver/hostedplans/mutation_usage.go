@@ -15,9 +15,18 @@ type mutationUsageWriter interface {
 	ApplyBillingUsage(context.Context, billingstore.UsageReceipt, int64) (billingstore.UsageResult, error)
 }
 
-const scheduledClassificationsPerHour = 120
+type scheduledClassificationUsageWriter interface {
+	mutationUsageWriter
+	ChargeBillingUsageWindow(context.Context, billingstore.Usage, int64) (billingstore.UsageResult, error)
+}
 
-func (d *Service) ChargeScheduledClassification(ctx context.Context, writer mutationUsageWriter, organization tracker.OrganizationID, project tracker.ProjectID, receiptID string, now time.Time) error {
+const scheduledClassificationsPerProjectMinute = 2
+const scheduledClassificationsPerOrganizationMinute = 100
+
+func (d *Service) ChargeScheduledClassification(ctx context.Context, writer scheduledClassificationUsageWriter, organization tracker.OrganizationID, project tracker.ProjectID, receiptID string, now time.Time) error {
+	if project == "" || !strings.HasPrefix(receiptID, billingstore.ScheduledClassificationReceiptKind+"_") || strings.Contains(receiptID, "/") || now.IsZero() {
+		return billingstore.ErrInvalidUsage
+	}
 	plans := d.Plans()
 	var limit int64
 	if plans == nil {
@@ -33,22 +42,29 @@ func (d *Service) ChargeScheduledClassification(ctx context.Context, writer muta
 	}
 	window := time.Unix(now.Unix()/plans.WindowSeconds*plans.WindowSeconds, 0).UTC()
 	for _, charge := range []struct {
-		id, metric, resource string
-		limit                int64
+		metric, resource string
+		limit            int64
 	}{
-		{receiptID + "/project", "scheduled-ci/" + string(project), "scheduled_ci_classifications", scheduledClassificationsPerHour * plans.WindowSeconds / 3600},
-		{receiptID, "api_mutations", "api_mutations", limit},
+		{"scheduled-ci/" + string(project), "scheduled_ci_classifications", scheduledClassificationsPerProjectMinute * (plans.WindowSeconds / 60)},
+		{billingstore.ScheduledClassificationMetric, "organization_scheduled_ci_classifications", scheduledClassificationsPerOrganizationMinute * (plans.WindowSeconds / 60)},
 	} {
-		usage, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: charge.id, WindowStart: window, Metric: charge.metric, Amount: 1}, charge.limit)
+		usage, err := writer.ChargeBillingUsageWindow(ctx, billingstore.Usage{OrganizationID: organization, WindowStart: window, Metric: charge.metric, Amount: 1}, charge.limit)
 		if err != nil {
 			return err
 		}
 		if !usage.Allowed {
 			return &LimitError{Resource: charge.resource, Allowance: charge.limit, Consumption: usage.Used}
 		}
-		if !usage.Applied {
-			return billingstore.ErrUsageReceiptConflict
-		}
+	}
+	usage, err := writer.ApplyBillingUsage(ctx, billingstore.UsageReceipt{OrganizationID: organization, ID: receiptID, WindowStart: window, Metric: "api_mutations", Amount: 1}, limit)
+	if err != nil {
+		return err
+	}
+	if !usage.Allowed {
+		return &LimitError{Resource: "api_mutations", Allowance: limit, Consumption: usage.Used}
+	}
+	if !usage.Applied {
+		return billingstore.ErrUsageReceiptConflict
 	}
 	return nil
 }

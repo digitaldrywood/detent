@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/billingstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/metricsstore"
@@ -55,12 +56,18 @@ func TestScheduledCIClassificationFallbackReceiptRetention(t *testing.T) {
 			if err := w.CreateAccessOrganization(t.Context(), accessstore.Organization{OrganizationID: test.org, Name: string(test.org), CreatedAt: window.Add(-48 * time.Hour)}); err != nil {
 				return err
 			}
-			for i, age := range ages {
-				if err := d.plansService().ChargeScheduledClassification(t.Context(), w, test.org, "prj_example", fmt.Sprintf("classification_%d", i), window.Add(-age)); err != nil {
+			for i := range 128 {
+				if _, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: test.org, ID: fmt.Sprintf("scheduled_ci_runner_%d/api_mutations", i), Metric: "api_mutations", WindowStart: window.Add(-26 * time.Hour), Amount: 1}, 128); err != nil {
 					return err
 				}
 			}
-			return nil
+			for i, age := range ages {
+				if err := d.plansService().ChargeScheduledClassification(t.Context(), w, test.org, "prj_example", fmt.Sprintf("scheduled_ci_%d", i), window.Add(-age)); err != nil {
+					return err
+				}
+			}
+			_, err := w.ApplyBillingUsage(t.Context(), billingstore.UsageReceipt{OrganizationID: test.org, ID: "scheduled_ci_legacy/project", Metric: "scheduled-ci/prj_example", WindowStart: window.Add(-ages[0]), Amount: 1}, 120)
+			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -74,17 +81,20 @@ func TestScheduledCIClassificationFallbackReceiptRetention(t *testing.T) {
 			pruned[test.org] = true
 			for _, tenant := range tests {
 				for _, age := range ages {
-					want := 2
+					wantReceipts, wantWindows := 1, 3
+					if age == ages[0] {
+						wantReceipts++
+					}
 					if pruned[tenant.org] && age >= 24*time.Hour {
-						want = 0
+						wantReceipts, wantWindows = 0, 0
 					}
 					var receipts, windows int
 					err := admin.QueryRowContext(t.Context(), `SELECT
 						(SELECT count(*) FROM hosted_usage_receipts WHERE organization_id=$1 AND window_start=$2),
 						(SELECT count(*) FROM hosted_usage_windows WHERE organization_id=$1 AND window_start=$2)`,
 						tenant.org, window.Add(-age)).Scan(&receipts, &windows)
-					if err != nil || receipts != want || windows != want {
-						t.Errorf("tenant %s age %s: receipts=%d windows=%d, want %d of each, err=%v", tenant.org, age, receipts, windows, want, err)
+					if err != nil || receipts != wantReceipts || windows != wantWindows {
+						t.Errorf("tenant %s age %s: receipts=%d windows=%d, want %d and %d, err=%v", tenant.org, age, receipts, windows, wantReceipts, wantWindows, err)
 					}
 				}
 			}

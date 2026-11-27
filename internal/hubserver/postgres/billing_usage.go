@@ -76,6 +76,31 @@ func (s *session) CollaborationBytes(ctx context.Context) (int64, error) {
 	return used, nil
 }
 
+func (s *session) ChargeBillingUsageWindow(ctx context.Context, usage billingstore.Usage, limit int64) (billingstore.UsageResult, error) {
+	if err := s.checkOrganization(usage.OrganizationID); err != nil {
+		return billingstore.UsageResult{}, err
+	}
+	if usage.Metric == "" || usage.Amount <= 0 || limit < 0 || usage.WindowStart.IsZero() {
+		return billingstore.UsageResult{}, billingstore.ErrInvalidUsage
+	}
+	window := usage.WindowStart.UTC()
+	used, err := s.queries.ChargeBillingUsageWindow(ctx, pgquery.ChargeBillingUsageWindowParams{
+		OrganizationID: s.organization, WindowStart: window, Metric: usage.Metric,
+		Amount: usage.Amount, Allowance: min(limit, billingstore.MaxUsageWindow),
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		used, err := s.BillingUsage(ctx, window, usage.Metric)
+		if errors.Is(err, corestore.ErrNotFound) {
+			err = nil
+		}
+		return billingstore.UsageResult{Used: used}, err
+	}
+	if err != nil {
+		return billingstore.UsageResult{}, mapError(ctx, err)
+	}
+	return billingstore.UsageResult{Applied: true, Allowed: true, Used: used}, nil
+}
+
 func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int64) (billingstore.UsageResult, error) {
 	if limit < 0 {
 		return billingstore.UsageResult{}, billingstore.ErrInvalidCollaborationBytes
@@ -112,13 +137,25 @@ func (s *session) AdjustCollaborationBytes(ctx context.Context, delta, limit int
 }
 
 func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time, limit int) error {
-	if cutoff.IsZero() || limit < 1 || limit > 128 {
+	if cutoff.IsZero() || limit < 1 || limit > billingstore.RequestBillingPruneBatch {
 		return corestore.ErrInvalidPage
 	}
 	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (
 		SELECT r.receipt_id FROM hosted_usage_receipts r
 		WHERE r.organization_id=$1 AND r.window_start <= $2
-		  AND (r.metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') OR starts_with(r.metric,'scheduled-ci/'))
+		  AND (starts_with(r.metric,'scheduled-ci/') OR (r.metric='api_mutations' AND starts_with(r.receipt_id,'scheduled_ci_') AND strpos(r.receipt_id,'/')=0))
+		  AND NOT EXISTS (
+			SELECT 1 FROM scheduled_ci_classification_claims c
+			WHERE c.organization_id=r.organization_id AND c.receipt_id=r.receipt_id AND c.expires_at > CURRENT_TIMESTAMP
+		  )
+		ORDER BY r.window_start,r.receipt_id LIMIT $3)`, s.organization, cutoff, limit); err != nil {
+		return mapError(ctx, err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_receipts WHERE organization_id=$1 AND receipt_id IN (
+		SELECT r.receipt_id FROM hosted_usage_receipts r
+		WHERE r.organization_id=$1 AND r.window_start <= $2
+		  AND r.metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events')
+		  AND NOT (r.metric='api_mutations' AND starts_with(r.receipt_id,'scheduled_ci_') AND strpos(r.receipt_id,'/')=0)
 		  AND NOT EXISTS (
 			SELECT 1 FROM scheduled_ci_classification_claims c
 			WHERE c.organization_id=r.organization_id AND c.receipt_id=r.receipt_id AND c.expires_at > CURRENT_TIMESTAMP
@@ -128,7 +165,7 @@ func (s *session) PruneRequestBillingUsage(ctx context.Context, cutoff time.Time
 	}
 	_, err := s.db.Exec(ctx, `DELETE FROM hosted_usage_windows WHERE organization_id=$1 AND (window_start,metric) IN (
 		SELECT window_start,metric FROM hosted_usage_windows WHERE organization_id=$1 AND window_start <= $2
-		  AND (metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events') OR starts_with(metric,'scheduled-ci/'))
+		  AND (metric IN ('http_requests','http_duration_microseconds','http_response_bytes','http_request_bytes','http_request_bytes_known','api_mutations','heartbeats','ingested_events','scheduled-ci') OR starts_with(metric,'scheduled-ci/'))
 		ORDER BY window_start,metric LIMIT $3)`, s.organization, cutoff, limit)
 	return mapError(ctx, err)
 }

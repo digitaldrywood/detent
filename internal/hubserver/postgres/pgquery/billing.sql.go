@@ -586,6 +586,36 @@ func (q *Queries) BillingUsages(ctx context.Context, arg BillingUsagesParams) ([
 	return items, nil
 }
 
+const chargeBillingUsageWindow = `-- name: ChargeBillingUsageWindow :one
+INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount)
+SELECT $1,$2,$3,$4::bigint
+WHERE $4::bigint <= $5::bigint
+ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=hosted_usage_windows.amount+excluded.amount
+WHERE hosted_usage_windows.amount <= $5::bigint-excluded.amount
+RETURNING amount
+`
+
+type ChargeBillingUsageWindowParams struct {
+	OrganizationID tracker.OrganizationID
+	WindowStart    time.Time
+	Metric         string
+	Amount         int64
+	Allowance      int64
+}
+
+func (q *Queries) ChargeBillingUsageWindow(ctx context.Context, arg ChargeBillingUsageWindowParams) (int64, error) {
+	row := q.db.QueryRow(ctx, chargeBillingUsageWindow,
+		arg.OrganizationID,
+		arg.WindowStart,
+		arg.Metric,
+		arg.Amount,
+		arg.Allowance,
+	)
+	var amount int64
+	err := row.Scan(&amount)
+	return amount, err
+}
+
 const createBillingCreditAccount = `-- name: CreateBillingCreditAccount :exec
 INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros,auto_enabled,threshold_cents,price_id,payment_method,failure)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8)

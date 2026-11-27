@@ -18,6 +18,9 @@ var ErrInvalidCollaborationBytes = errors.New("collaboration bytes adjustment is
 var ErrInvalidBudgetFact = errors.New("monthly budget record is invalid")
 
 const MaxUsageWindow = int64(1 << 50)
+const RequestBillingPruneBatch = 128
+const ScheduledClassificationMetric = "scheduled-ci"
+const ScheduledClassificationReceiptKind = "scheduled_ci"
 
 type PlanReference struct {
 	ID      string
@@ -379,6 +382,7 @@ type Writer interface {
 	SetBillingMonthlyPolicy(context.Context, MonthlyPolicy, tracker.Revision) error
 	ImportBillingMonthlyPolicy(context.Context, MonthlyPolicy) error
 	ApplyBillingUsage(context.Context, UsageReceipt, int64) (UsageResult, error)
+	ChargeBillingUsageWindow(context.Context, Usage, int64) (UsageResult, error)
 	AdjustCollaborationBytes(context.Context, int64, int64) (UsageResult, error)
 	PruneRequestBillingUsage(context.Context, time.Time, int) error
 	RecordBillingMonthlyAdmission(context.Context, MonthlyAdmission) error

@@ -110,6 +110,14 @@ ON CONFLICT(organization_id,lease_id) DO NOTHING;
 INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount) VALUES($1,$2,$3,$4)
 ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=hosted_usage_windows.amount+excluded.amount;
 
+-- name: ChargeBillingUsageWindow :one
+INSERT INTO hosted_usage_windows(organization_id,window_start,metric,amount)
+SELECT sqlc.arg(organization_id),sqlc.arg(window_start),sqlc.arg(metric),sqlc.arg(amount)::bigint
+WHERE sqlc.arg(amount)::bigint <= sqlc.arg(allowance)::bigint
+ON CONFLICT(organization_id,window_start,metric) DO UPDATE SET amount=hosted_usage_windows.amount+excluded.amount
+WHERE hosted_usage_windows.amount <= sqlc.arg(allowance)::bigint-excluded.amount
+RETURNING amount;
+
 -- name: BillingMonthlyAdmittedCandidate :one
 WITH admitted AS MATERIALIZED (
  SELECT a.organization_id,a.issue_id FROM monthly_budget_admissions a
