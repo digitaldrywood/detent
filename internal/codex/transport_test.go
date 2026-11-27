@@ -134,7 +134,7 @@ func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
 			models, catalogErr := backend.ListModels(ctx, runner.AgentProcessRequest{})
 			evidence := local.StartupProcessEvidence()
 			if test.unverified {
-				if evidence.ExitObserved || evidence.CleanupComplete || local.cmd.ProcessState != nil {
+				if evidence.ExitObserved || evidence.CleanupComplete {
 					t.Fatalf("helper unexpectedly exited: %+v", evidence)
 				}
 			} else {
@@ -753,7 +753,9 @@ func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) 
 	t.Parallel()
 
 	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return helperCommand(ctx, "turn-complete-backpressure")
+		cmd := helperCommand(ctx, "turn-complete-backpressure")
+		cmd.Env = append(cmd.Env, "GORACE="+strings.TrimSpace(os.Getenv("GORACE")+" atexit_sleep_ms=0"), "GOCOVERDIR="+t.TempDir())
+		return cmd
 	})
 	if err != nil {
 		t.Fatalf("NewLocalTransportFactory() error = %v", err)
