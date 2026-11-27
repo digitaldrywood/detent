@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,7 +120,10 @@ func TestSharedTransportBackoffAndRequestCounts(t *testing.T) {
 	for _, status := range []int{403, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-			client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/org/repo/issues", err: &connectorgithub.StatusError{StatusCode: status, RetryAfter: 2 * time.Minute}}, {method: http.MethodGet, path: "/repos/org/repo/pulls", response: []restPullRequest{}}}}
+			client := &scriptedRESTClient{t: t, steps: []restStep{
+				{method: http.MethodGet, path: "/repos/org/repo/issues", err: &connectorgithub.StatusError{StatusCode: status, RetryAfter: 2 * time.Minute, Err: connectorgithub.ErrRateLimited}},
+				{method: http.MethodGet, path: "/repos/org/repo/pulls", response: []restPullRequest{}},
+			}}
 			transport := NewTransport(nil)
 			transport.client = client
 			transport.now = func() time.Time { return now }
@@ -138,6 +144,58 @@ func TestSharedTransportBackoffAndRequestCounts(t *testing.T) {
 			}
 		})
 	}
+	t.Run("Actions permission denial permits unrelated outbox write", func(t *testing.T) {
+		const actionsRepository = "example-org/private-project"
+		const actionsPath = "/repos/" + actionsRepository + "/actions/runs/123/attempts/1"
+		const issuePath = "/repos/example-org/other-project/issues/17"
+		var writes atomic.Int32
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET "+actionsPath, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("X-RateLimit-Remaining", "4999")
+			w.Header().Set("X-RateLimit-Reset", "2082758400")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"message":"Resource not accessible by integration"}`)
+		})
+		mux.HandleFunc("GET "+issuePath, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `{"labels":[]}`)
+		})
+		mux.HandleFunc("PUT "+issuePath+"/labels", func(w http.ResponseWriter, _ *http.Request) {
+			writes.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		client, err := connectorgithub.NewClient(connectorgithub.ClientConfig{
+			Endpoint: server.URL + "/graphql", TokenSource: connectorgithub.StaticTokenSource("example-token"), HTTPClient: server.Client(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		transport := NewTransport(client)
+		evidence := gate.ScheduledEvidence{
+			Schema: 1, Repository: actionsRepository, OccurrenceKey: strings.Repeat("a", 64),
+			RunID: "123", RunAttempt: "1", JobID: "456", JobName: "Tests", HeadSHA: strings.Repeat("a", 40), Conclusion: "failure",
+			RunURL: "https://github.com/" + actionsRepository + "/actions/runs/123/attempts/1",
+			JobURL: "https://github.com/" + actionsRepository + "/actions/jobs/456",
+		}
+		_, err = NewImporter(transport).FetchImportPage(t.Context(), githubcontract.GitHubImportRequest{
+			Profile: "native", Repository: actionsRepository, Stage: githubcontract.ScheduledClassificationStage, Scheduled: &evidence,
+		})
+		var status *connectorgithub.StatusError
+		if !errors.As(err, &status) || status.StatusCode != http.StatusForbidden || !errors.Is(err, connectorgithub.ErrAuthenticationFailed) {
+			t.Fatalf("Actions verification returned %v, want HTTP 403 permission denial", err)
+		}
+		item := testOutboxItem(t, githubcontract.MutationWorkflowLabel, githubcontract.WorkflowLabelDesired{Label: "detent:todo", ManagedPrefix: "detent:"})
+		item.OrganizationID, item.RepositoryOwner, item.RepositoryName = "org_example", "example-org", "other-project"
+		item.BeforeWrite = func(context.Context) error { return nil }
+		result, err := NewWriter(transport).Step(t.Context(), item)
+		if err != nil || !result.Done {
+			t.Fatalf("unrelated outbox write after Actions denial: done=%t, error=%v", result.Done, err)
+		}
+		if got := writes.Load(); got != 1 {
+			t.Fatalf("outbox writes at issue endpoint = %d, want 1", got)
+		}
+	})
 }
 
 func TestReconcileNativeProfileDoesNotFetchIssues(t *testing.T) {

@@ -113,7 +113,8 @@ func (t *Transport) request(ctx context.Context, method, path string, execute fu
 	t.counts[key] = count
 	t.mu.Unlock()
 	var status *connectorgithub.StatusError
-	if errors.As(err, &status) && (status.StatusCode == http.StatusForbidden || status.StatusCode == http.StatusTooManyRequests) {
+	if errors.As(err, &status) && (status.StatusCode == http.StatusTooManyRequests ||
+		status.StatusCode == http.StatusForbidden && errors.Is(status, connectorgithub.ErrRateLimited)) {
 		delay := max(time.Minute, status.RetryAfter)
 		t.backoff = t.now().Add(delay)
 		if status.ResetAt.After(t.backoff) {
