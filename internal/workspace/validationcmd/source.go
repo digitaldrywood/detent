@@ -68,10 +68,10 @@ func RunBase(ctx context.Context, source, base string, prepare func() (string, e
 		}
 	}()
 	path := filepath.Join(scratch, "base")
-	if _, err := gitexec.Run(ctx, source, "clone", "--shared", "--no-checkout", "--no-hardlinks", "--", source, path); err != nil {
+	if _, err := gitexec.Run(ctx, source, "-c", "core.hooksPath="+os.DevNull, "clone", "--shared", "--no-checkout", "--no-hardlinks", "--", source, path); err != nil {
 		return gate.CommandResult{}, fmt.Errorf("clone base reproduction source: %w", err)
 	}
-	if _, err := gitexec.Run(ctx, path, "checkout", "--detach", base); err != nil {
+	if _, err := gitexec.Run(ctx, path, "-c", "core.hooksPath="+os.DevNull, "checkout", "--detach", base); err != nil {
 		return gate.CommandResult{}, fmt.Errorf("checkout reproduction base: %w", err)
 	}
 	result, err := run(path)

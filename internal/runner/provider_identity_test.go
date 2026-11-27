@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,10 +19,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
-	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
 func TestProviderIdentityFailureDoesNotCancelTurn(t *testing.T) {
@@ -201,11 +200,11 @@ func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
 		at = at.Add(3 * time.Second)
 		return at
 	}
-	var registered []string
-	ctx := procgroup.WithCommandOwner(t.Context(), func(_ context.Context, cmd *exec.Cmd, _ procgroup.Identity) (func(error, error) error, error) {
-		registered = append(registered, strings.Join(cmd.Args, " "))
-		return func(runErr, cleanupErr error) error { return errors.Join(runErr, cleanupErr) }, nil
-	}, gitexec.PrepareLocalInspection)
+	var started []string
+	ctx := commandshell.WithCommandStarter(t.Context(), func(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+		started = append(started, strings.Join(cmd.Args, " "))
+		return procgroup.StartOwned(ctx, cmd)
+	})
 	var gotSamples []uint64
 	var terminalDiff DiffStats
 	request := RunRequest{workspaceBackend: source, OnUsageUpdate: func(usage UsageUpdate) error {
@@ -213,8 +212,8 @@ func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
 			terminalDiff = usage.DiffStats
 		} else {
 			gotSamples = append(gotSamples, usage.RSSBytes)
-			if source.samples != 0 || len(registered) != 0 {
-				t.Errorf("RSS sample %d: %d diff refreshes and %d host command registrations", usage.RSSBytes, source.samples, len(registered))
+			if source.samples != 0 || len(started) != 0 {
+				t.Errorf("RSS sample %d: %d diff refreshes and %d commands started", usage.RSSBytes, source.samples, len(started))
 			}
 		}
 		return nil
@@ -223,8 +222,8 @@ func TestResourceUsageDoesNotInspectLiveDiff(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if !slices.Equal(gotSamples, []uint64{1, 2, 3, 4, 5}) || source.samples != 1 || terminalDiff.FilesChanged != 1 || terminalDiff.Fingerprint == "" || len(registered) != 0 {
-		t.Fatalf("RSS samples=%v diff refreshes=%d terminal diff=%+v host commands=%v", gotSamples, source.samples, terminalDiff, registered)
+	if !slices.Equal(gotSamples, []uint64{1, 2, 3, 4, 5}) || source.samples != 1 || terminalDiff.FilesChanged != 1 || terminalDiff.Fingerprint == "" {
+		t.Fatalf("RSS samples=%v diff refreshes=%d terminal diff=%+v started=%v", gotSamples, source.samples, terminalDiff, started)
 	}
 }
 
