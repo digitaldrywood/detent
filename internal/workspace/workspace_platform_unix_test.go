@@ -1973,6 +1973,7 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		redirection string
 		exitCode    int
 		commit      bool
+		withinLimit bool
 	}{
 		{name: "stdout retained", redirection: "2>/dev/null"},
 		{name: "stderr retained", redirection: ">/dev/null"},
@@ -1986,6 +1987,9 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		{name: "commit stdout retained", redirection: "2>/dev/null", commit: true},
 		{name: "commit stderr retained", redirection: ">/dev/null", commit: true},
 		{name: "failed commit retains diagnostics", commit: true, exitCode: 23},
+		{name: "bounded ls-remote stdout retained", args: []string{"ls-remote", "--heads", "--refs", "origin"}, redirection: "2>/dev/null", withinLimit: true},
+		{name: "bounded ls-remote stderr retained", args: []string{"ls-remote", "--heads", "--refs", "origin"}, redirection: ">/dev/null", withinLimit: true},
+		{name: "failed bounded ls-remote retains diagnostics", args: []string{"ls-remote", "--heads", "--refs", "origin"}, exitCode: 23, withinLimit: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2030,6 +2034,8 @@ exit %d
 				if tt.commit {
 					policy := commitPolicy{Report: CommitReport{Identity: CommitIdentity{Name: "Runner", Email: "runner@example.test"}, Signing: "unsigned"}}
 					output, err = policy.Run(ctx, dir, env, "commit", "--allow-empty", "-m", "example")
+				} else if tt.withinLimit {
+					output, _, err = gitDiffArgsWithinLimit(ctx, dir, env, maxRetainedRemoteRefsBytes, args...)
 				} else {
 					output, err = runGitAtWithEnv(ctx, dir, env, args...)
 				}
@@ -2069,7 +2075,11 @@ exit %d
 			} else if got.err != nil {
 				t.Fatal(got.err)
 			}
-			if !strings.Contains(output, "git stdout") || !strings.Contains(output, "git stderr") {
+			if tt.withinLimit && tt.exitCode == 0 {
+				if !strings.Contains(output, "git stdout") {
+					t.Fatalf("captured output = %q, want stdout", output)
+				}
+			} else if !strings.Contains(output, "git stdout") || !strings.Contains(output, "git stderr") {
 				t.Fatalf("captured output = %q, want stdout and stderr", output)
 			}
 		})

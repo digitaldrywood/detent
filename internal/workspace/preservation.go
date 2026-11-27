@@ -241,7 +241,13 @@ func (l *LocalGit) beginWorkspaceCleanup(ctx context.Context, info Info, issue I
 	return l.writeOwnershipRecord(record)
 }
 
+const maxRetainedRemoteRefsBytes = 4 << 20
+
 func retainedGitCommitCount(ctx context.Context, path, revision string) (int, error) {
+	return retainedGitCommitCountWithinLimit(ctx, path, revision, maxRetainedRemoteRefsBytes)
+}
+
+func retainedGitCommitCountWithinLimit(ctx context.Context, path, revision string, maxRemoteRefsBytes int) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, failedWorkspacePreservationTimeout)
 	defer cancel()
 	// A remote-tracking ref can outlive a deleted or force-pushed branch. Only
@@ -262,9 +268,12 @@ func retainedGitCommitCount(ctx context.Context, path, revision string) (int, er
 	}
 	args := []string{"rev-list", "--count", revision, "--not"}
 	for _, remote := range strings.Fields(output) {
-		refs, err := runGitAtWithEnv(ctx, path, []string{"GIT_TERMINAL_PROMPT=0"}, "ls-remote", "--heads", "--refs", remote)
+		refs, truncated, err := gitDiffArgsWithinLimit(ctx, path, []string{"GIT_TERMINAL_PROMPT=0"}, maxRemoteRefsBytes, "ls-remote", "--heads", "--refs", remote)
 		if err != nil {
 			return 0, fmt.Errorf("verify cleanup remote %s: %w", remote, err)
+		}
+		if truncated {
+			return 0, fmt.Errorf("verify cleanup remote %s: remote ref listing exceeded %d bytes", remote, maxRemoteRefsBytes)
 		}
 		for _, line := range strings.Split(refs, "\n") {
 			fields := strings.Fields(line)

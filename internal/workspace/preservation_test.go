@@ -438,3 +438,36 @@ func TestFilesystemPreservationSurvivesRestartAndResumption(t *testing.T) {
 		})
 	}
 }
+
+func TestRetainedGitCommitCountBoundsRemoteRefOutput(t *testing.T) {
+	t.Parallel()
+	source := initSourceRepo(t)
+	runGit(t, source, "remote", "add", "origin", initBareRemote(t))
+	runGit(t, source, "push", "-u", "origin", "main")
+	runGit(t, source, "push", "origin", "HEAD:refs/heads/extra-branch-name")
+
+	tests := []struct {
+		name      string
+		limit     int
+		wantErr   bool
+		wantCount int
+	}{
+		{name: "within limit succeeds", limit: maxRetainedRemoteRefsBytes, wantCount: 0},
+		{name: "over limit fails closed", limit: 32, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			count, err := retainedGitCommitCountWithinLimit(t.Context(), source, "HEAD", tt.limit)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "exceeded") {
+					t.Fatalf("retainedGitCommitCountWithinLimit() = (%d, %v), want exceeded error", count, err)
+				}
+				return
+			}
+			if err != nil || count != tt.wantCount {
+				t.Fatalf("retainedGitCommitCountWithinLimit() = (%d, %v), want (%d, nil)", count, err, tt.wantCount)
+			}
+		})
+	}
+}
