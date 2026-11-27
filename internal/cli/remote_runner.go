@@ -40,7 +40,12 @@ func startRemoteRunner(ctx context.Context, cfg BootConfig) error {
 	selected := remoterunner.NewConfigOwner(cfg.Global, func(next globalconfig.Config) error { return applyGlobalRuntimeConfig(gate, logLevel, next) })
 	var manager *project.Manager
 	var scheduling orchestrator.SchedulingSource
-	support := workspacerunner.DefaultSupport()
+	workspaceSupport := cfg.remoteWorkspaceSupport
+	if workspaceSupport == nil {
+		workspaceSupport = workspacerunner.DefaultSupport
+	}
+	support := workspaceSupport()
+	support.Terminal = support.Terminal && support.TerminalIsolation() == workspacesession.IsolationSandbox
 	capabilities := workspaceLaneCapabilities(ctx, cfg.Global, support)
 	var serving atomic.Int64
 	var workspaceCapabilities func() workspacesession.Capabilities

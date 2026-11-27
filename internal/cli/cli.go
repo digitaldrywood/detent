@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/workspacerunner"
 )
 
 var (
@@ -157,7 +158,8 @@ type BootConfig struct {
 	Scheduling       orchestrator.SchedulingSource
 	StartupRecovery  StartupRecovery
 
-	remoteHeartbeatTicker remoterunner.Ticker
+	remoteHeartbeatTicker  remoterunner.Ticker
+	remoteWorkspaceSupport func() workspacerunner.Support
 }
 
 type IsolatedRuntimeInfo struct {
