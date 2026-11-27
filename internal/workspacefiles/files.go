@@ -32,6 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -88,10 +89,22 @@ type Service struct {
 	// hidden is a cosmetic failure, and hiding one that should be visible is
 	// not.
 	hasGit bool
+	gitDir string
 }
 
 // Open prepares a service for a worktree.
 func Open(worktree string, deny workspacesession.Denylist) (*Service, error) {
+	return open(worktree, deny, true, "")
+}
+
+func OpenPinned(worktree, gitDir string, deny workspacesession.Denylist) (*Service, error) {
+	if gitDir != "" && !filepath.IsAbs(gitDir) {
+		return nil, errors.New("workspace Git directory must be absolute")
+	}
+	return open(worktree, deny, gitDir != "", gitDir)
+}
+
+func open(worktree string, deny workspacesession.Denylist, allowGit bool, gitDir string) (*Service, error) {
 	canonical, err := filepath.EvalSymlinks(worktree)
 	if err != nil {
 		return nil, fmt.Errorf("resolve worktree %q: %w", worktree, err)
@@ -105,9 +118,10 @@ func Open(worktree string, deny workspacesession.Denylist) (*Service, error) {
 		return nil, errors.Join(fmt.Errorf("stat worktree %q: %w", canonical, err), root.Close())
 	}
 	device, hasDevice := fileDevice(info)
-	service := &Service{root: root, path: canonical, device: device, hasDevice: hasDevice, deny: deny}
-	if _, err := exec.LookPath("git"); err == nil {
-		service.hasGit = true
+	service := &Service{root: root, path: canonical, device: device, hasDevice: hasDevice, deny: deny, gitDir: gitDir}
+	if allowGit {
+		_, err := exec.LookPath("git")
+		service.hasGit = err == nil
 	}
 	return service, nil
 }
@@ -649,11 +663,13 @@ func (s *Service) ignoredPaths(ctx context.Context, paths []string) map[string]b
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, gitCheckTimeout)
 	defer cancel()
-	command := exec.CommandContext(checkCtx, "git", "check-ignore", "--stdin", "-z")
-	// The worktree is the working directory rather than a -C argument: every
-	// argument then being a literal is what makes it plain, here and to a
-	// scanner, that nothing a reader sent reaches the command line.
+	command := exec.CommandContext(checkCtx, "git", "-c", "core.fsmonitor=false")
+	if s.gitDir != "" {
+		command.Args = append(command.Args, "--git-dir="+s.gitDir, "--work-tree="+s.path)
+	}
+	command.Args = append(command.Args, "check-ignore", "--stdin", "-z")
 	command.Dir = s.path
+	command.Env = gitexec.RemoteFetchEnvironment()
 	command.Stdin = strings.NewReader(strings.Join(paths, "\x00") + "\x00")
 	output, err := command.Output()
 	if err != nil {

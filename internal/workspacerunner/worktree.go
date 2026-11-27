@@ -74,6 +74,14 @@ func (g *GitWorktree) ProvidesGit() bool {
 	return ok
 }
 
+func (g *GitWorktree) gitDir(ctx context.Context, path string) (string, error) {
+	backend, ok := g.Backend.(*workspace.LocalGit)
+	if !ok {
+		return "", nil
+	}
+	return backend.WorkspaceGitDir(ctx, path)
+}
+
 // existingBackend is the backend lookup a retained workspace needs.
 type existingBackend interface {
 	Existing(workspace.Issue) (workspace.Info, error)

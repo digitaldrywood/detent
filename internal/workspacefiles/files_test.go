@@ -373,7 +373,7 @@ func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Fatal("git is required for the ignore decoration fixture")
 	}
-	service, worktree, _ := newWorktree(t)
+	_, worktree, outside := newWorktree(t)
 	if err := os.WriteFile(filepath.Join(worktree, ".gitignore"), []byte("ignored.log\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -386,6 +386,19 @@ func TestListHonoursGitignoreUnlessTheReaderAsksForIt(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", argv, err, output)
 		}
 	}
+	gitDir := filepath.Join(outside, "git-metadata")
+	if err := os.Rename(filepath.Join(worktree, ".git"), gitDir); err != nil {
+		t.Fatal(err)
+	}
+	deny, err := workspacesession.NewDenylist(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := workspacefiles.OpenPinned(worktree, gitDir, deny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
 	hidden, err := service.List(t.Context(), workspacesession.FilesRequest{})
 	if err != nil {
 		t.Fatal(err)

@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
@@ -184,8 +185,9 @@ const maxPathspecBytes = 64 << 10
 // canonical and is proved to be the repository's top level at Open, which is
 // the containment argument for a surface that stages "everything".
 type Service struct {
-	path string
-	deny workspacesession.Denylist
+	path   string
+	gitDir string
+	deny   workspacesession.Denylist
 }
 
 // Open prepares a service for a worktree, and refuses one this package must not
@@ -196,6 +198,17 @@ type Service struct {
 // session being torn down while it opens does not wait for a filesystem that
 // has stopped answering.
 func Open(ctx context.Context, worktree string, deny workspacesession.Denylist) (*Service, error) {
+	return open(ctx, worktree, "", deny)
+}
+
+func OpenPinned(ctx context.Context, worktree, gitDir string, deny workspacesession.Denylist) (*Service, error) {
+	if !filepath.IsAbs(gitDir) {
+		return nil, refuse(workspacesession.CodeUnsupported, "The workspace has no registered Git directory", ErrNotRepository)
+	}
+	return open(ctx, worktree, gitDir, deny)
+}
+
+func open(ctx context.Context, worktree, gitDir string, deny workspacesession.Denylist) (*Service, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return nil, refuse(workspacesession.CodeUnsupported,
 			"This runner has no git binary, so the git channel cannot be served",
@@ -206,7 +219,7 @@ func Open(ctx context.Context, worktree string, deny workspacesession.Denylist) 
 		return nil, refuse(workspacesession.CodeUnsupported,
 			"The worktree could not be resolved", errors.Join(ErrNotRepository, err))
 	}
-	service := &Service{path: canonical, deny: deny}
+	service := &Service{path: canonical, gitDir: gitDir, deny: deny}
 	toplevel := service.exec(ctx, readTimeout, nil, "rev-parse", "--show-toplevel")
 	if toplevel.err != nil {
 		return nil, refuse(workspacesession.CodeUnsupported,
@@ -349,7 +362,7 @@ func (s *Service) Push(ctx context.Context) (workspacesession.GitPushed, error) 
 	// refused by the remote, and the person is shown that refusal in git's own
 	// words. Overwriting somebody else's commits is not a thing a header button
 	// may do.
-	push := s.exec(ctx, pushTimeout, nil, "push", remote, branch)
+	push := s.exec(ctx, pushTimeout, nil, "push", "--recurse-submodules=no", remote, branch)
 	if push.err != nil {
 		return workspacesession.GitPushed{}, fail("The push failed", push.stderr, push.err)
 	}
@@ -420,7 +433,7 @@ func (c change) addPaths() []string {
 // an untracked directory arrive as its files, so the denylist decides per file
 // rather than per directory.
 func (s *Service) changes(ctx context.Context) ([]change, error) {
-	status := s.exec(ctx, readTimeout, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	status := s.exec(ctx, readTimeout, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
 	if status.err != nil {
 		return nil, fail("The worktree's status could not be read", status.stderr, status.err)
 	}
@@ -669,6 +682,11 @@ type result struct {
 func (s *Service) exec(ctx context.Context, timeout time.Duration, extraEnv []string, args ...string) result {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	options := []string{"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "diff.ignoreSubmodules=dirty", "-c", "submodule.recurse=false"}
+	if s.gitDir != "" {
+		options = append(options, "--git-dir="+s.gitDir, "--work-tree="+s.path)
+	}
+	args = append(options, args...)
 	command := exec.CommandContext(runCtx, "git", args...) // #nosec G204 -- git runs without a shell and every argument is a literal built by this package.
 	// The worktree is the working directory rather than a -C argument, for the
 	// same reason the files service does it: every argument then being a
@@ -770,7 +788,7 @@ func (b *tailBuffer) String() string {
 // through, so a credential the runner does not already hold fails the command
 // instead of waiting for a person who is not there.
 func (s *Service) environment() []string {
-	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=")
+	return append(gitexec.RemoteFetchEnvironment(), "GIT_ASKPASS=", "SSH_ASKPASS=")
 }
 
 // pathspec makes one literal pathspec.

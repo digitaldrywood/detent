@@ -150,6 +150,37 @@ func TestOpenRefusesWhatItMustNotWriteTo(t *testing.T) {
 	}
 }
 
+func TestPinnedServiceUsesTheRegisteredCheckout(t *testing.T) {
+	t.Parallel()
+	source := newRepository(t)
+	root := filepath.Join(t.TempDir(), "checkout")
+	gitAt(t, source, "worktree", "add", "-b", "workspace", root)
+	gitDir := gitAt(t, root, "rev-parse", "--absolute-git-dir")
+	list, err := workspacesession.NewDenylist(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := workspacegit.OpenPinned(t.Context(), root, gitDir, list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, root, "notes.txt", "workspace notes\n")
+	status, err := service.Status(t.Context())
+	if err != nil || status.Branch != "workspace" || status.Dirty != 1 {
+		t.Fatalf("pinned workspace status = %+v, %v", status, err)
+	}
+	committed, err := service.Commit(t.Context(), "Workspace edit", person, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gitAt(t, source, "show", "workspace:notes.txt"); got != "workspace notes" || committed.Files != 1 {
+		t.Fatalf("registered branch content = %q, committed files = %d", got, committed.Files)
+	}
+}
+
 func TestStatusReportsTheWorktree(t *testing.T) {
 	t.Parallel()
 	requireGit(t)

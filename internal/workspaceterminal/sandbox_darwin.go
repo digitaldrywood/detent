@@ -120,7 +120,8 @@ func sandboxProfile(root string, aliases []string, tty string) string {
 		profile.WriteString(" (literal " + strconv.Quote(alias) + ")")
 	}
 	profile.WriteString(")\n(allow file-read* file-write* file-map-executable (subpath " + strconv.Quote(root) + "))\n")
-	profile.WriteString(`(allow file-read* file-write-data
+	profile.WriteString(`(deny file-read-data file-write* (regex #"/[.][gG][iI][tT](/|$)"))
+(allow file-read* file-write-data
  (literal "/dev/null") (literal "/dev/zero"))
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom"))
 `)

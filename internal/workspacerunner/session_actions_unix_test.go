@@ -42,7 +42,7 @@ func TestSessionActionIsolation(t *testing.T) {
 				t.Fatal(err)
 			}
 			reporter := &recordingReporter{}
-			command := "printf ran > creation.txt; ! cat ../outside.txt >/dev/null 2>&1"
+			command := "printf ran > creation.txt && ! cat ../outside.txt >/dev/null 2>&1 && ! touch .git"
 			f := startSessionOver(t, root, creationCheckout(workspacesession.WorktreeFresh), []workspacesession.Action{
 				{ID: "act_setup", Name: "Setup", Command: command, RunOnWorktreeCreation: true},
 			}, func(config *workspacerunner.Config) {

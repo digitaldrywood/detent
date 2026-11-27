@@ -87,7 +87,7 @@ func ProbeSandbox(ctx context.Context) (result error) {
 		return err
 	}
 	defer terminal.Close()
-	script := `stty size >/dev/null && printf allowed > allowed && /bin/sh -c 'test "$(cat allowed)" = allowed && ! cat ../outside && ! cat escape && ! (printf forbidden > ../outside) && ! ln ../outside linked' && printf confirmed > confirmed; exit` + "\n"
+	script := `stty size >/dev/null && printf allowed > allowed && /bin/sh -c 'test "$(cat allowed)" = allowed && ! cat ../outside && ! cat escape && ! (printf forbidden > ../outside) && ! ln ../outside linked && ! touch .git' && printf confirmed > confirmed; exit` + "\n"
 	if err := terminal.Write([]byte(script)); err != nil {
 		return err
 	}

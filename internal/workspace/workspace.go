@@ -2154,6 +2154,44 @@ func readLinkedWorktreeGitDir(workspacePath string) (string, bool, error) {
 	return filepath.Clean(gitDir), true, nil
 }
 
+func (l *LocalGit) WorkspaceGitDir(ctx context.Context, path string) (string, error) {
+	root, err := canonicalExistingPath(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree: %w", err)
+	}
+	link, linked, err := readLinkedWorktreeGitDir(root)
+	if err != nil {
+		return "", err
+	}
+	if !linked {
+		return "", fmt.Errorf("%w: workspace requires a linked worktree", ErrWorktreeInvariant)
+	}
+	common, err := gitCommonDir(ctx, l.sourceRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve source Git directory: %w", err)
+	}
+	gitDir, err := canonicalExistingPath(link)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace Git directory: %w", err)
+	}
+	if filepath.Dir(gitDir) != filepath.Join(common, "worktrees") || pathWithin(root, common) {
+		return "", fmt.Errorf("%w: workspace metadata is outside the source Git directory or inside the worktree", ErrWorktreeInvariant)
+	}
+	backlink, err := os.ReadFile(filepath.Join(gitDir, "gitdir"))
+	if err != nil {
+		return "", fmt.Errorf("read worktree registration: %w", err)
+	}
+	registered := strings.TrimSpace(string(backlink))
+	if !filepath.IsAbs(registered) {
+		registered = filepath.Join(gitDir, registered)
+	}
+	registered, err = canonicalExistingPath(registered)
+	if err != nil || registered != filepath.Join(root, ".git") {
+		return "", errors.Join(fmt.Errorf("%w: workspace metadata belongs to another worktree", ErrWorktreeInvariant), err)
+	}
+	return gitDir, nil
+}
+
 func writeLinkedWorktreeGitDir(path string, gitDir string) (err error) {
 	info, err := os.Stat(path)
 	if err != nil {

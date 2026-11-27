@@ -31,6 +31,9 @@ func TestSandboxTerminalContainment(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("metadata"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	service, err := New(t.Context(), root, "/bin/sh", workspacesession.IsolationSandbox, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -47,6 +50,8 @@ func TestSandboxTerminalContainment(t *testing.T) {
 		{name: "symlink read escape", command: "! cat escape/credentials"},
 		{name: "symlink write escape", command: "! (printf escaped > escape/credentials)"},
 		{name: "hardlink escape", command: "! ln ../runner-home/credentials stolen"},
+		{name: "git entry is protected", command: "! touch .git && ! mv .git moved && ! ln .git linked"},
+		{name: "git metadata is protected under alternate casing", command: "! touch .GIT"},
 		{name: "child inherits confinement", command: "/bin/sh -c '! cat ../runner-home/credentials && ! (printf escaped > escape/credentials)'"},
 		{name: "terminal resize", command: "test \"$(stty size)\" = '40 120'"},
 	}

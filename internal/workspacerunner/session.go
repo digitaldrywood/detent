@@ -354,7 +354,33 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 		reason = workspacesession.ReasonCheckoutFailed
 		return fmt.Errorf("build workspace denylist: %w", err)
 	}
-	files, err := workspacefiles.Open(path, deny)
+	var files *workspacefiles.Service
+	if managed, ok := s.config.Worktree.(*GitWorktree); ok {
+		gitDir, gitErr := managed.gitDir(ctx, path)
+		if gitErr != nil {
+			reason = workspacesession.ReasonCheckoutFailed
+			return fmt.Errorf("resolve registered workspace Git directory: %w", gitErr)
+		}
+		if gitDir != "" {
+			git, err := workspacegit.OpenPinned(ctx, path, gitDir, deny)
+			if err != nil {
+				reason = workspacesession.ReasonCheckoutFailed
+				return fmt.Errorf("open registered workspace Git directory: %w", err)
+			}
+			s.setGit(git)
+		}
+		files, err = workspacefiles.OpenPinned(path, gitDir, deny)
+	} else {
+		if worktreeProvidesGit(s.config.Worktree) {
+			git, err := workspacegit.Open(ctx, path, deny)
+			if err != nil {
+				s.logger.Info("workspace.git_unavailable", "reason", workspacegit.Message(err), "error", err)
+			} else {
+				s.setGit(git)
+			}
+		}
+		files, err = workspacefiles.Open(path, deny)
+	}
 	if err != nil {
 		// A worktree that is not there is worktree_missing rather than a
 		// checkout failure: the checkout succeeded and something removed it.
@@ -410,20 +436,6 @@ func (s *Session) Run(ctx context.Context) (resultErr error) {
 	if s.shouldStop() || sessionCtx.Err() != nil {
 		reason = s.endReason(sessionCtx.Err())
 		return nil
-	}
-
-	// A worktree that is not a git repository is not a failed workspace. The
-	// files channel serves it perfectly well, and the header disables the git
-	// group with a reason, which is a better answer for the person than losing
-	// the whole workspace because this checkout is not a repository. The git
-	// service holds no handle, so there is nothing to close on the way out.
-	if !worktreeProvidesGit(s.config.Worktree) {
-		s.logger.Info("workspace.git_unavailable", "path", path, "reason", "the worktree backend produces no git worktrees")
-	} else if git, err := workspacegit.Open(ctx, path, deny); err != nil {
-		s.logger.Info("workspace.git_unavailable", "path", path,
-			"reason", workspacegit.Message(err), "error", err)
-	} else {
-		s.setGit(git)
 	}
 
 	// A runner that cannot open terminals is not a failed workspace either. The

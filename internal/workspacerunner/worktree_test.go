@@ -93,6 +93,15 @@ func TestGitWorktreePrepareRelease(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Prepare() error = %v", err)
 			}
+			gitDir, err := backend.WorkspaceGitDir(t.Context(), path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantGitDir := strings.TrimSpace(runWorktreeGit(t, path, "rev-parse", "--absolute-git-dir"))
+			wantGitDir, err = filepath.EvalSymlinks(wantGitDir)
+			if err != nil || gitDir != wantGitDir {
+				t.Fatalf("workspace Git directory = %q, want %q (%v)", gitDir, wantGitDir, err)
+			}
 			if err := worktrees.Release(t.Context(), path, checkout); err != nil {
 				t.Fatalf("Release() error = %v", err)
 			}
@@ -147,6 +156,27 @@ func TestGitWorktreeRetainedNeedsTheAttemptsWorktree(t *testing.T) {
 			}
 			if dirs := worktreeDirs(t, root); len(dirs) != 0 {
 				t.Fatalf("a refused retained workspace created worktrees %v", dirs)
+			}
+		})
+	}
+}
+
+func TestWorkspaceGitDirRequiresProjectMetadata(t *testing.T) {
+	t.Parallel()
+	_, backend, source, _ := newGitWorktree(t)
+	foreignSource := initWorktreeSourceRepo(t)
+	foreignWorktree := filepath.Join(t.TempDir(), "checkout")
+	runWorktreeGit(t, foreignSource, "worktree", "add", "--detach", foreignWorktree, "HEAD")
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "standalone checkout", path: source},
+		{name: "another project's linked worktree", path: foreignWorktree},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := backend.WorkspaceGitDir(t.Context(), test.path); !errors.Is(err, workspace.ErrWorktreeInvariant) {
+				t.Fatalf("WorkspaceGitDir error = %v, want worktree invariant refusal", err)
 			}
 		})
 	}
