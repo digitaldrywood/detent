@@ -358,8 +358,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 	return guarded, func() {
 		e.cancelMu.Lock()
 		if e.supervisorDone == guarded.Done() {
-			cause := context.Cause(guarded)
-			e.retainAuthorityLossLocked(cause)
+			cause := e.retainAuthorityLossLocked(context.Cause(guarded))
 			e.supervisionLost = e.supervisionLost || supervisorLost(cause)
 			e.supervisorDone = nil
 			e.supervisorCause = nil
