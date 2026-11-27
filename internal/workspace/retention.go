@@ -10,13 +10,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
+
+const maxAttemptRetentionScans = 32
 
 // RetentionRequest supplies authoritative tracker and process ownership evidence.
 // Missing or failed evidence never authorizes deleting a workspace or scratch.
 type RetentionRequest struct {
 	Now          time.Time
+	Organization string
+	Project      string
 	Active       []Issue
+	ActivePaths  []string
 	Completed    func(context.Context, []Issue) (map[string]time.Time, error)
 	ScratchState func(context.Context, string) (registered, terminal bool, err error)
 }
@@ -58,28 +65,93 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 		}
 	}
 	active := map[string]bool{}
+	activeAttemptScopes := map[string]bool{}
+	activeForeignIssueIDs := map[string]bool{}
+	activeForeignIdentifiers := map[string]bool{}
 	for _, issue := range request.Active {
 		active[issueKey(issue)] = true
 		active[legacyIssueKey(issue)] = true
+		if scope := issue.AttemptWorkspace.Key(); scope != "" {
+			activeAttemptScopes[scope] = true
+		} else if issue.CleanupInUse {
+			if issue.ID != "" {
+				activeForeignIssueIDs[issue.ID] = true
+			}
+			if issue.Identifier != "" {
+				activeForeignIdentifiers[issue.Identifier] = true
+			}
+		}
 	}
+	for _, path := range request.ActivePaths {
+		base := filepath.Base(filepath.Clean(path))
+		if scope, _ := splitCheckoutIssueKey(base); scope != "" {
+			activeAttemptScopes[scope] = true
+		} else if trimmed, ok := strings.CutSuffix(base, "-execution"); ok && workpath.ValidAttemptScope(trimmed, request.Organization, request.Project) {
+			activeAttemptScopes[trimmed] = true
+		}
+	}
+	attemptScoped := workpath.AttemptScopePrefix(request.Organization, request.Project) != ""
 	entries, err := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		recordError(err)
 	}
 	var records []cleanupOwnershipRecord
 	var issues []Issue
+	var attemptRecords []struct {
+		relative     string
+		relativePath string
+		scope        string
+		record       cleanupOwnershipRecord
+		modTime      time.Time
+	}
 	for _, entry := range entries {
 		relative := filepath.Join(cleanupOwnershipRegistryDir, entry.Name())
 		record, err := l.readOwnershipRecord(relative)
 		if err != nil || !l.validOwnershipRecord(ctx, relative, record) {
 			continue
 		}
-		if record.requiresAttemptOwner() {
-			continue
-		}
 		relativePath, err := filepath.Rel(l.root, record.Path)
 		if err != nil {
 			recordError(err)
+			continue
+		}
+		if record.requiresAttemptOwner() {
+			if !attemptScoped {
+				continue
+			}
+			scope, _ := splitCheckoutIssueKey(record.Key)
+			if !workpath.ValidAttemptScope(scope, request.Organization, request.Project) {
+				continue
+			}
+			if (record.IssueID != "" && activeForeignIssueIDs[record.IssueID]) || (record.Identifier != "" && activeForeignIdentifiers[record.Identifier]) {
+				activeAttemptScopes[scope] = true
+				continue
+			}
+			info, err := root.Lstat(relativePath)
+			if errors.Is(err, fs.ErrNotExist) {
+				recordError(removeRetentionPath(root, relative, &totals.Ownership))
+				continue
+			}
+			if err != nil {
+				activeAttemptScopes[scope] = true
+				recordError(err)
+				continue
+			}
+			if activeAttemptScopes[scope] || nativeOwnershipActive(record, request.Active) || sessionHeld(record.Path) {
+				activeAttemptScopes[scope] = true
+				continue
+			}
+			if request.Now.Before(info.ModTime().Add(time.Hour)) {
+				activeAttemptScopes[scope] = true
+				continue
+			}
+			attemptRecords = append(attemptRecords, struct {
+				relative     string
+				relativePath string
+				scope        string
+				record       cleanupOwnershipRecord
+				modTime      time.Time
+			}{relative: relative, relativePath: relativePath, scope: scope, record: record, modTime: info.ModTime()})
 			continue
 		}
 		if _, err := root.Lstat(relativePath); errors.Is(err, fs.ErrNotExist) {
@@ -94,6 +166,60 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 		}
 		records = append(records, record)
 		issues = append(issues, Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier})
+	}
+	checkoutScans := maxAttemptRetentionScans / 2
+	checkoutCursor, execCursorBefore := l.getAttemptRetentionCursors()
+	sort.Slice(attemptRecords, func(i, j int) bool {
+		return attemptRecords[i].scope < attemptRecords[j].scope
+	})
+	if checkoutCursor != "" && len(attemptRecords) > 1 {
+		pivot := sort.Search(len(attemptRecords), func(i int) bool { return attemptRecords[i].scope > checkoutCursor })
+		if pivot > 0 && pivot < len(attemptRecords) {
+			attemptRecords = append(attemptRecords[pivot:], attemptRecords[:pivot]...)
+		}
+	}
+	var lastScannedScope string
+	attemptBudgetStopped := false
+	for _, item := range attemptRecords {
+		if checkoutScans <= 0 || cleanupBatchExhausted(ctx) {
+			attemptBudgetStopped = true
+			break
+		}
+		if activeAttemptScopes[item.scope] {
+			continue
+		}
+		execPath := filepath.Join(l.root, item.scope+"-execution")
+		release, ok := l.acquireAttemptScopeCleanup(item.record.Path, execPath)
+		if !ok {
+			activeAttemptScopes[item.scope] = true
+			continue
+		}
+		live, exhausted, scanErr := l.attemptScopeBusy(ctx, &checkoutScans, item.record.Path, execPath)
+		if scanErr != nil {
+			release()
+			lastScannedScope = item.scope
+			activeAttemptScopes[item.scope] = true
+			recordError(scanErr)
+			continue
+		}
+		if exhausted {
+			release()
+			activeAttemptScopes[item.scope] = true
+			attemptBudgetStopped = true
+			break
+		}
+		lastScannedScope = item.scope
+		if live {
+			release()
+			activeAttemptScopes[item.scope] = true
+			continue
+		}
+		removed, removeErr := l.removeExpiredWorkspaceLocked(ctx, root, item.record, &totals.Workspaces, &totals.Ownership)
+		release()
+		if !removed || removeErr != nil {
+			activeAttemptScopes[item.scope] = true
+		}
+		recordError(removeErr)
 	}
 	if len(issues) > 0 && request.Completed != nil {
 		completed, err := request.Completed(ctx, issues)
@@ -112,16 +238,205 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 				if len(pids) > 0 {
 					continue
 				}
-				recordError(l.removeExpiredWorkspace(ctx, root, record, &totals.Workspaces, &totals.Ownership))
+				_, removeErr := l.removeExpiredWorkspace(ctx, root, record, &totals.Workspaces, &totals.Ownership)
+				recordError(removeErr)
 			}
 		}
 	}
 	recordError(l.sweepQuarantine(ctx, root, request.Now, &totals.Quarantine))
 	recordError(sweepHookLogs(root, request.Now, &totals.HookLogs))
 	recordError(l.sweepAttempts(ctx, root, request, &totals.Attempts))
+	if attemptScoped {
+		execScans := (maxAttemptRetentionScans - maxAttemptRetentionScans/2) + checkoutScans
+		execStopped, execCursorAfter, execErr := l.sweepAttemptExecutionDirs(ctx, root, request, activeAttemptScopes, execCursorBefore, &execScans, &totals.Attempts)
+		recordError(execErr)
+		nextCheckoutCursor := ""
+		if attemptBudgetStopped {
+			if lastScannedScope != "" {
+				nextCheckoutCursor = lastScannedScope
+			} else {
+				nextCheckoutCursor = checkoutCursor
+			}
+		}
+		nextExecCursor := ""
+		if execStopped {
+			if execCursorAfter != "" {
+				nextExecCursor = execCursorAfter
+			} else {
+				nextExecCursor = execCursorBefore
+			}
+		}
+		l.setAttemptRetentionCursors(nextCheckoutCursor, nextExecCursor)
+	}
 	recordError(l.sweepLanding(ctx, root, request, &totals.Landing))
 	l.logger.Info("workspace retention sweep", "workdir", l.root, "totals", totals, "errors", len(failures))
 	return totals, errors.Join(failures...)
+}
+
+func (l *LocalGit) acquireAttemptScopeCleanup(paths ...string) (func(), bool) {
+	seen := make(map[string]struct{}, len(paths))
+	releases := make([]func(), 0, len(paths))
+	releaseAll := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		clean := filepath.Clean(path)
+		if _, dup := seen[clean]; dup {
+			continue
+		}
+		seen[clean] = struct{}{}
+		release, ok := l.uses.TryCleanup(clean)
+		if !ok {
+			releaseAll()
+			return nil, false
+		}
+		releases = append(releases, release)
+		execRelease, ok := executionUses.TryCleanup(clean)
+		if !ok {
+			releaseAll()
+			return nil, false
+		}
+		releases = append(releases, execRelease)
+	}
+	return releaseAll, true
+}
+
+func (l *LocalGit) getAttemptRetentionCursors() (string, string) {
+	l.retentionCursorMu.Lock()
+	defer l.retentionCursorMu.Unlock()
+	return l.attemptCheckoutCursor, l.attemptExecCursor
+}
+
+func (l *LocalGit) setAttemptRetentionCursors(checkoutCursor, execCursor string) {
+	l.retentionCursorMu.Lock()
+	l.attemptCheckoutCursor = checkoutCursor
+	l.attemptExecCursor = execCursor
+	l.retentionCursorMu.Unlock()
+}
+
+func (l *LocalGit) attemptScopeBusy(ctx context.Context, remainingScans *int, paths ...string) (bool, bool, error) {
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return true, false, err
+		}
+		if *remainingScans <= 0 {
+			return true, true, nil
+		}
+		*remainingScans--
+		pids, err := scanOwnedWorkspaceProcessIDs(ctx, path, l.scanWorkspacePaths)
+		if err != nil {
+			return true, false, err
+		}
+		if len(pids) > 0 {
+			return true, false, nil
+		}
+	}
+	return false, false, nil
+}
+
+func (l *LocalGit) sweepAttemptExecutionDirs(ctx context.Context, root *os.Root, request RetentionRequest, activeAttemptScopes map[string]bool, cursor string, remainingScans *int, total *RemovalTotal) (bool, string, error) {
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return false, "", err
+	}
+	checkoutByScope := map[string][]string{}
+	type execCandidate struct {
+		name  string
+		scope string
+	}
+	var candidates []execCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if scope, _ := splitCheckoutIssueKey(name); workpath.ValidAttemptScope(scope, request.Organization, request.Project) {
+			checkoutByScope[scope] = append(checkoutByScope[scope], filepath.Join(l.root, name))
+			continue
+		}
+		if scope, ok := strings.CutSuffix(name, "-execution"); ok && workpath.ValidAttemptScope(scope, request.Organization, request.Project) {
+			candidates = append(candidates, execCandidate{name: name, scope: scope})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].scope < candidates[j].scope
+	})
+	if cursor != "" && len(candidates) > 1 {
+		pivot := sort.Search(len(candidates), func(i int) bool { return candidates[i].scope > cursor })
+		if pivot > 0 && pivot < len(candidates) {
+			candidates = append(candidates[pivot:], candidates[:pivot]...)
+		}
+	}
+	var failures []error
+	var lastScope string
+	stopped := false
+	for _, candidate := range candidates {
+		if *remainingScans <= 0 || cleanupBatchExhausted(ctx) {
+			stopped = true
+			break
+		}
+		if activeAttemptScopes[candidate.scope] {
+			continue
+		}
+		info, err := root.Lstat(candidate.name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		if !info.IsDir() || request.Now.Before(info.ModTime().Add(time.Hour)) {
+			continue
+		}
+		paths := append([]string{filepath.Join(l.root, candidate.name)}, checkoutByScope[candidate.scope]...)
+		release, ok := l.acquireAttemptScopeCleanup(paths...)
+		if !ok {
+			continue
+		}
+		live, exhausted, err := l.attemptScopeBusy(ctx, remainingScans, paths...)
+		if err != nil {
+			release()
+			lastScope = candidate.scope
+			failures = append(failures, err)
+			continue
+		}
+		if exhausted {
+			release()
+			stopped = true
+			break
+		}
+		lastScope = candidate.scope
+		if live {
+			release()
+			continue
+		}
+		if !takeCleanupSlot(ctx) {
+			release()
+			stopped = true
+			break
+		}
+		if err := makeQuarantineWritable(root, candidate.name); err != nil {
+			release()
+			failures = append(failures, err)
+			continue
+		}
+		if err := removeRetentionPath(root, candidate.name, total); err != nil {
+			failures = append(failures, err)
+		}
+		release()
+	}
+	return stopped, lastScope, errors.Join(failures...)
 }
 
 func (l *LocalGit) sweepLanding(ctx context.Context, root *os.Root, request RetentionRequest, total *RemovalTotal) error {

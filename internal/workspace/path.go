@@ -5,9 +5,74 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/digitaldrywood/detent/internal/workspace/internal/workpath"
 )
+
+type scratchLeaseRegistry struct {
+	mu       sync.Mutex
+	holders  map[string]int
+	cleaning map[string]chan struct{}
+}
+
+func (r *scratchLeaseRegistry) Use(ctx context.Context, path string) (func(), error) {
+	clean := filepath.Clean(path)
+	for {
+		r.mu.Lock()
+		ch := r.cleaning[clean]
+		if ch == nil {
+			if r.holders == nil {
+				r.holders = make(map[string]int)
+			}
+			r.holders[clean]++
+			r.mu.Unlock()
+			var once sync.Once
+			return func() {
+				once.Do(func() {
+					r.mu.Lock()
+					if r.holders[clean] <= 1 {
+						delete(r.holders, clean)
+					} else {
+						r.holders[clean]--
+					}
+					r.mu.Unlock()
+				})
+			}, nil
+		}
+		r.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (r *scratchLeaseRegistry) TryCleanup(path string) (func(), bool) {
+	clean := filepath.Clean(path)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.holders[clean] > 0 || r.cleaning[clean] != nil {
+		return nil, false
+	}
+	if r.cleaning == nil {
+		r.cleaning = make(map[string]chan struct{})
+	}
+	ch := make(chan struct{})
+	r.cleaning[clean] = ch
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.cleaning, clean)
+			close(ch)
+			r.mu.Unlock()
+		})
+	}, true
+}
+
+var executionUses scratchLeaseRegistry
 
 const workerScratchBaseName = workpath.WorkerScratchBaseName
 
@@ -62,6 +127,28 @@ func (a AttemptWorkspace) PrepareScratch(root string) (string, error) {
 		return "", err
 	}
 	return os.MkdirTemp(parent, "worker-")
+}
+
+func (a AttemptWorkspace) AcquireScratch(ctx context.Context, root string) (string, func(), error) {
+	key := a.Key()
+	if key == "" {
+		return "", nil, errors.New("worker scratch requires an organization, project and attempt")
+	}
+	parent := filepath.Clean(filepath.Join(root, key+"-execution"))
+	release, err := executionUses.Use(ctx, parent)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := ensurePrivateDirectories(root, parent); err != nil {
+		release()
+		return "", nil, err
+	}
+	scratch, err := os.MkdirTemp(parent, "worker-")
+	if err != nil {
+		release()
+		return "", nil, err
+	}
+	return scratch, release, nil
 }
 
 type attemptWorkspaceContextKey struct{}

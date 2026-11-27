@@ -213,6 +213,27 @@ func AttemptKey(organization, project, attempt string) string {
 	return "attempt-" + scope + "-" + strings.ToLower(id)
 }
 
+func AttemptScopePrefix(organization, project string) string {
+	scope := attemptScope(organization, project)
+	if scope == "" {
+		return ""
+	}
+	return "attempt-" + scope + "-"
+}
+
+func ValidAttemptScope(scope, organization, project string) bool {
+	prefix := AttemptScopePrefix(organization, project)
+	if prefix == "" {
+		return false
+	}
+	id, ok := strings.CutPrefix(scope, prefix)
+	if !ok || len(id) != 32 || id != strings.ToLower(id) {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
+}
+
 func attemptScope(organization, project string) string {
 	if organization == "" || project == "" {
 		return ""

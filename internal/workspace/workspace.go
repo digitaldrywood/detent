@@ -318,9 +318,12 @@ type LocalGit struct {
 	autoBranch         bool
 	hooks              Hooks
 	logger             *slog.Logger
-	createMu           *sync.Mutex
-	removeOwnedPath    func(string, string) error
-	scanWorkspacePaths workspaceProcessScanner
+	createMu               *sync.Mutex
+	removeOwnedPath        func(string, string) error
+	scanWorkspacePaths     workspaceProcessScanner
+	retentionCursorMu     sync.Mutex
+	attemptCheckoutCursor string
+	attemptExecCursor     string
 }
 
 type PathError = workpath.PathError

@@ -86,9 +86,11 @@ type retentionTestReaper struct {
 	cleanupSweepReaper
 	completed map[string]time.Time
 	owned     []workspace.Issue
+	request   workspace.RetentionRequest
 }
 
 func (r *retentionTestReaper) SweepRetention(ctx context.Context, request workspace.RetentionRequest) (workspace.RetentionTotals, error) {
+	r.request = request
 	owned := r.owned
 	if owned == nil {
 		owned = []workspace.Issue{{ID: "issue"}}
@@ -222,5 +224,35 @@ func TestCleanupConsumersPreserveUnverifiedReferences(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type scopedRetentionConnector struct {
+	*rateLimitConnector
+	org     string
+	project string
+}
+
+func (c *scopedRetentionConnector) NativeWorkspaceScope() (string, string) {
+	return c.org, c.project
+}
+
+func TestRetentionNativeScopeAndActivePaths(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
+	reaper := &retentionTestReaper{}
+	tracker := &scopedRetentionConnector{rateLimitConnector: &rateLimitConnector{}, org: "org_example", project: "prj_example"}
+	cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+	o := newRateLimitTestOrchestrator(cfg, tracker)
+	o.reaper = reaper
+	state := newState(cfg)
+	activePath := "/tmp/workspaces/attempt-abc-def--prj_example-1"
+	state.Running["wi_1"] = Running{Issue: connector.Issue{ID: "wi_1", Identifier: "prj_example#1"}, WorkspacePath: activePath}
+	o.sweepRetention(t.Context(), &state, now)
+	if reaper.request.Organization != "org_example" || reaper.request.Project != "prj_example" {
+		t.Fatalf("scope=(%q,%q), want (org_example,prj_example)", reaper.request.Organization, reaper.request.Project)
+	}
+	if !slices.Contains(reaper.request.ActivePaths, activePath) {
+		t.Fatalf("ActivePaths=%v, want %q", reaper.request.ActivePaths, activePath)
 	}
 }
