@@ -248,7 +248,7 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 		{name: "verdict cannot skip a failed gate", gateRepair: true, limit: 4, verdict: "pass", roundChoice: `{"action":"continue","next_phase":"merge","reason":"Skip the failing command."}`, wantReason: "phase is not authorized", wantVersions: 1, wantCalls: 3, wantReviewed: true},
 		{name: "validator repair", loseReceipt: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "quiet session restart", deadlineRound: "idle", deadlineRounds: 2, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
-		{name: "repeated timeout files one incident", deadlineRound: "idle", deadlineRounds: 3, repeatRemedy: true, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
+		{name: "repeated timeouts preserve unfinished work", deadlineRound: "idle", deadlineRounds: 3, repeatRemedy: true, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "busy round review", deadlineRound: "review", deadlineRounds: 1, limit: 5, verdict: "pass", wantVersions: 1, wantCalls: 2, wantReviewed: true},
 		{name: "SSH validator repair", ssh: true, limit: 4, verdict: "rework", wantVersions: 2, wantCalls: 4, wantReviewed: true},
 		{name: "implementation repair before acceptance", sourceReview: true, limit: 5, verdict: "pass", wantVersions: 2, wantCalls: 5, wantReviewed: true},
@@ -339,8 +339,8 @@ func RunNativeSourceReviewLoop(t *testing.T, factories Constructors) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.repeatRemedy && provider.incidents != 1 {
-				t.Errorf("repeated recovery filed %d machine incidents, want one", provider.incidents)
+			if test.repeatRemedy && provider.incidents != 0 {
+				t.Errorf("repeated recovery filed %d machine incidents, want none", provider.incidents)
 			}
 			if loopWorkspace.beforeRuns != 1 || loopWorkspace.afterRuns > 1 {
 				t.Fatalf("workspace lifecycle: before=%d after=%d", loopWorkspace.beforeRuns, loopWorkspace.afterRuns)

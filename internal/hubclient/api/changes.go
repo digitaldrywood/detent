@@ -212,7 +212,10 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 		return err
 	}
 	if len(raw) <= maxResponseBytes {
-		_, err = c.ReviewChange(ctx, item, id, version, request)
+		review, err := c.ReviewChange(ctx, item, id, version, request)
+		if err == nil && (review.ID == "" || review.VersionID != version) {
+			return fmt.Errorf("%w: validator publication returned an incomplete acknowledgement", ErrUnavailable)
+		}
 		var oversized *responseSizeError
 		if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 {
 			return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)

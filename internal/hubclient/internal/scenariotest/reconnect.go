@@ -116,14 +116,14 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 			var providersStopped atomic.Bool
 			newScheduler := func() *Scheduler {
 				t.Helper()
-				var held atomic.Bool
+				var holds atomic.Int32
 				httpClient := *fixtureClient(h.admin.Transport()).httpClient
 				transport := httpClient.Transport
 				httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if test.incompatibleArchive && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/attempts/") && request.URL.Query().Get("view") != "cleanup" {
 						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"archive_incompatible","message":"archive section incompatible"}`))}, nil
 					}
-					if request.URL.Query().Get("view") == "recovery" && !held.Load() {
+					if request.URL.Query().Get("view") == "recovery" && holds.Load() == 0 {
 						t.Error("restart recovery ran without a scheduler hold")
 					}
 					return transport.RoundTrip(request)
@@ -133,8 +133,8 @@ func RunNativeRunnerReconnectsRetainedAttempt(t *testing.T, factories Constructo
 					t.Fatal(err)
 				}
 				scheduler, err := newTestScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: identity.MachineID, Hostname: redemption.Hostname, Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: 10 * time.Minute, LeaseHold: func(context.Context) (func(), error) {
-					held.Store(true)
-					return func() { held.Store(false) }, nil
+					holds.Add(1)
+					return func() { holds.Add(-1) }, nil
 				}})
 				if err != nil {
 					t.Fatal(err)

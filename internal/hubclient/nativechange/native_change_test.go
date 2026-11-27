@@ -828,7 +828,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				h.failChanges.failVersions.Store(test.version)
 			}
 			if !test.outage || test.completeDuring {
-				if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				if err := execution.Finish(guarded, "succeeded"); err == nil || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) != test.outage {
 					t.Fatalf("unpublished finish = %v", err)
 				}
 				recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))

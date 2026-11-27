@@ -118,7 +118,7 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 				posted := false
 				fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if posted && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/changes/") {
-						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("summary unavailable")), Request: request}, nil
+						return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"insufficient_scope","message":"summary unavailable"}`)), Request: request}, nil
 					}
 					response, err := next.RoundTrip(request)
 					if err == nil && request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/reviews") && response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -361,6 +361,9 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 								return transport.RoundTrip(request)
 							}
 							publicationCalls++
+							if publicationCalls == 2 {
+								return &http.Response{StatusCode: http.StatusNoContent, Header: make(http.Header), Body: http.NoBody}, nil
+							}
 							if test.acceptanceFailure != "uncommitted" {
 								response, err := transport.RoundTrip(request)
 								if err != nil {
@@ -378,8 +381,12 @@ func RunNativeImplementationReviewIsRecordedSeparately(t *testing.T, factories C
 						}))
 					}
 					publicationErr := validator.RecordValidator(publicationCtx, result)
-					if test.acceptanceFailure != "" && publicationCalls != 1 {
-						t.Fatalf("acceptance mutation was replayed: %d calls", publicationCalls)
+					wantPosts := 2
+					if test.acceptanceFailure == "refused" || test.acceptanceFailure == "cancelled" {
+						wantPosts = 1
+					}
+					if test.acceptanceFailure != "" && publicationCalls != wantPosts {
+						t.Fatalf("acceptance publication requests = %d, want %d", publicationCalls, wantPosts)
 					}
 					if test.acceptanceFailure == "refused" {
 						var refusal *APIError

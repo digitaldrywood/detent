@@ -615,7 +615,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		}
 		restart()
 	}
-	if failure == "refused" || failure == "workspace" {
+	if failure == "refused" || failure == "workspace" || failure == "cleanup" {
 		wantStates = []string{"Todo"}
 	}
 	for _, want := range wantStates {
@@ -628,6 +628,9 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 				select {
 				case run := <-observed:
 					wantReason := "session_restart_required"
+					if resumeCase == "dirty" {
+						wantReason = "local_checkpoint_changed"
+					}
 					if run.mode != refusalMode || run.state != dispatchState || run.recordedRole != planRecoveryRole || !errors.Is(run.err, runner.ErrNativeRecoveryRequired) || !strings.Contains(run.err.Error(), wantReason) {
 						t.Fatalf("planning refusal ran the wrong dispatch or failure: mode=%s state=%s recorded_role=%s error=%v", run.mode, run.state, run.recordedRole, run.err)
 					}
@@ -653,6 +656,17 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		}
 	}
 	changes := h.changes(t, issue.ID)
+	if failure == "cleanup" {
+		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+		if err != nil || len(current.Attempts) != 1 || current.Attempts[0].TerminalFailure == nil || !strings.Contains(current.Attempts[0].TerminalFailure.Error, "reap") || len(changes) != 0 || provider.calls.Load() != 1 {
+			t.Fatalf("cleanup failure lost provenance or published source: attempts=%+v changes=%v error=%v", current.Attempts, changes, err)
+		}
+		content, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "show", ":CHANGE.md").Output()
+		if err != nil || string(content) != "changed\n" {
+			t.Fatalf("cleanup failure lost staged worker edits: %q, %v", content, err)
+		}
+		return
+	}
 	if failure == "workspace" {
 		current, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 		if err != nil || len(current.Attempts) != 1 || provider.calls.Load() != 0 || len(changes) != 0 {
@@ -676,14 +690,18 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if preserved == nil {
 			t.Fatal("checkpoint recovery preserved no source")
 		}
-		if current.Issue.State != "Human Review" || provider.calls.Load() != 1 || provider.verdictCalls.Load() != 1 || len(changes) != 1 || changes[0].CurrentVersion == "" {
+		wantVerdicts := int64(1)
+		if cleanCheckpoint {
+			wantVerdicts = 0
+		}
+		if current.Issue.State != "Human Review" || provider.calls.Load() != 1 || provider.verdictCalls.Load() != wantVerdicts || len(changes) != 1 || changes[0].CurrentVersion == "" {
 			t.Fatalf("historical judgment prevented delivery or lost source: state=%s attempts=%d work_turns=%d verdict_turns=%d changes=%d error=%v", current.Issue.State, len(current.Attempts), provider.calls.Load(), provider.verdictCalls.Load(), len(changes), err)
 		}
 		if cleanCheckpoint {
 			if len(preservedChanges) != 1 {
 				t.Fatalf("clean restart requires one preserved Change, got %d", len(preservedChanges))
 			}
-			if provider.resumeVerified.Load() != 1 || changes[0].ID != preservedChanges[0].ID || changes[0].CurrentVersion == preservedChanges[0].CurrentVersion {
+			if provider.resumeVerified.Load() != 0 || changes[0].ID != preservedChanges[0].ID || changes[0].CurrentVersion == preservedChanges[0].CurrentVersion {
 				t.Fatalf("clean restart did not advance the existing Change: verified=%d changes=%v", provider.resumeVerified.Load(), changes)
 			}
 		}
@@ -848,7 +866,7 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		}
 		wantWorktrees := wantAttempts
 		if legacy {
-			if legacyCheckpoint != "clean" {
+			if legacyCheckpoint == "none" {
 				wantWorktrees--
 			}
 			if legacyCheckpoint == "unpushed" {
@@ -876,18 +894,6 @@ func testNativePlannerHandoff(t *testing.T, planReview string, answerHistory, lo
 		if wantAttempts > 1 && (records.Items[0].LeaseID == attempt.LeaseID || records.Items[0].FencingToken >= attempt.FencingToken) {
 			t.Fatal("replacement did not take a new fence")
 		}
-	}
-	if failure == "cleanup" {
-		receipts, err := h.admin.ItemPhaseReceipts(t.Context(), tracker.NativeWorkItemID(issue.ID))
-		if err != nil || len(receipts) == 0 || provider.calls.Load() != 1 {
-			t.Fatalf("finished work was not pushed under the original run: work_turns=%d receipts=%v error=%v", provider.calls.Load(), receipts, err)
-		}
-		receipt := receipts[0]
-		if strings.Contains(receipt.Branch, "-finalization-") {
-			t.Fatalf("finished work was pushed to a finalization branch: %s", receipt.Branch)
-		}
-		nativeChangeGit(t, remote, "merge-base", "--is-ancestor", receipt.HeadSHA, "refs/heads/"+receipt.Branch)
-		nativeChangeGit(t, remote, "cat-file", "-e", receipt.HeadSHA+":CHANGE.md")
 	}
 }
 

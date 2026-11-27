@@ -69,7 +69,10 @@ func (r *ReviewDispatch) CheckReplacement(t *testing.T, ctx context.Context, req
 	if observation == nil || observation.Phase != "completed" {
 		t.Fatal("expected a completed implementation heartbeat")
 	}
-	setNow(scheduler, observation.HeartbeatAt.Add(2*time.Minute))
+	setNow(scheduler, observation.HeartbeatAt.Add(scheduler.LeaseDuration()/2))
+	if _, err := scheduler.RenewClaim(t.Context(), req.Issue.ID, scheduler.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := owner.ClaimState(t.Context()); err != nil {
 		t.Fatal(err)
 	}

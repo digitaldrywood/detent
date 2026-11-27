@@ -470,17 +470,21 @@ func (s *Scheduler) claimNative(ctx context.Context, source *NativeConnector, re
 	return lease, err, true
 }
 
-func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
+func (s *Scheduler) holdNativeFetch(ctx context.Context) func() {
 	s.mu.Lock()
 	s.nativeFetches++
 	s.mu.Unlock()
 	s.syncLeaseHold(ctx)
-	defer func() {
+	return func() {
 		s.mu.Lock()
 		s.nativeFetches--
 		s.mu.Unlock()
 		s.syncLeaseHold(ctx)
-	}()
+	}
+}
+
+func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
+	defer s.holdNativeFetch(ctx)()
 	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
 		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 	}
@@ -727,6 +731,7 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request *orchestr
 	if !pending {
 		return nil, nil
 	}
+	defer s.holdNativeFetch(ctx)()
 	var owner runnerauth.Runner
 	path := "/api/v2/organizations/" + string(file.Identity.OrganizationID) + "/runners/" + file.Identity.RunnerID + "/routing"
 	if err := s.client.Request(ctx, http.MethodGet, path, nil, &owner); err != nil {

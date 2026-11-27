@@ -330,7 +330,7 @@ func TestSSHNativePublication(t *testing.T) {
 			fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)
 			remote, disconnect := nativeSSHExecution(t, ctx, e, root)
 			remote.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
-			remote.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+			diffSource := func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 				diff, err := workspace.GitFileDiffs(ctx, checkout, base, tracker.MaxDiffBytes)
 				if err != nil {
 					return tracker.AttemptDiffRequest{}, false
@@ -340,7 +340,8 @@ func TestSSHNativePublication(t *testing.T) {
 					request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
 				}
 				return request, true
-			})
+			}
+			remote.(runner.DiffExecution).SetDiffSource(diffSource)
 			if err := remote.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
@@ -376,6 +377,7 @@ func TestSSHNativePublication(t *testing.T) {
 					t.Fatal("central journal written remotely")
 				}
 				remote, _ = nativeSSHExecution(t, ctx, e, root)
+				remote.(runner.DiffExecution).SetDiffSource(diffSource)
 				artifacts = remote.(runner.ArtifactExecution)
 				if err := artifacts.PrepareArtifacts(ctx, checkout); err != nil {
 					t.Fatal(err)
@@ -404,6 +406,11 @@ func TestSSHNativePublication(t *testing.T) {
 				disconnect()
 				// Frozen captures can finish centrally with no SSH connection.
 				err = e.FinalizeArtifacts(ctx, "unavailable remote checkout")
+				remote, _ = nativeSSHExecution(t, ctx, e, root)
+				remote.(runner.DiffExecution).SetDiffSource(diffSource)
+				remote.(runner.ChangeSourceExecution).SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, checkout, base, head)
+				})
 			}
 			if err != nil {
 				t.Fatal(err)

@@ -1693,6 +1693,17 @@ func recoverRunChangeSource(ctx context.Context, req RunRequest, runWorkspace wo
 	return err
 }
 
+func localUnpushedCheckpoint(previous *tracker.NativeAttempt, lease tracker.NativeLease) *tracker.NativeCheckpoint {
+	if previous == nil || previous.MachineID == "" || previous.MachineID != lease.MachineID {
+		return nil
+	}
+	checkpoint := previous.Checkpoint
+	if checkpoint == nil || checkpoint.Storage != "local_only" || checkpoint.WorktreeState != "unpushed" || checkpoint.UncertainForgeEffect() {
+		return nil
+	}
+	return checkpoint
+}
+
 func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
 	if req.Execution == nil || nativeLanding {
 		return
@@ -1712,11 +1723,8 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 	}
 	refreshCheckpoint := previous != nil && previous.Checkpoint != nil && (previous.Checkpoint.WorktreeState == "dirty" || previous.Checkpoint.Resume == "fresh_checkout")
 	issue.Checkpoint = phaserecovery.Checkpoint(recovery, issue.Source)
-	if issue.Checkpoint == nil && issue.Source == nil && issue.AttemptWorkspace.Key() != "" &&
-		previous != nil && previous.MachineID != "" && previous.MachineID == recovery.Lease.MachineID &&
-		previous.Checkpoint != nil && previous.Checkpoint.Storage == "local_only" && previous.Checkpoint.WorktreeState == "unpushed" &&
-		!previous.Checkpoint.UncertainForgeEffect() {
-		issue.LocalCheckpoint = previous.Checkpoint
+	if issue.Checkpoint == nil && issue.Source == nil && issue.AttemptWorkspace.Key() != "" {
+		issue.LocalCheckpoint = localUnpushedCheckpoint(previous, recovery.Lease)
 	}
 	if issue.NativeRework && refreshCheckpoint && issue.Checkpoint != nil {
 		issue.FreshCheckout = true
@@ -1971,6 +1979,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		recovery := req.Execution.Recovery()
 		if recovery.Change != nil {
 			workspaceIssue.PublishedChangeHeadSHA = recovery.Change.HeadSHA
+		}
+		if planPending && phaseSource == nil && recovery.Change == nil {
+			if prior := recovery.SourceAttempt(); prior != nil && prior.Identity != nil && prior.Identity.Role == RolePlan {
+				workspaceIssue.LocalCheckpoint = localUnpushedCheckpoint(prior, recovery.Lease)
+			}
 		}
 		workspaceIssue.RetainPhaseCheckout = retainsPhaseCheckout(recovery, req.AttemptWorkspace, req.phaseContinuation.ActiveAttemptID)
 		workspaceIssue.FreshCheckout = !workspaceIssue.RetainPhaseCheckout
