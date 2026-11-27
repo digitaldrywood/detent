@@ -31,6 +31,7 @@ if ! command -v initdb >/dev/null || ! command -v postgres >/dev/null; then
 fi
 
 pg_sup_pid=""
+landing_stage="initialize"
 cleanup_landing_postgres() {
     if [ -n "$pg_sup_pid" ]; then
         kill -TERM "$pg_sup_pid" 2>/dev/null || true
@@ -41,7 +42,14 @@ cleanup_landing_postgres() {
         pg_sup_pid=""
     fi
 }
-trap cleanup_landing_postgres EXIT
+finish_landing() {
+    local result=$1
+    cleanup_landing_postgres
+    if [ "$result" -ne 0 ]; then
+        printf 'FAIL\tcheck-landing\t%s (exit %s)\n' "$landing_stage" "$result" >&2
+    fi
+}
+trap 'finish_landing "$?"' EXIT
 
 start_landing_postgres() {
     if [ -n "${DETENT_TEST_POSTGRES:-}" ] && [ "${DETENT_TEST_POSTGRES}" != "binary" ]; then
@@ -207,6 +215,7 @@ exit "$status"
     return 1
 }
 
+landing_stage="select assets"
 needs_assets=$(python3 - "$base" "$head" <<'PY'
 import os
 import subprocess
@@ -240,6 +249,7 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
+    landing_stage="build assets and configuration docs"
     python3 - "$procs" <<'PY'
 import subprocess
 import sys
@@ -267,8 +277,10 @@ if status:
 PY
     printf 'Landing assets and generated docs built successfully.\n'
 fi
+landing_stage="build Go packages"
 go build -p "$procs" ./...
 
+landing_stage="select Go packages"
 selection=$(python3 - "$base" "$head" <<'PY'
 import json
 from pathlib import Path
@@ -343,10 +355,14 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
     test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    landing_stage="start PostgreSQL test fixture"
     start_landing_postgres
+    landing_stage="run Go short tests"
     env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=30m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
+    landing_stage="prepare pinned linter"
     make -j1 "$linter" TEST_PROCS="$procs"
+    landing_stage="lint changed Go files"
     env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
