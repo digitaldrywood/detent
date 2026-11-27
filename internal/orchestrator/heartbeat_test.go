@@ -164,6 +164,16 @@ func TestHeartbeatRetryUsesRemainingLease(t *testing.T) {
 	}
 	due := manager.due(now)
 	if len(due) != 1 {
+		t.Fatalf("no renewal due before the late response: %v", due)
+	}
+	now = deadline.Add(-900 * time.Millisecond)
+	manager.finish(due[0], heartbeatResult{issueID: "example", sequence: due[0].sequence, claimError: errors.New("hub unavailable")})
+	if delay := manager.nextDelay(now); delay < 100*time.Millisecond || delay > 450*time.Millisecond {
+		t.Fatalf("last-second retry delay = %v, want a retry after Hub recovery and within half the remaining lease", delay)
+	}
+	now = now.Add(manager.nextDelay(now))
+	due = manager.due(now)
+	if len(due) != 1 {
 		t.Fatalf("no renewal due after Hub recovery: %v", due)
 	}
 	renewed := now.Add(time.Minute)

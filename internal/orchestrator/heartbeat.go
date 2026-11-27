@@ -422,7 +422,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		}
 	} else if result.claimError != nil && !result.claimOwnerLost && !current.localLeaseDeadline.IsZero() {
 		now := m.now()
-		if remaining := current.localLeaseDeadline.Sub(now); remaining > time.Second {
+		if remaining := current.localLeaseDeadline.Sub(now); remaining > 0 {
 			current.claimFailures = min(current.claimFailures+1, 6)
 			backoff := time.Second << (current.claimFailures - 1)
 			delay := min(backoff, 30*time.Second, m.settings.interval, remaining/2)

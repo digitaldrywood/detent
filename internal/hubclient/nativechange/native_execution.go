@@ -1102,10 +1102,8 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 		}
 		diffErr := e.postDiff(diffCtx, data.Sequence)
 		cancelDiff()
-		if nativeLeaseLost(diffErr) {
-			return e.executionError(ctx, diffErr)
-		}
 		if diffErr != nil {
+			diffErr = e.executionError(ctx, diffErr)
 			if errors.Is(diffErr, runner.ErrExecutionAuthorityUnavailable) || kind == "run.finished" && api.NativePublicationUnavailable(diffErr) {
 				return diffErr
 			}

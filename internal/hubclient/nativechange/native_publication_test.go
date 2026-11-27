@@ -382,11 +382,13 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 	for _, tc := range []struct {
 		name, outcome  string
 		expire, revoke bool
+		refuseDiff     bool
 	}{
 		{name: "successful diff", outcome: "succeeded"},
 		{name: "failed turn diff", outcome: "failed"},
 		{name: "expired before renewal acknowledgement", outcome: "succeeded", expire: true},
 		{name: "revoked on reconnect", outcome: "succeeded", revoke: true},
+		{name: "revoked during failed turn diff", outcome: "failed", refuseDiff: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -426,6 +428,11 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 						diffWrites++
 						if offline {
 							return nil, io.ErrUnexpectedEOF
+						}
+						if tc.refuseDiff {
+							response.WriteHeader(http.StatusForbidden)
+							io.WriteString(response, `{"code":"insufficient_scope"}`)
+							return response.Result(), nil
 						}
 						if err := json.NewDecoder(request.Body).Decode(&diff); err != nil {
 							return nil, err
@@ -510,6 +517,18 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				}
 				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); err != nil {
 					t.Fatal(err)
+				}
+				if tc.refuseDiff {
+					for range 2 {
+						err := execution.Finish(detached, tc.outcome)
+						var cause *runner.CancellationCause
+						if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) ||
+							!errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" ||
+							diffWrites != 2 || completionRequests != 0 {
+							t.Fatalf("diff refusal did not fence completion: error=%v cause=%v diff writes=%d event requests=%d", err, context.Cause(guarded), diffWrites, completionRequests)
+						}
+					}
+					return
 				}
 				if err := execution.Finish(detached, tc.outcome); !nativeTransportUnavailable(err) || completions != 1 {
 					t.Fatalf("lost completion response: error=%v completions=%d", err, completions)
