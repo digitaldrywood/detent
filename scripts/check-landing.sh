@@ -31,6 +31,7 @@ if ! command -v initdb >/dev/null || ! command -v postgres >/dev/null; then
 fi
 
 pg_sup_pid=""
+stage="prepare landing checks"
 cleanup_landing_postgres() {
     if [ -n "$pg_sup_pid" ]; then
         kill -TERM "$pg_sup_pid" 2>/dev/null || true
@@ -41,7 +42,16 @@ cleanup_landing_postgres() {
         pg_sup_pid=""
     fi
 }
-trap cleanup_landing_postgres EXIT
+
+finish_landing() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+        printf 'Error: landing stage "%s" exited %s.\n' "$stage" "$status" >&2
+    fi
+    cleanup_landing_postgres
+    return "$status"
+}
+trap finish_landing EXIT
 
 start_landing_postgres() {
     if [ -n "${DETENT_TEST_POSTGRES:-}" ] && [ "${DETENT_TEST_POSTGRES}" != "binary" ]; then
@@ -240,6 +250,8 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
+    stage="build assets"
+    printf 'Landing assets: building app, CSS and generated docs\n'
     python3 - "$procs" <<'PY'
 import subprocess
 import sys
@@ -267,8 +279,10 @@ if status:
 PY
     printf 'Landing assets and generated docs built successfully.\n'
 fi
+stage="build Go packages"
 go build -p "$procs" ./...
 
+stage="select test and lint packages"
 selection=$(python3 - "$base" "$head" <<'PY'
 import json
 from pathlib import Path
@@ -343,10 +357,14 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
     test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    stage="start test PostgreSQL"
     start_landing_postgres
+    stage="run short Go tests"
     env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=30m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
+    stage="prepare Go linter"
     make -j1 "$linter" TEST_PROCS="$procs"
+    stage="lint Go packages"
     env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
