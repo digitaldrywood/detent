@@ -97,7 +97,8 @@ func Diagnostic(value string, maxBytes int) (string, bool) {
 			running = true
 			timeout = false
 		}
-		if diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line) || running {
+		sourcemapFallback := strings.HasSuffix(trimmed, "): Error when using sourcemap for reporting an error: Can't resolve original location of error.")
+		if running || !sourcemapFallback && (diagnosticSummary.MatchString(line) || diagnosticFailure.MatchString(line)) {
 			if !strings.HasSuffix(line, "\n") {
 				lines[i] += "\n"
 			}
