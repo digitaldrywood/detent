@@ -357,6 +357,11 @@ func (c *NativeClient) AppendEvent(ctx context.Context, id tracker.NativeWorkIte
 	if err != nil {
 		return err
 	}
+	if request.Type == "run.finished" {
+		if deadline, ok := ctx.Deadline(); ok {
+			return c.client.requestWithDeadline(ctx, time.Until(deadline), http.MethodPost, c.base()+path+"/events", nil, request, nil)
+		}
+	}
 	return c.client.request(ctx, http.MethodPost, c.base()+path+"/events", request, nil)
 }
 
