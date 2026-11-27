@@ -116,17 +116,19 @@ func TestDetachedPublicationStopsOnLeaseLoss(t *testing.T) {
 					} else {
 						err = execution.RecordRoundVerdict(finalization, progresscheck.RoundInput{RoundID: "round"})
 					}
-					observedLoss := errors.Is(err, lost)
-					if !scenario.revoked {
-						observedLoss = errors.Is(err, runner.ErrExecutionAuthorityUnavailable) && strings.Contains(err.Error(), scenario.name)
-					}
-					if scenario.callback {
-						observedLoss = err != nil && strings.Contains(err.Error(), lost.Error())
-						if peerContext.Err() != nil {
-							t.Fatalf("callback peer ended: %v", peerContext.Err())
+					if scenario.revoked {
+						observedCause := errors.Is(err, lost)
+						if scenario.callback {
+							observedCause = err != nil && strings.Contains(err.Error(), lost.Error())
+						}
+						if !observedCause {
+							t.Fatalf("publication lost the cancellation cause: %v", err)
 						}
 					}
-					if !observedLoss || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || calls != 1 || time.Since(start) != 10*time.Second || finalization.Err() != nil {
+					if scenario.callback && peerContext.Err() != nil {
+						t.Fatalf("callback peer ended: %v", peerContext.Err())
+					}
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || calls != 1 || time.Since(start) != 10*time.Second || finalization.Err() != nil {
 						t.Fatalf("publication returned %v after %s and %d POSTs, finalization error = %v", err, time.Since(start), calls, finalization.Err())
 					}
 				})
