@@ -3751,7 +3751,7 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 		{name: "reverted non-conflicted file to upstream", helperContent: "package app\n// base\n"},
 		{name: "renamed non-conflicted file", renameHelper: "helper_renamed_test.go"},
 		{name: "deleted non-conflicted file", deleteHelper: true},
-		{name: "empty staged resolution rejected", emptyStage: true, wantErr: true},
+		{name: "empty staged resolution skips conflicted commit", emptyStage: true, helperContent: "package app\n// base\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -3837,6 +3837,105 @@ func TestFinalizeNativeWorkAllowsNonConflictedEditsDuringPausedRebase(t *testing
 				if err != nil || string(gotHelper) != tc.helperContent {
 					t.Fatalf("helper_test.go = (%q, %v), want %q", string(gotHelper), err, tc.helperContent)
 				}
+			}
+		})
+	}
+}
+
+func TestVerifyCommitRedundantStillRejectsEarlierDroppedNonConflictedChanges(t *testing.T) {
+	t.Parallel()
+	source := initSourceRepo(t)
+	writeCheckpointFile(t, source, "conflict.txt", "base\n")
+	writeCheckpointFile(t, source, "helper_test.go", "package app\n// base\n")
+	runGit(t, source, "add", "conflict.txt", "helper_test.go")
+	runGit(t, source, "commit", "-m", "base")
+	base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+	runGit(t, source, "checkout", "-b", "feature")
+	writeCheckpointFile(t, source, "conflict.txt", "feature\n")
+	writeCheckpointFile(t, source, "helper_test.go", "package app\n// feature\n")
+	runGit(t, source, "add", "conflict.txt", "helper_test.go")
+	runGit(t, source, "commit", "-m", "first commit with conflict and helper")
+	first := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	writeCheckpointFile(t, source, "second.txt", "second\n")
+	runGit(t, source, "add", "second.txt")
+	runGit(t, source, "commit", "-m", "second commit")
+
+	runGit(t, source, "checkout", base)
+	writeCheckpointFile(t, source, "conflict.txt", "upstream\n")
+	runGit(t, source, "add", "conflict.txt")
+	runGit(t, source, "commit", "-m", "upstream conflict")
+	upstream := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+
+	if err := verifyCommitRedundant(t.Context(), source, upstream, first); !errors.Is(err, ErrMergeResolutionInvalid) {
+		t.Fatalf("verifyCommitRedundant() = %v, want ErrMergeResolutionInvalid", err)
+	}
+	if err := verifyActiveCommitCanSkipEmpty(t.Context(), source, upstream, first); err != nil {
+		t.Fatalf("verifyActiveCommitCanSkipEmpty() = %v, want nil", err)
+	}
+}
+
+func TestFinalizeNativeWorkTwoConsecutiveConflictsWithFirstEmptySkip(t *testing.T) {
+	t.Parallel()
+	for _, backend := range []string{"merge", "apply"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			writeCheckpointFile(t, source, "c1.txt", "base1\n")
+			writeCheckpointFile(t, source, "c2.txt", "base2\n")
+			writeCheckpointFile(t, source, "helper.txt", "base-helper\n")
+			runGit(t, source, "add", "c1.txt", "c2.txt", "helper.txt")
+			runGit(t, source, "commit", "-m", "base")
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+
+			owner, err := NewLocalGit(LocalGitOptions{Root: t.TempDir(), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{Identifier: "example#two-conflicts-" + backend, NativeRework: true, ProgressBaseRef: "main"}
+			info, err := owner.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, info.Path, "config", "rebase.backend", backend)
+			writeCheckpointFile(t, info.Path, "c1.txt", "feat1\n")
+			writeCheckpointFile(t, info.Path, "helper.txt", "feat-helper\n")
+			runGit(t, info.Path, "add", "c1.txt", "helper.txt")
+			runGit(t, info.Path, "commit", "-m", "first conflicted commit")
+			writeCheckpointFile(t, info.Path, "c2.txt", "feat2\n")
+			runGit(t, info.Path, "add", "c2.txt")
+			runGit(t, info.Path, "commit", "-m", "second conflicted commit")
+
+			writeCheckpointFile(t, source, "c1.txt", "upstream1\n")
+			writeCheckpointFile(t, source, "c2.txt", "upstream2\n")
+			runGit(t, source, "add", "c1.txt", "c2.txt")
+			runGit(t, source, "commit", "-m", "upstream conflicts")
+			runGit(t, source, "push", "origin", "main")
+
+			prepared, err := owner.PrepareRework(t.Context(), info, issue, MergePrepareOptions{TargetBranch: "main"}, func(context.Context) error { return nil })
+			if err != nil || prepared.Status != MergePrepareStatusConflict {
+				t.Fatalf("PrepareRework() = (%+v, %v), want conflict", prepared, err)
+			}
+			runGit(t, info.Path, "checkout", "HEAD", "--", "c1.txt", "helper.txt")
+			runGit(t, info.Path, "add", "c1.txt", "helper.txt")
+
+			_, err = owner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil })
+			var incomplete *SourceFinalizationIncomplete
+			if !errors.As(err, &incomplete) || incomplete.Status != MergePrepareStatusConflict {
+				t.Fatalf("first FinalizeNativeWork() err = %v, want second conflict pause", err)
+			}
+			writeCheckpointFile(t, info.Path, "c2.txt", "upstream2+feat2\n")
+			runGit(t, info.Path, "add", "c2.txt")
+
+			head, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(context.Context) error { return nil })
+			if err != nil || strings.TrimSpace(head) == "" {
+				t.Fatalf("second FinalizeNativeWork() = (%q, %v), want clean finish", head, err)
+			}
+			got, err := os.ReadFile(filepath.Join(info.Path, "c2.txt"))
+			if err != nil || string(got) != "upstream2+feat2\n" {
+				t.Fatalf("c2.txt = (%q, %v), want upstream2+feat2", string(got), err)
 			}
 		})
 	}

@@ -1321,7 +1321,7 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 				if !errors.Is(replayCheckErr, ErrMergeResolutionInvalid) {
 					return pausedRebaseState{}, replayCheckErr
 				}
-				if err := verifyCommitRedundant(ctx, path, prev, src); err != nil {
+				if err := verifyActiveCommitCanSkipEmpty(ctx, path, prev, src); err != nil {
 					return pausedRebaseState{}, err
 				}
 			}
@@ -1331,14 +1331,14 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 			prev = dst
 		}
 		for srcIdx < len(appliedSources) {
-			if err := verifyCommitRedundant(ctx, path, prev, appliedSources[srcIdx]); err != nil {
+			if err := verifyActiveCommitCanSkipEmpty(ctx, path, prev, appliedSources[srcIdx]); err != nil {
 				return pausedRebaseState{}, err
 			}
 			srcIdx++
 		}
 		var canSkipEmptyApply bool
 		if activeSource != "" {
-			skipErr := verifyCommitRedundant(ctx, path, head, activeSource)
+			skipErr := verifyActiveCommitCanSkipEmpty(ctx, path, head, activeSource)
 			if skipErr == nil {
 				canSkipEmptyApply = true
 			} else if !errors.Is(skipErr, ErrMergeResolutionInvalid) {
@@ -1373,7 +1373,7 @@ func (l *LocalGit) verifyPausedRebaseState(ctx context.Context, path string, iss
 	}
 	var canDropEmptyActive bool
 	if stoppedCommit != "" && !rescheduledPick {
-		dropErr := verifyCommitRedundant(ctx, path, head, stoppedCommit)
+		dropErr := verifyActiveCommitCanSkipEmpty(ctx, path, head, stoppedCommit)
 		if dropErr == nil {
 			canDropEmptyActive = true
 		} else if !errors.Is(dropErr, ErrMergeResolutionInvalid) {
@@ -1847,6 +1847,14 @@ func isEmptyCommit(ctx context.Context, path, sha string) (bool, error) {
 }
 
 func verifyCommitRedundant(ctx context.Context, path, prev, src string) error {
+	return verifyCommitRedundantWithMode(ctx, path, prev, src, false)
+}
+
+func verifyActiveCommitCanSkipEmpty(ctx context.Context, path, prev, src string) error {
+	return verifyCommitRedundantWithMode(ctx, path, prev, src, true)
+}
+
+func verifyCommitRedundantWithMode(ctx context.Context, path, prev, src string, allowConflicted bool) error {
 	srcParent, pErr := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--quiet", src+"^")
 	if pErr != nil {
 		return fmt.Errorf("%w: paused rebase dropped commit cannot be verified as redundant", ErrMergeResolutionInvalid)
@@ -1866,6 +1874,9 @@ func verifyCommitRedundant(ctx context.Context, path, prev, src string) error {
 		var commandErr *gitexec.CommandError
 		if !errors.As(mErr, &commandErr) || commandErr.ExitCode != 1 {
 			return fmt.Errorf("verify paused rebase dropped commit: %w", mErr)
+		}
+		if allowConflicted {
+			return nil
 		}
 		header, _, _ := strings.Cut(commandErr.Output, "\x00\x00")
 		parts := strings.Split(header, "\x00")
@@ -1897,7 +1908,7 @@ func verifyCommitRedundant(ctx context.Context, path, prev, src string) error {
 
 func verifyReplayedCommit(ctx context.Context, path, prev, src, dst string) error {
 	if dst == prev {
-		return verifyCommitRedundant(ctx, path, prev, src)
+		return verifyActiveCommitCanSkipEmpty(ctx, path, prev, src)
 	}
 	parent, err := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", dst+"^")
 	if err != nil || strings.TrimSpace(parent) != prev {
