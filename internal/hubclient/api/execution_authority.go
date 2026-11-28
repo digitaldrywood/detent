@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -35,3 +37,20 @@ func WithPublicationRetry(ctx context.Context, retry func(context.Context, func(
 }
 
 func MutationEffectError(ctx context.Context) error { return nativeEffectError(ctx) }
+
+func (authority nativeMutationAuthority) fenceRequest(ctx context.Context) context.Context {
+	explicit := requestFence(ctx)
+	done := authority.guard.done
+	if done == nil {
+		done = explicit.done
+	}
+	return WithRequestFence(ctx, done, func() error {
+		if err := nativeEffectError(ctx); err != nil {
+			return err
+		}
+		if cause := authority.guard.err(); errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) || errors.Is(cause, runner.ErrOperatorStopped) {
+			return cause
+		}
+		return explicit.err()
+	})
+}

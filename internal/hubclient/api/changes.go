@@ -228,7 +228,11 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	}
 	var stored attachment.ArchiveReference
 	headers := http.Header{"X-Detent-Archive-Schema": {"1"}, "Content-Type": {"application/json"}}
-	if err := c.client.requestWithHeaders(ctx, http.MethodPost, c.AttachmentPath("/work-items/"+url.PathEscape(string(item))+"/archives"), headers, bytes.NewReader(content), &stored); err != nil {
+	uploadCtx := ctx
+	if authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok {
+		uploadCtx = authority.fenceRequest(ctx)
+	}
+	if err := c.client.requestWithHeaders(uploadCtx, http.MethodPost, c.AttachmentPath("/work-items/"+url.PathEscape(string(item))+"/archives"), headers, bytes.NewReader(content), &stored); err != nil {
 		return err
 	}
 	if stored.Validate(string(c.organization)) != nil || stored.SchemaVersion != 1 || stored.UncompressedSize != int64(len(content)) {
