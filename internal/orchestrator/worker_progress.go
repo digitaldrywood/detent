@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,7 +16,7 @@ type workerProgress struct {
 	mu          sync.Mutex
 	latest      atomic.Pointer[Running]
 	persisted   atomic.Pointer[store.WorkAttemptHeartbeat]
-	closed      bool
+	closeErr    error
 	base        store.WorkAttemptHeartbeat
 	attempts    store.WorkAttemptStore
 	leaseTTL    time.Duration
@@ -137,7 +136,7 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if p.closed {
+	if p.closeErr != nil {
 		return context.Canceled
 	}
 	latest := p.latest.Load()
@@ -167,11 +166,10 @@ func (p *workerProgress) observe(ctx context.Context, update runpkg.UsageUpdate)
 	}
 	base := p.base
 	base.LeaseExpiresAt = now.Add(ttl)
-	heartbeat := p.heartbeat(base, now)
-	heartbeat.WorkerMetadataJSON = runningWorkAttemptMetadataJSON(running, nil)
+	heartbeat := p.heartbeat(base, now, &running)
 	if err := p.attempts.RecordWorkAttemptHeartbeat(operationCtx, heartbeat); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			p.closed = true
+		if workAttemptHeartbeatRetired(err) {
+			p.closeErr = err
 		}
 		return err
 	}
@@ -189,8 +187,7 @@ func (p *workerProgress) leaseExpiry(expiry time.Time) time.Time {
 	return expiry
 }
 
-func (p *workerProgress) heartbeat(base store.WorkAttemptHeartbeat, now time.Time) store.WorkAttemptHeartbeat {
-	running := p.latest.Load()
+func (p *workerProgress) heartbeat(base store.WorkAttemptHeartbeat, now time.Time, running *Running) store.WorkAttemptHeartbeat {
 	base.HeartbeatAt = now
 	if base.Phase != "backoff" {
 		base.Phase = runningWorkAttemptPhase(*running, nil)
@@ -212,7 +209,9 @@ func (p *workerProgress) close() {
 		return
 	}
 	p.mu.Lock()
-	p.closed = true
+	if p.closeErr == nil {
+		p.closeErr = context.Canceled
+	}
 	p.mu.Unlock()
 }
 

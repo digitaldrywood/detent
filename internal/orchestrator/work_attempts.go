@@ -1200,7 +1200,7 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation
 	}
-	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.CompletionSourceStart.PRDiffFingerprint != "" {
+	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.CompletionSourceStart.PRDiffFingerprint != "" || running.CompletionSourceStart.Captured {
 		out[completionSourceStartMetadataKey] = running.CompletionSourceStart
 	}
 	for key, value := range metadata {

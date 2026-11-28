@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
 )
 
@@ -24,25 +25,64 @@ func (s *errorHeartbeatStore) RecordWorkAttemptHeartbeat(_ context.Context, hear
 	return s.err
 }
 
+type retryClaimHeartbeat struct {
+	claimCleanupScheduling
+	renewals int
+}
+
+func (s *retryClaimHeartbeat) RenewClaimHeartbeat(_ context.Context, _ string, now time.Time) (Claimed, error) {
+	s.renewals++
+	return Claimed{LeaseRenewedAt: now, LocalLeaseDeadline: now.Add(2 * time.Minute)}, nil
+}
+
 func TestHeartbeatWriteRetryErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		err      error
 		failures int
 		expires  bool
+		retired  bool
 	}{
-		{"transient persistence failure", errors.New("temporarily unavailable"), 7, false},
-		{"expired before retry", context.DeadlineExceeded, 1, true},
-		{"retired attempt", store.ErrNotFound, 1, false},
+		{name: "transient persistence failure", err: errors.New("temporarily unavailable"), failures: 7},
+		{name: "expired before retry", err: context.DeadlineExceeded, failures: 1, expires: true},
+		{name: "retired attempt", err: store.ErrNotFound, failures: 1, retired: true},
+		{name: "terminal attempt", err: store.ErrWorkAttemptTerminal, failures: 1, retired: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now()
 			const interval = 10 * time.Second
 			backend := &errorHeartbeatStore{err: tc.err}
-			manager := newHeartbeatManager(Config{Claiming: ClaimingConfig{LeaseTTL: time.Minute, HeartbeatInterval: interval}}, nil, backend, func() time.Time { return now }, nil)
+			cfg := Config{Claiming: ClaimingConfig{LeaseTTL: time.Minute, HeartbeatInterval: interval}}
+			source := &retryClaimHeartbeat{}
+			manager := newHeartbeatManager(cfg, nil, backend, func() time.Time { return now }, nil, source)
 			expires := now.Add(time.Minute)
-			target := heartbeatTarget{issueID: "worker", workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004, LeaseExpiresAt: expires}}
+			issue := connector.Issue{ID: "worker", State: "In Progress"}
+			target := heartbeatTarget{issueID: issue.ID, localLeaseDeadline: now.Add(2 * time.Minute), workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: 6004, LeaseExpiresAt: expires}}
 			manager.upsert(target)
+			state := newState(cfg)
+			cancelled := false
+			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 6004, cancel: func() { cancelled = true }}
+			state.Claimed[issue.ID] = Claimed{Issue: issue, LocalLeaseDeadline: target.localLeaseDeadline}
+			orch := &Orchestrator{cfg: cfg, scheduling: source, heartbeats: manager}
+			checkRetired := func(result heartbeatResult) {
+				t.Helper()
+				manager.upsert(target)
+				now = now.Add(interval)
+				for _, due := range manager.due(now) {
+					manager.execute(t.Context(), due)
+				}
+				if source.renewals != tc.failures || backend.calls != tc.failures {
+					t.Fatalf("retired attempt: claim renewals=%d attempt writes=%d, want %d of each", source.renewals, backend.calls, tc.failures)
+				}
+				if !result.claimOwnerLost || result.claimRenewed {
+					t.Fatalf("retirement result: lost=%t renewed=%t", result.claimOwnerLost, result.claimRenewed)
+				}
+				orch.handleHeartbeatResult(&state, result)
+				if !cancelled || len(source.forgotten) != 1 || source.forgotten[0] != issue.ID ||
+					knownDispatchWaitReason(issue, &state, nil, nil) != "" {
+					t.Fatalf("retired attempt kept local dispatch ownership: canceled=%t claims=%d running=%d forgotten=%v", cancelled, len(state.Claimed), len(state.Running), source.forgotten)
+				}
+			}
 			now = now.Add(interval)
 			for i := range tc.failures {
 				due := manager.due(now)
@@ -50,17 +90,16 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 					t.Fatalf("due=%v", due)
 				}
 				manager.execute(t.Context(), due[0])
-				if result := <-manager.results; !errors.Is(result.workAttemptError, tc.err) || backend.calls != i+1 {
+				result := <-manager.results
+				if !errors.Is(result.workAttemptError, tc.err) || backend.calls != i+1 {
 					t.Fatalf("calls=%d write error=%v, want %d calls and %v", backend.calls, result.workAttemptError, i+1, tc.err)
+				}
+				if tc.retired {
+					checkRetired(result)
+					return
 				}
 				manager.upsert(target)
 				delay := manager.nextDelay(now)
-				if errors.Is(tc.err, store.ErrNotFound) {
-					if delay != interval {
-						t.Fatalf("retired attempt retry in %s", delay)
-					}
-					return
-				}
 				maximum := min(time.Second<<i, interval, expires.Sub(now)/3)
 				if delay < maximum-maximum/8 || delay > maximum {
 					t.Fatalf("failure %d delay=%s maximum=%s", i+1, delay, maximum)
@@ -74,9 +113,11 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 					t.Fatalf("due=%v", due)
 				}
 				manager.execute(t.Context(), due[0])
-				if result := <-manager.results; !errors.Is(result.workAttemptError, store.ErrNotFound) || backend.calls != tc.failures {
+				result := <-manager.results
+				if !errors.Is(result.workAttemptError, store.ErrNotFound) {
 					t.Fatalf("expired attempt: calls=%d write error=%v", backend.calls, result.workAttemptError)
 				}
+				checkRetired(result)
 				return
 			}
 			backend.err = nil

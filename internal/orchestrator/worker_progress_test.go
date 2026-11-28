@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -17,11 +18,12 @@ import (
 func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name string
-		err  error
+		name         string
+		err          error
+		recoverWrite bool
 	}{
 		{name: "persisted"},
-		{name: "storage unavailable", err: errors.New("storage unavailable")},
+		{name: "storage unavailable", err: errors.New("storage unavailable"), recoverWrite: true},
 		{name: "retired attempt", err: store.ErrNotFound},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,7 +33,11 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 			base := store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID, HeartbeatAt: now, LeaseExpiresAt: now.Add(time.Minute)}
 			progress := newWorkerProgress(running, base, attempts, 4096)
 			running.progress = progress
-			update := runpkg.UsageUpdate{LastCommand: "go test ./...", SessionID: "session", LastMessage: "tests running", CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true}}
+			const fingerprint = "source-start-diff"
+			update := runpkg.UsageUpdate{LastCommand: "go test ./...", SessionID: "session", LastMessage: "tests running", CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{
+				WorkspaceDiffAvailable: true,
+				DiffStats:              runpkg.DiffStats{FilesChanged: 1, Fingerprint: fingerprint},
+			}}
 			if err := progress.observe(t.Context(), update); !errors.Is(err, tt.err) {
 				t.Fatalf("observe() = %v, want %v", err, tt.err)
 			}
@@ -43,6 +49,32 @@ func TestWorkerProgressCheckpointPersistence(t *testing.T) {
 			}
 			if len(attempts.heartbeats) != 1 || !strings.Contains(attempts.heartbeats[0].WorkerMetadataJSON, "completion_source") {
 				t.Fatalf("checkpoint heartbeats = %#v", attempts.heartbeats)
+			}
+			if tt.recoverWrite {
+				cfg := Config{Claiming: ClaimingConfig{LeaseTTL: time.Minute, HeartbeatInterval: 10 * time.Second}}
+				manager := newHeartbeatManager(cfg, nil, attempts, func() time.Time { return now }, nil)
+				manager.upsert(heartbeatTarget{issueID: running.Issue.ID, progress: progress, workAttemptHeartbeat: base})
+				attempts.err = nil
+				now = now.Add(10 * time.Second)
+				due := manager.due(now)
+				if len(due) != 1 {
+					t.Fatalf("due heartbeats = %d, want 1", len(due))
+				}
+				manager.execute(t.Context(), due[0])
+				if len(attempts.heartbeats) != 2 {
+					t.Fatalf("checkpoint and heartbeat writes = %d, want 2", len(attempts.heartbeats))
+				}
+				var metadata struct {
+					Source completionSourceStartRecord `json:"completion_source"`
+				}
+				if err := json.Unmarshal([]byte(attempts.heartbeats[1].WorkerMetadataJSON), &metadata); err != nil {
+					t.Fatal(err)
+				}
+				for _, source := range []completionSourceStartRecord{metadata.Source, running.withProgress().CompletionSourceStart} {
+					if !source.Persisted || source.Fingerprint.DiffFingerprint != fingerprint {
+						t.Errorf("source receipt after successful heartbeat = %+v, want persisted %q", source, fingerprint)
+					}
+				}
 			}
 			progress.close()
 			if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: "late callback"}); !errors.Is(err, context.Canceled) {
@@ -73,7 +105,7 @@ func TestWorkerProgressValidation(t *testing.T) {
 				running.Issue.PullRequest = &connector.PullRequest{CIStatus: "pending"}
 			}
 			progress := newWorkerProgress(running, base, nil, 4096)
-			got := progress.heartbeat(base, time.Now())
+			got := progress.heartbeat(base, time.Now(), progress.latest.Load())
 			if got.Phase != tt.phase || got.WaitReason != tt.wait || got.NextAction != tt.action {
 				t.Fatalf("heartbeat = %+v", got)
 			}

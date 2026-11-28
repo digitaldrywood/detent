@@ -288,7 +288,7 @@ func TestCompletionSnapshotPreservesLiveWorkerProgress(t *testing.T) {
 					t.Fatal(err)
 				}
 				if persisted {
-					heartbeat := progress.heartbeat(base, time.Now())
+					heartbeat := progress.heartbeat(base, time.Now(), progress.latest.Load())
 					progress.persisted.Store(&heartbeat)
 				}
 			}
@@ -1964,7 +1964,7 @@ func TestPromotionReadKeepsRecoveredWorkersObservable(t *testing.T) {
 					if err := progress.observe(t.Context(), runpkg.UsageUpdate{LastMessage: message}); err != nil {
 						t.Fatal(err)
 					}
-					heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now())
+					heartbeat := progress.heartbeat(store.WorkAttemptHeartbeat{AttemptID: 1}, time.Now(), progress.latest.Load())
 					progress.persisted.Store(&heartbeat)
 					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
 					snapshot, err := o.State(ctx)

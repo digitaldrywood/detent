@@ -63,7 +63,6 @@ type heartbeatTarget struct {
 	claimLost            bool
 	completionCancel     context.CancelCauseFunc
 	attemptDeadline      time.Time
-	attemptRetired       bool
 	workAttemptHeartbeat store.WorkAttemptHeartbeat
 	workerProcess        procgroup.Identity
 	workspacePath        string
@@ -190,7 +189,6 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		if current.attemptDeadline.After(target.attemptDeadline) {
 			target.attemptDeadline = current.attemptDeadline
 		}
-		target.attemptRetired = current.attemptRetired
 		target.failures = current.failures
 		target.sequence = current.sequence
 		target.nextDue = current.nextDue
@@ -252,7 +250,7 @@ func (target heartbeatTarget) completionDeadline() time.Time {
 
 func (target heartbeatTarget) completionLeaseLost(now time.Time) bool {
 	deadline := target.completionDeadline()
-	return target.claimLost || target.attemptRetired ||
+	return target.claimLost ||
 		!deadline.IsZero() && !now.Before(deadline)
 }
 
@@ -420,10 +418,15 @@ func (m *heartbeatManager) execute(ctx context.Context, target heartbeatTarget) 
 	}
 	settings := m.settingsSnapshot()
 	result := heartbeatResult{issueID: target.issueID, sequence: target.sequence}
+	now := m.now().UTC()
+	if deadline := target.progress.leaseExpiry(target.attemptDeadline); !deadline.IsZero() && !now.Before(deadline) {
+		result.workAttemptError = store.ErrNotFound
+		m.finish(target, result)
+		return
+	}
 	if source, ok := settings.scheduling.(claimHeartbeatClock); ok {
 		target.localLeaseDeadline = source.ClaimHeartbeatDeadline(target.issueID)
 	}
-	now := m.now().UTC()
 	if settings.scheduling != nil {
 		budget := settings.leaseTTL
 		if !target.localLeaseDeadline.IsZero() {
@@ -496,8 +499,8 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 	if target.progress != nil {
 		target.progress.mu.Lock()
 		defer target.progress.mu.Unlock()
-		if target.progress.closed {
-			return target.workAttemptHeartbeat, context.Canceled
+		if target.progress.closeErr != nil {
+			return target.workAttemptHeartbeat, target.progress.closeErr
 		}
 	}
 	m.mu.Lock()
@@ -509,8 +512,16 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 	heartbeat := target.workAttemptHeartbeat
 	heartbeat.HeartbeatAt = now
 	heartbeat.LeaseExpiresAt = now.Add(settings.leaseTTL)
+	var acknowledgedSource *Running
 	if target.progress != nil && heartbeat.Phase != deferredCompletionPhase {
-		heartbeat = target.progress.heartbeat(heartbeat, now)
+		running := target.progress.latest.Load()
+		if running.CompletionSourceStart.Captured && !running.CompletionSourceStart.Persisted {
+			snapshot := *running
+			snapshot.CompletionSourceStart.Persisted = true
+			acknowledgedSource = &snapshot
+			running = acknowledgedSource
+		}
+		heartbeat = target.progress.heartbeat(heartbeat, now, running)
 	}
 	if settings.workAttempts != nil && heartbeat.AttemptID > 0 {
 		budget := renewalBudget(now, target.progress.leaseExpiry(target.attemptDeadline), settings.leaseTTL)
@@ -528,6 +539,9 @@ func (m *heartbeatManager) persistHeartbeat(ctx context.Context, target heartbea
 		}
 		if target.progress != nil {
 			target.progress.persisted.Store(&heartbeat)
+			if acknowledgedSource != nil {
+				target.progress.latest.Store(acknowledgedSource)
+			}
 		}
 	}
 	return heartbeat, nil
@@ -546,12 +560,13 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		m.mu.Unlock()
 		return
 	}
-	if errors.Is(result.workAttemptError, store.ErrNotFound) {
-		current.attemptRetired = true
-	}
-	if current.completionCancel != nil && (result.claimOwnerLost || current.attemptRetired) {
-		current.completionCancel(ErrSchedulingClaimLost)
+	if current.claimLost || result.claimOwnerLost || workAttemptHeartbeatRetired(result.workAttemptError) {
 		current.claimLost = true
+		result.claimOwnerLost = true
+		result.claimRenewed = false
+		if current.completionCancel != nil {
+			current.completionCancel(ErrSchedulingClaimLost)
+		}
 	}
 	if result.workAttemptRenewed {
 		current.attemptDeadline = result.heartbeat.LeaseExpiresAt
@@ -559,7 +574,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	now := m.now()
 	delay := m.settings.interval
 	retry := !result.claimOwnerLost && (result.claimError != nil || result.workAttemptError != nil &&
-		!errors.Is(result.workAttemptError, store.ErrNotFound) && !errors.Is(result.workAttemptError, context.Canceled))
+		!errors.Is(result.workAttemptError, context.Canceled))
 	if retry {
 		current.failures++
 		delay = min(delay, schedulingBackoffInterval(time.Second, current.failures-1))
@@ -587,7 +602,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	current.workspaceAdvanced = result.workspaceAdvanced
 	m.targets[target.issueID] = current
 	m.mu.Unlock()
-	if result.workAttemptError != nil && !errors.Is(result.workAttemptError, store.ErrNotFound) {
+	if result.workAttemptError != nil && !workAttemptHeartbeatRetired(result.workAttemptError) {
 		m.logger.Warn("dedicated work attempt heartbeat failed", "attempt_id", result.heartbeat.AttemptID, "issue_id", result.issueID, "error", result.workAttemptError)
 	}
 	if result.claimError != nil {
@@ -601,6 +616,10 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	default:
 	}
 	m.notify()
+}
+
+func workAttemptHeartbeatRetired(err error) bool {
+	return errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrWorkAttemptTerminal)
 }
 
 func (m *heartbeatManager) notify() {

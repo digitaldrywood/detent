@@ -53,7 +53,7 @@ func (o *Orchestrator) checkpointValidator(issueID string, attemptID int64, gene
 			if owned.progress != nil {
 				owned.progress.mu.Lock()
 				defer owned.progress.mu.Unlock()
-				if owned.progress.closed {
+				if owned.progress.closeErr != nil {
 					return runner.ErrExecutionAuthorityUnavailable
 				}
 			}
