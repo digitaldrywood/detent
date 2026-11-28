@@ -885,6 +885,11 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 			ExpectedRevision: f.reload(t).Revision, State: "In Progress", Reason: "worker_progress",
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, move), http.StatusOK)
+		move.IdempotencyKey, move.ExpectedRevision, move.State = "disallowed-retry", f.reload(t).Revision, "Todo"
+		requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.worker, move), http.StatusUnprocessableEntity, "transition_not_allowed")
+		requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{
+			Mutation: tracker.Mutation{IdempotencyKey: "disallowed-human-move"}, ExpectedRevision: move.ExpectedRevision, State: "Todo", Reason: "user_requested",
+		}), http.StatusUnprocessableEntity, "transition_not_allowed")
 		failure := func() tracker.NativeRunEvent {
 			return tracker.NativeRunEvent{
 				Mutation: tracker.Mutation{IdempotencyKey: hubapi.NewID("finish")}, Type: "run.finished", SchemaVersion: 1,
@@ -896,9 +901,8 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 		for range 2 {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, failure()), http.StatusOK)
 			claim.SessionID = hubapi.NewID("competing-session")
-			if response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim); response.Code == http.StatusOK {
-				t.Fatal("failure allowed another claim before lease release")
-			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim), http.StatusConflict)
+			staleFailure := failure()
 			f.release(t)
 			claim.SessionID = hubapi.NewID("retry-session")
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, claim)
@@ -910,6 +914,7 @@ func TestClaimCandidatesKeepOfferingUnsuccessfulAttempts(t *testing.T) {
 			}
 			f.run, f.attempt = hubapi.NewID("run"), hubapi.NewID("attempt")
 			f.startAttempt(t, f.started)
+			requireNativeError(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, staleFailure), http.StatusConflict, "stale_fencing_token")
 		}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{
 			Mutation: tracker.Mutation{IdempotencyKey: "operator-hold"}, ExpectedRevision: f.reload(t).Revision, State: "Blocked", Reason: "user_requested",

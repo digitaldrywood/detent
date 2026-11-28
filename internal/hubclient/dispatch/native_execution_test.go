@@ -1183,6 +1183,9 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 					}
 					if event.Type == "run.finished" {
 						finishedEvents++
+						if operation == "release_finish_lost" {
+							return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
+						}
 					}
 				}
 				if strings.HasSuffix(request.URL.Path, "/release") && operation == "release_finish_ack_retry" {
@@ -1290,13 +1293,16 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 					claim := scheduler.nativeClaims[id]
 					claim.deadline = time.Now().Add(-time.Second)
 					scheduler.nativeClaims[id] = claim
-					owned := fixtureRecoverExecution(t, scheduler, id, func(state *checkpoint.State) { state.PreparedOutcome = "failed" })
+					owned := fixtureRecoverExecution(t, scheduler, id, func(state *checkpoint.State) {
+						state.PreparedOutcome = "failed"
+						state.Data.Identity = &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
+					})
 					observedAttempt = owned.CompletionData()
 				}
 				err := scheduler.ReleaseClaim(t.Context(), id, "released")
 				if operation == "release_finish_lost" {
-					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-						t.Fatalf("failed Finish reported settlement: %v", err)
+					if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || finishedEvents != 1 {
+						t.Fatalf("failed Finish = %v after %d finish events, want one Hub fence rejection", err, finishedEvents)
 					}
 				} else if err != nil {
 					t.Fatal(err)

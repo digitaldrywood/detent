@@ -859,10 +859,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context, reason string) (er
 	var rejection *nativeCompletionRejection
 	var releasedAttempt *tracker.NativeAttempt
 	if outcome != "" && !finished {
-		if outcome != "succeeded" && !e.claimActive() {
-			finishErr = runner.ErrExecutionAuthorityUnavailable
-		}
-		if finishErr == nil && publicationUnavailable && expectedState != "" {
+		if publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.NativeClient().Issue(ctx, e.claim.lease.WorkItemID)
 			if err != nil {
 				finishErr = e.executionError(ctx, err)
