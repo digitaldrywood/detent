@@ -25,7 +25,9 @@ func WithExecutionMutationAuthority(ctx context.Context, scope string, lease tra
 func executionMutationAuthority(ctx context.Context, scope string, lease tracker.NativeLease, execution runner.Execution) nativeMutationAuthority {
 	cause := func() error { return context.Cause(ctx) }
 	authority := nativeMutationAuthority{scope: scope, lease: lease, cancellation: cause, guard: requestGuard{done: ctx.Done(), check: cause}}
-	authority.owner, _ = execution.(mutationAuthorityOwner)
+	if owner, ok := execution.(mutationAuthorityOwner); ok {
+		authority.owner = owner
+	}
 	return authority
 }
 
