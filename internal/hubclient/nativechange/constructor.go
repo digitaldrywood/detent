@@ -40,7 +40,7 @@ func NewRecoveredExecution(host executioncontract.ExecutionHost, ctx context.Con
 	execution := &nativeExecution{
 		publication: state.Publication, observations: state.Observations,
 		scheduler: s, claim: claim, data: state.Data, pending: state.Pending, rejected: state.Rejected,
-		lastDiff: state.Diff, storedSeq: state.StoredSeq,
+		lastDiff: state.Diff, storedSeq: state.StoredSeq, pendingCheckpointDiff: state.PendingCheckpointDiff,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
 		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
 		recoveredSource: state.RecoveredSource, mergeResolution: state.MergeResolution,

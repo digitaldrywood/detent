@@ -166,6 +166,54 @@ func TestFencedRequestRechecksAuthorityAfterTokenResolution(t *testing.T) {
 	}
 }
 
+func TestDetachedPublicationRechecksAuthorityAfterTokenResolution(t *testing.T) {
+	for _, route := range []string{"phases", "progress"} {
+		for _, loss := range []string{"expiry", "revocation"} {
+			t.Run(route+"/"+loss, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) {
+						response.WriteHeader(http.StatusNoContent)
+					})
+					item := tracker.NativeWorkItemID("wi_example")
+					lease := tracker.NativeLease{ID: "lease", FencingToken: 1, WorkItemID: item}
+					mutation := tracker.Mutation{IdempotencyKey: "example", LeaseID: lease.ID, FencingToken: lease.FencingToken}
+					native, err := client.Native("org_example", "prj_example")
+					if err != nil {
+						t.Fatal(err)
+					}
+					live, revoke := context.WithCancelCause(t.Context())
+					defer revoke(nil)
+					deadline := time.Now().Add(time.Second)
+					resolved := false
+					client.tokenSource = func() string {
+						resolved = true
+						if loss == "expiry" {
+							<-time.After(time.Until(deadline))
+						} else {
+							revoke(runner.ErrExecutionAuthorityUnavailable)
+						}
+						return "fixture"
+					}
+					ctx := context.WithoutCancel(WithMutationAuthority(live, native.Scope(), lease, func() error {
+						if !time.Now().Before(deadline) {
+							return runner.ErrExecutionAuthorityUnavailable
+						}
+						return context.Cause(live)
+					}))
+					if route == "phases" {
+						_, err = native.PublishPhaseReceipt(ctx, item, tracker.NativePhaseReceipt{Mutation: mutation})
+					} else {
+						_, err = native.PublishRoundVerdict(ctx, item, progresscheck.Publication{Mutation: mutation})
+					}
+					if !resolved || ctx.Err() != nil || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || *calls != 0 {
+						t.Fatalf("token resolved = %t, request reached transport %d times, error = %v", resolved, *calls, err)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestFencedPublicationRequestBudget(t *testing.T) {
 	for _, route := range []string{"phases", "progress"} {
 		for _, scenario := range []struct {

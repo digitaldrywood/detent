@@ -76,7 +76,8 @@ type nativeExecution struct {
 	// nil for a run with no worktree to describe.
 	diffSource runner.AttemptDiffSource
 	// lastDiff is the most recent diff the source produced.
-	lastDiff *tracker.AttemptDiffRequest
+	lastDiff              *tracker.AttemptDiffRequest
+	pendingCheckpointDiff *tracker.AttemptDiffRequest
 	// storedSeq is the run event sequence whose diff the hub last stored, so
 	// the finish can tell its final diff was received.
 	storedSeq int64
@@ -1098,13 +1099,22 @@ func (e *nativeExecution) captureDiff(ctx context.Context) error {
 // running and its lease is therefore the producer; the generation is the run
 // event sequence the diff belongs to, which is why the post happens before the
 // event and not after it.
-func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnosticErr error) {
+func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) error {
+	_, err := e.captureAndPostDiff(ctx, sequence)
+	return err
+}
+
+func (e *nativeExecution) captureAndPostDiff(ctx context.Context, sequence int64) (_ *tracker.AttemptDiffRequest, diagnosticErr error) {
 	done := e.diagnosticOperation("native.postDiff")
 	defer func() { done(diagnosticErr) }()
 	if err := e.captureDiff(ctx); err != nil {
-		return err
+		return nil, err
 	}
-	request := *e.lastDiff
+	diff := e.lastDiff
+	return diff, e.postCapturedDiff(ctx, sequence, *diff)
+}
+
+func (e *nativeExecution) postCapturedDiff(ctx context.Context, sequence int64, request tracker.AttemptDiffRequest) error {
 	request.Producer = tracker.DiffProducer{
 		Kind: tracker.DiffSourceAttempt, ID: e.data.AttemptID,
 		LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
@@ -1160,19 +1170,25 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 	if kind == "run.finished" {
 		data.CompletionBody = e.preparedMessage
 	}
+	var pendingDiff *tracker.AttemptDiffRequest
+	var pendingDiffErr error
 	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
 		diffCtx, cancelDiff := ctx, func() {}
 		if kind == "run.checkpointed" {
 			diffCtx, cancelDiff = checkpointDiffContext(ctx)
 		}
-		diffErr := e.postDiff(diffCtx, data.Sequence)
+		diff, diffErr := e.captureAndPostDiff(diffCtx, data.Sequence)
 		cancelDiff()
 		if diffErr != nil {
 			diffErr = e.executionError(ctx, diffErr)
 			if errors.Is(diffErr, runner.ErrExecutionAuthorityUnavailable) || kind == "run.finished" && api.NativePublicationUnavailable(diffErr) {
 				return diffErr
 			}
-			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", diffErr)
+			if kind == "run.checkpointed" && diff != nil && api.NativePublicationUnavailable(diffErr) {
+				pendingDiff, pendingDiffErr = diff, diffErr
+			} else {
+				slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", diffErr)
+			}
 		}
 	}
 	data.Handoff = checkpoint
@@ -1203,6 +1219,10 @@ func (e *nativeExecution) appendEvent(ctx context.Context, kind, outcome string,
 		return err
 	}
 	e.pending = &event
+	if pendingDiff != nil {
+		e.pendingCheckpointDiff = pendingDiff
+		return pendingDiffErr
+	}
 	return e.flush(ctx)
 }
 
@@ -1212,6 +1232,19 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	}
 	done := e.diagnosticOperation("append." + e.pending.Type)
 	defer func() { done(err) }()
+	if diff := e.pendingCheckpointDiff; diff != nil {
+		diffCtx, cancel := checkpointDiffContext(ctx)
+		diffErr := e.postCapturedDiff(diffCtx, e.pending.Data.Sequence, *diff)
+		cancel()
+		if diffErr != nil {
+			diffErr = e.executionError(ctx, diffErr)
+			if errors.Is(diffErr, runner.ErrExecutionAuthorityUnavailable) || api.NativePublicationUnavailable(diffErr) {
+				return diffErr
+			}
+			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", e.pending.Data.Sequence, "error", diffErr)
+		}
+		e.pendingCheckpointDiff = nil
+	}
 	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
 		path, err := nativeItemPath(e.claim.lease.WorkItemID)
 		if err != nil {

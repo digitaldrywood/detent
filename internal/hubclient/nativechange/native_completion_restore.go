@@ -28,7 +28,7 @@ func (e *nativeExecution) completionSnapshot() checkpoint.State {
 		Settled:     e.settled,
 		Publication: e.publication, Observations: e.observations,
 		Lease: e.claim.lease, Data: e.data, Pending: e.pending, Rejected: e.rejected,
-		Diff: e.lastDiff, StoredSeq: e.storedSeq,
+		Diff: e.lastDiff, StoredSeq: e.storedSeq, PendingCheckpointDiff: e.pendingCheckpointDiff,
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
 		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
