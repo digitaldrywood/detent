@@ -20,6 +20,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const issueMailInterval = 10 * time.Second
+
 type issueMailer struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -43,19 +45,14 @@ func (s *Service) startIssueMailer() {
 	s.issueMailer = &issueMailer{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(s.issueMailer.done)
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(issueMailInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := s.deliverDailySummaries(ctx, s.config.Clock()); err != nil && ctx.Err() == nil {
-					s.config.Logger.Warn("daily summary delivery failed", "error", err)
-				}
-				if err := s.deliverIssueEmails(ctx, s.config.Clock()); err != nil && ctx.Err() == nil {
-					s.config.Logger.Warn("issue notification delivery failed", "error", err)
-				}
+				s.deliverIssueMailTick(ctx)
 			}
 		}
 	}()
@@ -68,7 +65,21 @@ func (s *Service) stopIssueMailer() {
 	}
 }
 
-func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
+func (s *Service) deliverIssueMailTick(workerCtx context.Context) {
+	tickCtx, cancel := context.WithTimeout(workerCtx, issueMailInterval)
+	defer cancel()
+	if err := s.deliverDailySummaries(tickCtx, s.config.Clock()); err != nil && workerCtx.Err() == nil {
+		s.config.Logger.Warn("daily summary delivery failed", "error", err)
+	}
+	if tickCtx.Err() != nil {
+		return
+	}
+	if err := s.deliverIssueEmails(tickCtx, workerCtx, s.config.Clock()); err != nil && workerCtx.Err() == nil {
+		s.config.Logger.Warn("issue notification delivery failed", "error", err)
+	}
+}
+
+func (s *Service) deliverIssueEmails(ctx, sendParent context.Context, now time.Time) error {
 	if s.config.Hosted == nil || s.config.Hosted.EmailSender == nil {
 		return nil
 	}
@@ -87,6 +98,9 @@ func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
 	cursor, wrapped, examined := seek, false, false
 	var passed []accountstore.NotificationCandidate
 	for range 100 {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(failures, err)
+		}
 		message, page, consumed, err := s.claimIssueEmail(ctx, now, cursor, passed)
 		if !page.Found && !page.More {
 			if err != nil {
@@ -110,7 +124,7 @@ func (s *Service) deliverIssueEmails(ctx context.Context, now time.Time) error {
 		if message.To == "" {
 			continue
 		}
-		sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		sendCtx, cancel := context.WithTimeout(sendParent, 10*time.Second)
 		err = s.config.Hosted.EmailSender.SendEmail(sendCtx, message)
 		cancel()
 		if err != nil {

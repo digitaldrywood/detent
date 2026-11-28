@@ -4,16 +4,118 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/hubserver/accountstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
+	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type issueMailerRepository struct {
+	tenantstore.Repository
+	accountstore.SummaryDeliveryRepository
+	accountstore.NotificationRepository
+	reads         chan context.Context
+	notifications chan context.Context
+	summaryDue    bool
+}
+
+func (r *issueMailerRepository) DueSummaries(_ context.Context, org tracker.OrganizationID, now time.Time) ([]accountstore.SummaryRecipient, error) {
+	if !r.summaryDue {
+		return nil, nil
+	}
+	r.summaryDue = false
+	return []accountstore.SummaryRecipient{{Organization: string(org), TimeZone: "UTC", Eligible: true, End: now}}, nil
+}
+
+func (*issueMailerRepository) SummaryStatus(context.Context, tracker.OrganizationID, string, time.Time) (string, error) {
+	return "", nil
+}
+
+func (r *issueMailerRepository) ReadTenant(ctx context.Context, _ tracker.OrganizationID, _ corestore.Workload, _ func(tenantstore.Reader) error) error {
+	r.reads <- ctx
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *issueMailerRepository) NotificationEvents(ctx context.Context, _ tracker.OrganizationID) ([]eventstore.Event, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r.notifications <- ctx:
+		return nil, nil
+	}
+}
+
+func (*issueMailerRepository) NotificationSeek(context.Context, tracker.OrganizationID) (accountstore.NotificationCursor, error) {
+	return accountstore.NotificationCursor{}, nil
+}
+
+func (*issueMailerRepository) DueNotification(context.Context, tracker.OrganizationID, time.Time, accountstore.NotificationCursor, []accountstore.NotificationCandidate) (accountstore.NotificationPage, error) {
+	return accountstore.NotificationPage{}, nil
+}
+
+func TestIssueMailerTickDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stop    bool
+		wantErr error
+		elapsed time.Duration
+	}{
+		{name: "tick expires and notifications resume", wantErr: context.DeadlineExceeded, elapsed: 10 * time.Second},
+		{name: "shutdown cancels the pending read", stop: true, wantErr: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				repo := &issueMailerRepository{reads: make(chan context.Context, 1), notifications: make(chan context.Context, 1), summaryDue: true}
+				s := &Service{config: Config{
+					Hosted: &hostedplans.HostedConfig{OrganizationID: "org_example", EmailSender: healthEmailSenderFunc(func(context.Context, auth.EmailMessage) error {
+						t.Error("mailer sent an email after a failed summary read")
+						return nil
+					})},
+					AccessRepository: repo, TenantRepository: repo, Clock: time.Now, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				}}
+				s.startIssueMailer()
+				defer s.stopIssueMailer()
+
+				ctx := <-repo.reads
+				started := time.Now()
+				deadline, ok := ctx.Deadline()
+				if !ok || deadline.Sub(started) != 10*time.Second {
+					t.Fatalf("summary read deadline = %v, present = %t, want 10s from read start", deadline, ok)
+				}
+				if tc.stop {
+					s.stopIssueMailer()
+				}
+				<-ctx.Done()
+				if !errors.Is(ctx.Err(), tc.wantErr) || time.Since(started) != tc.elapsed {
+					t.Fatalf("summary read ended after %s with %v, want %s and %v", time.Since(started), ctx.Err(), tc.elapsed, tc.wantErr)
+				}
+				if !tc.stop {
+					select {
+					case <-s.issueMailer.done:
+						t.Fatal("tick expiry stopped the mail worker")
+					case next := <-repo.notifications:
+						if nextDeadline, ok := next.Deadline(); !ok || nextDeadline.Sub(deadline) != 10*time.Second {
+							t.Fatalf("notification deadline = %v, present = %t, want 10s after summary tick expired", nextDeadline, ok)
+						}
+					}
+				}
+			})
+		})
+	}
+}
 
 type unreadableDetails struct {
 	attachment.DetailStore
@@ -44,11 +146,11 @@ func TestIssueEmailKeepsNoticeWhenVerificationIsUnreadable(t *testing.T) {
 	details := &unreadableDetails{DetailStore: v.service.runDetailStore(), unreadable: true}
 	v.service.config.RunDetails = details
 	due := time.Now().Add(2 * time.Minute)
-	if err := v.service.deliverIssueEmails(t.Context(), due); err == nil || requests != 0 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err == nil || requests != 0 {
 		t.Fatalf("unreadable verification error=%v requests=%d", err, requests)
 	}
 	details.unreadable = false
-	if err := v.service.deliverIssueEmails(t.Context(), due); err != nil || requests != 1 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err != nil || requests != 1 {
 		t.Fatalf("readable verification error=%v requests=%d, want 1", err, requests)
 	}
 }
@@ -207,13 +309,13 @@ func TestIssueEmailPassesSubscriptionHeldByAnotherWorker(t *testing.T) {
 		second = v.users["tester"].identity.Email
 	}
 	due := time.Now().Add(2 * time.Minute)
-	if err := v.service.deliverIssueEmails(t.Context(), due); err != nil || requests[first] != 0 || requests[second] != 1 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err != nil || requests[first] != 0 || requests[second] != 1 {
 		t.Fatalf("with %s held: error=%v requests=%v, want only %s", first, err, requests, second)
 	}
 	if err := held.Rollback(); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.service.deliverIssueEmails(t.Context(), due); err != nil || requests[first] != 1 || requests[second] != 1 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err != nil || requests[first] != 1 || requests[second] != 1 {
 		t.Fatalf("after release: error=%v requests=%v", err, requests)
 	}
 }
@@ -254,7 +356,7 @@ func TestIssueEmailReachesDueNoticeBehindFutureNotices(t *testing.T) {
 		reached = v.users["tester"].identity.Email
 	}
 	for tick := range 3 {
-		if err := v.service.deliverIssueEmails(t.Context(), due); err != nil || requests[reached] != 1 || requests[waiting] != 0 {
+		if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err != nil || requests[reached] != 1 || requests[waiting] != 0 {
 			t.Fatalf("tick=%d error=%v requests=%v, want one for %s and none before its time for %s", tick, err, requests, reached, waiting)
 		}
 	}
@@ -291,10 +393,10 @@ func TestIssueEmailReachesRecipientBehindFailingSubscriptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	v.service.config.RunDetails = &unreadableDetails{DetailStore: v.service.runDetailStore(), unreadable: true}
-	if err := v.service.deliverIssueEmails(t.Context(), due); err == nil || len(delivered) != 0 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err == nil || len(delivered) != 0 {
 		t.Fatalf("first run error=%v delivered=%v, want 100 unreadable subscriptions and nothing sent", err, delivered)
 	}
-	if err := v.service.deliverIssueEmails(t.Context(), due); err == nil || delivered[later] != 1 || len(delivered) != 1 {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), due); err == nil || delivered[later] != 1 || len(delivered) != 1 {
 		t.Fatalf("second run error=%v delivered=%v, want the later recipient %s once", err, delivered, later)
 	}
 }

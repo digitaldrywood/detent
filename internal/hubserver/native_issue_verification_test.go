@@ -370,7 +370,7 @@ func TestNativeIssueVerificationListAndEmail(t *testing.T) {
 	other := v.file(t, "tester", "list-other", nil, "")
 	open := v.file(t, "reporter", "list-open", nil, "")
 	open = v.move(t, open, "Todo")
-	if err := v.service.deliverIssueEmails(t.Context(), started.Add(2*time.Minute)); err != nil {
+	if err := v.service.deliverIssueEmails(t.Context(), t.Context(), started.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
