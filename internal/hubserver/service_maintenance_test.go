@@ -3,8 +3,10 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,13 +17,122 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/eventstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/healthstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
+	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/threadstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/viewstore"
 	"github.com/digitaldrywood/detent/internal/pgtransport"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestPostgresMaintenanceReadDeadlines(t *testing.T) {
+	for _, stall := range []string{"unread", "change reviews"} {
+		t.Run(stall, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const interval = 25 * time.Second
+				ctx, cancel := context.WithCancel(t.Context())
+				type read struct {
+					kind string
+					ctx  context.Context
+					at   time.Time
+					err  error
+				}
+				reads := make(chan read)
+				blocked := false
+				repository := maintenanceDeadlineRepository{observe: func(readCtx context.Context, kind string) error {
+					if kind == stall && !blocked {
+						blocked = true
+						if _, ok := readCtx.Deadline(); ok {
+							<-readCtx.Done()
+						}
+					}
+					select {
+					case reads <- read{kind: kind, ctx: readCtx, at: time.Now(), err: readCtx.Err()}:
+					case <-ctx.Done():
+					}
+					return readCtx.Err()
+				}}
+				config := WithDeps(Config{Clock: time.Now, Logger: discardLogger(), WebhookMaintenanceInterval: interval, TenantRepository: repository}, hubdeps.Deps{
+					RunMaintenance: func(context.Context, *hubmaintenance.Scheduler, func(error)) error { return nil },
+					NewMaintenanceTimer: func(time.Duration) hubdeps.Timer {
+						return hubdeps.Timer{Stop: func() {}}
+					},
+				}).Normalized()
+				service := &Service{config: config, localOrganization: "org_example", workerDone: make(chan struct{}), boardRefresh: make(chan struct{}, 1)}
+				started := time.Now()
+				go service.runPostgresMaintenance(ctx)
+				defer func() {
+					cancel()
+					<-service.workerDone
+				}()
+				expectRead := func(kind string, deadline time.Time, expired bool) context.Context {
+					t.Helper()
+					got := <-reads
+					actual, ok := got.ctx.Deadline()
+					if got.kind != kind || !ok || !actual.Equal(deadline) {
+						t.Fatalf("read = %s with deadline %v, want %s with deadline %v", got.kind, actual, kind, deadline)
+					}
+					if expired && (!errors.Is(got.err, context.DeadlineExceeded) || !got.at.Equal(deadline)) || !expired && got.err != nil {
+						t.Fatalf("read %s returned %v at %v, deadline %v, want expired=%v", kind, got.err, got.at, deadline, expired)
+					}
+					return got.ctx
+				}
+				expectRead("unread", started.Add(interval), stall == "unread")
+				expectRead("change reviews", started.Add(interval), true)
+				for _, next := range []struct {
+					event  bool
+					kind   string
+					budget time.Duration
+				}{
+					{kind: "checkpoint source", budget: 3 * interval},
+					{event: true, kind: "change reviews", budget: 3 * interval},
+				} {
+					if next.event {
+						service.boardRefresh <- struct{}{}
+					}
+					expectRead("unread", started.Add(next.budget), false)
+					passCtx := expectRead(next.kind, started.Add(next.budget), false)
+					synctest.Wait()
+					if passCtx.Err() != context.Canceled || ctx.Err() != nil {
+						t.Fatalf("pass context = %v, worker context = %v", passCtx.Err(), ctx.Err())
+					}
+				}
+			})
+		})
+	}
+}
+
+type maintenanceDeadlineRepository struct {
+	tenantstore.Repository
+	observe func(context.Context, string) error
+}
+
+func (r maintenanceDeadlineRepository) ReadTenant(ctx context.Context, _ tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
+	return read(maintenanceDeadlineReader{observe: func(kind string) error { return r.observe(ctx, kind) }})
+}
+
+func (r maintenanceDeadlineRepository) BackfillCurrentChangeReviewsAfter(ctx context.Context, _ tracker.OrganizationID, _ *eventstore.Content, _ int, _ string) (int, string, error) {
+	return 0, "", r.observe(ctx, "change reviews")
+}
+
+type maintenanceDeadlineReader struct {
+	tenantstore.Reader
+	observe func(string) error
+}
+
+func (r maintenanceDeadlineReader) ThreadUnreadJob(context.Context) (threadstore.UnreadJob, error) {
+	if err := r.observe("unread"); err != nil {
+		return threadstore.UnreadJob{}, err
+	}
+	return threadstore.UnreadJob{}, corestore.ErrNotFound
+}
+
+func (r maintenanceDeadlineReader) UnclassifiedCheckpointSource(context.Context, string, int) (leasestore.CheckpointSourcePage, error) {
+	return leasestore.CheckpointSourcePage{}, r.observe("checkpoint source")
+}
 
 func TestHostedMaintenancePublishesPagesForTwoTenants(t *testing.T) {
 	t.Parallel()

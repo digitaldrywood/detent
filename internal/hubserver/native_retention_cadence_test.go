@@ -22,7 +22,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -32,7 +31,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(start.Add(-31 * 24 * time.Hour).UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
-	f := newDefaultNativeFixture(t, WithDeps(Config{Clock: now, WebhookMaintenanceInterval: 10 * time.Millisecond}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
+	f := newDefaultNativeFixture(t, WithDeps(Config{Clock: now}, hubdeps.Deps{RetentionTimeout: frozenRetentionTimeout, RunMaintenance: func(ctx context.Context, _ *hubmaintenance.Scheduler, _ func(error)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}}))
@@ -59,6 +58,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	clock.Store(start.UnixNano())
 	metrics := s.config.TenantRepository.(metricsstore.Repository)
 	s.requestMetrics = newTenantTestMetrics(metrics, f.project.OrganizationID)
+	t.Cleanup(func() { s.requestMetrics = nil })
 	content := eventstore.NewContent(s.runDetailStore())
 	admin := usagePostgresAdmin(t, s)
 	insertCommand := func(t *testing.T, organization tracker.OrganizationID, key string, at time.Time) {
@@ -106,33 +106,17 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 		}
 	}
 	warmup := metricTick(t, "warmup", start)
-	var reviewPasses atomic.Int64
-	observed := postgres.WithTransactionTiming(t.Context(), nil, func(_ time.Time, query string) {
-		if strings.Contains(query, "name: RecordPendingChangeReviewSummary") {
-			reviewPasses.Add(1)
-		}
-	})
-	ctx, cancel := context.WithCancel(observed)
-	waitForTick := func(t *testing.T, tick func() error) {
+	lastCleanup := start
+	runTick := func(t *testing.T, check func() error) {
 		t.Helper()
-		testenv.WaitUntil(t, ctx, tick)
-		previous := reviewPasses.Load()
-		testenv.WaitUntil(t, ctx, func() error {
-			if reviewPasses.Load() <= previous {
-				return fmt.Errorf("maintenance has not begun its following review pass")
-			}
-			return nil
-		})
+		ctx, cancel := context.WithTimeout(t.Context(), s.config.WebhookMaintenanceInterval)
+		defer cancel()
+		lastCleanup = s.runPostgresMaintenanceTick(ctx, lastCleanup)
+		if err := check(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	s.workerDone = make(chan struct{})
-	s.workerCancel = cancel
-	t.Cleanup(func() {
-		cancel()
-		<-s.workerDone
-		s.requestMetrics = nil
-	})
-	go s.runPostgresMaintenance(ctx)
-	waitForTick(t, warmup)
+	runTick(t, warmup)
 	for _, test := range []struct {
 		name     string
 		after    time.Duration
@@ -203,7 +187,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			waitForTick(t, func() error {
+			runTick(t, func() error {
 				if err := tick(); err != nil {
 					return err
 				}

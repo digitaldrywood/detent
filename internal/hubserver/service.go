@@ -694,16 +694,16 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		}
 	})
 	defer maintenance.Wait()
-	refreshUnread := func() {
-		if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
-		}
+	interval := s.config.WebhookMaintenanceInterval
+	runPass := func(run func(context.Context)) {
+		passCtx, cancel := context.WithTimeout(ctx, interval)
+		defer cancel()
+		run(passCtx)
 	}
-	refreshUnread()
-	s.maintainPostgresChangeReviews(ctx)
+	runPass(s.refreshPostgresProjections)
 	searchRefresh := s.searchRefreshTimer()
 	defer searchRefresh.Stop()
-	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	lastCleanup := s.config.Clock()
 	for {
@@ -711,40 +711,48 @@ func (s *Service) runPostgresMaintenance(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.boardRefresh:
-			refreshUnread()
-			s.maintainPostgresChangeReviews(ctx)
+			runPass(s.refreshPostgresProjections)
 		case <-searchRefresh.C:
-			s.maintainNativeSearch(ctx)
-			searchRefresh.Reset(s.config.WebhookMaintenanceInterval)
+			runPass(s.maintainNativeSearch)
+			searchRefresh.Reset(interval)
 		case <-ticker.C:
-			refreshUnread()
-			s.maintainPostgresChangeReviews(ctx)
-			now := s.config.Clock()
-			if err := s.expireGoTestReceipts(ctx, now, s.config.Clock); err != nil && !errors.Is(err, context.Canceled) {
-				s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
-			}
-			if err := s.expireRequestMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
-				s.config.Logger.Warn("expire PostgreSQL request metrics", "error", err)
-			}
-			if s.requestMetrics != nil {
-				if err := s.requestMetrics.Flush(ctx, s.config.Clock()); err != nil && !errors.Is(err, context.Canceled) {
-					s.config.Logger.WarnContext(ctx, "flush tenant request metrics", "error", err)
-				}
-			}
-			if now.Sub(lastCleanup) >= nativeCleanupInterval {
-				if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
-					s.config.Logger.WarnContext(ctx, "maintain PostgreSQL native retention", "error", err)
-				}
-				lastCleanup = now
-			}
+			runPass(func(ctx context.Context) {
+				lastCleanup = s.runPostgresMaintenanceTick(ctx, lastCleanup)
+			})
 		}
 	}
 }
 
-func (s *Service) maintainPostgresChangeReviews(ctx context.Context) {
+func (s *Service) refreshPostgresProjections(ctx context.Context) {
+	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
+	}
 	if err := s.populateChangeColumns(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.WarnContext(ctx, "populate PostgreSQL current Change reviews", "error", err)
 	}
+}
+
+func (s *Service) runPostgresMaintenanceTick(ctx context.Context, lastCleanup time.Time) time.Time {
+	s.refreshPostgresProjections(ctx)
+	now := s.config.Clock()
+	if err := s.expireGoTestReceipts(ctx, now, s.config.Clock); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Warn("expire PostgreSQL Go test receipts", "error", err)
+	}
+	if err := s.expireRequestMetrics(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.Warn("expire PostgreSQL request metrics", "error", err)
+	}
+	if s.requestMetrics != nil {
+		if err := s.requestMetrics.Flush(ctx, s.config.Clock()); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.WarnContext(ctx, "flush tenant request metrics", "error", err)
+		}
+	}
+	if ctx.Err() == nil && now.Sub(lastCleanup) >= nativeCleanupInterval {
+		if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
+			s.config.Logger.WarnContext(ctx, "maintain PostgreSQL native retention", "error", err)
+		}
+		return now
+	}
+	return lastCleanup
 }
 
 func (s *Service) stopGitHubWebhookMaintenance() error {
