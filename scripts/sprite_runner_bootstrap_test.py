@@ -174,24 +174,12 @@ case $name in
     uname) if [[ $1 == -s ]]; then output=Linux; else output=${FIXTURE_ARCH:-x86_64}; fi ;;
     nproc) output=${FIXTURE_NPROC:-8} ;;
     id) if [[ $1 == -u ]]; then output=1000; else output=sprite; fi ;;
-    findmnt)
-        if [[ $* == *--task* ]]; then
-            output="rw,upperdir=${DOCKER_SNAPSHOT_ROOT:-/var/lib/docker/containerd/daemon/io.containerd.snapshotter.v1.overlayfs}/snapshots/1/fs"
-        elif [[ $* == *snapshots/1/fs ]]; then output=${DOCKER_SNAPSHOT_FILESYSTEM:-ext4}
-        elif [[ $* == *--mountpoint* && $* == */var/lib/docker ]]; then output=${DOCKER_FILESYSTEM:-ext4}
-        else output="ext4 ${FIXTURE_LOCAL_DISK:-}"; [[ -n ${FIXTURE_LOCAL_DISK:-} ]] || status=1; fi ;;
+    findmnt) output="ext4 ${FIXTURE_LOCAL_DISK:-}"; [[ -n ${FIXTURE_LOCAL_DISK:-} ]] || status=1 ;;
     unshare) output=; [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1 ;;
     sudo)
         output=
         if [[ $1 == test && $2 == -w && $3 == /sys/fs/cgroup ]]; then
             [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1
-        elif [[ $1 == test && ( ${3:-} == /var/run/docker.sock || ${3:-} == /etc/docker/daemon.json ) ]]; then
-            status=1
-        elif [[ $1 == find && $2 == /var/lib/docker ]]; then
-            if [[ -n ${DOCKER_OPERATOR_LAUNCHER:-} ]]; then
-                printf '%s\n' "$DOCKER_OPERATOR_LAUNCHER" > "$HOME/.local/lib/detent-sprite-runner/start-docker"
-            fi
-            output=${DOCKER_ROOT_ENTRY:-}
         else execute=true; fi ;;
     go)
         output=
@@ -237,52 +225,7 @@ case $name in
         elif [[ $1 == -p || ${2:-} == */yaml || ${2:-} == setup-manifest ]]; then execute=true
         elif [[ ! -f $FIXTURE_ROOT/chromium-ready || -n ${BROWSER_FAIL:-} ]]; then status=1
         else printf 'PNG fixture' > "${!#}"; output='Chromium fixture: headless screenshot verified'; fi ;;
-    docker)
-        output=
-        args=("$@")
-        if [[ $1 == --host ]]; then args=("${args[@]:2}"); fi
-        cid=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
-        case ${args[0]} in
-            context) output=${DOCKER_FIXTURE_ENDPOINT:-unix:///var/run/docker.sock} ;;
-            info)
-                if [[ ( ! -f $FIXTURE_ROOT/service-detent-docker.json && -z ${EXISTING_DOCKER:-} ) || -n ${OFFLINE_DOCKER:-} ]]; then
-                    status=1
-                else output='/var/lib/docker overlayfs'; fi ;;
-            --version) output='Docker version 29.1.3, build fixture' ;;
-            create)
-                if [[ ${DOCKER_PROBE_FAILURE:-} == create-rejected ]]; then
-                    printf 'daemon rejected create\n' >&2; status=1
-                else
-                    printf '%s\n' "${args[4]:-}" "${args[6]:-}" > "$FIXTURE_ROOT/probe-container"
-                    if [[ ${DOCKER_PROBE_FAILURE:-} == create ]]; then
-                        printf 'Docker create response lost\n' >&2; status=124
-                    else
-                        printf '%s\n' "$cid" > "${args[2]}"
-                    fi
-                fi ;;
-            ps)
-                if [[ -f $FIXTURE_ROOT/probe-container ]]; then
-                    { read -r probe_name; read -r probe_label; } < "$FIXTURE_ROOT/probe-container"
-                    if [[ -n $probe_name && -n $probe_label && ${args[4]} == "name=^/$probe_name\$" && ${args[6]} == "label=$probe_label" ]]; then
-                        output=$cid
-                    fi
-                fi ;;
-            start)
-                if [[ ${DOCKER_PROBE_FAILURE:-} == start ]]; then
-                    printf 'failed to mount overlay: invalid argument\n' >&2; status=125
-                fi ;;
-            exec)
-                if [[ ${DOCKER_PROBE_FAILURE:-} == exec ]]; then
-                    printf 'OCI runtime exec failed: failed to open /proc/70/ns/ipc: Permission denied\n' >&2; status=126
-                elif [[ ${DOCKER_PROBE_FAILURE:-} == init && ${args[4]:-} == *docker-init* ]]; then
-                    status=1
-                fi ;;
-            inspect) if [[ ${args[2]} == '{{.State.Pid}}' ]]; then output=1234; else output=0; fi ;;
-            stop) [[ -f $FIXTURE_ROOT/probe-container ]] || status=1 ;;
-            rm) [[ ${!#} == "$cid" ]] && rm "$FIXTURE_ROOT/probe-container" || status=1 ;;
-            *) status=2 ;;
-        esac ;;
-    dockerd) output= ;;
+    docker) output='Docker version 29.1.3, build fixture'; if [[ $1 == info && ! -f $FIXTURE_ROOT/service-detent-docker.json ]]; then status=1; fi ;;
     playwright) if [[ $1 == install ]]; then : > "$FIXTURE_ROOT/chromium-ready"; output=; else output='Version 1.63.0'; fi ;;
     *) ''' + "exec " + shlex.quote(sys.executable) + " -S -c " + shlex.quote(PYTHON_STUB) + r''' "$0" "$@" ;;
 esac
@@ -390,7 +333,7 @@ class SpriteBootstrapTests(unittest.TestCase):
                         PATH=str(self.fake_bin) + os.pathsep + os.environ["PATH"],
                         TMPDIR=str(self.root))
         for key in ("GOPATH", "GOCACHE", "GOMODCACHE", "XDG_CACHE_HOME", "npm_config_cache", "NPM_CONFIG_CACHE",
-                    "GH_CONFIG_DIR", "CODEX_HOME", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_HOST", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+                    "GH_CONFIG_DIR", "CODEX_HOME", "DOCKER_CONFIG", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
             self.env.pop(key, None)
         # The image's existing local Codex link cannot be npm's install prefix.
         bundled = self.home / ".local/bin"
@@ -855,10 +798,10 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.assertIn("headless screenshot verified", update.stdout)
 
     def test_docker_install_requires_sprite_capabilities(self):
-        self.env.update(DOCKER_CANDIDATE="(none)", DOCKER_SUPPORTED="1")
+        self.env["DOCKER_CANDIDATE"] = "(none)"
+        self.env["DOCKER_SUPPORTED"] = "1"
         unavailable = self.run_bootstrap()
         self.assertNotEqual(unavailable.returncode, 0)
-        self.assertIn("configured APT repositories provide no Docker package", unavailable.stderr)
         self.assertFalse(any(command in ("curl", "npm", "playwright") for command, _ in self.calls()), unavailable.stdout)
         self.assertFalse(self.registrations())
         self.assertIn("Last completed step: enrollment input and Sprite prerequisites checked", unavailable.stderr)
@@ -868,152 +811,35 @@ class SpriteBootstrapTests(unittest.TestCase):
         (self.root / "calls.jsonl").unlink()
         skipped = self.run_bootstrap()
         self.assertEqual(skipped.returncode, 0, skipped.stderr)
-        self.assertIn("Docker: skipped:", skipped.stdout)
         self.assertFalse((self.root / "docker.io.version").exists())
         self.assertFalse(any(command == "apt-cache" and args[-1] == "docker.io" for command, args in self.calls()))
-
         self.env["DOCKER_SUPPORTED"] = "1"
         for candidate in ("29.1.3-0ubuntu3~25.10.1", "29.1.3-0ubuntu4.1"):
             with self.subTest(candidate=candidate):
-                self.fresh_sprite()
                 self.env["DOCKER_CANDIDATE"] = candidate
-                available = self.run_bootstrap()
+                available = self.run_bootstrap(enrollment="")
                 self.assertEqual(available.returncode, 0, available.stderr)
                 self.assertEqual((self.root / "docker.io.version").read_text(), candidate)
-                self.assertIn("PostgreSQL exec and graceful stop verified", available.stdout)
-                service = json.loads((self.root / "service-detent-docker.json").read_text())
-                launcher = pathlib.Path(service[service.index("--cmd") + 1])
-                launched = run_fixture_command(["bash", str(launcher)], input="", env=self.env)
-                self.assertEqual(launched.returncode, 0, launched.stderr)
-                self.assertIn(["dockerd", ["--data-root", "/var/lib/docker", "--group", "sprite", "--init"]], self.calls())
+                self.assertTrue((self.root / "service-detent-docker.json").exists())
+                self.assertIn("Docker version 29.1.3", available.stdout)
                 self.assertIn(["apt-get", ["install", "-y", "--no-install-recommends", "--allow-downgrades", "docker.io=" + candidate]], self.calls())
-                self.assertEqual(self.setup_manifest()["toolchain"]["docker"], candidate)
-                identity = self.home / ".config/detent-runner/identity.json"
-                enrolled = identity.read_bytes()
                 before = len(self.calls())
                 rerun = self.run_bootstrap(enrollment="")
                 self.assertEqual(rerun.returncode, 0, rerun.stderr)
-                self.assertEqual(identity.read_bytes(), enrolled)
-                self.assert_preserved_docker(before)
-                self.assertFalse((self.root / "probe-container").exists())
-
-    def assert_preserved_docker(self, before):
-        for command, args in self.calls()[before:]:
-            if command == "apt-get" and args[:1] == ["install"]:
-                self.assertFalse(any(arg.startswith("docker.io=") for arg in args))
-            if command == "sprite-env":
-                self.assertFalse(any("detent-docker" in arg for arg in args) and args[:2] != ["services", "get"])
-
-    def test_docker_probe_preserves_existing_service_and_reports_runtime_failures(self):
-        self.env.update(DOCKER_SUPPORTED="1", DOCKER_CANDIDATE="29.1.3-0ubuntu4.1")
-        initial = self.run_bootstrap()
-        self.assertEqual(initial.returncode, 0, initial.stderr)
-        service = self.root / "service-detent-docker.json"
-        service.write_text('["operator configuration"]')
-        launcher = self.home / ".local/lib/detent-sprite-runner/start-docker"
-        launcher.write_text("#!/bin/bash\nexec dockerd --data-root /operator/docker\n")
-        identity = self.home / ".config/detent-runner/identity.json"
-        paths = (service, launcher, identity, self.root / "docker.io.version",
-                 self.root / "unrelated-container", self.root / "unrelated-volume")
-        for path in paths[-2:]:
-            path.write_text("existing state")
-        original = {path: path.read_bytes() for path in paths}
-        self.env["DOCKER_CANDIDATE"] = "30.0.0-1"
-
-        for stage, diagnostic, expected in (
-            ("create", "Docker create response lost", ["create", "ps", "rm"]),
-            ("create-rejected", "daemon rejected create", ["create", "ps"]),
-            ("start", "failed to mount overlay: invalid argument", ["create", "start", "rm"]),
-            ("exec", "failed to open /proc/70/ns/ipc: Permission denied", ["create", "start", "exec", "rm"]),
-            ("", "", ["create", "start", "exec", "stop", "inspect", "rm"]),
-        ):
-            with self.subTest(stage=stage):
-                self.env["DOCKER_PROBE_FAILURE"] = stage
-                before = len(self.calls())
-                result = self.run_bootstrap(enrollment="")
-                if stage:
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(diagnostic, result.stderr)
-                    self.assertNotIn("PostgreSQL readiness timed out", result.stderr)
-                    self.assertFalse(any(cmd == "sprite-env" and args[:2] in (["checkpoints", "create"], ["services", "create"])
-                                         for cmd, args in self.calls()[before:]))
-                else:
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(self.setup_manifest()["toolchain"]["docker"], "29.1.3-0ubuntu4.1")
-                self.assert_preserved_docker(before)
-                docker_calls = [args[2:] for cmd, args in self.calls()[before:] if cmd == "docker" and args[0] == "--host"]
-                self.assertEqual(docker_calls[0], ["info"])
-                probe = [args for args in docker_calls if args[0] not in ("info", "--version")]
-                self.assertFalse((self.root / "probe-container").exists())
-                self.assertEqual([args[0] for args in probe], expected)
-                if expected[-1] == "rm":
-                    self.assertEqual(probe[-1][:-1], ["rm", "--volumes", "--force"] if stage else ["rm", "--volumes"])
-                self.assertEqual({path: path.read_bytes() for path in paths}, original)
-                self.assertNotIn(TOKEN, result.stdout + result.stderr)
-
-        self.env["OFFLINE_DOCKER"] = "1"
+                self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
+                self.assertFalse(any(command == "sprite-env" and args[:3] == ["services", "create", "detent-docker"] for command, args in self.calls()[before:]))
+        self.env["DOCKER_CANDIDATE"] = "(none)"
+        (self.root / "docker.io.version").unlink()
+        (self.root / "service-detent-docker.json").unlink()
         before = len(self.calls())
-        offline = self.run_bootstrap(enrollment="")
-        self.assertNotEqual(offline.returncode, 0)
-        self.assertIn("existing Docker installation is unavailable", offline.stderr)
-        self.assert_preserved_docker(before)
-        self.assertEqual({path: path.read_bytes() for path in paths}, original)
-
-    def test_docker_probe_uses_the_selected_local_endpoint(self):
-        for endpoint, probed in (("unix:///run/operator/docker.sock", True), ("tcp://example.invalid:2376", False)):
-            with self.subTest(endpoint=endpoint):
-                self.fresh_sprite()
-                self.env.update(DOCKER_FIXTURE_ENDPOINT=endpoint, EXISTING_DOCKER="1", DOCKER_SUPPORTED="1")
-                result = self.run_bootstrap()
-                self.assertEqual(result.returncode, 0, result.stderr)
-                calls = [args for cmd, args in self.calls() if cmd == "docker" and args[0] == "--host"]
-                if probed:
-                    self.assertTrue(any(args[:3] == ["--host", endpoint, "start"] for args in calls))
-                    self.assertEqual(self.setup_manifest()["toolchain"]["docker"], "external")
-                else:
-                    self.assertEqual(calls, [])
-                    self.assertIn("Docker endpoint is not a local Unix socket", result.stdout)
-                self.assert_preserved_docker(0)
-
-    def test_managed_docker_checks_cover_the_effective_snapshot_mount_and_init_on_retry(self):
-        self.env["DOCKER_SUPPORTED"] = "1"
-        for setting, value, diagnostic, installs in (
-            ("DOCKER_FILESYSTEM", "overlay", "requires an ext4 mount at /var/lib/docker", False),
-            ("DOCKER_ROOT_ENTRY", "/var/lib/docker/volumes", "existing Docker installation is unavailable", False),
-            ("DOCKER_SNAPSHOT_ROOT", "/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs",
-             "snapshot upperdir is outside /var/lib/docker", True),
-            ("DOCKER_SNAPSHOT_FILESYSTEM", "overlay", "snapshot upperdir is not on ext4", True),
-            ("DOCKER_PROBE_FAILURE", "init", "must start PostgreSQL with root docker-init as PID 1", True),
-        ):
-            with self.subTest(setting=setting):
-                self.fresh_sprite()
-                self.env[setting] = value
-                for attempt in range(2 if installs else 1):
-                    with self.subTest(attempt=attempt + 1):
-                        before = len(self.calls())
-                        result = self.run_bootstrap()
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn(diagnostic, result.stderr)
-                        self.assertFalse(self.registrations())
-                        self.assertFalse(any(cmd == "sprite-env" and args[:2] == ["checkpoints", "create"]
-                                             for cmd, args in self.calls()[before:]))
-                        self.assertFalse((self.root / "probe-container").exists())
-                        if attempt:
-                            self.assert_preserved_docker(before)
-                self.env.pop(setting)
-                self.assertEqual((self.root / "docker.io.version").exists(), installs)
-
-    def test_docker_launcher_created_during_bootstrap_is_preserved(self):
-        operator_launcher = "#!/bin/bash\nexec dockerd --data-root /operator/docker\n"
-        self.env.update(DOCKER_SUPPORTED="1", DOCKER_OPERATOR_LAUNCHER=operator_launcher.rstrip("\n"))
-        result = self.run_bootstrap()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("could not create the Docker launcher", result.stderr)
-        launcher = self.home / ".local/lib/detent-sprite-runner/start-docker"
-        self.assertEqual(launcher.read_bytes(), operator_launcher.encode())
-        self.assertEqual(launcher.stat().st_mode & 0o777, 0o600)
+        registrations = len(self.registrations())
+        unavailable = self.run_bootstrap()
+        self.assertNotEqual(unavailable.returncode, 0)
+        self.assertIn("configured APT repositories provide no Docker package", unavailable.stderr)
         self.assertFalse((self.root / "service-detent-docker.json").exists())
-        self.assertFalse(self.registrations())
+        self.assertEqual(len(self.registrations()), registrations)
+        self.assertNotIn(TOKEN, unavailable.stdout + unavailable.stderr)
+        self.assertFalse(any(command == "apt-get" and args[:1] == ["install"] for command, args in self.calls()[before:]))
 
     def test_postgresql_repository_candidates_and_partial_installation(self):
         cases = (
@@ -1078,7 +904,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         bundled = self.home / ".local/bin"
         bundled.mkdir(parents=True)
         (bundled / "codex").symlink_to(self.fake_bin / "codex")
-        for state in ("calls.jsonl", "tokens.txt", "chromium-ready", "postgresql-client-17.version", "docker.io.version"):
+        for state in ("calls.jsonl", "tokens.txt", "chromium-ready", "postgresql-client-17.version"):
             (self.root / state).unlink(missing_ok=True)
         for service in self.root.glob("service-*.json"):
             service.unlink()
