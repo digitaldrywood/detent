@@ -147,6 +147,10 @@ func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
 	if IsLocalGitCommand(cmd) {
 		ApplyLocalIsolation(cmd)
 	}
+	return runOwnedGitCommand(ctx, cmd)
+}
+
+func runOwnedGitCommand(ctx context.Context, cmd *exec.Cmd) error {
 	runErr, cleanupErr := procgroup.RunOwned(ctx, cmd)
 	if runErr == exec.ErrWaitDelay && ctx.Err() == nil {
 		runErr = nil

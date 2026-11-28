@@ -335,6 +335,11 @@ func ReadPublicationSource(ctx context.Context, path string, args ...string) (st
 	return withCommandEnvironment(ctx, path, IsolatedEnvironment(), true, "", RunCommand, args...)
 }
 
+func readIsolatedScratch(ctx context.Context, scratch string, args ...string) (string, error) {
+	env := append(IsolatedEnvironment(), "GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0")
+	return withCommandEnvironment(ctx, scratch, env, true, "", runOwnedGitCommand, args...)
+}
+
 func pushPublication(ctx context.Context, scratch, repository, refspec string, options ...string) error {
 	args := append([]string{"push", "--no-follow-tags"}, options...)
 	_, err := runPublicationTransport(ctx, scratch, append(args, "--", repository, refspec)...)
@@ -503,7 +508,7 @@ func VerifyPublicationAncestry(ctx context.Context, path, ancestor, head string)
 		return errors.New("publication ancestry requires exact commit IDs")
 	}
 	return withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
-		_, err := ReadPublicationSource(ctx, scratch, "merge-base", "--is-ancestor", ancestor, head)
+		_, err := readIsolatedScratch(ctx, scratch, "merge-base", "--is-ancestor", ancestor, head)
 		return err
 	})
 }
@@ -514,7 +519,7 @@ func VerifyPublicationAncestryComplete(ctx context.Context, path, ancestor, head
 	}
 	var isAncestor bool
 	err := withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
-		_, mergeErr := ReadPublicationSource(ctx, scratch, "merge-base", "--is-ancestor", ancestor, head)
+		_, mergeErr := readIsolatedScratch(ctx, scratch, "merge-base", "--is-ancestor", ancestor, head)
 		if mergeErr == nil {
 			isAncestor = true
 			return nil
@@ -523,7 +528,7 @@ func VerifyPublicationAncestryComplete(ctx context.Context, path, ancestor, head
 		if !errors.As(mergeErr, &commandErr) || commandErr.ExitCode != 1 {
 			return mergeErr
 		}
-		shallow, shallowErr := ReadPublicationSource(ctx, scratch, "rev-parse", "--is-shallow-repository")
+		shallow, shallowErr := readIsolatedScratch(ctx, scratch, "rev-parse", "--is-shallow-repository")
 		if shallowErr != nil {
 			return shallowErr
 		}
@@ -543,7 +548,7 @@ func IsolatedReplayWritePaths(ctx context.Context, path, headSHA string, commits
 	seen := make(map[string]struct{})
 	err := withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
 		read := func(args ...string) (string, error) {
-			return ReadPublicationSource(ctx, scratch, args...)
+			return readIsolatedScratch(ctx, scratch, args...)
 		}
 		prevTreeRaw, tErr := read("rev-parse", "--verify", headSHA+"^{tree}")
 		if tErr != nil {
@@ -628,7 +633,7 @@ func IsolatedMergeTree(ctx context.Context, path, base, branch1, branch2 string,
 	}
 	return withPublicationGit(ctx, path, "", func(scratch string, _ publicationSource) error {
 		read := func(args ...string) (string, error) {
-			return ReadPublicationSource(ctx, scratch, args...)
+			return readIsolatedScratch(ctx, scratch, args...)
 		}
 		merged, mergeErr := read("merge-tree", "--write-tree", "--name-only", "-z", "--merge-base="+base, branch1, branch2)
 		return verify(read, merged, mergeErr)
@@ -641,7 +646,7 @@ func IsolatedMergeTreeIndex(ctx context.Context, path, base, branch1, branch2 st
 	}
 	return withPublicationGit(ctx, path, "", func(scratch string, source publicationSource) error {
 		read := func(args ...string) (string, error) {
-			return ReadPublicationSource(ctx, scratch, args...)
+			return readIsolatedScratch(ctx, scratch, args...)
 		}
 		indexPath := filepath.Join(source.gitDir, "index")
 		diffIndex := func(tree string) (string, error) {
