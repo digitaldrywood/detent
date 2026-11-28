@@ -260,9 +260,16 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
 	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	if replayPublication {
+		fenced = publication
+	}
+	sessionPath := authority.scope + "/runner-sessions"
+	matchingFence := hasAuthority && fenced.LeaseID != "" && fenced.LeaseID == authority.lease.ID &&
+		fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken
+	fencedSession := method == http.MethodPost && replayMutation && target == sessionPath && matchingFence
 	guard := requestFence(ctx)
 	sendCtx := ctx
-	if replayPublication {
+	if replayPublication || fencedSession {
 		explicit := guard
 		sendCtx = WithRequestFence(ctx, authority.guard.done, func() error {
 			if err := nativeEffectError(ctx); err != nil {
@@ -270,8 +277,11 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 			}
 			return explicit.err()
 		})
-		guard = authority.guard
-		fenced = publication
+		if fencedSession {
+			guard = requestFence(sendCtx)
+		} else {
+			guard = authority.guard
+		}
 	}
 	send := func() error {
 		return c.withinRequestBudget(ctx, guard, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
@@ -283,14 +293,12 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 			return c.requestOnce(sendCtx, timeout, method, path, headers, input, output)
 		})
 	}
-	sessionPath := authority.scope + "/runner-sessions"
 	sessionRequest := target == sessionPath || strings.HasPrefix(target, sessionPath+"/")
 	itemPath := authority.scope + "/work-items/" + url.PathEscape(string(authority.lease.WorkItemID)) + "/"
 	publicationRequest := authority.publications && strings.HasPrefix(target, itemPath)
 	if hasAuthority && authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
 		if method == http.MethodGet || method == http.MethodHead ||
-			method == http.MethodPost && fenced.IdempotencyKey != "" && fenced.LeaseID == authority.lease.ID &&
-				fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken {
+			method == http.MethodPost && fenced.IdempotencyKey != "" && matchingFence {
 			return authority.retry(ctx, send)
 		}
 	}
