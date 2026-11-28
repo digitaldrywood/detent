@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -57,7 +58,10 @@ func (c *NativeClient) reconcileAttemptDiff(ctx context.Context, path, attemptID
 		return receipt, lost
 	}
 	if err != nil {
-		if NativePublicationUnavailable(err) {
+		var readErr *APIError
+		accessRefused := errors.As(err, &readErr) && readErr != nil &&
+			(readErr.Status == http.StatusUnauthorized || readErr.Status == http.StatusForbidden)
+		if accessRefused || NativeLeaseLost(err) || NativePublicationUnavailable(err) {
 			return receipt, fmt.Errorf("read stored attempt diff: %w", err)
 		}
 		return receipt, refusal
@@ -74,11 +78,27 @@ func (c *NativeClient) reconcileAttemptDiff(ctx context.Context, path, attemptID
 		producer.RunnerID = stored.Producer.RunnerID
 	}
 	if stored.ID == "" || stored.AttemptID != attemptID || stored.Producer != producer || stored.Generation != request.Generation ||
-		stored.BaseSHA != request.BaseSHA || stored.HeadSHA != request.HeadSHA || stored.FileCount != len(request.Files) ||
-		!slices.EqualFunc(stored.Files, request.Files, func(stored, intended tracker.AttemptDiffFile) bool { return reflect.DeepEqual(stored, intended) }) {
+		stored.BaseSHA != request.BaseSHA || stored.HeadSHA != request.HeadSHA || stored.FileCount != len(request.Files) {
+		return receipt, refusal
+	}
+	for i := range request.Files {
+		file := &request.Files[i]
+		file.Path = jsonUTF8(file.Path)
+		file.OldPath = jsonUTF8(file.OldPath)
+		file.Patch = jsonUTF8(file.Patch)
+	}
+	files, _ := tracker.NormalizeDiffFiles(request.Files)
+	if !slices.EqualFunc(stored.Files, files, func(stored, intended tracker.AttemptDiffFile) bool { return reflect.DeepEqual(stored, intended) }) {
 		return receipt, refusal
 	}
 	return tracker.AttemptDiffReceipt{Accepted: true, DiffID: stored.ID, Generation: stored.Generation, FileCount: stored.FileCount, PatchBytes: stored.PatchBytes, Truncated: stored.Truncated}, nil
+}
+
+func jsonUTF8(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return string([]rune(value))
 }
 
 // attemptDiffTooLarge reports whether err is the hub refusing the diff for its

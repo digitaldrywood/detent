@@ -179,12 +179,14 @@ func TestPostAttemptDiffReportsOtherFailures(t *testing.T) {
 func TestPostAttemptDiffReconcilesOnlyMatchingGeneration(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		alter func(*tracker.AttemptDiff)
-		strip bool
+		name        string
+		alter       func(*tracker.AttemptDiff)
+		strip       bool
+		encodingCut bool
 	}{
 		{name: "same diff"},
 		{name: "same diff after size refusal", strip: true},
+		{name: "same diff truncated by Hub after JSON encoding", encodingCut: true},
 		{name: "other attempt", alter: func(diff *tracker.AttemptDiff) { diff.AttemptID = "attempt_other" }},
 		{name: "other fence", alter: func(diff *tracker.AttemptDiff) { diff.Producer.FencingToken++ }},
 		{name: "other generation", alter: func(diff *tracker.AttemptDiff) { diff.Generation.Seq++ }},
@@ -199,6 +201,11 @@ func TestPostAttemptDiffReconcilesOnlyMatchingGeneration(t *testing.T) {
 			if tc.strip {
 				statuses = append([]int{http.StatusRequestEntityTooLarge}, statuses...)
 				files[0].Patch, files[0].Truncated = "", true
+			}
+			if tc.encodingCut {
+				prefix := strings.Repeat("x", tracker.MaxDiffPatchBytes-4)
+				request.Files[0].Patch = prefix + "\xe9\xff\n"
+				files[0].Patch, files[0].Truncated = prefix+"\uFFFD", true
 			}
 			stored := tracker.AttemptDiff{ID: "diff_original", AttemptID: testAttemptID, Producer: request.Producer, Generation: request.Generation,
 				BaseSHA: request.BaseSHA, HeadSHA: request.HeadSHA, Files: files, FileCount: 1}

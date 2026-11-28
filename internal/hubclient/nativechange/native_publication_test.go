@@ -307,7 +307,23 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 }
 
 func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
-	for _, scenario := range []string{"stalled", "unavailable", "overlapping checkpoints", "restored overlapping checkpoints", "committed final diff loses acknowledgement"} {
+	for _, test := range []struct {
+		name         string
+		readStatus   int
+		readCode     string
+		lostFinalAck bool
+		invalidPatch bool
+	}{
+		{name: "stalled"},
+		{name: "unavailable"},
+		{name: "overlapping checkpoints"},
+		{name: "restored overlapping checkpoints"},
+		{name: "committed final diff loses acknowledgement", lostFinalAck: true},
+		{name: "committed final diff with malformed UTF-8 loses acknowledgement", lostFinalAck: true, invalidPatch: true},
+		{name: "checkpoint read-back unauthorized", readStatus: http.StatusUnauthorized, readCode: "unauthorized"},
+		{name: "checkpoint read-back forbidden", readStatus: http.StatusForbidden, readCode: "insufficient_scope"},
+	} {
+		scenario := test.name
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
@@ -317,7 +333,7 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				second := checkpoint
 				second.HeadSHA = nativeChangeFixtureHead("d")
 				restore := scenario == "restored overlapping checkpoints"
-				lostDiffAck := scenario == "committed final diff loses acknowledgement"
+				lostDiffAck := test.lostFinalAck
 				offline := scenario == "overlapping checkpoints" || restore || lostDiffAck
 				var attempts []tracker.AttemptDiffRequest
 				stored := make(map[int64]tracker.AttemptDiffRequest)
@@ -334,6 +350,15 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 					case strings.HasSuffix(request.URL.Path, "/diff"):
 						if request.Method == http.MethodGet {
 							diffReads++
+							if test.readStatus != 0 {
+								if request.URL.Query().Get("at") != "2" || len(stored) != 1 || stored[2].HeadSHA != checkpoint.HeadSHA {
+									t.Fatalf("unexpected checkpoint read-back: %s", request.URL)
+								}
+								response.Header().Set("Content-Type", "application/json")
+								response.WriteHeader(test.readStatus)
+								io.WriteString(response, `{"code":"`+test.readCode+`"}`)
+								return response.Result(), nil
+							}
 							if !lostDiffAck || request.URL.Query().Get("at") != "4" || finalDiffCommits != 1 {
 								t.Fatalf("unexpected diff read: %s", request.URL)
 							}
@@ -352,13 +377,25 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 							return nil, io.ErrUnexpectedEOF
 						}
 						if len(attempts) == 1 {
+							if test.readStatus != 0 {
+								stored[diff.Generation.Seq] = diff
+							}
 							if scenario == "stalled" {
 								<-request.Context().Done()
 								return nil, request.Context().Err()
 							}
 							return nil, io.ErrUnexpectedEOF
 						}
+						if test.readStatus != 0 {
+							response.Header().Set("Content-Type", "application/json")
+							response.WriteHeader(http.StatusConflict)
+							io.WriteString(response, `{"code":"stale_generation"}`)
+							return response.Result(), nil
+						}
 						if lostDiffAck && diff.Generation.Seq == 4 {
+							if test.invalidPatch && diff.Files[0].Patch != "+caf\uFFFD\uFFFD\n" {
+								t.Errorf("final patch on the wire = %q", diff.Files[0].Patch)
+							}
 							if finalDiffCommits == 0 {
 								stored[4] = diff
 								finalDiffCommits++
@@ -397,6 +434,8 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 							}
 						}
 						response.WriteHeader(http.StatusNoContent)
+					case test.readStatus != 0 && strings.HasSuffix(request.URL.Path, "/release"):
+						response.WriteHeader(http.StatusNoContent)
 					default:
 						t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
 					}
@@ -414,8 +453,8 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 					t.Fatal(err)
 				}
 				source := fixtureConnector(native)
-				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(5 * time.Minute)}, descriptor, "project")
 				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(5 * time.Minute), execution: execution}, descriptor, "project")
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
 				execution.data.Sequence = 1
 				if offline && !lostDiffAck {
@@ -433,10 +472,23 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 					}
 					diff, ok := nativeChangeDiff(liveHead, file)(ctx)
 					diff.CommitBound = true
+					if test.invalidPatch && liveHead == second.HeadSHA {
+						diff.Files[0].Patch = "+caf\xe9\xff\n"
+					}
 					return diff, ok
 				})
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 				defer cancel()
+				var guarded context.Context
+				if test.readStatus != 0 {
+					var stop func()
+					guarded, stop, err = execution.Guard(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer stop()
+					ctx = context.WithoutCancel(guarded)
+				}
 				if err := execution.Checkpoint(ctx, checkpoint); err != nil {
 					t.Fatal(err)
 				}
@@ -445,6 +497,18 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				}
 				if scenario == "stalled" && time.Since(start) != checkpointDiffTimeout {
 					t.Fatalf("stalled checkpoint took %v, want %v", time.Since(start), checkpointDiffTimeout)
+				}
+				if test.readStatus != 0 {
+					for range 2 {
+						err := execution.FlushRuntime(ctx)
+						var cause *runner.CancellationCause
+						if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) ||
+							!errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" ||
+							events != 0 || diffReads != 1 || len(attempts) != 2 {
+							t.Fatalf("checkpoint read refusal did not fence publication: error=%v cause=%v events=%d diff reads=%d diff writes=%d", err, context.Cause(guarded), events, diffReads, len(attempts))
+						}
+					}
+					return
 				}
 				if offline {
 					liveHead = second.HeadSHA
