@@ -3316,18 +3316,6 @@ func labelListContains(labels []string, want string) bool {
 	return false
 }
 
-func stateUpdatesEqual(got []stateUpdateCall, want []stateUpdateCall) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func stateListIncludes(states []string, want string) bool {
 	want = strings.ToLower(strings.TrimSpace(want))
 	for _, state := range states {
@@ -3572,19 +3560,14 @@ func (c *parallelFetchConnector) releaseFetches() {
 }
 
 type staticRunner struct {
-	calls      atomic.Int64
-	requestMu  sync.Mutex
-	requestLog []orchestrator.RunRequest
-	result     orchestrator.RunResult
-	err        error
-	onRun      func(orchestrator.RunRequest)
+	calls  atomic.Int64
+	result orchestrator.RunResult
+	err    error
+	onRun  func(orchestrator.RunRequest)
 }
 
 func (r *staticRunner) Run(_ context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	r.calls.Add(1)
-	r.requestMu.Lock()
-	r.requestLog = append(r.requestLog, request)
-	r.requestMu.Unlock()
 	if r.onRun != nil {
 		r.onRun(request)
 	}
@@ -3605,13 +3588,6 @@ func (e instantBackendError) BackendErrorBody() string {
 
 func (e instantBackendError) BackendErrorMessage() string {
 	return "model rejected"
-}
-
-func (r *staticRunner) requests() []orchestrator.RunRequest {
-	r.requestMu.Lock()
-	defer r.requestMu.Unlock()
-
-	return append([]orchestrator.RunRequest(nil), r.requestLog...)
 }
 
 type fakeWorkspaceReaper struct {
