@@ -141,12 +141,12 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 		{name: "merge identity retains project effort", content: "first\nreviewed\nbase\n", effort: "low"},
 		{name: "conflict keeps implementation reservation", content: "first\nreviewed\nbase\n", reserved: true},
 		{name: "base line shifts retain equivalent reviewed diff", content: "prefix\nfirst\nreviewed\nbase\n", shifted: true},
-		{name: "nonconflicting hunk edits return to implementation", content: "other\nreviewed\nbase\n", failed: true},
+		{name: "nonconflicting hunk edits publish for review", content: "other\nreviewed\nbase\n", changed: true},
 		{name: "changed diff publishes for review", content: "first\nresolved\nbase\n", changed: true},
 		{name: "budget refusal preserves landing without a provider turn", budgetDenied: true},
 		{name: "legacy pending conflict asks a typed question when unresolved", failed: true, needsHuman: true},
 		{name: "failed configured gate returns to implementation", content: "first\ninvalid\nbase\n", failed: true, gateFailure: true},
-		{name: "unrelated edits return to implementation", content: "first\nreviewed\nbase\n", outside: true, failed: true},
+		{name: "unrelated edits publish for review", content: "first\nreviewed\nbase\n", outside: true, changed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := initRunnerSourceRepo(t)

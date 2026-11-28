@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -43,6 +44,104 @@ func (*noChangeLandingExecution) RecordValidator(context.Context, gate.Validator
 	return nil
 }
 
+func TestNoChangeWorkspaceHeadAcceptsSameTreeHistoryCommit(t *testing.T) {
+	t.Parallel()
+	repo := initRunnerSourceRepo(t)
+	base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	runRunnerGit(t, repo, "checkout", "-b", "other")
+	runRunnerGit(t, repo, "commit", "--allow-empty", "-m", "prior phase")
+	prior := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	runRunnerGit(t, repo, "checkout", base)
+	runRunnerGit(t, repo, "merge", "--no-ff", "-s", "ours", "-m", "retain phase history", prior)
+	retained := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+
+	for _, tc := range []struct {
+		name     string
+		head     string
+		noChange bool
+		want     string
+	}{
+		{name: "same tree retained history commit", head: retained, noChange: true, want: retained},
+		{name: "exact base head needs no override", head: base, noChange: true, want: ""},
+		{name: "non-no-change never overrides", head: retained, noChange: false, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			input := NativeValidation{
+				Version: &tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: base}},
+			}
+			if tc.noChange {
+				input.NoChange = &tracker.NativeNoChangeCompletion{VerifiedSHA: base}
+			}
+			req := RunRequest{
+				retainedReview: &retainedReviewWorkspace{
+					backend: &noChangeRetainedReviewBackend{head: tc.head},
+					info:    workspace.Info{Path: repo},
+				},
+			}
+			if got := noChangeWorkspaceHead(t.Context(), req, input); got != tc.want {
+				t.Fatalf("noChangeWorkspaceHead() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNoChangeRetainedHistoryCommandReceiptValidatesCriterion(t *testing.T) {
+	t.Parallel()
+	repo := initRunnerSourceRepo(t)
+	base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	tree := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD^{tree}"))
+	runRunnerGit(t, repo, "checkout", "-b", "other")
+	runRunnerGit(t, repo, "commit", "--allow-empty", "-m", "prior phase")
+	prior := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	runRunnerGit(t, repo, "checkout", base)
+	runRunnerGit(t, repo, "merge", "--no-ff", "-s", "ours", "-m", "retain phase history", prior)
+	retained := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+
+	payload := `{"verdict":"pass","score":1.0,"summary":"verified on retained tree","findings":[],"criteria_evidence":[{"criterion":"base check","kind":"receipt","reference":"make check","behavior":"command succeeds on retained tree","head_sha":"` + base + `","tree_sha":"` + tree + `"}]}`
+	agent := &spoofedResolutionAgent{
+		spoofedOutput:     payload,
+		validatorResponse: payload,
+	}
+	r, err := NewRunner(Dependencies{
+		ProcessSource: emptyProcessSource,
+		Workflow:      config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}}}},
+		Workspace:     &fakeWorkspaceBackend{},
+		AgentBackend:  agent,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &noChangeRetainedReviewBackend{head: retained, tree: tree}
+	cmdReceipt := gate.CommandResult{ReceiptID: "cmd_1", Command: "echo ok", ExitCode: 0, HeadSHA: retained, TreeSHA: tree, StartedAt: time.Unix(1, 0).UTC()}
+	version := &tracker.ChangeVersion{
+		ID:                 "version_nochange",
+		ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", BaseSHA: base, HeadSHA: base, Validation: &cmdReceipt},
+	}
+	version.Policy.Gates.Validator = true
+	res, err := r.Validate(t.Context(), ValidatorRequest{
+		retainedReview:        &retainedReviewWorkspace{backend: backend, info: workspace.Info{Path: repo}},
+		expectedWorkspaceHead: retained,
+		NativeVersion:         version,
+		Issue:                 connector.Issue{ID: "wi_1", Identifier: "example-project#1", Title: "no change check", Description: "## Acceptance criteria\n- base check\n"},
+		Diff:                  &connector.ValidationDiff{Repository: "example-org/example-project", BaseSHA: base, HeadSHA: base, Digest: "digest"},
+		Commands:              []gate.CommandResult{cmdReceipt},
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if res.HeadSHA != base {
+		t.Fatalf("Validate() HeadSHA = %q, want %q", res.HeadSHA, base)
+	}
+	if len(res.Commands) == 0 || res.Commands[0].HeadSHA != base {
+		t.Fatalf("Validate() Commands = %+v, want HeadSHA normalized to %q", res.Commands, base)
+	}
+	gate.ApplyCriterionPolicy(gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}, &res)
+	if res.Verdict != gate.ValidatorVerdictPass {
+		t.Fatalf("ApplyCriterionPolicy verdict = %q, not_verified = %+v, evidence = %+v, commands = %+v", res.Verdict, res.NotVerified, res.CriteriaEvidence, res.Commands)
+	}
+}
+
 func TestNoChangeEmptyLandingRunsRequiredGates(t *testing.T) {
 	for _, eligible := range []bool{true, false} {
 		t.Run(map[bool]string{true: "accepted base evidence enters required gates", false: "missing evidence retains nothing_to_land"}[eligible], func(t *testing.T) {
@@ -71,6 +170,7 @@ func TestNoChangeEmptyLandingRunsRequiredGates(t *testing.T) {
 type noChangeRetainedReviewBackend struct {
 	landingBackend
 	head string
+	tree string
 }
 
 func (b *noChangeRetainedReviewBackend) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
@@ -82,7 +182,11 @@ func (*noChangeRetainedReviewBackend) VerifyReviewTree(context.Context, workspac
 }
 
 func (b *noChangeRetainedReviewBackend) RunReviewCommand(_ context.Context, _ workspace.Info, _ workspace.Issue, command string) (gate.CommandResult, error) {
-	return gate.CommandResult{Command: command, HeadSHA: b.head, TreeSHA: b.head, ExitCode: 0}, nil
+	tree := b.tree
+	if tree == "" {
+		tree = b.head
+	}
+	return gate.CommandResult{Command: command, HeadSHA: b.head, TreeSHA: tree, ExitCode: 0}, nil
 }
 
 func (*noChangeRetainedReviewBackend) PreserveIssue(context.Context, workspace.Issue) (workspace.Preservation, error) {
