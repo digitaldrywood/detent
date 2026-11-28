@@ -188,12 +188,14 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		restartPolicy      bool
 		longRetry          bool
 		expired            bool
+		recoveryWriteFails bool
 	}{
 		{name: "native orphan continuation retains claim policy", nativeAuthority: true, resumedPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "native orphan continuation after another policy change", nativeAuthority: true, resumedPolicy: true, restartPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "native final checkpoint authority survives restart", nativeAuthority: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "expired completion cannot publish", expired: true},
 		{name: "non-native renewal outlasts original lease", longRetry: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "fresh heartbeat manager renews after failed recovery write", longRetry: true, recoveryWriteFails: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "native completion waits for restoration transport", longRetry: true, nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "invalid restored authority cannot release another claim", nativeAuthority: true, wantRestores: 2, restoreError: runpkg.ErrExecutionAuthorityUnavailable, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalAbandoned},
 		{name: "intake off preserves deferred completion through restart", intakeOff: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
@@ -300,14 +302,28 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				event.Result.PullRequestHeadPushed = true
 				event.Result.WorkspaceBranch = "detent/1869"
 			}
-			if tt.nativeAuthority {
+			if tt.recoveryWriteFails {
+				tracker.firstErr = nil
+				initialOrch.deferTrackerUnavailableCompletion(t.Context(), &initialState, event, initialState.Running[issue.ID], &github.StatusError{RetryAfter: 11 * time.Minute})
+			} else if tt.nativeAuthority {
 				tracker.firstErr = nil
 				initialOrch.deferTrackerUnavailableCompletion(t.Context(), &initialState, event, initialState.Running[issue.ID], completionDeferralAvailabilityError())
 			} else {
 				initialOrch.handleRunResult(t.Context(), &initialState, event)
 			}
 
-			restartedStore := initialStore
+			var restartedStore store.WorkAttemptStore = initialStore
+			var recovering *transientRecoveryWriteStore
+			var confirmedExpiry time.Time
+			if tt.recoveryWriteFails {
+				saved, err := initialStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				confirmedExpiry = saved.LeaseExpiresAt
+				recovering = &transientRecoveryWriteStore{WorkAttemptStore: initialStore}
+				restartedStore = recovering
+			}
 			recoveredIssue := cloneIssue(issue)
 			recoveredIssue.State = tt.recoveredState
 			tracker.setIssue(recoveredIssue)
@@ -358,6 +374,14 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if retry, ok := restartedState.Retry[issue.ID]; !ok || !retry.CompletionDeferred {
 				t.Fatalf("Retry[%q] = %#v, want recovered completion deferral", issue.ID, retry)
 			}
+			if recovering != nil {
+				target := restartedOrch.heartbeats.targets[issue.ID]
+				if recovering.heartbeatCalls != 1 || !target.attemptDeadline.Equal(confirmedExpiry) ||
+					!restartedState.Retry[issue.ID].DueAt.After(confirmedExpiry) {
+					t.Fatalf("recovery writes=%d, heartbeat deadline=%s, completion due=%s, want one failed write and renewal before %s",
+						recovering.heartbeatCalls, target.attemptDeadline, restartedState.Retry[issue.ID].DueAt, confirmedExpiry)
+				}
+			}
 			if tt.forgeClass != "" {
 				decoded := restartedState.deferredCompletions[issue.ID].completion()
 				availability, typed := forgeavailability.As(decoded.Err)
@@ -402,7 +426,7 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 						t.Fatal("publication unexpectedly settled during tracker outage")
 					}
 				}
-				for range 3 {
+				for renewal := range 3 {
 					restartAt = restartAt.Add(4 * time.Minute)
 					targets := restartedOrch.heartbeats.due(restartAt)
 					if len(targets) != 1 {
@@ -410,6 +434,12 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 					}
 					for _, target := range targets {
 						restartedOrch.heartbeats.execute(t.Context(), target)
+					}
+					if recovering != nil && renewal == 0 {
+						result := <-restartedOrch.heartbeats.results
+						if !result.workAttemptRenewed || !restartAt.Before(confirmedExpiry) || !result.heartbeat.LeaseExpiresAt.After(confirmedExpiry) || len(restartedState.Completed) != 0 {
+							t.Fatalf("renewal=%+v at %s, want renewal before %s with completion still deferred", result, restartAt, confirmedExpiry)
+						}
 					}
 					restartedOrch.expireOrphanedWorkAttempts(t.Context(), &restartedState, restartAt)
 				}
@@ -471,6 +501,9 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if restartedState.TokenTotals.TotalTokens != tt.wantAcceptedTokens {
 				t.Fatalf("accepted tokens = %d, want %d", restartedState.TokenTotals.TotalTokens, tt.wantAcceptedTokens)
 			}
+			if recovering != nil && recovering.completions != 1 {
+				t.Fatalf("durable completions = %d, want one", recovering.completions)
+			}
 			if tt.nativeAuthority {
 				wantPrepared, wantReleases := 1, 1
 				if tt.restoreError != nil {
@@ -482,6 +515,25 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+type transientRecoveryWriteStore struct {
+	store.WorkAttemptStore
+	heartbeatCalls int
+	completions    int
+}
+
+func (s *transientRecoveryWriteStore) RecordWorkAttemptHeartbeat(ctx context.Context, heartbeat store.WorkAttemptHeartbeat) error {
+	s.heartbeatCalls++
+	if s.heartbeatCalls == 1 {
+		return errors.New("recovery persistence unavailable")
+	}
+	return s.WorkAttemptStore.RecordWorkAttemptHeartbeat(ctx, heartbeat)
+}
+
+func (s *transientRecoveryWriteStore) CompleteWorkAttempt(ctx context.Context, completion store.WorkAttemptCompletion) error {
+	s.completions++
+	return s.WorkAttemptStore.CompleteWorkAttempt(ctx, completion)
 }
 
 func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {

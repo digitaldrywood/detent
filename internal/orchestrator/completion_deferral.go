@@ -28,6 +28,7 @@ const (
 )
 
 type deferredCompletion struct {
+	recoveredLeaseExpiry   time.Time
 	FailureDecision        *tracker.FailureAttribution    `json:"failure_decision,omitempty"`
 	Schema                 int                            `json:"schema"`
 	Running                Running                        `json:"running"`
@@ -444,25 +445,33 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		if o.logger != nil {
 			o.logger.Error("deferred completion persistence failed", "attempt_id", record.Running.WorkAttemptID, "issue_id", record.Running.Issue.ID, "error", err)
 		}
+		if ctx.Err() == nil && record.recoveredLeaseExpiry.After(o.clockNow()) &&
+			!errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrWorkAttemptTerminal) {
+			heartbeat.LeaseExpiresAt = record.recoveredLeaseExpiry
+			o.trackDeferredCompletionHeartbeat(state, record, heartbeat)
+		}
 		return false
 	}
 	if record.Running.progress != nil {
 		record.Running.progress.persisted.Store(&heartbeat)
 	}
-	if o.heartbeats != nil {
-		o.heartbeats.upsert(heartbeatTarget{
-			progress:             record.Running.progress,
-			issueID:              record.Running.Issue.ID,
-			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
-			localLeaseDeadline:   claimRenewalDeadline(state.Claimed[record.Running.Issue.ID]),
-			attemptDeadline:      heartbeat.LeaseExpiresAt,
-			workAttemptHeartbeat: heartbeat,
-			workerProcess:        record.Running.WorkerProcess,
-			workspacePath:        record.Running.WorkspacePath,
-		})
-	}
+	o.trackDeferredCompletionHeartbeat(state, record, heartbeat)
 	o.applyWorkAttemptHeartbeatSnapshot(state, record.Running.WorkAttemptID, heartbeat, nil)
 	return true
+}
+
+func (o *Orchestrator) trackDeferredCompletionHeartbeat(state *State, record deferredCompletion, heartbeat store.WorkAttemptHeartbeat) {
+	claim := state.Claimed[record.Running.Issue.ID]
+	o.heartbeats.upsert(heartbeatTarget{
+		progress:             record.Running.progress,
+		issueID:              record.Running.Issue.ID,
+		claimOwner:           firstNonBlank(claim.Owner, o.claimOwner()),
+		localLeaseDeadline:   claimRenewalDeadline(claim),
+		attemptDeadline:      heartbeat.LeaseExpiresAt,
+		workAttemptHeartbeat: heartbeat,
+		workerProcess:        record.Running.WorkerProcess,
+		workspacePath:        record.Running.WorkspacePath,
+	})
 }
 
 func deferredCompletionMetadataJSON(record deferredCompletion) (string, error) {
@@ -509,6 +518,7 @@ func decodeDeferredCompletion(attempt store.WorkAttempt) (deferredCompletion, er
 	record.Running.mergeControl = record.MergeControl != nil && *record.MergeControl
 	record.Running.legacyDeferredMerge = record.MergeControl == nil && record.Request.Mode == runpkg.RunModeMerge
 	record.Persisted = true
+	record.recoveredLeaseExpiry = attempt.LeaseExpiresAt
 	return record, nil
 }
 
