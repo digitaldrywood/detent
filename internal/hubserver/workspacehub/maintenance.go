@@ -37,7 +37,9 @@ func Maintain(ctx context.Context, stop <-chan struct{}, stopped chan<- struct{}
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			sweep(ctx)
+			tickCtx, cancel := context.WithTimeout(ctx, interval())
+			sweep(tickCtx)
+			cancel()
 			timer.Reset(next())
 		}
 	}
