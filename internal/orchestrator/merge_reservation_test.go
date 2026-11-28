@@ -613,12 +613,11 @@ func TestMergeReservationPersistsAndRestoresWait(t *testing.T) {
 			if tt.refresh {
 				issue.PullRequest.CIStatus = "success"
 				issue.PullRequest.MergeableState = "behind"
+				event.Result = runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathCheckedHead}
 				if tt.apiRefusal {
 					issue.PullRequest.MergeableState = "clean"
-					tracker.err = connector.ErrPullRequestBaseOutOfDate
-				}
-				event.Result = runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: runpkg.RunOutputMergeFastPathCheckedHead}
-				if !orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
+					orch.refreshMergeWorkerBase(t.Context(), &state, event, running, issue, "merge_api_rejected_out_of_date_base")
+				} else if !orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) {
 					t.Fatal("base refusal was not handled")
 				}
 			} else {

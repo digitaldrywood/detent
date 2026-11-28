@@ -58,6 +58,7 @@ type pullRequestNode struct {
 	ActivityAt                 *time.Time                          `json:"activityAt"`
 	HeadRefName                string                              `json:"headRefName"`
 	BaseRefName                string                              `json:"baseRefName"`
+	BaseRepository             string                              `json:"-"`
 	HeadSHA                    string                              `json:"headSHA"`
 	BaseSHA                    string                              `json:"baseRefOid"`
 	HydrationUnavailableReason string                              `json:"-"`
@@ -180,8 +181,11 @@ type restPullRequestMergeResponse struct {
 }
 
 type restHead struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
+	Repo struct {
+		FullName string `json:"full_name"`
+	} `json:"repo"`
 }
 
 type restReview struct {

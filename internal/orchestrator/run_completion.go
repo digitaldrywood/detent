@@ -118,11 +118,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	mergeControl := running.mergeControl
-	if mergeControl && !o.dispatchPlanner().allowsDirectPullRequestMerge() {
+	if mergeControl && !o.dispatchPlanner().allowsLegacyMergeCompletion() {
 		o.releaseClaim(state, event.IssueID)
 		return
 	}
-	if mergeControl || running.legacyDeferredMerge && mergeWorkerIssue(running.Issue) && o.dispatchPlanner().allowsDirectPullRequestMerge() {
+	if mergeControl || running.legacyDeferredMerge && mergeWorkerIssue(running.Issue) && o.dispatchPlanner().allowsLegacyMergeCompletion() {
 		var unbind func()
 		ctx, unbind = o.heartbeats.bindCompletion(ctx, event.IssueID, running.WorkAttemptID)
 		defer unbind()
@@ -917,7 +917,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return false
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
-	revisionBound := running.mergeRevisionBound() && o.dispatchPlanner().allowsDirectPullRequestMerge()
+	revisionBound := running.mergeRevisionBound() && o.dispatchPlanner().allowsLegacyMergeCompletion()
 	if revisionBound && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
@@ -994,7 +994,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, event.Result.MergeFallbackFindings)
 		return true
 	}
-	if mergeWorkerIssue(running.Issue) && !o.dispatchPlanner().allowsDirectPullRequestMerge() {
+	if mergeWorkerIssue(running.Issue) && !o.dispatchPlanner().allowsLegacyMergeCompletion() {
 		o.releaseClaim(state, event.IssueID)
 		return true
 	}
@@ -1181,6 +1181,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if ctx.Err() != nil || running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
+	if !o.dispatchPlanner().allowsDirectPullRequestMerge() || running.WorkAttemptID != 0 || event.Request.WorkAttemptID != 0 {
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "leased_landing_requires_native_change", errors.New("leased landing requires a native Change"))
+		return true
+	}
 	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
 		if ctx.Err() != nil {
 			return true
@@ -1196,6 +1200,25 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true
+	}
+	if revisionBound {
+		merged, err := hydrator.HydratePullRequest(ctx, issue)
+		if ctx.Err() != nil || !o.mergeControlCompletionActive(ctx, running) {
+			return true
+		}
+		if err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
+		if !pullRequestMerged(merged.PullRequest) {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("merge receipt is unavailable"))
+			return true
+		}
+		if !sameMergeRevision(event.Request.Issue, merged) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, merged)
+			return true
+		}
+		issue = merged
 	}
 	return o.finishProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 }

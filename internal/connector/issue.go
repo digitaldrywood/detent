@@ -143,6 +143,7 @@ type PullRequest struct {
 	URL                          string                      `json:"url,omitempty" yaml:"url,omitempty"`
 	BranchName                   string                      `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	BaseRef                      string                      `json:"base_ref,omitempty" yaml:"base_ref,omitempty"`
+	BaseRepository               string                      `json:"base_repository,omitempty" yaml:"base_repository,omitempty"`
 	BaseBranchStrict             bool                        `json:"base_branch_strict,omitempty" yaml:"-"`
 	State                        string                      `json:"state,omitempty" yaml:"state,omitempty"`
 	MergeableState               string                      `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`

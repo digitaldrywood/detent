@@ -27,6 +27,7 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	planner := newDispatchPlanner(o.cfg)
 	planner.nativeWorkflow = o.nativeWorkflow()
 	planner.boundedAdmission = o.scheduling != nil
+	planner.durableWorkAttempts = o.workAttempts != nil
 	return planner
 }
 

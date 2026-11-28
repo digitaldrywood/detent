@@ -639,6 +639,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 		MergedAt:       parseGitHubTime(pullRequest.MergedAt),
 		HeadRefName:    pullRequest.Head.Ref,
 		BaseRefName:    pullRequest.Base.Ref,
+		BaseRepository: pullRequest.Base.Repo.FullName,
 		HeadSHA:        pullRequest.Head.SHA,
 		BaseSHA:        pullRequest.Base.SHA,
 	}
@@ -659,6 +660,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		URL:                          strings.TrimSpace(pullRequest.URL),
 		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
 		BaseRef:                      strings.TrimSpace(pullRequest.BaseRefName),
+		BaseRepository:               strings.TrimSpace(pullRequest.BaseRepository),
 		State:                        strings.ToUpper(strings.TrimSpace(pullRequest.State)),
 		MergeableState:               strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)),
 		Draft:                        pullRequest.Draft,

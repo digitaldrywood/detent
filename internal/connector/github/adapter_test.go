@@ -1449,7 +1449,7 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/pulls/42",
-			body:   `{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"labels":[{"name":"Ready to Merge"},{"name":"bug"}],"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"ref":"main","sha":"base-sha"},"updated_at":"2026-06-26T13:00:00Z"}`,
+			body:   `{"node_id":"PR_42","number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"labels":[{"name":"Ready to Merge"},{"name":"bug"}],"head":{"ref":"detent/example_repo_1","sha":"head-sha","repo":{"full_name":"example/fork"}},"base":{"ref":"main","sha":"base-sha","repo":{"full_name":"example/repo"}},"updated_at":"2026-06-26T13:00:00Z"}`,
 		},
 		{
 			method: http.MethodGet,
@@ -1485,7 +1485,7 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 		t.Fatalf("HydratePullRequest().PullRequest = nil, want hydrated pull request")
 	}
 	pr := got.PullRequest
-	if pr.NodeID != "PR_42" || pr.Number != 42 || pr.State != "OPEN" || pr.MergeableState != "clean" || pr.HeadSHA != "head-sha" || pr.BaseRef != "main" || pr.BaseSHA != "base-sha" {
+	if pr.NodeID != "PR_42" || pr.Number != 42 || pr.State != "OPEN" || pr.MergeableState != "clean" || pr.HeadSHA != "head-sha" || pr.BaseRepository != "example/repo" || pr.BaseRef != "main" || pr.BaseSHA != "base-sha" {
 		t.Fatalf("hydrated pull request = %#v, want current clean pull request details", pr)
 	}
 	if pr.CIStatus != "pass" || pr.CheckRunCount != 1 {

@@ -25,6 +25,7 @@ const dispatchCandidateLookahead = 8
 type dispatchPlanner struct {
 	nativeWorkflow       bool
 	boundedAdmission     bool
+	durableWorkAttempts  bool
 	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)

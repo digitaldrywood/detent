@@ -5333,11 +5333,9 @@ func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t
 	}
 }
 
-func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalState(t *testing.T) {
+func TestHandleRunResultRecordsObservedMergeDeliveryTime(t *testing.T) {
 	t.Parallel()
 
-	// Replays #3445/#3465's recorded worker completion and actual integration,
-	// then the same delay across Chicago midnight. Catches backdated delivery.
 	for _, tt := range []struct {
 		name             string
 		worker, delivery time.Time
@@ -5365,14 +5363,17 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 				MergeableState: "clean",
 				CIStatus:       "success",
 				HeadSHA:        "head-clean",
+				BaseRef:        "main",
 			})
 			issue.State = "Merging"
 			issue.Identifier = "digitaldrywood/creswoodcorners-phone#68"
+			merged := cloneIssue(issue)
+			merged.PullRequest.State = "MERGED"
 			tracker := &autoPromoteTickMergeConnector{
 				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
+				hydratedIssues:           []connector.Issue{merged},
 			}
-			tracker.afterHydrate = func() { clock = now.Add(time.Minute) }
-			tracker.afterMerge = func() { clock = tt.delivery }
+			tracker.afterHydrate = func() { clock = tt.delivery }
 			var logs strings.Builder
 			orch := &Orchestrator{
 				cfg:             cfg,
@@ -5390,31 +5391,32 @@ func TestHandleRunResultProgrammaticallyMergesCleanMergeWorkerWithoutTerminalSta
 				t.Fatal(err)
 			}
 			state.Running[issue.ID] = Running{
-				WorkAttemptID: attemptID,
-				Issue:         cloneIssue(issue),
-				Attempt:       1,
-				StartedAt:     now.Add(-time.Minute),
-				WorkerHost:    "worker-a",
-				TurnCount:     3,
-				LastEvent:     "workpad_update",
-				LastMessage:   "validated current-head CI and updated the Workpad, but left the PR open",
+				legacyDeferredMerge: true,
+				WorkAttemptID:       attemptID,
+				Issue:               cloneIssue(issue),
+				Attempt:             1,
+				StartedAt:           now.Add(-time.Minute),
+				WorkerHost:          "worker-a",
+				TurnCount:           3,
+				LastEvent:           "workpad_update",
+				LastMessage:         "validated current-head CI and updated the Workpad, but left the PR open",
 			}
+			orch.heartbeats = newHeartbeatManager(cfg, tracker, backend, orch.now, orch.logger)
+			orch.trackRunningHeartbeat(&state, state.Running[issue.ID], Claimed{}, clock)
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
 			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
 				IssueID:     issue.ID,
 				CompletedAt: now,
+				Request:     runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeMerge, WorkAttemptID: attemptID},
 				Result: runpkg.RunResult{
 					FinalState: runpkg.FinalStateCompleted,
 					Output:     "validated current-head CI and updated the Workpad",
 				},
 			})
 
-			if len(tracker.merges) != 1 {
-				t.Fatalf("merges = %#v, want one programmatic merge", tracker.merges)
-			}
-			if got := tracker.merges[0]; got.repository != "digitaldrywood/creswoodcorners-phone" || got.number != 76 || got.headSHA != "head-clean" || got.method != "merge" {
-				t.Fatalf("merge request = %#v, want repository digitaldrywood/creswoodcorners-phone PR 76 head-clean using merge", got)
+			if len(tracker.merges) != 0 {
+				t.Fatalf("observed merge receipt sent another merge: %#v", tracker.merges)
 			}
 			if got := tracker.hydrations; !reflect.DeepEqual(got, []autoPromoteTickHydration{{
 				issueID:    issue.ID,
