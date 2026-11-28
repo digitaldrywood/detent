@@ -129,24 +129,61 @@ func TestStandaloneStartupHealthRequiresReadCredential(t *testing.T) {
 func TestStandaloneStartupHealthReportsAuthenticatedProgress(t *testing.T) {
 	t.Parallel()
 	_, cfg, expected := postgresStartupHealthFixture(t)
+	const budget = 35 * time.Second
+	cfg.RequestBudget = budget
+	var readCtx context.Context
+	var appliedBudget time.Duration
+	cfg.Deps().RequestTimeout = func(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		appliedBudget = timeout
+		var cancel context.CancelFunc
+		readCtx, cancel = context.WithTimeout(ctx, timeout)
+		return readCtx, cancel
+	}
 	progress := openPostgresStartupHealth(t, cfg)
-	request := httptest.NewRequest(http.MethodGet, "/health", nil)
-	request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
-	recorder := httptest.NewRecorder()
-	progress.ServeHTTP(recorder, request)
-	var health struct {
-		MigrationHealth
-		Status  string `json:"status"`
-		Version string `json:"version"`
-		Commit  string `json:"commit"`
-	}
-	if err := json.NewDecoder(recorder.Body).Decode(&health); err != nil {
-		t.Fatal(err)
-	}
-	if recorder.Code != http.StatusServiceUnavailable || health.Status != "unavailable" || health.MigrationsRunning || health.SchemaFactsComplete ||
-		health.SchemaVersion != expected.SchemaVersion || health.SchemaFingerprint != expected.SchemaFingerprint ||
-		health.Version != "v1" || health.Commit != "abc123" {
-		t.Fatalf("startup health = %d %+v", recorder.Code, health)
+	for _, tc := range []struct {
+		name         string
+		callerBudget time.Duration
+		wantBudget   time.Duration
+	}{
+		{name: "configured request budget", wantBudget: budget},
+		{name: "caller deadline", callerBudget: time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			readCtx, appliedBudget = nil, 0
+			ctx := t.Context()
+			if tc.callerBudget > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.callerBudget)
+				defer cancel()
+			}
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/health", nil)
+			request.Header.Set("Authorization", "Bearer "+testHubAdminToken)
+			recorder := httptest.NewRecorder()
+			progress.ServeHTTP(recorder, request)
+			var health struct {
+				MigrationHealth
+				Status  string `json:"status"`
+				Version string `json:"version"`
+				Commit  string `json:"commit"`
+			}
+			if err := json.NewDecoder(recorder.Body).Decode(&health); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusServiceUnavailable || health.Status != "unavailable" || health.MigrationsRunning || health.SchemaFactsComplete ||
+				health.SchemaVersion != expected.SchemaVersion || health.SchemaFingerprint != expected.SchemaFingerprint ||
+				health.Version != "v1" || health.Commit != "abc123" {
+				t.Fatalf("startup health = %d %+v", recorder.Code, health)
+			}
+			if appliedBudget != tc.wantBudget {
+				t.Errorf("applied request budget = %s, want %s", appliedBudget, tc.wantBudget)
+			}
+			if tc.wantBudget > 0 && (readCtx == nil || !errors.Is(readCtx.Err(), context.Canceled)) {
+				t.Error("startup health did not release its request context")
+			}
+			if err := ctx.Err(); err != nil {
+				t.Errorf("caller context after startup health = %v", err)
+			}
+		})
 	}
 }
 

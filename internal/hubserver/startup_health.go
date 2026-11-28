@@ -76,7 +76,9 @@ func (s *startupHealth) serveStandaloneHealth(w http.ResponseWriter, r *http.Req
 	}
 	c := echo.New().NewContext(r, w)
 	c.SetPath("/health")
-	credential, status, err := service.authenticateAPIRequestContext(r.Context(), c)
+	cancel := service.applyRequestDeadline(c, service.config.RequestBudget)
+	defer cancel()
+	credential, status, err := service.authenticateAPIRequest(c)
 	if err != nil {
 		http.Error(w, "Unauthorized", status)
 		return
