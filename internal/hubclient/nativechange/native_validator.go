@@ -213,6 +213,11 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), Validator: &result,
 	})
 	publicationErr := err
+	if publicationErr == nil && errors.Is(e.ExecutionAuthorityError(), runner.ErrExecutionAuthorityUnavailable) {
+		e.change.Validator = &result
+		e.change.Reviewed = false
+		return nil
+	}
 	if publicationErr != nil {
 		var refusal *APIError
 		if !errors.Is(publicationErr, ErrUnavailable) || ctx.Err() != nil || errors.As(publicationErr, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {

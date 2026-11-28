@@ -3,17 +3,25 @@ package nativechange
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -22,6 +30,186 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestLargeValidatorPublicationUsesLiveFence(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stale bool
+	}{
+		{name: "archive upload recovers from 503"},
+		{name: "prior receipt survives review fence refusal", stale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", FencingToken: 1, PolicyID: descriptor.ID}
+				const changeID, versionID = "change_example", "version_example"
+				var guarded context.Context
+				var archivePayload, reviewPayload []byte
+				var archiveRef attachment.ArchiveReference
+				var receipt string
+				var diff tracker.AttemptDiffRequest
+				var completion tracker.NativeRunEvent
+				uploads, posts, reviews, reads, diffs, completions := 0, 0, 0, 0, 0, 0
+				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					switch {
+					case strings.HasSuffix(req.URL.Path, "/validate"):
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(req.URL.Path, "/capabilities"):
+						json.NewEncoder(response).Encode(map[string]any{"features": []string{tracker.NativeValidatorReceiptCapability}})
+					case req.URL.Query().Get("view") == "validator_receipt":
+						reads++
+						var cause *runner.CancellationCause
+						if !errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
+							t.Error("receipt read started before typed fence cancellation")
+						}
+						json.NewEncoder(response).Encode(map[string]string{"request_sha256": receipt})
+					case req.URL.Query().Get("view") == "bounded":
+						sections := map[string]operatortool.ChangeReadPage{}
+						for _, name := range []string{"versions", "reviews", "checks", "discussion"} {
+							sections[name] = operatortool.ChangeReadPage{Complete: true}
+						}
+						json.NewEncoder(response).Encode(operatortool.ChangeResult{
+							OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: string(lease.WorkItemID),
+							Detail: &tracker.ChangeDetail{
+								Change:  tracker.ChangeRequest{ID: changeID, CurrentVersion: versionID, ProjectID: "prj_example", WorkItemID: lease.WorkItemID},
+								Summary: tracker.ChangeSummary{Status: "reviewed"},
+							},
+							Read: &operatortool.ChangeRead{VersionID: versionID, Sections: sections},
+						})
+					case strings.HasSuffix(req.URL.Path, "/archives"):
+						uploads++
+						raw, err := io.ReadAll(req.Body)
+						if err != nil {
+							return nil, err
+						}
+						if req.Header.Get(attachment.ArchiveLeaseHeader) != string(lease.ID) || req.Header.Get(attachment.ArchiveFenceHeader) != "1" {
+							t.Fatal("archive upload omitted the original fence")
+						}
+						if archivePayload != nil && !bytes.Equal(archivePayload, raw) {
+							t.Fatal("archive upload replay changed the payload")
+						}
+						archivePayload = raw
+						if !tc.stale && uploads == 1 {
+							response.WriteHeader(http.StatusServiceUnavailable)
+							io.WriteString(response, `{"code":"unavailable"}`)
+							break
+						}
+						var archive changerequest.ValidatorArchive
+						if err := json.Unmarshal(raw, &archive); err != nil {
+							return nil, err
+						}
+						command, err := json.Marshal(archive.Review)
+						if err != nil {
+							return nil, err
+						}
+						digest := sha256.Sum256(command)
+						receipt = hex.EncodeToString(digest[:])
+						archiveRef, _, err = attachment.PrepareArchive("org_example", 1, bytes.NewReader(raw))
+						if err != nil {
+							return nil, err
+						}
+						json.NewEncoder(response).Encode(archiveRef)
+					case strings.HasSuffix(req.URL.Path, "/reviews"):
+						posts++
+						raw, err := io.ReadAll(req.Body)
+						if err != nil {
+							return nil, err
+						}
+						var submission changerequest.ReviewSubmission
+						if json.Unmarshal(raw, &submission) != nil || submission.LeaseID != lease.ID || submission.FencingToken != lease.FencingToken ||
+							submission.ValidatorArchive == nil || submission.ValidatorArchive.SHA256 != archiveRef.SHA256 {
+							t.Fatal("review did not carry the reserved archive and original fence")
+						}
+						if tc.stale && posts == 2 {
+							if !bytes.Equal(raw, reviewPayload) {
+								t.Fatal("review replay changed the original command")
+							}
+							response.WriteHeader(http.StatusConflict)
+							io.WriteString(response, `{"code":"stale_fencing_token"}`)
+							break
+						}
+						reviews++
+						reviewPayload = raw
+						if tc.stale {
+							return nil, io.ErrUnexpectedEOF
+						}
+						io.WriteString(response, `{"review_id":"review_example","version_id":"version_example"}`)
+					case strings.HasSuffix(req.URL.Path, "/diff"):
+						diffs++
+						if err := json.NewDecoder(req.Body).Decode(&diff); err != nil {
+							return nil, err
+						}
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(req.URL.Path, "/events"):
+						completions++
+						if err := json.NewDecoder(req.Body).Decode(&completion); err != nil {
+							return nil, err
+						}
+						response.WriteHeader(http.StatusNoContent)
+					case strings.HasSuffix(req.URL.Path, "/release"):
+						response.WriteHeader(http.StatusNoContent)
+					default:
+						t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+					}
+					return response.Result(), nil
+				})}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, LeaseTTL: time.Minute, HeartbeatInterval: time.Second, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: time.Now().Add(time.Minute), execution: execution}, descriptor, "project")
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "example"}
+				head := nativeChangeFixtureHead("c")
+				execution.SetDiffSource(nativeChangeDiff(head, "README.md"))
+				execution.change = &runner.NativeChange{ChangeID: changeID, VersionID: versionID, Changed: true, HeadSHA: head, BaseSHA: nativeChangeFixtureHead("a")}
+				execution.settled = true
+				var stop func()
+				guarded, stop, err = execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer stop()
+				result := gate.ValidatorResult{VersionID: versionID, SessionID: 41, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make test", Output: strings.Repeat("x", 1300<<10)}}}
+				if err := execution.RecordValidator(guarded, result); err != nil {
+					t.Fatal(err)
+				}
+				if execution.change.Validator == nil || execution.change.Validator.SessionID != result.SessionID {
+					t.Fatal("committed validator result was not recorded")
+				}
+				if tc.stale {
+					for _, ctx := range []context.Context{context.WithoutCancel(guarded), t.Context()} {
+						if err := execution.Finish(ctx, "succeeded"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+							t.Errorf("finish after review fence refusal = %v", err)
+						}
+					}
+					if uploads != 1 || posts != 2 || reviews != 1 || reads != 1 || diffs != 0 || completions != 0 {
+						t.Fatalf("after refusal: uploads=%d posts=%d reviews=%d receipt reads=%d diffs=%d completions=%d", uploads, posts, reviews, reads, diffs, completions)
+					}
+					return
+				}
+				if err := execution.Finish(guarded, "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				if uploads != 2 || posts != 1 || reviews != 1 || reads != 0 || diffs != 1 || completions != 1 ||
+					completion.Data.Outcome != "succeeded" || diff.Generation.Seq != completion.Data.Sequence {
+					t.Fatalf("publication did not recover: uploads=%d posts=%d reviews=%d receipt reads=%d diffs=%d completions=%d outcome=%q",
+						uploads, posts, reviews, reads, diffs, completions, completion.Data.Outcome)
+				}
+			})
+		})
+	}
+}
 
 func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 	for _, outcome := range []string{"audit publication failed", "succeeded"} {
