@@ -52,13 +52,13 @@ func TestDetailBatchAuthorityBoundsScopeAndDeadline(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	before := time.Now()
-	rows, err := callAuthority[[]attachment.DetailReadResult](t.Context(), client, "ReadDetails", DetailBatchRequest{Organization: binding.Organization, References: []attachment.ArchiveReference{ref, ref}, Deadline: before.Add(time.Hour)})
+	deadline := time.Now().Add(time.Hour)
+	rows, err := callAuthority[[]attachment.DetailReadResult](t.Context(), client, "ReadDetails", DetailBatchRequest{Organization: binding.Organization, References: []attachment.ArchiveReference{ref, ref}, Deadline: deadline})
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("batch: %v", err)
 	}
-	if store.calls.Load() != 1 || store.deadline.After(time.Now().Add(budget)) || store.deadline.Before(before) {
-		t.Fatal("authority budget or allocation count changed")
+	if store.calls.Load() != 1 || !store.deadline.Equal(deadline) {
+		t.Fatal("authority changed the request deadline or allocation count")
 	}
 	data, err := rows[0].Bytes()
 	if err != nil || !bytes.Equal(data, store.data) {
@@ -67,7 +67,7 @@ func TestDetailBatchAuthorityBoundsScopeAndDeadline(t *testing.T) {
 	if _, err := rows[1].Bytes(); !errors.Is(err, artifact.ErrMissing) || len(rows[1].Data) != 0 {
 		t.Fatalf("failed content retained: %v", err)
 	}
-	if _, err := callAuthority[[]attachment.DetailReadResult](t.Context(), client, "ReadDetails", DetailBatchRequest{Organization: "org_foreign", References: []attachment.ArchiveReference{ref}, Deadline: before.Add(time.Hour)}); err == nil {
+	if _, err := callAuthority[[]attachment.DetailReadResult](t.Context(), client, "ReadDetails", DetailBatchRequest{Organization: "org_foreign", References: []attachment.ArchiveReference{ref}, Deadline: deadline}); err == nil {
 		t.Fatal("foreign request accepted")
 	}
 	if store.calls.Load() != 1 {

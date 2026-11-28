@@ -34,8 +34,8 @@ func (s *authorityServer) ReadArchive(request ArchiveRequest, result *ArchiveRes
 }
 
 func (c *Client) ReadArchive(ctx context.Context, ref attachment.ArchiveReference, presign bool) (ArchiveResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	return callAuthority[ArchiveResponse](ctx, c, "ReadArchive", ArchiveRequest{Reference: ref, Presign: presign, Deadline: deadline})
+	return callAuthorityContext[ArchiveResponse](ctx, c.client, "ReadArchive", ArchiveRequest{Reference: ref, Presign: presign, Deadline: deadline})
 }

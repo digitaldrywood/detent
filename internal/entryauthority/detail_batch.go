@@ -43,10 +43,10 @@ func (c *Client) ReadDetails(ctx context.Context, organization string, refs []at
 	if organization != c.organization || attachment.ValidateDetailBatch(organization, refs) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	rows, err := callAuthority[[]attachment.DetailReadResult](ctx, c, "ReadDetails", DetailBatchRequest{Organization: organization, References: refs, Deadline: deadline})
+	rows, err := callAuthorityContext[[]attachment.DetailReadResult](ctx, c.client, "ReadDetails", DetailBatchRequest{Organization: organization, References: refs, Deadline: deadline})
 	if err != nil {
 		return nil, contentClientError(err)
 	}

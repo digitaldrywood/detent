@@ -92,6 +92,7 @@ type authorityServer struct {
 	readDetail          func(DetailRequest) ([]byte, error)
 	readDetails         func(DetailBatchRequest) ([]attachment.DetailReadResult, error)
 	contentContext      func(time.Time) (context.Context, context.CancelFunc)
+	readContext         func(time.Time) (context.Context, context.CancelFunc)
 	archive             func(ArchiveRequest) (ArchiveResponse, error)
 	content             func(ContentRequest) ([]byte, error)
 }
@@ -160,7 +161,10 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		defer end()
 		return resolve(lookup, request.Origin)
 	}
-	authority := &authorityServer{binding: binding, budget: budget, resolve: current, contentContext: func(deadline time.Time) (context.Context, context.CancelFunc) {
+	readContext := func(deadline time.Time) (context.Context, context.CancelFunc) {
+		return context.WithDeadline(ctx, deadline)
+	}
+	authority := &authorityServer{binding: binding, budget: budget, resolve: current, readContext: readContext, contentContext: func(deadline time.Time) (context.Context, context.CancelFunc) {
 		lookup, cancel := context.WithTimeout(ctx, budget)
 		lookup, end := context.WithDeadline(lookup, deadline)
 		return lookup, func() { end(); cancel() }
@@ -169,7 +173,7 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		authority.contents = archives[0].Contents
 		if archives[0].Content != nil {
 			authority.content = func(request ContentRequest) ([]byte, error) {
-				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
+				lookup, cancel := readContext(request.Deadline)
 				defer cancel()
 				if err := lookup.Err(); err != nil {
 					return nil, err
@@ -179,10 +183,11 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		}
 		if archives[0].Reader != nil {
 			authority.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
-				lookup, stop := context.WithTimeout(ctx, budget)
-				defer stop()
-				lookup, end := context.WithDeadline(lookup, request.Deadline)
-				defer end()
+				lookup, cancel := readContext(request.Deadline)
+				defer cancel()
+				if err := lookup.Err(); err != nil {
+					return ArchiveResponse{}, err
+				}
 				return archives[0].Reader(lookup, request.Reference, request.Presign)
 			}
 		}
@@ -194,18 +199,14 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		details := archives[0].Details
 		if recovery, ok := details.(attachment.CanonicalDetailStore); ok {
 			authority.readCanonicalDetail = func(request DetailRequest) ([]byte, error) {
-				lookup, stop := context.WithTimeout(ctx, budget)
-				defer stop()
-				lookup, end := context.WithDeadline(lookup, request.Deadline)
-				defer end()
+				lookup, cancel := readContext(request.Deadline)
+				defer cancel()
 				return recovery.ReadCanonicalDetail(lookup, request.Organization, request.Project, request.Key)
 			}
 		}
 		authority.readDetails = func(request DetailBatchRequest) ([]attachment.DetailReadResult, error) {
-			lookup, stop := context.WithTimeout(ctx, budget)
-			defer stop()
-			lookup, end := context.WithDeadline(lookup, request.Deadline)
-			defer end()
+			lookup, cancel := readContext(request.Deadline)
+			defer cancel()
 			if batch, ok := details.(attachment.DetailBatchStore); ok {
 				return batch.ReadDetails(lookup, request.Organization, request.References)
 			}
@@ -220,10 +221,8 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 			return details.StoreDetail(lookup, request.Organization, request.Data)
 		}
 		authority.readDetail = func(request DetailRequest) ([]byte, error) {
-			lookup, stop := context.WithTimeout(ctx, budget)
-			defer stop()
-			lookup, end := context.WithDeadline(lookup, request.Deadline)
-			defer end()
+			lookup, cancel := readContext(request.Deadline)
+			defer cancel()
 			return details.ReadDetail(lookup, request.Organization, request.Reference)
 		}
 	}
@@ -308,6 +307,13 @@ func (c *Client) Close() error {
 	return nil
 }
 
+func (c *Client) readContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, c.budget)
+}
+
 type ContentRequest struct {
 	Organization string
 	Content      []byte
@@ -338,7 +344,7 @@ func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) e
 	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || request.Reference.Validate(s.binding.Organization) != nil {
 		return cloudassert.ErrInvalid
 	}
-	ctx, cancel := s.contentContext(request.Deadline)
+	ctx, cancel := s.readContext(request.Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return contentFailure(request, started, "archive content unavailable", err)
@@ -357,10 +363,10 @@ func (c *Client) PublishContent(ctx context.Context, organization string, conten
 	return callAuthority[attachment.ArchiveReference](ctx, c, "PublishContent", ContentRequest{Organization: organization, Content: content, Deadline: deadline})
 }
 func (c *Client) ReadContent(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	data, err := callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	data, err := callAuthorityContext[[]byte](ctx, c.client, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
 	return data, contentClientError(err)
 }
 
@@ -380,11 +386,8 @@ func (s *authorityServer) Content(request ContentRequest, result *[]byte) error 
 }
 
 func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.budget)
-		defer cancel()
-	}
+	ctx, cancel := c.readContext(ctx)
+	defer cancel()
 	request.Deadline, _ = ctx.Deadline()
 	data, err := callAuthorityContext[[]byte](ctx, c.client, "Content", request)
 	return data, contentClientError(err)
@@ -440,10 +443,10 @@ func (c *Client) ReadDetail(ctx context.Context, organization string, ref attach
 	if organization != c.organization || ref.Validate(organization) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	data, err := callAuthority[[]byte](ctx, c, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	data, err := callAuthorityContext[[]byte](ctx, c.client, "ReadDetail", DetailRequest{Organization: organization, Reference: ref, Deadline: deadline})
 	return data, contentClientError(err)
 }
 
@@ -463,9 +466,9 @@ func (c *Client) ReadCanonicalDetail(ctx context.Context, organization, project,
 	if organization != c.organization || attachment.ValidateCanonicalDetailKey(organization, project, key) != nil {
 		return nil, attachment.ErrInvalid
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.budget)
+	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	data, err := callAuthority[[]byte](ctx, c, "ReadCanonicalDetail", DetailRequest{Organization: organization, Project: project, Key: key, Deadline: deadline})
+	data, err := callAuthorityContext[[]byte](ctx, c.client, "ReadCanonicalDetail", DetailRequest{Organization: organization, Project: project, Key: key, Deadline: deadline})
 	return data, contentClientError(err)
 }
