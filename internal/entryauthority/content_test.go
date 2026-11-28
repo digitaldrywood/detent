@@ -8,16 +8,107 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/rpc"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 )
+
+func TestHostedContentUsesCallerDeadline(t *testing.T) {
+	binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 1}
+	ref, compressed, err := attachment.PrepareArchive(binding.Organization, 1, strings.NewReader("archive contents"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const budget = 3 * time.Second
+	for _, tc := range []struct {
+		name             string
+		caller, cancelAt time.Duration
+		elapsed          time.Duration
+		wantErr          error
+	}{
+		{name: "long read", caller: 30 * time.Second, elapsed: 20 * time.Second},
+		{name: "in-flight cancellation", caller: 30 * time.Second, cancelAt: time.Second, elapsed: time.Second, wantErr: context.Canceled},
+		{name: "short caller deadline", caller: 2 * time.Second, elapsed: 2 * time.Second, wantErr: context.DeadlineExceeded},
+		{name: "negotiated fallback", elapsed: budget, wantErr: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				serverCtx, stopServer := context.WithCancel(t.Context())
+				defer stopServer()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				started := time.Now()
+				if tc.caller > 0 {
+					var stopDeadline context.CancelFunc
+					ctx, stopDeadline = context.WithTimeout(ctx, tc.caller)
+					defer stopDeadline()
+				}
+				received := make(chan time.Time, 1)
+				authority := newAuthorityServer(serverCtx, binding, budget, nil, []Archives{{Content: func(ctx context.Context, _ ContentRequest) ([]byte, error) {
+					deadline, _ := ctx.Deadline()
+					received <- deadline
+					if tc.cancelAt > 0 {
+						timer := time.AfterFunc(tc.cancelAt, cancel)
+						defer timer.Stop()
+					}
+					timer := time.NewTimer(20 * time.Second)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-timer.C:
+						return compressed, nil
+					}
+				}}})
+				server := rpc.NewServer()
+				if err := server.RegisterName("Authority", authority); err != nil {
+					t.Fatal(err)
+				}
+				serverConn, clientConn := net.Pipe()
+				serverDone := make(chan struct{})
+				go func() {
+					defer close(serverDone)
+					server.ServeConn(serverConn)
+				}()
+				client := &Client{client: rpc.NewClient(clientConn), budget: budget, organization: binding.Organization}
+				defer func() {
+					stopServer()
+					if err := client.Close(); err != nil {
+						t.Error(err)
+					}
+					<-serverDone
+				}()
+				data, err := client.Content(ctx, ContentRequest{Organization: binding.Organization, Reference: ref})
+				if !errors.Is(err, tc.wantErr) || tc.wantErr == nil && !bytes.Equal(data, compressed) {
+					t.Errorf("content read returned %d bytes and %v, want error %v", len(data), err, tc.wantErr)
+				}
+				if elapsed := time.Since(started); elapsed != tc.elapsed {
+					t.Errorf("content read took %v, want %v", elapsed, tc.elapsed)
+				}
+				select {
+				case got := <-received:
+					want := tc.caller
+					if want == 0 {
+						want = budget
+					}
+					if !got.Equal(started.Add(want)) {
+						t.Errorf("authority deadline = %v, want %v", got, started.Add(want))
+					}
+				default:
+					t.Error("content read did not reach the authority")
+				}
+			})
+		})
+	}
+}
 
 type contentObjectStore struct {
 	attachment.ArchiveStorage

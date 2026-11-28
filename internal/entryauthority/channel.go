@@ -15,7 +15,6 @@ const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
 const RequestBudgetEnvironment = "DETENT_INTERNAL_ENTRY_REQUEST_BUDGET"
 const BootstrapVersion = "v1:3:5"
 const DefaultTenantRequestBudget = 30 * time.Second
-const contentTimeout = 15 * time.Second
 
 var ErrUnavailable = errors.New("entry authority unavailable")
 
@@ -141,6 +140,19 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 	ctx, cancel := context.WithCancel(ctx)
 	p := &Parent{Files: []*os.File{childRead, childWrite}, stream: channel{reader: parentRead, writer: parentWrite, budget: budget}, cancel: cancel, done: make(chan struct{})}
 	server := rpc.NewServer()
+	authority := newAuthorityServer(ctx, binding, budget, resolve, archives)
+	if err := server.RegisterName("Authority", authority); err != nil {
+		close(p.done)
+		return nil, errors.Join(err, p.Close())
+	}
+	go func() {
+		defer close(p.done)
+		server.ServeConn(p.stream)
+	}()
+	return p, nil
+}
+
+func newAuthorityServer(ctx context.Context, binding Binding, budget time.Duration, resolve Resolver, archives []Archives) *authorityServer {
 	current := func(request Request) (cloudassert.Claims, error) {
 		lookup, stop := context.WithTimeout(ctx, budget)
 		defer stop()
@@ -159,8 +171,6 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 			authority.content = func(request ContentRequest) ([]byte, error) {
 				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 				defer cancel()
-				lookup, stop := context.WithTimeout(lookup, contentTimeout)
-				defer stop()
 				if err := lookup.Err(); err != nil {
 					return nil, err
 				}
@@ -217,15 +227,7 @@ func Start(ctx context.Context, binding Binding, budget time.Duration, resolve R
 			return details.ReadDetail(lookup, request.Organization, request.Reference)
 		}
 	}
-	if err := server.RegisterName("Authority", authority); err != nil {
-		close(p.done)
-		return nil, errors.Join(err, p.Close())
-	}
-	go func() {
-		defer close(p.done)
-		server.ServeConn(p.stream)
-	}()
-	return p, nil
+	return authority
 }
 
 func (p *Parent) Close() error {
@@ -262,13 +264,17 @@ func Open(ctx context.Context, marker string, binding Binding, budget time.Durat
 func callAuthority[T any](ctx context.Context, c *Client, method string, args any) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
+	return callAuthorityContext[T](ctx, c.client, method, args)
+}
+
+func callAuthorityContext[T any](ctx context.Context, client *rpc.Client, method string, args any) (T, error) {
 	var zero T
 	if err := ctx.Err(); err != nil {
 		return zero, err
 	}
 	reply := new(T)
 	done := make(chan *rpc.Call, 1)
-	go c.client.Go("Authority."+method, args, reply, done)
+	go client.Go("Authority."+method, args, reply, done)
 	select {
 	case <-ctx.Done():
 		return zero, ctx.Err()
@@ -374,11 +380,13 @@ func (s *authorityServer) Content(request ContentRequest, result *[]byte) error 
 }
 
 func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, contentTimeout)
-	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.budget)
+		defer cancel()
+	}
 	request.Deadline, _ = ctx.Deadline()
-	client := &Client{client: c.client, budget: contentTimeout}
-	data, err := callAuthority[[]byte](ctx, client, "Content", request)
+	data, err := callAuthorityContext[[]byte](ctx, c.client, "Content", request)
 	return data, contentClientError(err)
 }
 
