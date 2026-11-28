@@ -214,6 +214,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	}
 	configuredRetry := append([]connector.WorkflowState(nil), customRework...)
 	configuredRetry[1].Transitions = []string{"Merging", "Fixing", "Done", "Blocked"}
+	customRetry := []connector.WorkflowState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Transitions: []string{"Operator Queue", "Blocked", "Done", "Repair Queue"}},
+		{Name: "Operator Queue", Dispatchable: true, OperatorOnly: true},
+		{Name: "Blocked"},
+		{Name: "Done", Terminal: true},
+		{Name: "Repair Queue", Dispatchable: true},
+	}
 	checkpoint := DiffStats{Status: "clean", HeadSHA: strings.Repeat("c", 40), RecoveryStateExpected: true, RecoveryStateAvailable: true}
 	checkpointDeadline := fmt.Errorf("worker cancellation: deadline_exceeded (source: orchestrator.parent_context)\nrun agent turn: %w\nresolve cleanup ownership source: git rev-parse --git-common-dir failed: %w", runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded)
 	yes, no := true, false
@@ -409,6 +417,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "failed provider with checkpoint returns to Rework", states: unfinishedWorkflow, humanReview: &no, runErr: errors.New("provider failed"), diffStats: checkpoint, wantContinue: true, wantState: "Rework"},
 		{name: "unattributed failure without outgoing retry retries in place", states: noRecoveryLane, humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, repeatRetry: true, wantContinue: true, wantState: "In Progress", wantSameState: true},
 		{name: "unattributed failure without Todo route retries in configured lane", states: configuredRetry, reworkState: "Fixing", humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, repeatRetry: true, wantContinue: true, wantState: "Fixing"},
+		{name: "unattributed failure uses reachable custom retry lane", states: customRetry, humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, machineAttempt: 3, repeatRetry: true, wantContinue: true, wantState: "Repair Queue"},
 		{name: "unattributed failure preserves concurrent operator hold", states: configuredRetry, reworkState: "Fixing", humanReview: &no, runErr: errors.New("worker failed"), turnStarted: true, handoffState: "Blocked", wantState: "Blocked", wantSameState: true},
 		{name: "source free completion without Todo route retries in place", states: noRecoveryLane, change: &runpkg.NativeChange{}, humanReview: &no, machineAttempt: 3, wantSettled: true, wantContinue: true, wantState: "In Progress", wantSameState: true},
 		{name: "completed checkpoint ownership deadline is instance owned with human review", states: workflow, humanReview: &yes, runErr: errors.Join(runpkg.ErrWorkspacePreparation, runpkg.ErrNativeRecoveryRequired, context.DeadlineExceeded), wantContinue: true},
