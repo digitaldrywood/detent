@@ -56,8 +56,8 @@ func TestHandleWorkAttemptRecoveryAbandonsActiveAttemptAndAudits(t *testing.T) {
 		t.Fatalf("abandon retained deferred completion: deferred=%v retries=%v", state.deferredCompletions, state.Retry)
 	}
 	orch.retryDeferredCompletions(ctx, &state, now.Add(time.Hour))
-	if tracker.fieldIssueID != issue.ID || tracker.fieldName != "Detent Lease" || tracker.fieldValue != "" {
-		t.Fatalf("SetField call = %q %q %q, want lease release", tracker.fieldIssueID, tracker.fieldName, tracker.fieldValue)
+	if tracker.fieldIssueID != "" {
+		t.Fatalf("SetField call = %q %q %q, want no tracker lease mutation", tracker.fieldIssueID, tracker.fieldName, tracker.fieldValue)
 	}
 	receipt, err := runtimeStore.WorkAttempt(ctx, attemptID)
 	if err != nil {

@@ -628,6 +628,9 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
 	}
+	if planner := o.dispatchPlanner(); !planner.nativeWorkflow && mergeWorkerIssue(issue) && mergeWorkerProgrammaticMergeReady(issue, o.cfg) && !planner.allowsDirectPullRequestMerge() {
+		return dispatchIssueOutcome{reason: dispatchSkipAwaitingGate, waitReason: "leased landing requires a native Change"}
+	}
 	if !o.localIntakeAllows(state, issue) {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
 	}

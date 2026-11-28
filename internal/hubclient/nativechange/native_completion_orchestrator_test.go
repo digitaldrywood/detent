@@ -1,11 +1,14 @@
 package nativechange
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,9 +107,51 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 		}
 	}
 	source := &nativeCompletionScheduling{Scheduler: h.scheduler, issue: request.Issue, released: make(chan error, 1)}
+	pollInterval := time.Hour
+	if target == "Done" {
+		pollInterval = time.Second
+	}
+	var finishRequests atomic.Int32
+	finishEvents := make(chan tracker.NativeRunEvent, 2)
+	allowFinish := make(chan struct{})
+	if target == "Done" {
+		transport := fixtureClient(h.native.Transport()).requests.Load()
+		fixtureClient(h.native.Transport()).requests.Store(executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+			if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/events") {
+				return transport.RoundTrip(r)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			r.Body.Close()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			var event tracker.NativeRunEvent
+			if err := json.Unmarshal(body, &event); err != nil {
+				return nil, err
+			}
+			if event.Type != "run.finished" {
+				return transport.RoundTrip(r)
+			}
+			switch finishRequests.Add(1) {
+			case 1:
+				finishEvents <- event
+				return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: r}, nil
+			case 2:
+				finishEvents <- event
+				select {
+				case <-allowFinish:
+				case <-r.Context().Done():
+					return nil, r.Context().Err()
+				}
+			}
+			return transport.RoundTrip(r)
+		}))
+		t.Cleanup(func() { fixtureClient(h.native.Transport()).requests.Store(transport) })
+	}
 	orch, err := orchestrator.New(orchestrator.Config{
 		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor,
-		PollInterval: time.Hour, MaxConcurrentAgents: 1,
+		PollInterval: pollInterval, MaxConcurrentAgents: 1,
 		ActiveStates: []string{"Rework", "In Progress"}, TerminalStates: []string{"Done"},
 		AutoPromote: orchestrator.AutoPromoteConfig{HumanReview: new(false), Gate: backend.gate},
 	}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
@@ -140,6 +185,31 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("native completion runner did not return")
 	}
+	if target == "Done" {
+		select {
+		case err := <-source.released:
+			if !nativeTransportUnavailable(err) {
+				t.Fatalf("first completion write returned %v, want Hub unavailable", err)
+			}
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("completion owner did not observe the first write failure")
+		}
+		var first tracker.NativeRunEvent
+		select {
+		case first = <-finishEvents:
+		default:
+			t.Fatal("completion failed before sending the terminal event")
+		}
+		select {
+		case retry := <-finishEvents:
+			if first.IdempotencyKey == "" || retry.IdempotencyKey != first.IdempotencyKey || retry.Data.Sequence != first.Data.Sequence || retry.Data.LeaseID != first.Data.LeaseID || retry.Data.FencingToken != first.Data.FencingToken {
+				t.Fatal("completion retry changed the pending write identity")
+			}
+			close(allowFinish)
+		case <-testenv.WaitContext(t, t.Context()).Done():
+			t.Fatal("completion owner did not retry the pending write")
+		}
+	}
 	select {
 	case err := <-source.released:
 		if err != nil {
@@ -150,6 +220,25 @@ func runNativeCompletionBackend(t *testing.T, h *nativeChangeHub, backend *nativ
 	}
 	if err := orch.Drain(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	if target == "Done" {
+		if finishRequests.Load() != 2 {
+			t.Fatalf("terminal write requests = %d, want one failure and one owner retry", finishRequests.Load())
+		}
+		history, err := h.admin.History(t.Context(), tracker.NativeWorkItemID(request.Issue.ID), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished := 0
+		leaseID := request.Execution.Recovery().Lease.ID
+		for _, event := range history.Items {
+			if event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.LeaseID == leaseID {
+				finished++
+			}
+		}
+		if finished != 1 {
+			t.Fatalf("committed terminal events = %d, want one for the landing lease", finished)
+		}
 	}
 	state, err := orch.State(t.Context())
 	landed := false

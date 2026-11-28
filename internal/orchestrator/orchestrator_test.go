@@ -829,8 +829,8 @@ func TestForceQuitInterruptsRunningSessionAndAbandonsClaim(t *testing.T) {
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after force quit", issue.ID)
 	}
-	if !tracker.hasSetField(issue.ID, "Lease", "") {
-		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls())
+	if tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("cleanup cleared the tracker lease: %#v", tracker.setFieldCalls())
 	}
 }
 
@@ -889,8 +889,8 @@ func TestDrainCompletionAbandonsClaim(t *testing.T) {
 	if _, ok := state.Retry[issue.ID]; ok {
 		t.Fatalf("Retry[%q] present after drain completion", issue.ID)
 	}
-	if !tracker.hasSetField(issue.ID, "Lease", "") {
-		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls())
+	if tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("cleanup cleared the tracker lease: %#v", tracker.setFieldCalls())
 	}
 }
 

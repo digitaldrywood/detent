@@ -762,6 +762,9 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 	if stateIn(issue.State, p.cfg.TerminalStates) {
 		return dispatchableDecision{reason: dispatchSkipTerminalState}
 	}
+	if !p.nativeWorkflow && mergeWorkerIssue(issue) && mergeWorkerProgrammaticMergeReady(issue, p.cfg) && !p.allowsDirectPullRequestMerge() {
+		return dispatchableDecision{reason: dispatchSkipAwaitingGate, detail: "leased landing requires a native Change"}
+	}
 	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}
 	}

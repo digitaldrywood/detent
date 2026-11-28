@@ -238,7 +238,7 @@ func TestHeartbeatManagerRenewsWithoutSchedulerLoop(t *testing.T) {
 	}
 }
 
-func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
+func TestCompleteTerminalRunningStopsInFlightHeartbeat(t *testing.T) {
 	now := time.Now().UTC()
 	issue := claimTestIssue("issue-terminal-heartbeat")
 	issue.State = "Done"
@@ -298,8 +298,8 @@ func TestCompleteTerminalRunningClearsInFlightHeartbeatLease(t *testing.T) {
 	if completedBeforeRenewal {
 		t.Fatal("terminal completion returned before the in-flight heartbeat finished")
 	}
-	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != "" {
-		t.Fatalf("Detent Lease = %q, want cleared after terminal completion", got)
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got == "" {
+		t.Fatal("terminal completion cleared the tracker lease instead of leaving it to expire")
 	}
 	manager.mu.Lock()
 	_, tracked := manager.targets[issue.ID]

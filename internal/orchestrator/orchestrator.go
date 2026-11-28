@@ -1596,37 +1596,7 @@ func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
 		}
 		return err
 	}
-	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
-		return nil
-	}
-	if strings.TrimSpace(issueID) == "" || o.connector == nil {
-		return nil
-	}
-	target, resumeRenewal := o.heartbeats.quiesceCompletionRenewal(issueID)
-	if resumeRenewal == nil {
-		o.heartbeats.remove(issueID)
-	} else {
-		defer resumeRenewal()
-		claim := Claimed{Issue: connector.Issue{ID: issueID}, Owner: target.claimOwner}
-		if err := o.verifyMergeControlClaim(ctx, claim, nil); err != nil {
-			if errors.Is(err, ErrSchedulingClaimLost) {
-				target.completionCancel(err)
-			}
-			return err
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, ""); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("abandon claim lease failed", "issue_id", issueID, "error", err)
-		}
-		return err
-	}
-	if resumeRenewal != nil {
-		o.heartbeats.remove(issueID)
-	}
+	o.heartbeats.remove(issueID)
 	return nil
 }
 

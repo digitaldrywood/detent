@@ -58,7 +58,6 @@ type heartbeatTarget struct {
 	localLeaseDeadline   time.Time
 	claimLost            bool
 	completionCancel     context.CancelCauseFunc
-	quiescing            bool
 	attemptDeadline      time.Time
 	workAttemptHeartbeat store.WorkAttemptHeartbeat
 	workerProcess        procgroup.Identity
@@ -183,7 +182,6 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		}
 		target.claimLost = current.claimLost
 		target.completionCancel = current.completionCancel
-		target.quiescing = current.quiescing
 		target.attemptDeadline = current.attemptDeadline
 		target.failures = current.failures
 		target.sequence = current.sequence
@@ -274,33 +272,6 @@ func (m *heartbeatManager) remove(issueID string) {
 	}
 }
 
-func (m *heartbeatManager) quiesceCompletionRenewal(issueID string) (heartbeatTarget, func()) {
-	if m == nil {
-		return heartbeatTarget{}, nil
-	}
-	m.mu.Lock()
-	target := m.targets[issueID]
-	if target.completionCancel == nil {
-		m.mu.Unlock()
-		return heartbeatTarget{}, nil
-	}
-	target.quiescing = true
-	m.targets[issueID] = target
-	m.mu.Unlock()
-	if target.flightDone != nil {
-		<-target.flightDone
-	}
-	return target, func() {
-		m.mu.Lock()
-		if current, ok := m.targets[issueID]; ok && current.sequence == target.sequence {
-			current.quiescing = false
-			m.targets[issueID] = current
-		}
-		m.mu.Unlock()
-		m.notify()
-	}
-}
-
 func (m *heartbeatManager) protects(issueID string) bool {
 	if m == nil {
 		return false
@@ -370,7 +341,7 @@ func (m *heartbeatManager) nextDelay(now time.Time) time.Duration {
 		if target.completionCancel != nil && !target.localLeaseDeadline.IsZero() && (next.IsZero() || target.localLeaseDeadline.Before(next)) {
 			next = target.localLeaseDeadline
 		}
-		if !target.inFlight && !target.quiescing && (next.IsZero() || target.nextDue.Before(next)) {
+		if !target.inFlight && (next.IsZero() || target.nextDue.Before(next)) {
 			next = target.nextDue
 		}
 	}
@@ -390,7 +361,7 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 			target.claimLost = true
 			m.targets[issueID] = target
 		}
-		if target.claimLost || target.inFlight || target.quiescing || now.Before(target.nextDue) {
+		if target.claimLost || target.inFlight || now.Before(target.nextDue) {
 			continue
 		}
 		target.inFlight = true

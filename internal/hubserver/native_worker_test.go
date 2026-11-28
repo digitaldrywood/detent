@@ -259,6 +259,11 @@ func TestNativeClaimsEventsAndRestartWithoutGitHub(t *testing.T) {
 	if finishError.Code != "stale_fencing_token" {
 		t.Fatalf("late completion refusal=%+v", finishError)
 	}
+	staleRelease := tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}
+	for _, id := range []tracker.LeaseID{lease.ID, replacement.ID} {
+		response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(id)+"/release", worker, staleRelease)
+		requireNativeStatus(t, response, http.StatusConflict)
+	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}

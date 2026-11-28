@@ -178,7 +178,7 @@ func TestClaimingHeartbeatKeepsActiveLeaseFromReclaim(t *testing.T) {
 	}
 }
 
-func TestSuccessfulContinuationReleasesClaimLease(t *testing.T) {
+func TestSuccessfulContinuationRetiresLocalClaim(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 17, 14, 0, 0, 0, time.UTC)
@@ -203,8 +203,8 @@ func TestSuccessfulContinuationReleasesClaimLease(t *testing.T) {
 		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 	})
 
-	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != "" {
-		t.Fatalf("Detent Lease = %q, want released", got)
+	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got != issue.Fields["Detent Lease"] {
+		t.Fatalf("Detent Lease = %q, want original lease to expire", got)
 	}
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after continuation completion", issue.ID)

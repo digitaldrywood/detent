@@ -66,7 +66,7 @@ func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, stat
 	return o.runOperatorAction(workflowconfig.OperatorActionMergeWhenWedged, func() map[string]struct{} {
 		transitioned := map[string]struct{}{}
 		merger, ok := o.connector.(connector.PullRequestMerger)
-		if !ok {
+		if !ok || !o.dispatchPlanner().allowsDirectPullRequestMerge() {
 			return transitioned
 		}
 		queueInspector, hasQueueInspector := o.connector.(interface {

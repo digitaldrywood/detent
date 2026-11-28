@@ -118,6 +118,10 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
 	if mergeControl {
+		if !o.dispatchPlanner().allowsDirectPullRequestMerge() {
+			o.releaseClaim(state, event.IssueID)
+			return
+		}
 		var unbind func()
 		ctx, unbind = o.heartbeats.bindCompletion(ctx, event.IssueID)
 		defer unbind()
@@ -939,9 +943,6 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
 		if event.Result.Output == mergeControlCheckedHeadOutput {
-			if !o.confirmMergeControlClaim(ctx, state, event, running) {
-				return true
-			}
 			if mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
 				target := doneStateName(o.cfg.TerminalStates)
 				if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), "merge_worker_programmatic_merge"); err != nil {
@@ -985,6 +986,10 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	if strings.TrimSpace(event.Result.Output) == runpkg.RunOutputMergeFallbackRework {
 		o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeFallbackRequiresReworkReason, nil, event.Result.MergeFallbackFindings)
+		return true
+	}
+	if mergeWorkerIssue(running.Issue) && !o.dispatchPlanner().allowsDirectPullRequestMerge() {
+		o.releaseClaim(state, event.IssueID)
 		return true
 	}
 	hydrator, ok := o.connector.(connector.PullRequestHydrator)
@@ -1153,9 +1158,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
-	if mergeControl && !o.confirmMergeControlClaim(ctx, state, event, running) {
-		return true
-	}
 	if ctx.Err() != nil {
 		return true
 	}
@@ -1177,9 +1179,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 
 	targetState := doneStateName(o.cfg.TerminalStates)
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
-	if mergeControl && !o.confirmMergeControlClaim(ctx, state, event, running) {
-		return true
-	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
 		if mergeControl {
 			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)

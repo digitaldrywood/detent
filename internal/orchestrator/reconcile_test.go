@@ -617,8 +617,8 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 	default:
 		t.Fatal("running context was not cancelled")
 	}
-	if !tracker.hasSetField(issue.ID, "Lease", "") {
-		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls)
+	if tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("cancellation cleared the tracker lease: %#v", tracker.setFieldCalls)
 	}
 	if len(reaper.issues) != 1 || reaper.issues[0].ID != issue.ID {
 		t.Fatalf("reaped issues = %#v, want cancelled issue", reaper.issues)

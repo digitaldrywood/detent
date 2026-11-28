@@ -5632,12 +5632,8 @@ func TestHandleRunResultAbandonsIncompleteMergeWorkerWhileDraining(t *testing.T)
 	if len(tracker.merges) != 0 {
 		t.Fatalf("merges = %#v, want none while draining", tracker.merges)
 	}
-	if got := tracker.setFields; !reflect.DeepEqual(got, []autoPromoteTickSetField{{
-		issueID: issue.ID,
-		field:   "Lease",
-		value:   "",
-	}}) {
-		t.Fatalf("set fields = %#v, want lease release", got)
+	if len(tracker.setFields) != 0 {
+		t.Fatalf("set fields = %#v, want none while draining", tracker.setFields)
 	}
 	if len(tracker.comments) != 0 {
 		t.Fatalf("comments = %#v, want none while draining", tracker.comments)

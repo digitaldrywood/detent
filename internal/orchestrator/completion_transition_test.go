@@ -1040,8 +1040,8 @@ func TestHydrationUnavailableDoesNotReleaseReplacementTrackerClaim(t *testing.T)
 	if _, ok := state.Claimed[issue.ID]; ok {
 		t.Fatalf("Claimed[%q] present after completed attempt release", issue.ID)
 	}
-	if got := tracker.stateIssues[0].Fields["Detent Lease"]; got != "" {
-		t.Fatalf("Detent Lease after completed attempt release = %q, want empty", got)
+	if got := tracker.stateIssues[0].Fields["Detent Lease"]; got != issue.Fields["Detent Lease"] {
+		t.Fatalf("Detent Lease after completed attempt release = %q, want original lease", got)
 	}
 
 	replacementLease := now.Add(time.Minute).Format(time.RFC3339Nano)
@@ -1052,8 +1052,8 @@ func TestHydrationUnavailableDoesNotReleaseReplacementTrackerClaim(t *testing.T)
 	if got := tracker.stateIssues[0].Fields["Detent Lease"]; got != replacementLease {
 		t.Fatalf("replacement Detent Lease = %q, want %q", got, replacementLease)
 	}
-	if got := len(tracker.setFields); got != 1 {
-		t.Fatalf("claim field writes = %d, want one completed-attempt release", got)
+	if got := len(tracker.setFields); got != 0 {
+		t.Fatalf("claim field writes = %d, want none", got)
 	}
 }
 
