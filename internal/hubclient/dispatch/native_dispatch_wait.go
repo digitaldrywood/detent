@@ -59,7 +59,7 @@ func (s *Scheduler) WaitCandidateChanges(ctx context.Context, project string, wa
 		}
 		if err == nil {
 			query := url.Values{"after": {cursor}, "wait": {"30"}}
-			err = source.NativeClient().Transport().RequestWithDeadline(ctx, tracker.NativeDispatchWaitRequestBudget, http.MethodGet, source.NativeClient().Scope()+"/claims/wait?"+query.Encode(), nil, nil, &page)
+			err = source.NativeClient().Transport().RequestWithDeadline(ctx, tracker.NativeLongPollRequestBudget, http.MethodGet, source.NativeClient().Scope()+"/claims/wait?"+query.Encode(), nil, nil, &page)
 		}
 		if ctx.Err() != nil {
 			return

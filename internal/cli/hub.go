@@ -160,6 +160,13 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 			if postgresConfig == nil {
 				return NewValidationError("PostgreSQL Hub configuration is required", "Set postgres in the file passed to --hosted-config.", nil)
 			}
+			var requestBudget time.Duration
+			if value := lookupEnv(entryauthority.RequestBudgetEnvironment); value != "" {
+				requestBudget, err = time.ParseDuration(value)
+				if err != nil || requestBudget <= 0 {
+					return errors.New("invalid entry request budget")
+				}
+			}
 			var adminToken string
 			if hosted == nil {
 				adminTokenEnv = strings.TrimSpace(adminTokenEnv)
@@ -248,6 +255,7 @@ func newHubServeCommand(version, commit string, lookupEnv func(string) string, r
 				InitialAdminToken:          []byte(adminToken),
 				SecretKeys:                 secretKeys,
 				BusyTimeout:                busyTimeout,
+				RequestBudget:              requestBudget,
 				ShutdownTimeout:            shutdownTimeout,
 				GitHubWebhookSecret:        []byte(strings.TrimSpace(lookupEnv(githubWebhookSecretEnv))),
 				DatabaseBackend:            hubserver.DatabasePostgres,

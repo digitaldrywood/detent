@@ -7,15 +7,109 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversations"
 	"github.com/digitaldrywood/detent/internal/hubserver/conversationstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/testenv"
 )
+
+func TestConversationWorkerControlsMaximumWait(t *testing.T) {
+	t.Parallel()
+	type pollKey struct{}
+	budgets := make(chan time.Duration, 1)
+	timers := make(chan time.Duration, 1)
+	fire := make(chan time.Time, 1)
+	cfg := conversationTestConfig()
+	cfg.Deps().RequestTimeout = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+		if ctx.Value(pollKey{}) != nil {
+			budgets <- budget
+		}
+		return context.WithTimeout(ctx, budget)
+	}
+	cfg.Deps().NewConversationControlTimer = func(wait time.Duration) hubdeps.Timer {
+		timers <- wait
+		return hubdeps.Timer{C: fire, Stop: func() {}}
+	}
+	h := hubfixture.Open(t, cfg)
+	f := newWorkerConversationProject(t, h, "Idle worker controls")
+	for _, tc := range []struct {
+		name        string
+		callerLimit bool
+	}{
+		{name: "maximum wait returns an empty page"},
+		{name: "caller cancels before the maximum wait", callerLimit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.WithValue(t.Context(), pollKey{}, true)
+			var cancel context.CancelFunc
+			if tc.callerLimit {
+				ctx, cancel = context.WithTimeout(ctx, 20*time.Second)
+			} else {
+				ctx, cancel = context.WithCancel(ctx)
+			}
+			wait := testenv.WaitContext(t, t.Context())
+			response := httptest.NewRecorder()
+			done := make(chan struct{})
+			t.Cleanup(func() { cancel(); <-done })
+			go func() {
+				defer close(done)
+				h.Handler().ServeHTTP(response, f.controlsRequest(ctx, 0, 30))
+			}()
+			select {
+			case duration := <-timers:
+				if duration != 30*time.Second {
+					t.Fatalf("control wait = %s, want 30s", duration)
+				}
+			case <-done:
+				t.Fatalf("poll returned before creating its timer: status %d", response.Code)
+			case <-wait.Done():
+				t.Fatal("poll did not create its timer")
+			}
+			if tc.callerLimit {
+				select {
+				case budget := <-budgets:
+					t.Fatalf("caller-supplied deadline was replaced by %s", budget)
+				default:
+				}
+				cancel()
+			} else {
+				var budget time.Duration
+				select {
+				case budget = <-budgets:
+				case <-wait.Done():
+					t.Fatal("poll did not use a server budget")
+				}
+				if budget <= 30*time.Second {
+					t.Fatalf("server budget %s leaves no headroom for the 30s controls wait", budget)
+				}
+				fire <- time.Now()
+			}
+			select {
+			case <-done:
+			case <-wait.Done():
+				t.Fatal("poll did not return")
+			}
+			if tc.callerLimit {
+				if response.Code == http.StatusOK {
+					t.Fatal("canceled poll returned a successful page")
+				}
+				return
+			}
+			hubfixture.RequireStatus(t, response, http.StatusOK)
+			var page conversations.WorkerControlsResponse
+			hubfixture.Decode(t, response, &page)
+			if len(page.Controls) != 0 || page.Cursor != 0 {
+				t.Fatalf("idle poll returned %+v, want an empty page with the original cursor", page)
+			}
+		})
+	}
+}
 
 func TestConversationWorkerControlsLongPoll(t *testing.T) {
 	t.Parallel()

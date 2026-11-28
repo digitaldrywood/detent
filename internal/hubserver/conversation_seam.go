@@ -98,9 +98,10 @@ func (s *Service) conversationDeps() conversations.Deps {
 		NewCoordinator: func(service *conversationService) conversationCoordinator {
 			return newConversationCoordinator(s, service)
 		},
-		NewControls:  conversations.NewControlRouter,
-		Ready:        s.ready.Load,
-		Organization: s.appOrganizationID,
+		NewControls:     conversations.NewControlRouter,
+		NewControlTimer: s.config.Deps().NewConversationControlTimer,
+		Ready:           s.ready.Load,
+		Organization:    s.appOrganizationID,
 		Authorization: hubscope.Authorization{
 			Access: func(ctx context.Context, reader accessstore.Reader, scope hubscope.NativeScope, write bool) error {
 				return toFeatureError(s.authorizeAccessScope(ctx, reader, scope, write))

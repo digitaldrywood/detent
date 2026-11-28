@@ -160,7 +160,8 @@ func (s *Service) tenantSpec(organization Organization) TenantSpec {
 		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
 		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
-		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
+		PublicKey:     cloudassert.PublicKeyOf(s.config.SigningKey),
+		RequestBudget: s.tenantRequestBudget(),
 		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 			return s.tenantContent(ctx, organization, request)
 		},

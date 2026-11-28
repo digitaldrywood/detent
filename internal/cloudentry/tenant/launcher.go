@@ -23,6 +23,7 @@ type TenantSpec struct {
 	PublicURL       string
 	Issuer          string
 	PublicKey       string
+	RequestBudget   time.Duration
 	Check           func(context.Context) error
 	ResolveKey      entryauthority.Resolver
 	ArchiveContents attachment.ArchiveContentStore
@@ -227,6 +228,9 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		args = append(args, "--listen", "unix:"+spec.Socket)
 		cmd := exec.CommandContext(attempt, l.Binary, args...) // #nosec G204 -- the operator-configured Detent binary runs with fixed arguments and no shell.
 		cmd.Env = append(append(baseEnvironment(), l.Environment...), "DETENT_HUB_ADMIN_TOKEN="+token)
+		if spec.RequestBudget > 0 {
+			cmd.Env = append(cmd.Env, entryauthority.RequestBudgetEnvironment+"="+spec.RequestBudget.String())
+		}
 		cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 		cmd.WaitDelay = 15 * time.Second

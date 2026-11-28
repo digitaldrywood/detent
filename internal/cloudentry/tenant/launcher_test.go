@@ -31,16 +31,17 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		environment []string
+		budget      time.Duration
 		want        string
 	}{
-		{name: "without App credentials", want: "\n\n\n"},
-		{name: "product App credentials", environment: []string{"DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}, want: "123\nprivate-key\nwebhook-secret\n"},
+		{name: "without App credentials", want: "\n\n\n\n"},
+		{name: "product App credentials and proxy budget", environment: []string{"DETENT_HUB_GITHUB_APP_ID=123", "DETENT_HUB_GITHUB_APP_PRIVATE_KEY=private-key", "DETENT_HUB_GITHUB_WEBHOOK_SECRET=webhook-secret"}, budget: 53 * time.Second, want: "123\nprivate-key\nwebhook-secret\n53s\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			directory := t.TempDir()
 			binary := filepath.Join(directory, "tenant-fixture")
-			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DETENT_TEST_ARGS\"\nprintf '%s\\n' \"$DETENT_HUB_GITHUB_APP_ID\" \"$DETENT_HUB_GITHUB_APP_PRIVATE_KEY\" \"$DETENT_HUB_GITHUB_WEBHOOK_SECRET\" > \"$DETENT_TEST_ENV\"\nexit 1\n"
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DETENT_TEST_ARGS\"\nprintf '%s\\n' \"$DETENT_HUB_GITHUB_APP_ID\" \"$DETENT_HUB_GITHUB_APP_PRIVATE_KEY\" \"$DETENT_HUB_GITHUB_WEBHOOK_SECRET\" \"$DETENT_INTERNAL_ENTRY_REQUEST_BUDGET\" > \"$DETENT_TEST_ENV\"\nexit 1\n"
 			if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -48,7 +49,7 @@ func TestExecLauncherWritesPrivateFilesAndStops(t *testing.T) {
 				return []byte("organization_id: " + spec.Organization.ID + "\n"), nil
 			}}
 			t.Cleanup(func() { _ = launcher.Close() })
-			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock")}
+			spec := TenantSpec{Organization: Organization{ID: "org_exec"}, Directory: directory, Socket: filepath.Join(directory, "t.sock"), RequestBudget: test.budget}
 			if err := launcher.Start(t.Context(), spec); err != nil {
 				t.Fatal(err)
 			}

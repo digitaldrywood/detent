@@ -23,12 +23,21 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/cloudentry/oauth"
 	"github.com/digitaldrywood/detent/internal/cloudentry/socket"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 var strippedRequestHeaders = []string{
 	"Cookie", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Forwarded-Port",
 	"X-Real-Ip", "X-Original-Url", "X-Rewrite-Url", "X-Original-Forwarded-For", cloudassert.Header,
+}
+
+func (s *Service) tenantRequestBudget() time.Duration {
+	if s.config.tenantRequestBudget > 0 {
+		return s.config.tenantRequestBudget
+	}
+	return entryauthority.DefaultTenantRequestBudget
 }
 
 func (s *Service) tenantTransport(organization Organization) (http.RoundTripper, error) {
@@ -41,7 +50,7 @@ func (s *Service) tenantTransport(organization Organization) (http.RoundTripper,
 		return nil, errors.New("tenant endpoint is invalid")
 	}
 	path := strings.TrimPrefix(organization.Endpoint, "unix:")
-	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: hubapi.DefaultRequestBudget, DisableCompression: true,
+	transport := &http.Transport{MaxIdleConnsPerHost: 16, IdleConnTimeout: time.Minute, ResponseHeaderTimeout: max(s.tenantRequestBudget(), tracker.NativeLongPollRequestBudget), DisableCompression: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			if err := socket.Verify(path); err != nil {
 				return nil, err

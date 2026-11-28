@@ -14,8 +14,9 @@ import (
 func (s *Service) requestDeadline(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		budget := s.config.RequestBudget
-		if c.Path() == hubapi.NativeBase+"/claims/wait" {
-			budget = max(budget, tracker.NativeDispatchWaitRequestBudget)
+		switch c.Path() {
+		case hubapi.NativeBase + "/claims/wait", hubapi.NativeBase + "/conversations/:conversation/controls":
+			budget = max(budget, tracker.NativeLongPollRequestBudget)
 		}
 		request := c.Request()
 		ctx, cancel := s.requestContext(request.Context(), budget)

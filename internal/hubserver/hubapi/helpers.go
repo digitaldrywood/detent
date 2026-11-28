@@ -14,7 +14,6 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-const DefaultRequestBudget = 30 * time.Second
 const DefaultCleanupBudget = 5 * time.Second
 
 const MaxRequestBodyBytes int64 = 1 << 20

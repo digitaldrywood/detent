@@ -12,7 +12,9 @@ import (
 )
 
 const BootstrapEnvironment = "DETENT_INTERNAL_ENTRY_AUTHORITY"
+const RequestBudgetEnvironment = "DETENT_INTERNAL_ENTRY_REQUEST_BUDGET"
 const BootstrapVersion = "v1:3:5"
+const DefaultTenantRequestBudget = 30 * time.Second
 const contentTimeout = 15 * time.Second
 
 var ErrUnavailable = errors.New("entry authority unavailable")

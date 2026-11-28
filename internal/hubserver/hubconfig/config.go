@@ -144,7 +144,7 @@ func (c Config) Normalized() Config {
 		c.BusyTimeout = hubapi.DefaultCleanupBudget
 	}
 	if c.RequestBudget <= 0 {
-		c.RequestBudget = hubapi.DefaultRequestBudget
+		c.RequestBudget = entryauthority.DefaultTenantRequestBudget
 	}
 	if c.ShutdownTimeout <= 0 {
 		c.ShutdownTimeout = defaultShutdownTime

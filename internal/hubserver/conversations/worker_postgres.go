@@ -908,7 +908,7 @@ func (r *WorkerRouter) controlsPostgres(e echo.Context, id string, identity Work
 	defer cancel()
 	var deadline <-chan time.Time
 	if wait > 0 {
-		timer := time.NewTimer(wait)
+		timer := s.deps.NewControlTimer(wait)
 		defer timer.Stop()
 		deadline = timer.C
 	}

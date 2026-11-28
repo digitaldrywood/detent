@@ -316,6 +316,40 @@ func TestProvisioningSelfServiceJourney(t *testing.T) {
 	}
 }
 
+func TestTenantRequestBudget(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		budget    time.Duration
+		wantHub   time.Duration
+		wantProxy time.Duration
+	}{
+		{name: "default with long poll headroom", wantHub: 30 * time.Second, wantProxy: 40 * time.Second},
+		{name: "configured budget", budget: 53 * time.Second, wantHub: 53 * time.Second, wantProxy: 53 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			service := &Service{config: Config{
+				Allocation:          &AllocationConfig{TenantRoot: root},
+				SigningKey:          ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)),
+				tenantRequestBudget: tc.budget,
+			}}
+			organization := Organization{ID: "org_example", Endpoint: "unix:" + filepath.Join(root, "hub.sock")}
+			if got := service.tenantSpec(organization).RequestBudget; got != tc.wantHub {
+				t.Errorf("tenant launch budget = %s, want %s", got, tc.wantHub)
+			}
+			transport, err := service.tenantTransport(organization)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy, ok := transport.(*http.Transport)
+			if !ok || proxy.ResponseHeaderTimeout != tc.wantProxy {
+				t.Fatalf("unexpected proxy transport %+v, want %s response header budget", transport, tc.wantProxy)
+			}
+		})
+	}
+}
+
 func testProvisioningSelfServiceJourney(t *testing.T, configureStorage func(*Config)) {
 	t.Parallel()
 	f := newProvisioningFixture(t, 3, nil, configureStorage)

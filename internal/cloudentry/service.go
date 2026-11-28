@@ -83,9 +83,10 @@ type Config struct {
 	AttachmentTransport http.RoundTripper
 	platformEmailSender auth.EmailSender
 
-	tenantStartTimeout time.Duration
-	platformDeadline   time.Duration
-	reloadSignals      <-chan os.Signal
+	tenantStartTimeout  time.Duration
+	tenantRequestBudget time.Duration
+	platformDeadline    time.Duration
+	reloadSignals       <-chan os.Signal
 }
 
 func ValidateConfig(c Config) error { return c.validate() }

@@ -44,6 +44,7 @@ type Deps struct {
 	DashboardDelivery           *DashboardDelivery
 	ConversationStreamHeartbeat time.Duration
 	ConversationStreamAuthorize time.Duration
+	NewConversationControlTimer func(time.Duration) Timer
 }
 
 func Default() Deps {

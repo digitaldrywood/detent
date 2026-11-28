@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubauth"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/internal/hubdeps"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -63,6 +64,7 @@ type Deps struct {
 	UsageSink                      ConversationUsageSink
 	NewCoordinator                 func(*ConversationService) ConversationCoordinator
 	NewControls                    func(*ConversationService) ConversationControlRouter
+	NewControlTimer                func(time.Duration) hubdeps.Timer
 	Ready                          func() bool
 	Organization                   func() string
 	Authorization                  hubscope.Authorization
@@ -95,6 +97,9 @@ type Server struct {
 }
 
 func NewServer(deps Deps) *Server {
+	if deps.NewControlTimer == nil {
+		deps.NewControlTimer = hubdeps.NewTimer
+	}
 	return &Server{deps: deps}
 }
 

@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
+	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 )
 
 const hubServePostgresConfig = `postgres:
@@ -59,6 +63,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 		}
 		if name == "TEST_HUB_POSTGRES_PASSWORD" {
 			return "postgres-fixture-password"
+		}
+		if name == entryauthority.RequestBudgetEnvironment {
+			return "53s"
 		}
 		if name == "TEST_HUB_WEBHOOK_SECRET" {
 			return "webhook-secret"
@@ -108,6 +115,9 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	if gotConfig.BusyTimeout != 2*time.Second {
 		t.Fatalf("busy timeout = %s, want 2s", gotConfig.BusyTimeout)
 	}
+	if gotConfig.RequestBudget != 53*time.Second {
+		t.Fatalf("request budget = %s, want 53s from the entry bootstrap configuration", gotConfig.RequestBudget)
+	}
 	if gotConfig.ShutdownTimeout != 3*time.Second {
 		t.Fatalf("shutdown timeout = %s, want 3s", gotConfig.ShutdownTimeout)
 	}
@@ -132,6 +142,21 @@ func TestHubServeCommandPassesConfiguration(t *testing.T) {
 	if gotConfig.Version != "v-test" {
 		t.Fatalf("version = %q, want v-test", gotConfig.Version)
 	}
+	t.Run("request without a deadline", func(t *testing.T) {
+		var applied time.Duration
+		gotConfig.Deps().RequestTimeout = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+			applied = budget
+			return context.WithTimeout(ctx, budget)
+		}
+		hub := hubfixture.Open(t, gotConfig)
+		request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
+		request.Header.Set("Authorization", "Bearer "+hub.AdminToken())
+		response := httptest.NewRecorder()
+		hub.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK || applied != 53*time.Second {
+			t.Fatalf("health status = %d, request budget = %s, want 200 and 53s", response.Code, applied)
+		}
+	})
 }
 
 func TestHubServeCommandValidatesDatabase(t *testing.T) {
