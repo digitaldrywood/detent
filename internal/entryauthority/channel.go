@@ -173,7 +173,7 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		authority.contents = archives[0].Contents
 		if archives[0].Content != nil {
 			authority.content = func(request ContentRequest) ([]byte, error) {
-				lookup, cancel := readContext(request.Deadline)
+				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 				defer cancel()
 				if err := lookup.Err(); err != nil {
 					return nil, err
@@ -183,7 +183,7 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		}
 		if archives[0].Reader != nil {
 			authority.archive = func(request ArchiveRequest) (ArchiveResponse, error) {
-				lookup, cancel := readContext(request.Deadline)
+				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 				defer cancel()
 				if err := lookup.Err(); err != nil {
 					return ArchiveResponse{}, err
@@ -199,13 +199,13 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 		details := archives[0].Details
 		if recovery, ok := details.(attachment.CanonicalDetailStore); ok {
 			authority.readCanonicalDetail = func(request DetailRequest) ([]byte, error) {
-				lookup, cancel := readContext(request.Deadline)
+				lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 				defer cancel()
 				return recovery.ReadCanonicalDetail(lookup, request.Organization, request.Project, request.Key)
 			}
 		}
 		authority.readDetails = func(request DetailBatchRequest) ([]attachment.DetailReadResult, error) {
-			lookup, cancel := readContext(request.Deadline)
+			lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 			defer cancel()
 			if batch, ok := details.(attachment.DetailBatchStore); ok {
 				return batch.ReadDetails(lookup, request.Organization, request.References)
@@ -221,7 +221,7 @@ func newAuthorityServer(ctx context.Context, binding Binding, budget time.Durati
 			return details.StoreDetail(lookup, request.Organization, request.Data)
 		}
 		authority.readDetail = func(request DetailRequest) ([]byte, error) {
-			lookup, cancel := readContext(request.Deadline)
+			lookup, cancel := context.WithDeadline(ctx, request.Deadline)
 			defer cancel()
 			return details.ReadDetail(lookup, request.Organization, request.Reference)
 		}
