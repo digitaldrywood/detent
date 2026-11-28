@@ -916,7 +916,8 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return false
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
-	if running.mergeRevisionBound() && o.dispatchPlanner().allowsDirectPullRequestMerge() && !o.mergeControlCompletionActive(ctx, running) {
+	revisionBound := running.mergeRevisionBound() && o.dispatchPlanner().allowsDirectPullRequestMerge()
+	if revisionBound && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 	if err != nil {
@@ -934,13 +935,18 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		}
 		return false
 	}
-	for _, issue := range issues {
-		if strings.TrimSpace(issue.ID) != issueID {
+	for _, current := range issues {
+		if strings.TrimSpace(current.ID) != issueID {
 			continue
 		}
-		issue = mergeIssueTrackerFields(running.Issue, issue)
+		issue := mergeIssueTrackerFields(running.Issue, current)
 		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
+		}
+		if revisionBound && mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) &&
+			!sameMergeRevision(event.Request.Issue, current) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, current)
+			return true
 		}
 		if running.mergeControl {
 			if !o.mergeControlCompletionActive(ctx, running) {

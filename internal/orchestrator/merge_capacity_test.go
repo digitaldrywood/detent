@@ -212,6 +212,78 @@ func (s *unavailableMergeHeartbeat) RecordWorkAttemptHeartbeat(context.Context, 
 	return s.err
 }
 
+func TestDelayedTerminalMergeCompletionChecksOriginalRevision(t *testing.T) {
+	for _, change := range []string{"unchanged", "repository", "number", "head"} {
+		t.Run(change, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				now := time.Now()
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
+				checked := readyMergeCapacityIssue("item", 1)
+				checked.Identifier = "example-org/example-project#1"
+				checked.PRRepository = "example-org/example-project"
+				checked.PullRequest.URL = "https://github.test/example-org/example-project/pull/1"
+				readStarted, releaseRead := make(chan struct{}), make(chan struct{})
+				release := sync.OnceFunc(func() { close(releaseRead) })
+				defer release()
+				tracker := &mergeControlClaimConnector{
+					autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+						autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{checked}},
+					},
+					beforeRead: sync.OnceFunc(func() {
+						close(readStarted)
+						<-releaseRead
+					}),
+				}
+				orch := &Orchestrator{cfg: cfg, connector: tracker, now: time.Now}
+				state := newState(cfg)
+				running := Running{Issue: checked, Mode: runpkg.RunModeMerge, mergeControl: true}
+				state.Running[checked.ID] = running
+				event := runpkg.Completion{
+					IssueID: checked.ID, Request: runpkg.RunRequest{Issue: checked, Mode: runpkg.RunModeMerge},
+					CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+				}
+				handled := make(chan bool, 1)
+				go func() {
+					handled <- orch.completeLatestTerminalMergeWorkerResult(t.Context(), &state, event, running)
+				}()
+				synctest.Wait()
+				select {
+				case <-readStarted:
+				default:
+					t.Fatal("completion did not start the tracker read")
+				}
+				<-time.After(45 * time.Second)
+				current := cloneIssue(checked)
+				current.PullRequest.State = "merged"
+				switch change {
+				case "repository":
+					current.PRRepository = "example-org/other-project"
+				case "number":
+					current.PullRequest.Number++
+				case "head":
+					current.PullRequest.HeadSHA = "replacement-head"
+				}
+				tracker.stateIssues[0] = current
+				release()
+				if !<-handled {
+					t.Fatal("terminal merge completion was not handled")
+				}
+				if change == "unchanged" {
+					if len(tracker.updates) != 1 || tracker.stateIssues[0].State != "Done" || len(state.Completed) != 1 {
+						t.Fatalf("checked merge did not complete once: updates=%v completed=%d", tracker.updates, len(state.Completed))
+					}
+					return
+				}
+				retry := state.Retry[checked.ID]
+				if len(tracker.updates) != 0 || len(state.Completed) != 0 || retry.Wait.Kind != retryWaitCurrentHeadCI ||
+					!sameMergeRevision(current, retry.Issue) {
+					t.Fatalf("replacement revision must require a fresh merge decision: updates=%v completed=%d retry kind=%q", tracker.updates, len(state.Completed), retry.Wait.Kind)
+				}
+			})
+		})
+	}
+}
+
 func TestLegacyDeferredMergeChecksOriginalRevision(t *testing.T) {
 	for _, change := range []string{"unchanged", "head", "repository", "number"} {
 		t.Run(change, func(t *testing.T) {
@@ -310,6 +382,7 @@ type mergeControlClaimConnector struct {
 	*autoPromoteTickMergeConnector
 	mu          sync.Mutex
 	hydrate     func(context.Context)
+	beforeRead  func()
 	beforeWrite func()
 }
 
@@ -322,6 +395,9 @@ func (c *mergeControlClaimConnector) HydratePullRequest(ctx context.Context, iss
 }
 
 func (c *mergeControlClaimConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	if c.beforeRead != nil {
+		c.beforeRead()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.autoPromoteTickMergeConnector.FetchIssueStatesByIDs(ctx, ids)
