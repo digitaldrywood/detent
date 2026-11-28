@@ -15,6 +15,7 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 	"github.com/digitaldrywood/detent/internal/workspace/validationcmd"
 )
 
@@ -386,7 +387,52 @@ func WithAttemptWorkspace(ctx context.Context, attempt AttemptWorkspace) context
 		return ctx
 	}
 	ctx = context.WithValue(ctx, attemptWorkspaceContextKey{}, attempt)
-	return commandshell.WithCommandStarter(ctx, procgroup.StartOwned)
+	return commandshell.WithCommandStarter(ctx, startAttemptCommand)
+}
+
+func startAttemptCommand(ctx context.Context, cmd *exec.Cmd) (func() error, error) {
+	if gitexec.IsLocalGitCommand(cmd) {
+		gitexec.ApplyLocalIsolation(cmd)
+		return procgroup.StartOwned(ctx, cmd)
+	}
+	if attempt := AttemptWorkspaceFromContext(ctx); attempt != (AttemptWorkspace{}) && attempt.Key() == "" {
+		return nil, errors.New("native command requires an exact attempt")
+	}
+	owner := ValidationProcessOwnerFromContext(ctx)
+	if owner == nil {
+		return nil, errors.New("native command requires a fenced session owner")
+	}
+	process, err := owner(ctx, Info{Path: cmd.Dir}, Issue{}, "")
+	if err != nil {
+		return nil, err
+	}
+	if process == nil {
+		return nil, errors.New("native command has no fenced session")
+	}
+	procgroup.Configure(ctx, cmd)
+	var identity procgroup.Identity
+	launch := procgroup.WithStartAcknowledgement(ctx, func(observed procgroup.Identity) error {
+		identity = observed
+		return process.Started(ctx, observed)
+	})
+	if err := procgroup.StartAuthorized(launch, cmd); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+		defer cancel()
+		return nil, errors.Join(err, process.Finished(cleanup, gate.CommandResult{ExitCode: -1}, procgroup.StartRollbackCleanup(err)))
+	}
+	return func() error {
+		runErr, cleanupErr := procgroup.WaitOwned(ctx, cmd, identity)
+		if runErr == exec.ErrWaitDelay && ctx.Err() == nil {
+			runErr = nil
+		}
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), failedWorkspacePreservationTimeout)
+		defer cancel()
+		code := 0
+		if runErr != nil {
+			code = -1
+		}
+		return errors.Join(runErr, cleanupErr, process.Finished(cleanup, gate.CommandResult{ExitCode: code}, cleanupErr))
+	}, nil
 }
 
 func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Issue, command string) (result gate.CommandResult, resultErr error) {

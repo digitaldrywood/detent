@@ -144,11 +144,233 @@ func RunCommand(ctx context.Context, cmd *exec.Cmd) error {
 	if commandshell.HasCommandStarter(ctx) {
 		return commandshell.RunCommand(ctx, cmd)
 	}
+	if IsLocalGitCommand(cmd) {
+		ApplyLocalIsolation(cmd)
+	}
 	runErr, cleanupErr := procgroup.RunOwned(ctx, cmd)
 	if runErr == exec.ErrWaitDelay && ctx.Err() == nil {
 		runErr = nil
 	}
 	return errors.Join(runErr, cleanupErr)
+}
+
+func IsLocalGitCommand(cmd *exec.Cmd) bool {
+	if cmd == nil || len(cmd.Args) < 2 || hasRawCommandLine(cmd) {
+		return false
+	}
+	if !isTrustedGitExecutable(cmd.Path) || !isGitExecutableName(cmd.Args[0]) {
+		return false
+	}
+	subIdx, ok := parseLocalGitSubcommand(cmd.Args[1:])
+	if !ok {
+		return false
+	}
+	sub := cmd.Args[subIdx+1]
+	rest := cmd.Args[subIdx+2:]
+	for _, a := range rest {
+		if a == "--" {
+			break
+		}
+		if isHelpOrPaginateFlag(a) {
+			return false
+		}
+	}
+	switch sub {
+	case "merge-base", "show-ref", "check-ref-format",
+		"ls-tree", "patch-id":
+		return true
+	case "rev-parse":
+		for i := 0; i < len(rest); i++ {
+			a := rest[i]
+			if a == "--" {
+				break
+			}
+			if !strings.HasPrefix(a, "-") {
+				continue
+			}
+			if a == "--git-path" {
+				i++
+				if i >= len(rest) {
+					return false
+				}
+				continue
+			}
+			switch a {
+			case "--verify", "--quiet", "-q", "--short", "--abbrev-ref",
+				"--symbolic-full-name", "--git-dir", "--git-common-dir",
+				"--shared-index-path", "--show-toplevel",
+				"--is-inside-work-tree", "--is-bare-repository",
+				"--path-format=absolute", "--end-of-options",
+				"--show-object-format", "--absolute-git-dir":
+				continue
+			default:
+				return false
+			}
+		}
+		return len(rest) > 0
+	case "ls-files":
+		for _, a := range rest {
+			if a == "--" {
+				break
+			}
+			if !strings.HasPrefix(a, "-") {
+				continue
+			}
+			switch a {
+			case "--stage", "-s", "--cached", "-c", "--others", "-o",
+				"--exclude-standard", "--unmerged", "-u", "-z", "-v",
+				"--full-name", "--error-unmatch":
+				continue
+			default:
+				return false
+			}
+		}
+		return true
+	case "rev-list":
+		for _, a := range rest {
+			if !strings.HasPrefix(a, "-") || a == "--" {
+				continue
+			}
+			switch a {
+			case "--count", "--reverse", "--first-parent", "--topo-order",
+				"--no-merges", "--left-right", "--ancestry-path", "--parents", "-n":
+				continue
+			default:
+				if strings.HasPrefix(a, "--max-count=") {
+					continue
+				}
+				return false
+			}
+		}
+		return len(rest) > 0
+	case "diff-tree":
+		for _, a := range rest {
+			if !strings.HasPrefix(a, "-") {
+				continue
+			}
+			switch a {
+			case "--root", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames",
+				"--name-only", "--name-status", "-r", "-m", "-z",
+				"--no-ext-diff", "--no-textconv":
+				continue
+			default:
+				return false
+			}
+		}
+		return len(rest) > 0
+	case "cat-file":
+		if len(rest) == 2 && (rest[0] == "blob" || rest[0] == "-t" || rest[0] == "-s" || rest[0] == "-e") {
+			return true
+		}
+		return false
+	case "symbolic-ref":
+		positional := 0
+		for _, a := range rest {
+			if strings.HasPrefix(a, "-") {
+				if a != "--quiet" && a != "-q" && a != "--short" {
+					return false
+				}
+				continue
+			}
+			positional++
+		}
+		return positional == 1
+	default:
+		return false
+	}
+}
+
+func ApplyLocalIsolation(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	base := cmd.Environ()
+	filtered := make([]string, 0, len(base)+3)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "GIT_ALLOW_PROTOCOL=") ||
+			strings.HasPrefix(entry, "GIT_NO_LAZY_FETCH=") ||
+			strings.HasPrefix(entry, "GIT_OPTIONAL_LOCKS=") ||
+			strings.HasPrefix(entry, "GIT_EXTERNAL_DIFF=") {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	cmd.Env = append(filtered, "GIT_ALLOW_PROTOCOL=", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0")
+	if len(cmd.Args) >= 2 {
+		subIdx := gitSubcommandIndex(cmd.Args[1:])
+		if subIdx >= 0 {
+			pos := subIdx + 1
+			sub := cmd.Args[pos]
+			prefix := append([]string{}, cmd.Args[:pos]...)
+			prefix = append(prefix, "--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath="+os.DevNull, "-c", "log.showSignature=false")
+			if sub == "diff-tree" {
+				prefix = append(prefix, sub, "--no-ext-diff", "--no-textconv")
+				cmd.Args = append(prefix, cmd.Args[pos+1:]...)
+			} else {
+				cmd.Args = append(prefix, cmd.Args[pos:]...)
+			}
+		}
+	}
+}
+
+func isGitExecutableName(name string) bool {
+	if name == "" {
+		return false
+	}
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), ".exe")
+	return base == "git"
+}
+
+func isTrustedGitExecutable(path string) bool {
+	if !isGitExecutableName(path) || !filepath.IsAbs(path) {
+		return false
+	}
+	resolved, err := exec.LookPath("git")
+	if err != nil || !filepath.IsAbs(resolved) {
+		return false
+	}
+	return path == resolved
+}
+
+func isHelpOrPaginateFlag(arg string) bool {
+	return arg == "-h" || arg == "--help" || arg == "--help-all" || strings.HasPrefix(arg, "--help=") || arg == "--paginate"
+}
+
+func parseLocalGitSubcommand(args []string) (int, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-C" {
+			i++
+			if i >= len(args) {
+				return -1, false
+			}
+			continue
+		}
+		if arg == "--no-pager" {
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			return -1, false
+		}
+		return i, true
+	}
+	return -1, false
+}
+
+func gitSubcommandIndex(args []string) int {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env":
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		return i
+	}
+	return -1
 }
 
 func prepareLocalInspection(cmd *exec.Cmd) {

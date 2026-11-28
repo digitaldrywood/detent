@@ -299,7 +299,13 @@ func gitProgressPatchBounded(ctx context.Context, path string, limit int64, revi
 		return "", err
 	}
 	diff.Stdout = pw
-	wait, err := procgroup.StartOwned(ctx, diff)
+	var wait func() error
+	if commandshell.HasCommandStarter(ctx) {
+		wait, err = commandshell.StartCommand(ctx, diff)
+	} else {
+		gitexec.ApplyLocalIsolation(diff)
+		wait, err = procgroup.StartOwned(ctx, diff)
+	}
 	_ = pw.Close()
 	if err != nil {
 		_ = pr.Close()
