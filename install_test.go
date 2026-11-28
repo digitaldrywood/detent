@@ -796,7 +796,8 @@ func TestWriteInstallFixtureContainsGeneratedFiles(t *testing.T) {
 func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
 	t.Helper()
 
-	clone := exec.CommandContext(t.Context(), "git", "clone", "--shared", "--no-checkout", "--", source, checkout)
+	clone := exec.CommandContext(t.Context(), "git", "clone", "--local", "--shared", "--no-checkout", "--", source, checkout)
+	clone.Env = append(clone.Environ(), "GIT_ALLOW_PROTOCOL=file")
 	if output, err := clone.CombinedOutput(); err != nil {
 		t.Fatalf("clone install checkout: %v\n%s", err, output)
 	}
