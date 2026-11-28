@@ -50,5 +50,5 @@ type IssueCommandDeps struct {
 	ValidateFiling     func(context.Context, hubscope.NativeScope, hubrecords.WorkItemRecordPlan) (policystore.Revision, bool, error)
 	PrepareAttachments func(context.Context, hubscope.NativeScope, hubrecords.WorkItemRecordPlan) (hubrecords.WorkItemAttachmentReferences, error)
 	AttachmentQuota    func(context.Context, tenantstore.Reader) (int64, error)
-	WakeSpriteRunners  func(hubscope.NativeScope, json.RawMessage)
+	WakeSpriteRunners  func(context.Context, hubscope.NativeScope, json.RawMessage)
 }

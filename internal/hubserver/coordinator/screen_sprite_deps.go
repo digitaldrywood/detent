@@ -63,7 +63,7 @@ type SpriteCommandDeps struct {
 	RecordAuthority func(context.Context, hubscope.NativeScope, *int64) (string, error)
 	Update          func(context.Context, hubscope.NativeScope, tracker.Mutation, SpriteChange, func(sprites.PoolSettings) (sprites.PoolSettings, *string, error)) error
 	RecheckMutation func(context.Context, hubscope.NativeScope) error
-	StartPool       func(hubscope.NativeScope)
+	StartPool       func(context.Context, hubscope.NativeScope)
 }
 
 type SpritePreviewDeps struct {

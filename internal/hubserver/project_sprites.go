@@ -61,8 +61,20 @@ type spriteLifecyclePass struct {
 	pendingState string
 }
 
-func (s *Service) scheduleSpriteWake(ctx context.Context, scope hubscope.NativeScope, result json.RawMessage) {
-	if s.config.SecretKeys == nil {
+func (s *Service) configureSpriteLifecycle(workerCtx context.Context) {
+	s.wakeSpriteRunnersAfter = func(ctx context.Context, scope hubscope.NativeScope, result json.RawMessage) {
+		s.scheduleSpriteWake(ctx, workerCtx, scope, result)
+	}
+	s.startSpriteLifecycle = func(ctx context.Context, scope hubscope.NativeScope, state string) {
+		s.scheduleSpriteLifecycle(ctx, workerCtx, scope, state)
+	}
+	s.startSpritePoolForQueue = func(ctx context.Context, scope hubscope.NativeScope) {
+		s.startSpriteLifecycle(ctx, scope, "organization")
+	}
+}
+
+func (s *Service) scheduleSpriteWake(ctx, workerCtx context.Context, scope hubscope.NativeScope, result json.RawMessage) {
+	if s.config.SecretKeys == nil || workerCtx.Err() != nil {
 		return
 	}
 	var issue struct {
@@ -75,23 +87,30 @@ func (s *Service) scheduleSpriteWake(ctx context.Context, scope hubscope.NativeS
 	if err != nil || !dispatchable {
 		return
 	}
-	s.scheduleSpriteLifecycle(ctx, scope, issue.State)
+	s.scheduleSpriteLifecycle(ctx, workerCtx, scope, issue.State)
 }
 
-func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope hubscope.NativeScope, state string) {
-	if s.config.SecretKeys == nil {
+func (s *Service) scheduleSpriteLifecycle(ctx, workerCtx context.Context, scope hubscope.NativeScope, state string) {
+	if s.config.SecretKeys == nil || workerCtx.Err() != nil {
 		return
 	}
-	if state != "" {
-		allowed, err := monthlySpriteAllowed(ctx, nil, hubscope.NativeScope{Organization: scope.Organization}, s.config.Clock(), s.database.billingRepository)
-		if err != nil {
-			s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
-			return
-		}
-		if !allowed {
-			return
-		}
+	if state != "" && !s.spriteLifecycleBudgetAllowed(ctx, scope.Organization) {
+		return
 	}
+	if ctx.Err() == nil {
+		s.startSpriteLifecyclePass(workerCtx, scope, state, false)
+	}
+}
+
+func (s *Service) spriteLifecycleBudgetAllowed(ctx context.Context, organization tracker.OrganizationID) bool {
+	allowed, err := monthlySpriteAllowed(ctx, nil, hubscope.NativeScope{Organization: organization}, s.config.Clock(), s.database.billingRepository)
+	if err != nil && ctx.Err() == nil {
+		s.config.Logger.Warn("Check Sprite lifecycle monthly budget", "error", err)
+	}
+	return err == nil && allowed
+}
+
+func (s *Service) startSpriteLifecyclePass(ctx context.Context, scope hubscope.NativeScope, state string, recheckBudget bool) {
 	key := spriteWakeKey{organization: scope.Organization}
 	s.spriteWakeMu.Lock()
 	defer s.spriteWakeMu.Unlock()
@@ -117,11 +136,14 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope hubscope.Na
 			close(pass.done)
 			s.spriteWakeMu.Unlock()
 			if pending != "" && ctx.Err() == nil {
-				s.scheduleSpriteLifecycle(ctx, scope, pending)
+				s.startSpriteLifecyclePass(ctx, scope, pending, true)
 			}
 		}()
 		defer cancel()
 		if state != "" {
+			if recheckBudget && !s.spriteLifecycleBudgetAllowed(wakeContext, scope.Organization) {
+				return
+			}
 			if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil {
 				if wakeContext.Err() == nil {
 					s.config.Logger.Warn("sprite runners could not be woken", "error", err)

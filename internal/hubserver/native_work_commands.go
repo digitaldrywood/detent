@@ -34,7 +34,7 @@ func (s *Service) createNativeIssueCommand(ctx context.Context, scope hubscope.N
 	}
 	result, err := s.executeWorkItemRecordMutation(ctx, scope, hubapi.NativeCommandOptions{OperationID: operation, Feature: "collaboration"}, request.Mutation, request, "")
 	if err == nil && s.wakeSpriteRunnersAfter != nil {
-		s.wakeSpriteRunnersAfter(scope, result)
+		s.wakeSpriteRunnersAfter(ctx, scope, result)
 	}
 	return result, err
 }

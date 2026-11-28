@@ -489,7 +489,7 @@ func (e hubProjectExecutor) command(ctx context.Context, call operatortool.Call,
 		if err != nil {
 			return nil, err
 		}
-		s.startSpritePoolForQueue(scope)
+		s.startSpritePoolForQueue(ctx, scope)
 		return raw, nil
 	case "create_native_project":
 		if s.config.Hosted != nil {

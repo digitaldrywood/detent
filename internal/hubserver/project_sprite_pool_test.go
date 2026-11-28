@@ -383,7 +383,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else if test.failure == "" {
-				f.service.wakeSpriteRunnersAfter(scope, json.RawMessage(`{"state":"Todo"}`))
+				f.service.wakeSpriteRunnersAfter(t.Context(), scope, json.RawMessage(`{"state":"Todo"}`))
 				f.service.spriteWakeWork.Wait()
 			} else {
 				err = f.service.scaleSpritePool(t.Context(), scope, true)
@@ -475,7 +475,7 @@ func TestSpritePoolLifecycle(t *testing.T) {
 					response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.MachineID)+"/heartbeat", runner.Credential, map[string]any{"display_name": runner.DisplayName, "capacity": runner.Capacity, "version": runner.Version, "sprite_name": runner.SpriteName})
 					requireNativeStatus(t, response, http.StatusOK)
 				} else {
-					f.service.startSpriteLifecycle(scope, "")
+					f.service.startSpriteLifecycle(t.Context(), scope, "")
 				}
 				f.service.spriteWakeWork.Wait()
 			}
@@ -833,10 +833,10 @@ func TestSpritePoolMutationDuringDeletion(t *testing.T) {
 	setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
 	provider.deleteStarted = make(chan struct{})
 	provider.releaseDelete = make(chan struct{})
-	f.service.startSpriteLifecycle(scope, "")
+	f.service.startSpriteLifecycle(t.Context(), scope, "")
 	waitSpriteWake(t, provider.deleteStarted)
 	setSpriteIssuesArchived(t, f, false)
-	f.service.wakeSpriteRunnersAfter(scope, json.RawMessage(`{"state":"Todo"}`))
+	f.service.wakeSpriteRunnersAfter(t.Context(), scope, json.RawMessage(`{"state":"Todo"}`))
 	close(provider.releaseDelete)
 	f.service.spriteWakeWork.Wait()
 	if len(provider.created) != 4 || len(provider.deleted) != 2 {
@@ -1228,7 +1228,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 					first, second = later, f
 				}
 			}
-			f.service.startSpriteLifecycle(scope, "")
+			f.service.startSpriteLifecycle(t.Context(), scope, "")
 			f.service.spriteWakeWork.Wait()
 			read := func(project nativeFixture) projectSpriteAllocation {
 				t.Helper()
@@ -1270,7 +1270,7 @@ func TestProjectSpriteAllocationLifecycle(t *testing.T) {
 			}
 			spriteFixtureExec(t, f, `UPDATE organization_sprite_pools SET max_runners=1 WHERE organization_id=$1`, scope.Organization)
 			setSpriteMembersIdleSince(t, f, f.service.config.Clock().Add(-time.Hour))
-			f.service.startSpriteLifecycle(scope, "")
+			f.service.startSpriteLifecycle(t.Context(), scope, "")
 			f.service.spriteWakeWork.Wait()
 			if a, b := read(first), read(second); a.AllocatedCount != 1 || b.AllocatedCount != 0 || b.Shortfall != 3 || a.DesiredCount != 1 || b.DesiredCount != 3 {
 				t.Fatalf("lowered shared ceiling first=%+v second=%+v", a, b)
@@ -1856,7 +1856,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	store.mu.Lock()
 	store.reads = 0
 	store.mu.Unlock()
-	f.service.scheduleSpriteLifecycle(t.Context(), scope, "Todo")
+	f.service.scheduleSpriteLifecycle(t.Context(), t.Context(), scope, "Todo")
 	f.service.spriteWakeWork.Wait()
 	store.mu.Lock()
 	reads := store.reads

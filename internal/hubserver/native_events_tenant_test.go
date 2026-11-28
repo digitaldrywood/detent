@@ -41,7 +41,7 @@ func withSuppressedSpriteWake(t *testing.T, service *Service, organization track
 	t.Helper()
 	startSpritePool := service.startSpritePoolForQueue
 	key := spriteWakeKey{organization: organization}
-	service.startSpritePoolForQueue = func(hubscope.NativeScope) {}
+	service.startSpritePoolForQueue = func(context.Context, hubscope.NativeScope) {}
 	service.spriteWakeMu.Lock()
 	service.spriteWakes[key] = &spriteLifecyclePass{}
 	service.spriteWakeMu.Unlock()

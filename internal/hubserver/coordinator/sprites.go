@@ -247,7 +247,7 @@ func (s SpriteCommandDeps) Execute(ctx context.Context, action chat.Action) (cha
 	if err != nil {
 		return chat.ActionExecution{}, ActionError(err)
 	}
-	s.StartPool(scope)
+	s.StartPool(ctx, scope)
 	return chat.ActionExecution{Message: "Sprite pool lifecycle requested. Read get_sprite_pool and get_sprite_bootstrap_log to watch progress. A connected runner still needs customer provider sign-in, Git access, checkout and approved project policy before it can push work."}, nil
 }
 

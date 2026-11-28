@@ -71,9 +71,9 @@ type Service struct {
 	config                  Config
 	outbox                  *outboxWorker
 	ready                   atomic.Bool
-	wakeSpriteRunnersAfter  func(hubscope.NativeScope, json.RawMessage)
-	startSpriteLifecycle    func(hubscope.NativeScope, string)
-	startSpritePoolForQueue func(hubscope.NativeScope)
+	wakeSpriteRunnersAfter  func(context.Context, hubscope.NativeScope, json.RawMessage)
+	startSpriteLifecycle    func(context.Context, hubscope.NativeScope, string)
+	startSpritePoolForQueue func(context.Context, hubscope.NativeScope)
 	spriteWakeMu            sync.Mutex
 	spriteWakes             map[spriteWakeKey]*spriteLifecyclePass
 	spriteWakeWork          sync.WaitGroup
@@ -297,15 +297,7 @@ func openService(ctx context.Context, cfg Config, startup *startupHealth) (*Serv
 	if service.config.ProjectParticipants == nil && service.config.TenantRepository != nil && service.config.AccessRepository != nil {
 		service.config.ProjectParticipants = tenantProjectParticipants{service: service}
 	}
-	service.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) {
-		service.scheduleSpriteWake(workerContext, scope, result)
-	}
-	service.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) {
-		service.scheduleSpriteLifecycle(workerContext, scope, state)
-	}
-	service.startSpritePoolForQueue = func(scope hubscope.NativeScope) {
-		service.scheduleSpritePoolForQueue(workerContext, scope)
-	}
+	service.configureSpriteLifecycle(workerContext)
 	if database.postgres == nil || cfg.OutboxBackend != nil {
 		service.outbox = newOutboxWorker(service)
 	}

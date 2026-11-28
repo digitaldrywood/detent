@@ -6,15 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/accessstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
+	"github.com/digitaldrywood/detent/internal/hubserver/projectstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -200,15 +204,7 @@ func startSpriteWakeWorkers(t *testing.T, s *Service) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	s.workerCancel = cancel
-	s.wakeSpriteRunnersAfter = func(scope hubscope.NativeScope, result json.RawMessage) {
-		s.scheduleSpriteWake(ctx, scope, result)
-	}
-	s.startSpriteLifecycle = func(scope hubscope.NativeScope, state string) {
-		s.scheduleSpriteLifecycle(ctx, scope, state)
-	}
-	s.startSpritePoolForQueue = func(scope hubscope.NativeScope) {
-		s.scheduleSpritePoolForQueue(ctx, scope)
-	}
+	s.configureSpriteLifecycle(ctx)
 	t.Cleanup(s.stopSpriteRunners)
 }
 
@@ -366,8 +362,10 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 			t.Parallel()
 			started, stopped := make(chan struct{}), make(chan struct{})
 			var calls atomic.Int32
+			var wakeCtx context.Context
 			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
 				calls.Add(1)
+				wakeCtx = request.Context()
 				close(started)
 				<-request.Context().Done()
 				close(stopped)
@@ -388,9 +386,21 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 				cancel()
 				waitSpriteWake(t, done)
 			} else {
-				f.create(t, "wake-before-stop")
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				request := newHubAPIRequest(t, http.MethodPost, f.base+"/work-items", f.token, tracker.CreateIssue{
+					Mutation: tracker.Mutation{IdempotencyKey: "wake-before-stop"}, Title: "Wake before stop",
+					Body: strings.Repeat("Full issue content. ", 80) + issueContractTestSections, State: "Todo",
+				})
+				response := httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, request.WithContext(ctx))
+				requireNativeStatus(t, response, http.StatusOK)
 				waitSpriteWake(t, started)
 				done := spriteWakeDone(t, f.service, scope)
+				cancel()
+				if err := wakeCtx.Err(); err != nil {
+					t.Fatalf("request cancellation stopped scheduled Sprite wake: %v", err)
+				}
 				if mode == "shutdown" {
 					if err := f.service.Shutdown(t.Context()); err != nil {
 						t.Fatal(err)
@@ -401,7 +411,7 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 					}
 				}
 				waitSpriteWake(t, done)
-				f.service.wakeSpriteRunnersAfter(scope, json.RawMessage(`{"state":"Todo"}`))
+				f.service.wakeSpriteRunnersAfter(t.Context(), scope, json.RawMessage(`{"state":"Todo"}`))
 				f.service.spriteWakeMu.Lock()
 				active := len(f.service.spriteWakes)
 				f.service.spriteWakeMu.Unlock()
@@ -413,6 +423,82 @@ func TestWakeSpriteRunnersCancellation(t *testing.T) {
 			if calls.Load() != 1 {
 				t.Fatalf("cancellation calls=%d, want 1", calls.Load())
 			}
+		})
+	}
+}
+
+type spriteEligibilityRepository struct {
+	tenantstore.Repository
+	read func(context.Context, func(tenantstore.Reader) error) error
+}
+
+func (r spriteEligibilityRepository) ReadTenant(ctx context.Context, _ tracker.OrganizationID, _ corestore.Workload, read func(tenantstore.Reader) error) error {
+	return r.read(ctx, read)
+}
+
+type dispatchableSpriteProject struct{ tenantstore.Reader }
+
+func (dispatchableSpriteProject) ProjectRecord(context.Context, tracker.ProjectID) (projectstore.Record, error) {
+	return projectstore.Record{States: []tracker.NativeState{{Name: "Todo", Dispatchable: true}}}, nil
+}
+
+func TestSpriteWakeEligibilityUsesCallerContext(t *testing.T) {
+	for _, pendingRead := range []string{"project", "monthly budget"} {
+		t.Run(pendingRead, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				started := make(chan context.Context, 1)
+				release, done := make(chan struct{}), make(chan struct{})
+				block := spriteEligibilityRepository{read: func(ctx context.Context, _ func(tenantstore.Reader) error) error {
+					started <- ctx
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-release:
+						return errors.New("test released pending eligibility read")
+					}
+				}}
+				project := spriteEligibilityRepository{read: func(_ context.Context, read func(tenantstore.Reader) error) error {
+					return read(dispatchableSpriteProject{})
+				}}
+				if pendingRead == "project" {
+					project = block
+				}
+				s := &Service{config: Config{SecretKeys: secretTestKeys(t, "1", "1"), Clock: time.Now, Logger: discardLogger(), AccessRepository: project},
+					database: &database{billingRepository: block}, spriteWakes: make(map[spriteWakeKey]*spriteLifecyclePass)}
+				startSpriteWakeWorkers(t, s)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				scope := hubscope.NativeScope{Organization: "org_example", Project: "prj_example"}
+				go func() {
+					defer close(done)
+					s.wakeSpriteRunnersAfter(ctx, scope, json.RawMessage(`{"state":"Todo"}`))
+				}()
+				defer func() {
+					close(release)
+					<-done
+				}()
+				synctest.Wait()
+				var readCtx context.Context
+				select {
+				case readCtx = <-started:
+				default:
+					t.Fatal("Sprite wake did not reach eligibility read")
+				}
+				wantDeadline, _ := ctx.Deadline()
+				if deadline, ok := readCtx.Deadline(); !ok || !deadline.Equal(wantDeadline) {
+					t.Errorf("eligibility deadline = %v, present = %t, want caller's one-minute deadline", deadline, ok)
+				}
+				cancel()
+				synctest.Wait()
+				select {
+				case <-done:
+					if !errors.Is(readCtx.Err(), context.Canceled) {
+						t.Errorf("eligibility read context error = %v, want canceled", readCtx.Err())
+					}
+				default:
+					t.Error("Sprite wake still waiting on eligibility after caller cancellation")
+				}
+			})
 		})
 	}
 }

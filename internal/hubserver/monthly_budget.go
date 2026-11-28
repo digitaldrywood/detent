@@ -210,7 +210,7 @@ func (s *Service) resumeMonthlyBudgetWork(ctx context.Context, scope hubscope.Na
 			s.config.Logger.Warn("Resume budget-eligible conversations", "error", err)
 		}
 	}
-	s.startSpritePoolForQueue(scope)
+	s.startSpritePoolForQueue(ctx, scope)
 }
 
 func (s *Service) stopMonthlyBudgetSpritePasses(ctx context.Context, organization tracker.OrganizationID) {

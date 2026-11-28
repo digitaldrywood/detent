@@ -64,7 +64,7 @@ type HeartbeatDeps struct {
 	AttemptRunMatches           func(snapshot hubrecords.TenantAttemptSnapshot, run tracker.NativeRunData) bool
 	Logger                      *slog.Logger
 	Version                     string
-	StartSpriteLifecycle        func(hubscope.NativeScope, string)
+	StartSpriteLifecycle        func(context.Context, hubscope.NativeScope, string)
 	Plans                       func() *hostedplans.HostedPlansConfig
 	ReadCapabilitiesDigest      func(echo.Context) (string, bool, error)
 	PrepareConfiguration        func(context.Context, hubapi.APICredential, tracker.ProjectID, *runnerauth.ProjectConfiguration) (ApplyHeartbeatConfiguration, error)
@@ -413,7 +413,7 @@ func (d HeartbeatDeps) HeartbeatNativeMachineTenant(c echo.Context, request Nati
 		d.NotifyDispatch(credential.Runner.OrganizationID)
 	}
 	if d.StartSpriteLifecycle != nil {
-		d.StartSpriteLifecycle(hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID}, "")
+		d.StartSpriteLifecycle(ctx, hubscope.NativeScope{Organization: credential.Runner.OrganizationID, Project: projectID}, "")
 	}
 	assigned := false
 	cleanupKey := CleanupCursorKey{Organization: credential.Runner.OrganizationID, Project: projectID, Runner: credential.Runner.RunnerID}

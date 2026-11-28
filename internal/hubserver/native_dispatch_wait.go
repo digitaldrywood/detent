@@ -34,7 +34,7 @@ func (s *Service) notifyNativeDispatch(ctx context.Context, scope hubscope.Nativ
 		}
 	}
 	if event, ok := input.(tracker.NativeRunEvent); ok && event.Type == "run.finished" && scope.Project != "" {
-		s.startSpritePoolForQueue(scope)
+		s.startSpritePoolForQueue(ctx, scope)
 	}
 }
 

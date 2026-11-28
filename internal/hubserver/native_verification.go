@@ -67,7 +67,7 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope hubscope.N
 	options := hubapi.NativeCommandOptions{OperationID: nativeOperation(scope, "POST", "/work-items/"+item+"/verification"), Item: item, Feature: "collaboration"}
 	result, err := s.executeWorkItemRecordMutation(ctx, scope, options, request.Mutation, request, "")
 	if err == nil && request.Result == tracker.VerifyResultNotFixed && s.wakeSpriteRunnersAfter != nil {
-		s.wakeSpriteRunnersAfter(scope, result)
+		s.wakeSpriteRunnersAfter(ctx, scope, result)
 	}
 	return result, err
 }

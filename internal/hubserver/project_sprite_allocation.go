@@ -61,7 +61,7 @@ func (s *Service) setProjectSpriteAllocation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	s.startSpritePoolForQueue(scope)
+	s.startSpritePoolForQueue(c.Request().Context(), scope)
 	return c.JSONBlob(http.StatusOK, result)
 }
 

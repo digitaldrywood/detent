@@ -125,7 +125,7 @@ func (s *Service) setSpritePoolCommand(ctx context.Context, scope hubscope.Nativ
 		if err := s.executeSpritePoolCommand(ctx, scope, input); err != nil {
 			return spritePoolView{}, err
 		}
-		s.startSpritePoolForQueue(scope)
+		s.startSpritePoolForQueue(ctx, scope)
 		return s.spritePoolResponse(ctx, scope)
 	}
 	settings := input.spritePoolSettings
@@ -143,7 +143,7 @@ func (s *Service) setSpritePoolCommand(ctx context.Context, scope hubscope.Nativ
 	if err := s.updateSpritePool(ctx, scope, settings, input.IsolationTier); err != nil {
 		return view, err
 	}
-	s.startSpritePoolForQueue(scope)
+	s.startSpritePoolForQueue(ctx, scope)
 	return s.spritePoolResponse(ctx, scope)
 }
 
@@ -576,10 +576,6 @@ func (s *Service) spriteEnrollmentExpiry(ctx context.Context, scope hubscope.Nat
 		return err
 	})
 	return hubapi.FormatHubTime(expires), err
-}
-
-func (s *Service) scheduleSpritePoolForQueue(ctx context.Context, scope hubscope.NativeScope) {
-	s.startSpriteLifecycle(scope, "organization")
 }
 
 func (s *Service) describeSpritePoolMembers(ctx context.Context, scope hubscope.NativeScope, members []spritePoolMember) error {

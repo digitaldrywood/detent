@@ -208,7 +208,7 @@ func (s IssueCommandDeps) ExecuteSplit(ctx context.Context, action chat.Action) 
 		if err != nil {
 			return chat.ActionExecution{}, err
 		}
-		s.WakeSpriteRunners(scope, encoded)
+		s.WakeSpriteRunners(ctx, scope, encoded)
 	}
 	var names []string
 	for _, child := range result.Children {

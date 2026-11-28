@@ -43,7 +43,7 @@ func (s *Service) transitionNativeIssueTenant(ctx context.Context, scope hubscop
 func (s *Service) transitionNativeIssueTenantFromChat(ctx context.Context, scope hubscope.NativeScope, item string, request tracker.Transition, conversationID string) (json.RawMessage, error) {
 	result, err := s.transitionNativeIssueTenantWithStop(ctx, scope, item, request, nil, conversationID)
 	if err == nil && s.wakeSpriteRunnersAfter != nil {
-		s.wakeSpriteRunnersAfter(scope, result)
+		s.wakeSpriteRunnersAfter(ctx, scope, result)
 	}
 	return result, err
 }
