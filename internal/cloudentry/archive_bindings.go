@@ -214,16 +214,20 @@ func (s *Service) bindingStorage(ctx context.Context, b attachment.StorageBindin
 }
 
 func (s *Service) archiveStorageForReference(ctx context.Context, organization string, ref attachment.ArchiveReference) (attachment.ArchiveStorage, error) {
-	if ref.BindingID == "" {
+	return s.archiveStorageForBinding(ctx, organization, ref.BindingID, ref.CustomerOwned)
+}
+
+func (s *Service) archiveStorageForBinding(ctx context.Context, organization, bindingID string, customerOwned bool) (attachment.ArchiveStorage, error) {
+	if bindingID == "" {
 		if err := s.ensureLegacyArchiveBinding(ctx, organization); err != nil {
 			return nil, artifact.ErrStorage
 		}
 	}
-	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=$1 AND id=$2`, organization, ref.BindingID))
-	if errors.Is(err, sql.ErrNoRows) && ref.BindingID == "" {
+	b, err := scanArchiveBinding(s.registry.store.reader.QueryRowContext(ctx, archiveBindingSelect+` WHERE organization_id=$1 AND id=$2`, organization, bindingID))
+	if errors.Is(err, sql.ErrNoRows) && bindingID == "" {
 		return s.bindingStorage(ctx, attachment.StorageBinding{})
 	}
-	if err != nil || (b.Backend == "s3") != ref.CustomerOwned {
+	if err != nil || (b.Backend == "s3") != customerOwned {
 		return nil, artifact.ErrStorage
 	}
 	return s.bindingStorage(ctx, b)

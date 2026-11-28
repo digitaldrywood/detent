@@ -85,8 +85,7 @@ func (s *HTTP) readValidatorArchive(ctx context.Context, scope hubscope.NativeSc
 	}
 	if ref.ExecutionScoped(string(scope.Organization)) {
 		fence := attachment.ArchiveFence{LeaseID: mutation.LeaseID, FencingToken: mutation.FencingToken}
-		key, err := fence.Key(string(scope.Organization), string(scope.Project), item, ref.SHA256)
-		if err != nil || key != ref.Key {
+		if !fence.MatchesPublished(string(scope.Organization), string(scope.Project), item, ref) {
 			return payload, tracker.ErrStaleFencingToken
 		}
 	}

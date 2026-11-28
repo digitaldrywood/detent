@@ -778,10 +778,9 @@ func (s AttachmentRecords) FinishCloudAttachmentDeletionTenant(c echo.Context) e
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
 		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
-	var input struct {
-		ID string `json:"id"`
-	}
-	if err := c.Bind(&input); err != nil || conversation.ValidateAttachmentID(input.ID) != nil {
+	var input attachment.AttachmentDeletionReceipt
+	if err := c.Bind(&input); err != nil || conversation.ValidateAttachmentID(input.ID) != nil ||
+		input.Archive != nil && !input.Archive.Valid(claims.Audience) {
 		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment id"))
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
@@ -791,7 +790,7 @@ func (s AttachmentRecords) FinishCloudAttachmentDeletionTenant(c echo.Context) e
 		if !ok {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
-		return owner.FinishAttachmentDeletion(ctx, input.ID, s.deps.Now().UTC())
+		return owner.FinishAttachmentDeletion(ctx, input, s.deps.Now().UTC())
 	})
 	if err != nil {
 		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
@@ -804,11 +803,21 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 	if !ok || claims.Kind != cloudassert.KindService || claims.Audience == "" {
 		return s.deps.APIError(c, hubapi.NativeNotFound())
 	}
+	var input attachment.DeletionScan
+	if strings.HasPrefix(c.Request().Header.Get(echo.HeaderContentType), echo.MIMEApplicationJSON) {
+		if err := c.Bind(&input); err != nil {
+			return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid attachment deletion scan"))
+		}
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
 	organization := tracker.OrganizationID(claims.Audience)
 	now := s.deps.Now().UTC()
 	cutoff := now.Add(-attachment.OrphanTTL)
+	var archiveCutoff time.Time
+	if input.Archives {
+		archiveCutoff = now.Add(-attachment.ArchiveUploadTimeout)
+	}
 	var candidates []attachmentstore.Record
 	err := s.deps.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
 		owner, ok := r.(attachmentstore.ExpiryReader)
@@ -816,13 +825,14 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, 100)
+		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, archiveCutoff, 100)
 		return err
 	})
 	if err != nil {
 		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
 	items := []attachment.Metadata{}
+	deletions := []attachment.AttachmentDeletionReceipt{}
 	for _, candidate := range candidates {
 		metadata := candidate.Metadata
 		if metadata.DeletedAt == nil {
@@ -845,7 +855,18 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 			}
 			metadata.DeletedAt = &now
 		}
-		items = append(items, metadata)
+		if !input.Archives {
+			items = append(items, metadata)
+			continue
+		}
+		deletion := attachment.AttachmentDeletionReceipt{ID: metadata.ID}
+		if candidate.Kind == "archive" {
+			deletion.Archive = &attachment.ArchiveDeletionTarget{Key: candidate.ObjectKey, BindingID: candidate.StorageBindingID, CustomerOwned: candidate.CustomerOwned}
+		}
+		deletions = append(deletions, deletion)
+	}
+	if input.Archives {
+		return c.JSON(http.StatusOK, deletions)
 	}
 	return c.JSON(http.StatusOK, items)
 }

@@ -249,5 +249,5 @@ func (s *Service) finishAttachmentMCPDeletion(c echo.Context, input operatortool
 	if json.Unmarshal(raw, &authorized) != nil || authorized.Principal == "" {
 		return false
 	}
-	return s.removeAttachment(c.Request().Context(), organization, attachment.Metadata{ID: input.AttachmentID}, authorized.Principal) == nil
+	return s.removeAttachment(c.Request().Context(), organization, attachment.AttachmentDeletionReceipt{ID: input.AttachmentID}, authorized.Principal) == nil
 }

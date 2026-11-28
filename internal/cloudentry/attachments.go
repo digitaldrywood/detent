@@ -501,7 +501,7 @@ func (s *Service) deleteAttachment(c echo.Context) error {
 	if err != nil || status != http.StatusNoContent {
 		return attachmentCallError(c, status, raw, err, false)
 	}
-	if err := s.removeAttachment(c.Request().Context(), organization, record, record.AuthorizedPrincipal); err != nil {
+	if err := s.removeAttachment(c.Request().Context(), organization, attachment.AttachmentDeletionReceipt{ID: record.ID}, record.AuthorizedPrincipal); err != nil {
 		return attachmentError(c, http.StatusBadGateway, "attachment_storage_unavailable", "Attachment deletion is pending")
 	}
 	return c.NoContent(http.StatusNoContent)
@@ -527,18 +527,32 @@ func (s *Service) referenceAttachment(c echo.Context) error {
 	return c.NoContent(status)
 }
 
-func (s *Service) removeAttachment(ctx context.Context, organization Organization, record attachment.Metadata, principal string) error {
+func (s *Service) removeAttachment(ctx context.Context, organization Organization, record attachment.AttachmentDeletionReceipt, principal string) error {
+	storage := s.attachments
 	key, err := attachment.Key(organization.ID, record.ID)
 	if err != nil {
 		return err
 	}
+	if target := record.Archive; target != nil {
+		if !target.Valid(organization.ID) {
+			return attachment.ErrInvalid
+		}
+		key = target.Key
+		storage, err = s.archiveStorageForBinding(ctx, organization.ID, target.BindingID, target.CustomerOwned)
+		if err != nil {
+			return err
+		}
+	}
+	if storage == nil {
+		return errors.New("attachment deletion storage unavailable")
+	}
 	if err := s.auth.audit(ctx, principal, organization.ID, "attachment_deleted"); err != nil {
 		return err
 	}
-	if err := s.attachments.Delete(ctx, key); err != nil {
+	if err := storage.Delete(ctx, key); err != nil {
 		return err
 	}
-	status, err := s.serviceRequest(ctx, organization, "/internal/v1/attachments/deleted", map[string]string{"id": record.ID}, nil)
+	status, err := s.serviceRequest(ctx, organization, "/internal/v1/attachments/deleted", record, nil)
 	if err != nil {
 		return err
 	}
@@ -549,7 +563,7 @@ func (s *Service) removeAttachment(ctx context.Context, organization Organizatio
 }
 
 func (s *Service) sweepAttachments(ctx context.Context) {
-	if s.attachments == nil || s.config.Now().Before(s.attachmentSweepAt) {
+	if (s.attachments == nil && s.config.ArchiveCredentials == nil) || s.config.Now().Before(s.attachmentSweepAt) {
 		return
 	}
 	s.attachmentSweepAt = s.config.Now().Add(time.Hour)
@@ -569,24 +583,26 @@ func (s *Service) sweepAttachments(ctx context.Context) {
 }
 
 func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization Organization) error {
-	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", struct{}{}, nil)
+	status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/attachments/expired", attachment.DeletionScan{Archives: true}, nil)
 	if err != nil {
 		return err
 	}
 	if status != http.StatusOK {
 		return errors.New("attachment retention metadata unavailable")
 	}
-	var records []attachment.Metadata
+	var records []attachment.AttachmentDeletionReceipt
 	if err := json.Unmarshal(raw, &records); err != nil {
 		return err
 	}
+	var deletionErr error
 	for _, record := range records {
 		unlock := s.attachmentLocks.lock(organization.ID, true)
 		err := s.removeAttachment(ctx, organization, record, "entry")
 		unlock()
-		if err != nil {
-			return err
-		}
+		deletionErr = errors.Join(deletionErr, err)
+	}
+	if s.attachments == nil {
+		return deletionErr
 	}
 	for _, objects := range []struct{ prefix, endpoint string }{
 		{"attachments/", "/internal/v1/attachments/exists"},
@@ -594,10 +610,10 @@ func (s *Service) sweepOrganizationAttachments(ctx context.Context, organization
 		{"blobs/sha256/", "/internal/v1/attachments/exists"},
 	} {
 		if err := s.sweepAttachmentOrphans(ctx, organization, objects.prefix, objects.endpoint); err != nil {
-			return err
+			return errors.Join(deletionErr, err)
 		}
 	}
-	return nil
+	return deletionErr
 }
 
 func (s *Service) sweepAttachmentOrphans(ctx context.Context, organization Organization, namespace, endpoint string) error {

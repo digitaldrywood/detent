@@ -64,7 +64,7 @@ func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref *attac
 			return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
 		}
 		if fence != nil {
-			key, err := fence.Key(organization, string(scope.Project), string(item), ref.SHA256)
+			key, err := fence.Key(organization, string(scope.Project), string(item), ref.BindingID, ref.SHA256)
 			if err != nil || ref.Key != key {
 				return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
 			}
@@ -101,7 +101,6 @@ func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref *attac
 	if publish && fence != nil && errors.Is(err, tracker.ErrStaleFencingToken) {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubapi.ReadTimeout)
 		defer cancel()
-		discard := false
 		cleanupErr := s.deps.WriteTenant(cleanup, scope.Organization, func(w tenantstore.Writer) error {
 			row, err := s.lockArchiveItem(cleanup, w, scope, item)
 			if err != nil {
@@ -110,15 +109,11 @@ func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref *attac
 			if err := checkFence(cleanup, w, row); !errors.Is(err, tracker.ErrStaleFencingToken) {
 				return err
 			}
-			discard, err = w.DiscardAttachmentArchive(cleanup, record, item)
-			return err
+			return w.RejectAttachmentArchive(cleanup, record, item, s.deps.Now().UTC())
 		})
 		failure := &hubapi.NativeError{Code: "stale_fencing_token", Message: "Lease fencing token is stale", Status: http.StatusConflict, PublicMessage: true}
 		if cleanupErr != nil {
 			return s.deps.APIError(c, failure, "cleanup_error", cleanupErr)
-		}
-		if discard {
-			failure.Details = map[string]any{attachment.ArchiveDiscardObject: true}
 		}
 		return s.deps.APIError(c, failure)
 	}

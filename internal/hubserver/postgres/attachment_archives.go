@@ -2,10 +2,7 @@ package postgres
 
 import (
 	"context"
-	"errors"
-	"math"
-
-	"github.com/jackc/pgx/v5"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -17,35 +14,20 @@ func archiveReference(row attachmentstore.Record) attachment.ArchiveReference {
 	return attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size, UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion), Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
 }
 
-func (s *session) DiscardAttachmentArchive(ctx context.Context, r attachmentstore.ArchiveRecord, item tracker.NativeWorkItemID) (bool, error) {
+func (s *session) RejectAttachmentArchive(ctx context.Context, r attachmentstore.ArchiveRecord, item tracker.NativeWorkItemID, at time.Time) error {
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
-		return false, err
+		return err
 	}
 	ref := r.Reference
 	if !ref.ExecutionScoped(string(s.organization)) {
-		return false, attachment.ErrInvalid
+		return attachment.ErrInvalid
 	}
-	var size int64
-	var customerOwned bool
-	err := s.db.QueryRow(ctx, `DELETE FROM attachments a WHERE a.organization_id=$1 AND a.id=$2 AND a.project_id=$3
- AND a.uploader=$4 AND a.object_key=$5 AND a.kind='archive'
- AND NOT EXISTS (SELECT 1 FROM attachment_archive_references l WHERE l.organization_id=$1 AND l.project_id=$3 AND l.work_item_id=$6 AND l.attachment_id=$2)
- RETURNING a.size,a.customer_owned`,
-		s.organization, r.ID, r.ProjectID, r.Uploader, ref.Key, item).Scan(&size, &customerOwned)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var exists bool
-		err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM attachments WHERE organization_id=$1 AND id=$2)`, s.organization, r.ID).Scan(&exists)
-		return !exists, mapError(ctx, err)
-	}
-	if err != nil {
-		return false, mapError(ctx, err)
-	}
-	if !customerOwned {
-		if _, err := s.AdjustCollaborationBytes(ctx, -size, math.MaxInt64); err != nil {
-			return false, err
-		}
-	}
-	return true, nil
+	_, err := s.db.Exec(ctx, `UPDATE attachments a SET deleted_at=$7 WHERE a.organization_id=$1 AND a.id=$2 AND a.project_id=$3
+ AND a.uploader=$4 AND a.object_key=$5 AND a.storage_binding_id=$6 AND a.kind='archive'
+ AND a.deleted_at IS NULL AND a.object_deleted_at IS NULL
+ AND NOT EXISTS (SELECT 1 FROM attachment_archive_references l WHERE l.organization_id=$1 AND l.project_id=$3 AND l.work_item_id=$8 AND l.attachment_id=$2)`,
+		s.organization, r.ID, r.ProjectID, r.Uploader, ref.Key, ref.BindingID, at, item)
+	return mapError(ctx, err)
 }
 
 func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstore.ArchiveRecord) (bool, error) {

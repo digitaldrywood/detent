@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -77,7 +78,7 @@ func TestOrganizationLogoLifecycle(t *testing.T) {
 						if row.Retention != "organization" || row.Metadata.DeletedAt != nil {
 							return fmt.Errorf("current logo lost organization retention")
 						}
-						candidates, err := r.(attachmentstore.ExpiryReader).AttachmentDeletionCandidates(t.Context(), row.Metadata.CreatedAt.Add(2*attachment.OrphanTTL), 100)
+						candidates, err := r.(attachmentstore.ExpiryReader).AttachmentDeletionCandidates(t.Context(), row.Metadata.CreatedAt.Add(2*attachment.OrphanTTL), time.Time{}, 100)
 						if err != nil {
 							return err
 						}

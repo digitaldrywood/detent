@@ -225,37 +225,55 @@ func (s *session) DeleteAttachment(ctx context.Context, project tracker.ProjectI
 	return nil
 }
 
-func (s *session) FinishAttachmentDeletion(ctx context.Context, id string, at time.Time) error {
-	var size int64
-	err := s.db.QueryRow(ctx, `UPDATE attachments SET object_deleted_at=$3 WHERE organization_id=$1 AND id=$2 AND kind='attachment' AND deleted_at IS NOT NULL AND object_deleted_at IS NULL AND NOT customer_owned AND storage_binding_id='' AND pending_content IS NULL AND object_key IN ('','orgs/' || organization_id || '/attachments/' || id) RETURNING size`, s.organization, id, at).Scan(&size)
-	if errors.Is(err, pgx.ErrNoRows) {
-		var completed bool
-		err = s.db.QueryRow(ctx, `SELECT object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=$1 AND id=$2 AND deleted_at IS NOT NULL`, s.organization, id).Scan(&completed)
-		if err == nil && !completed {
-			return corestore.ErrNotFound
+func (s *session) FinishAttachmentDeletion(ctx context.Context, receipt attachment.AttachmentDeletionReceipt, at time.Time) error {
+	predicate := managedAttachmentPredicate
+	args := []any{s.organization, receipt.ID}
+	if target := receipt.Archive; target != nil {
+		if !target.Valid(string(s.organization)) {
+			return attachment.ErrInvalid
 		}
-		return mapError(ctx, err)
+		predicate = rejectedArchivePredicate + ` AND object_key=$3 AND storage_binding_id=$4 AND customer_owned=$5`
+		args = append(args, target.Key, target.BindingID, target.CustomerOwned)
 	}
+	var size int64
+	var customerOwned, completed bool
+	err := s.db.QueryRow(ctx, `SELECT size,customer_owned,object_deleted_at IS NOT NULL FROM attachments WHERE organization_id=$1 AND id=$2 AND deleted_at IS NOT NULL AND `+predicate+` FOR UPDATE`, args...).Scan(&size, &customerOwned, &completed)
 	if err != nil {
 		return mapError(ctx, err)
+	}
+	if completed {
+		return nil
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE attachments SET object_deleted_at=$3 WHERE organization_id=$1 AND id=$2`, s.organization, receipt.ID, at); err != nil {
+		return mapError(ctx, err)
+	}
+	if customerOwned {
+		return nil
 	}
 	_, err = s.AdjustCollaborationBytes(ctx, -size, math.MaxInt64)
 	return err
 }
 
 const managedAttachmentPredicate = `kind='attachment' AND NOT customer_owned AND storage_binding_id='' AND pending_content IS NULL AND object_key IN ('','orgs/' || organization_id || '/attachments/' || id)`
+const rejectedArchivePredicate = `kind='archive' AND pending_content IS NULL`
 const orphanAttachmentPredicate = `deleted_at IS NULL AND object_deleted_at IS NULL AND retention_class IN ('','expiring') AND work_item_id IS NULL AND created_at<=$2`
 const attachmentHasReferences = `EXISTS(SELECT 1 FROM attachment_item_references r WHERE r.organization_id=attachments.organization_id AND r.attachment_id=attachments.id)`
 
-func (s *session) AttachmentDeletionCandidates(ctx context.Context, cutoff time.Time, limit int) ([]attachmentstore.Record, error) {
+func (s *session) AttachmentDeletionCandidates(ctx context.Context, cutoff, archiveCutoff time.Time, limit int) ([]attachmentstore.Record, error) {
 	if cutoff.IsZero() || limit < 1 || limit > 100 {
 		return nil, corestore.ErrInvalidPage
+	}
+	var rejectedBefore *time.Time
+	if !archiveCutoff.IsZero() {
+		rejectedBefore = &archiveCutoff
 	}
 	rows, err := s.db.Query(ctx, `SELECT * FROM (
  (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND deleted_at IS NOT NULL AND object_deleted_at IS NULL ORDER BY created_at,id LIMIT $3)
  UNION ALL
  (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND `+orphanAttachmentPredicate+` ORDER BY created_at,id LIMIT $3)
- ) candidates ORDER BY created_at,id LIMIT $3`, s.organization, cutoff, limit)
+ UNION ALL
+ (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+rejectedArchivePredicate+` AND deleted_at IS NOT NULL AND deleted_at<=$4 AND object_deleted_at IS NULL ORDER BY deleted_at,id LIMIT $3)
+ ) candidates ORDER BY created_at,id LIMIT $3`, s.organization, cutoff, limit, rejectedBefore)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

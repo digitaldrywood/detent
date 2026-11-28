@@ -2,16 +2,20 @@ package cloudentry
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/integration/hubfixture"
 	"github.com/digitaldrywood/detent/internal/hubserver/leasestore"
@@ -22,15 +26,22 @@ import (
 
 func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 	for _, tc := range []struct {
-		name              string
-		revoke, atReserve bool
+		name                                                  string
+		revoke, atReserve, deleteFails, rotation, lostRefusal bool
 	}{
 		{name: "expires before quota reservation", atReserve: true},
 		{name: "expires during object upload"},
 		{name: "revoked during object upload", revoke: true},
+		{name: "failed object deletion keeps quota charged", deleteFails: true},
+		{name: "lost publication refusal keeps cleanup pending", lostRefusal: true},
+		{name: "expired replay after binding rotation preserves published archive", rotation: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newSeparateDatabaseEntryFixture(t, slog.New(slog.DiscardHandler))
+			var advance atomic.Int64
+			now := func() time.Time { return time.Now().Add(time.Duration(advance.Load())) }
+			f := newEntryFixtureOn(t, nil, slog.New(slog.DiscardHandler), nil, func(cfg *hubserver.Config) {
+				cfg.Clock = now
+			})
 			if err := f.service.closeAllocator(); err != nil {
 				t.Fatal(err)
 			}
@@ -66,31 +77,47 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				return err
 			}
 			puts := 0
-			transport := archiveValidationTransport{next: store.Transport, check: func(req *http.Request) error {
-				if req.Method != http.MethodPut || !strings.Contains(req.URL.Path, "/blobs/sha256/") {
-					return nil
+			failDelete := tc.deleteFails
+			transport := runtimeTransport(func(req *http.Request) (*http.Response, error) {
+				if req.Method == http.MethodDelete && failDelete && strings.Contains(req.URL.Path, "/blobs/sha256/") {
+					response := httptest.NewRecorder()
+					response.WriteHeader(http.StatusForbidden)
+					return response.Result(), nil
 				}
-				puts++
-				if armed && !ended && !tc.atReserve {
-					return endLease()
+				if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/blobs/sha256/") {
+					puts++
+					if armed && !ended && !tc.atReserve && !tc.rotation {
+						if err := endLease(); err != nil {
+							return nil, err
+						}
+					}
 				}
-				return nil
-			}}
-			if tc.atReserve {
+				return store.Transport.RoundTrip(req)
+			})
+			if tc.atReserve || tc.rotation || tc.lostRefusal {
 				original := f.service.config.Transport
 				checks := 0
-				path := "/api/v2/organizations/" + tenant.ID + "/projects/prj_runner/attachment-metadata/archives/" + string(lease.WorkItemID) + "/check"
+				path := "/api/v2/organizations/" + tenant.ID + "/projects/prj_runner/attachment-metadata/archives/" + string(lease.WorkItemID)
 				f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
 					next, err := original(organization)
-					return archiveValidationTransport{next: next, check: func(req *http.Request) error {
-						if armed && !ended && req.Method == http.MethodPost && req.URL.Path == path {
-							checks++
-							if checks == 2 {
-								return endLease()
+					return runtimeTransport(func(req *http.Request) (*http.Response, error) {
+						if armed && !ended && req.Method == http.MethodPost {
+							if tc.atReserve && req.URL.Path == path+"/check" {
+								checks++
+							}
+							if tc.rotation && req.URL.Path == path || tc.atReserve && checks == 2 {
+								if err := endLease(); err != nil {
+									return nil, err
+								}
 							}
 						}
-						return nil
-					}}, err
+						response, err := next.RoundTrip(req)
+						if tc.lostRefusal && armed && req.Method == http.MethodPost && req.URL.Path == path && err == nil && response.StatusCode == http.StatusConflict {
+							_ = response.Body.Close()
+							return nil, io.ErrUnexpectedEOF
+						}
+						return response, err
+					}), err
 				}
 			}
 			cfg := store.Config()
@@ -144,13 +171,35 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				}
 				return used
 			}
+			published := []string{retained.Key}
+			if tc.rotation {
+				first := upload(0, lease.WorkItemID, "interrupted", true)
+				hubfixture.RequireStatus(t, first, http.StatusCreated)
+				var ref attachment.ArchiveReference
+				if err := json.Unmarshal(first.Body.Bytes(), &ref); err != nil {
+					t.Fatal(err)
+				}
+				published = append(published, ref.Key)
+				binding, err := f.service.currentArchiveBinding(t.Context(), tenant.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				next, err := f.service.saveArchiveBinding(t.Context(), binding, binding.Revision)
+				if err != nil || next.ID == binding.ID {
+					t.Fatalf("rotate hosted binding: %v", err)
+				}
+			}
 			before := usage()
 			armed = true
 			rejected := upload(0, lease.WorkItemID, "interrupted", true)
 			if !ended {
 				t.Fatalf("upload did not reach the lease-loss boundary: %d %s", rejected.Code, rejected.Body.String())
 			}
-			hubfixture.RequireCode(t, rejected, http.StatusConflict, "stale_fencing_token")
+			if tc.lostRefusal {
+				hubfixture.RequireStatus(t, rejected, http.StatusBadGateway)
+			} else {
+				hubfixture.RequireCode(t, rejected, http.StatusConflict, "stale_fencing_token")
+			}
 			hubfixture.RequireCode(t, upload(0, lease.WorkItemID, "retry", true), http.StatusConflict, "stale_fencing_token")
 			if response := upload(0, lease.WorkItemID, "missing-fence", false); response.Code < 400 || response.Code >= 500 {
 				t.Fatalf("worker upload without a fence = %d %s", response.Code, response.Body.String())
@@ -160,20 +209,56 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 			if tc.atReserve {
 				wantPuts = 1
 			}
+			if tc.rotation {
+				wantPuts = 3
+			}
 			if puts != wantPuts {
 				t.Errorf("object PUTs = %d, want %d", puts, wantPuts)
 			}
-			if got := usage(); got != before {
-				t.Errorf("rejected uploads changed quota usage from %d to %d", before, got)
+			if got := usage(); tc.atReserve && got != before || !tc.atReserve && got <= before {
+				t.Errorf("quota before object deletion = %d, initial quota = %d", got, before)
+			}
+			organization, err := f.service.readyOrganization(t.Context(), tenant.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+				t.Fatal(err)
+			}
+			if got := usage(); !tc.atReserve && got <= before {
+				t.Errorf("quota refunded before pending writes drained: %d", got)
+			}
+			advance.Store(int64(2 * time.Minute))
+			if tc.deleteFails {
+				if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err == nil {
+					t.Error("deletion failure was not reported")
+				}
+				if got := usage(); got <= before {
+					t.Errorf("failed deletion refunded quota to %d", got)
+				}
+				failDelete = false
+			}
+			for range 2 {
+				if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+					t.Fatal(err)
+				}
+				if got := usage(); got != before {
+					t.Errorf("quota after object deletion = %d, want %d", got, before)
+				}
 			}
 			var links int
-			if err := tenant.Database.QueryRowContext(t.Context(), `SELECT count(*) FROM attachment_archive_references WHERE organization_id=$1 AND project_id='prj_runner'`, org).Scan(&links); err != nil || links != 1 {
+			if err := tenant.Database.QueryRowContext(t.Context(), `SELECT count(*) FROM attachment_archive_references WHERE organization_id=$1 AND project_id='prj_runner'`, org).Scan(&links); err != nil || links != len(published) {
 				t.Errorf("archive links = %d, error = %v", links, err)
 			}
 			store.Mu.Lock()
 			defer store.Mu.Unlock()
-			if _, ok := store.Objects[retained.Key]; !ok || len(store.Objects) != 1 {
-				t.Errorf("accepted archive present = %t, stored objects = %d", ok, len(store.Objects))
+			for _, key := range published {
+				if _, ok := store.Objects[key]; !ok {
+					t.Error("a published archive was deleted")
+				}
+			}
+			if len(store.Objects) != len(published) {
+				t.Errorf("stored objects = %d, want %d", len(store.Objects), len(published))
 			}
 		})
 	}

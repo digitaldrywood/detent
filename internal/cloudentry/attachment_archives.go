@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/labstack/echo/v4"
 
@@ -56,12 +55,6 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err != nil {
 		return attachmentUploadError(c, err)
 	}
-	if check.Fence != nil {
-		ref.Key, err = check.Fence.Key(organization.ID, c.Param("project"), c.Param("item"), ref.SHA256)
-		if err != nil {
-			return attachmentUploadError(c, err)
-		}
-	}
 	unlock := s.attachmentLocks.lock(organization.ID, false)
 	defer unlock()
 	current, err := s.readyOrganization(c.Request().Context(), organization.ID)
@@ -73,6 +66,17 @@ func (s *Service) uploadArchive(c echo.Context) error {
 		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	ref.BindingID, ref.CustomerOwned = binding.ID, binding.Backend == "s3"
+	ctx := c.Request().Context()
+	if check.Fence != nil {
+		ref.Key, err = check.Fence.Key(organization.ID, c.Param("project"), c.Param("item"), ref.BindingID, ref.SHA256)
+		if err != nil {
+			return attachmentUploadError(c, err)
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, attachment.ArchiveUploadTimeout)
+		defer cancel()
+		c.SetRequest(c.Request().WithContext(ctx))
+	}
 	storage, err := s.bindingStorage(c.Request().Context(), binding)
 	if err != nil {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
@@ -82,7 +86,6 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
-	ctx := c.Request().Context()
 	if err := s.auth.audit(ctx, authorized.Principal, organization.ID, "archive_uploaded"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Archive audit is unavailable")
 	}
@@ -91,14 +94,6 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	}
 	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix, attachment.ArchivePublication{ArchiveReference: ref, Fence: check.Fence})
 	if err != nil || status != http.StatusCreated {
-		if err == nil && status == http.StatusConflict && check.Fence != nil {
-			var refusal struct {
-				Details map[string]bool `json:"details"`
-			}
-			if json.Unmarshal(raw, &refusal) == nil && refusal.Details[attachment.ArchiveDiscardObject] {
-				s.discardArchive(ctx, storage, organization.ID, authorized.Principal, ref.Key)
-			}
-		}
 		return attachmentCallError(c, status, raw, err, false)
 	}
 	var stored attachment.ArchiveReference
@@ -106,18 +101,6 @@ func (s *Service) uploadArchive(c echo.Context) error {
 		return attachmentError(c, http.StatusBadGateway, "tenant_unavailable", "Archive reference is invalid")
 	}
 	return c.JSON(http.StatusCreated, stored)
-}
-
-func (s *Service) discardArchive(ctx context.Context, storage attachment.ArchiveStorage, organization, principal, key string) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-	defer cancel()
-	err := s.auth.audit(cleanup, principal, organization, "attachment_deleted")
-	if err == nil {
-		err = storage.Delete(cleanup, key)
-	}
-	if err != nil {
-		s.config.Logger.WarnContext(cleanup, "rejected archive cleanup failed", "organization", organization)
-	}
 }
 
 func (s *Service) readArchive(c echo.Context) error {
