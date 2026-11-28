@@ -430,6 +430,9 @@ func TestArchiveRoutesLifecycle(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
 	f := newSeparateDatabaseEntryFixture(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := f.service.closeAllocator(); err != nil {
+		t.Fatal(err)
+	}
 	store := newSpacesFixture(t, false)
 	storageConfig := store.Config()
 	storageConfig.Endpoint = "https://objects.example.test"

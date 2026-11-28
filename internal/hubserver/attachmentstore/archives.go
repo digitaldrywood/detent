@@ -39,6 +39,7 @@ type ArchiveWriter interface {
 	ArchiveReader
 	PrepareAttachmentArchive(context.Context, ArchiveRecord) (bool, error)
 	PublishAttachmentArchive(context.Context, ArchiveRecord, tracker.NativeWorkItemID) error
+	DiscardAttachmentArchive(context.Context, ArchiveRecord, tracker.NativeWorkItemID) (bool, error)
 }
 
 type StorageArchiveCursor struct {

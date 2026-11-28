@@ -75,6 +75,7 @@ type AttachmentArchiveHTTPDeps struct {
 	ReadWorkItem          func(context.Context, hubscope.NativeScope, string) (corestore.WorkItem, eventstore.CollaborationVersion, error)
 	RequireReporterTriage func(hubscope.NativeScope, tracker.NativeIssue) error
 	WriteAuthority        func(context.Context, tenantstore.Writer, hubscope.NativeScope, *attachment.EvidenceRequest) (corestore.WorkItem, error)
+	AuthorizeFence        func(context.Context, tenantstore.Writer, hubscope.NativeScope, corestore.WorkItem, tracker.Mutation) error
 	QuotaLimit            func(context.Context, tenantstore.Reader) (int64, error)
 	ReadConversation      func(context.Context, hubscope.NativeScope, string) (ConversationRecord, error)
 	Authorize             func(context.Context, accessstore.Reader, hubscope.NativeScope, bool) error

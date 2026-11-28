@@ -34,8 +34,7 @@ func (q ObjectLookup) Valid(organization string) bool {
 		return false
 	}
 	for _, key := range keys {
-		expected, err := ArchiveKey(organization, key[strings.LastIndex(key, "/")+1:])
-		if err != nil || expected != key {
+		if !validArchiveBlobKey(organization, key, key[strings.LastIndex(key, "/")+1:]) {
 			return false
 		}
 	}
@@ -85,11 +84,23 @@ func ArchiveKey(organization, digest string) (string, error) {
 }
 
 func (r ArchiveReference) Validate(organization string) error {
-	key, err := ArchiveKey(organization, r.SHA256)
-	if (r.BindingID != "" && !validOrganization(r.BindingID)) || (r.CustomerOwned && r.BindingID == "") || err != nil || (key != r.Key && !validIssueArchiveKey(organization, r)) || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
+	if (r.BindingID != "" && !validOrganization(r.BindingID)) || (r.CustomerOwned && r.BindingID == "") || (!validArchiveBlobKey(organization, r.Key, r.SHA256) && !validIssueArchiveKey(organization, r)) || r.CompressedSize <= 0 || r.CompressedSize > MaxArchiveBytes || r.UncompressedSize <= 0 || r.UncompressedSize > MaxArchiveBytes || r.Codec != "gzip" || r.SchemaVersion < 1 || r.Kind != "archive" || r.Retention != ArchiveRetention {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func validArchiveBlobKey(organization, key, digest string) bool {
+	plain, err := ArchiveKey(organization, digest)
+	if err != nil {
+		return false
+	}
+	if key == plain {
+		return true
+	}
+	remainder, ok := strings.CutPrefix(key, strings.TrimSuffix(plain, digest))
+	binding, storedDigest, separated := strings.Cut(remainder, "/")
+	return ok && separated && storedDigest == digest && artifact.ValidHash(binding, 64)
 }
 
 func IssueArchiveKey(organization, project, issue string, revision int64, digest string) (string, error) {
@@ -183,6 +194,9 @@ func StoreArchive(ctx context.Context, storage ArchiveStorage, organization stri
 		return nil
 	}
 	if err := storage.PutArchive(ctx, ref, data); err != nil {
+		if ref.ExecutionScoped(organization) && archiveStored(ctx, storage, ref) {
+			return nil
+		}
 		return artifact.ErrStorage
 	}
 	if !archiveStored(ctx, storage, ref) {

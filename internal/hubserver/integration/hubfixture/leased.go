@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -116,8 +117,13 @@ func (f LeasedRunners) Client(t *testing.T, index int) (*api.NativeClient, conte
 
 func SeedLeasedRunners(t *testing.T, h *Hub, organization tracker.OrganizationID, customize ...func(*policy.Descriptor)) LeasedRunners {
 	t.Helper()
+	return SeedLeasedRunnersThrough(t, h, organization, h.Handler(), customize...)
+}
+
+func SeedLeasedRunnersThrough(t *testing.T, h *Hub, organization tracker.OrganizationID, handler http.Handler, customize ...func(*policy.Descriptor)) LeasedRunners {
+	t.Helper()
 	var err error
-	f := LeasedRunners{Organization: organization, Admin: h.Admin, Hub: h, Server: httptest.NewServer(h.Handler())}
+	f := LeasedRunners{Organization: organization, Admin: h.Admin, Hub: h, Server: httptest.NewServer(handler)}
 	t.Cleanup(f.Server.Close)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	expires := now.Add(time.Hour)
@@ -133,7 +139,11 @@ func SeedLeasedRunners(t *testing.T, h *Hub, organization tracker.OrganizationID
 	f.Policy.ProjectID = "prj_runner"
 	f.Policy.ApprovedAt, f.Policy.ApprovedBy = now, "test_hub_admin"
 	err = h.Repository.WriteTenant(t.Context(), organization, corestore.Serving, func(w tenantstore.Writer) error {
-		if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
+		if _, err := w.HubIdentity(t.Context()); errors.Is(err, corestore.ErrNotFound) {
+			if err := w.CreateHubIdentity(t.Context(), accessstore.HubIdentity{OrganizationID: organization, ID: "hub_" + strings.Repeat("a", 32), CursorKey: bytes.Repeat([]byte{0x5a}, 32)}); err != nil {
+				return err
+			}
+		} else if err != nil {
 			return err
 		}
 		if _, err := w.CreateProjectRecord(t.Context(), projectstore.Record{Core: corestore.Project{OrganizationID: organization, ID: "prj_runner", Name: "Example", Profile: "native"}, States: States()}); err != nil {
@@ -210,7 +220,7 @@ func SeedLeasedRunners(t *testing.T, h *Hub, organization tracker.OrganizationID
 		f.Data = append(f.Data, data)
 		event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "start_" + data.AttemptID}, Type: "run.started", SchemaVersion: 1, Data: data}
 		path := "/api/v2/organizations/" + string(organization) + "/projects/prj_runner/work-items/" + string(lease.WorkItemID) + "/events"
-		RequireStatus(t, h.Request(t, http.MethodPost, path, f.Tokens[index], event), http.StatusOK)
+		RequireStatus(t, Request(t, handler, http.MethodPost, path, f.Tokens[index], event), http.StatusOK)
 	}
 	return f
 }

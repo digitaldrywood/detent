@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -228,6 +229,8 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	}
 	var stored attachment.ArchiveReference
 	headers := http.Header{"X-Detent-Archive-Schema": {"1"}, "Content-Type": {"application/json"}}
+	headers.Set(attachment.ArchiveLeaseHeader, string(request.LeaseID))
+	headers.Set(attachment.ArchiveFenceHeader, strconv.FormatInt(int64(request.FencingToken), 10))
 	uploadCtx := ctx
 	if authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok {
 		uploadCtx = authority.fenceRequest(ctx)
