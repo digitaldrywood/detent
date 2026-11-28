@@ -306,17 +306,22 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 }
 
 func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
-	for _, scenario := range []string{"stalled", "unavailable"} {
+	for _, scenario := range []string{"stalled", "unavailable", "overlapping checkpoints"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
 				descriptor := clientTestPolicy()
 				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
 				checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
+				second := checkpoint
+				second.HeadSHA = nativeChangeFixtureHead("d")
+				offline := scenario == "overlapping checkpoints"
 				var attempts []tracker.AttemptDiffRequest
-				var stored bool
+				stored := make(map[int64]tracker.AttemptDiffRequest)
 				events := 0
 				var published tracker.NativeRunEvent
+				var publishedCheckpoints []tracker.NativeRunEvent
+				var completion *tracker.NativeRunEvent
 				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
 					switch {
@@ -328,6 +333,9 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 							return nil, err
 						}
 						attempts = append(attempts, diff)
+						if offline {
+							return nil, io.ErrUnexpectedEOF
+						}
 						if len(attempts) == 1 {
 							if scenario == "stalled" {
 								<-request.Context().Done()
@@ -335,18 +343,32 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 							}
 							return nil, io.ErrUnexpectedEOF
 						}
-						stored = true
+						stored[diff.Generation.Seq] = diff
 						io.WriteString(response, "{}")
 					case strings.HasSuffix(request.URL.Path, "/events"):
 						events++
-						if !stored {
-							t.Error("checkpoint event reached the Hub before its diff")
-						}
 						if err := request.Context().Err(); err != nil {
 							return nil, err
 						}
+						published = tracker.NativeRunEvent{}
 						if err := json.NewDecoder(request.Body).Decode(&published); err != nil {
 							t.Fatal(err)
+						}
+						diff, exists := stored[published.Data.Sequence]
+						if !exists || published.Data.Handoff != nil && published.Data.Handoff.HeadSHA != diff.HeadSHA {
+							t.Errorf("event %s sequence %d reached the Hub before its matching diff", published.Type, published.Data.Sequence)
+						}
+						if published.Type == "run.checkpointed" {
+							publishedCheckpoints = append(publishedCheckpoints, published)
+						}
+						if published.Type == "run.finished" {
+							if completion == nil {
+								completion = new(published)
+								return nil, io.ErrUnexpectedEOF
+							}
+							if !reflect.DeepEqual(*completion, published) {
+								t.Errorf("terminal replay changed the applied completion: %+v", published)
+							}
 						}
 						response.WriteHeader(http.StatusNoContent)
 					default:
@@ -370,7 +392,22 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
 				execution.data.Sequence = 1
-				execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+				if offline {
+					execution.data.Identity.Role = "triage"
+				}
+				liveHead := checkpoint.HeadSHA
+				execution.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+					if liveHead == "" {
+						return tracker.AttemptDiffRequest{}, false
+					}
+					file := "README.md"
+					if liveHead == second.HeadSHA {
+						file = "other.go"
+					}
+					diff, ok := nativeChangeDiff(liveHead, file)(ctx)
+					diff.CommitBound = true
+					return diff, ok
+				})
 				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 				defer cancel()
 				if err := execution.Checkpoint(ctx, checkpoint); err != nil {
@@ -382,11 +419,43 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				if scenario == "stalled" && time.Since(start) != checkpointDiffTimeout {
 					t.Fatalf("stalled checkpoint took %v, want %v", time.Since(start), checkpointDiffTimeout)
 				}
+				if offline {
+					liveHead = second.HeadSHA
+					if err := execution.Checkpoint(ctx, second); err != nil {
+						t.Fatal(err)
+					}
+					if events != 0 {
+						t.Fatalf("published %d events during the outage", events)
+					}
+					liveHead, offline = "", false
+					if err := execution.Finish(ctx, "succeeded"); !api.NativePublicationUnavailable(err) {
+						t.Errorf("first completion should lose its acknowledgement: %v", err)
+					}
+					if err := execution.Finish(ctx, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if err := execution.Finish(ctx, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if len(publishedCheckpoints) != 2 || publishedCheckpoints[0].Data.Sequence != 2 || publishedCheckpoints[0].Data.Handoff == nil || *publishedCheckpoints[0].Data.Handoff != checkpoint ||
+						publishedCheckpoints[1].Data.Sequence != 3 || publishedCheckpoints[1].Data.Handoff == nil || *publishedCheckpoints[1].Data.Handoff != second ||
+						stored[2].HeadSHA != checkpoint.HeadSHA || stored[3].HeadSHA != second.HeadSHA || stored[4].HeadSHA != second.HeadSHA ||
+						completion == nil || completion.Data.Outcome != "succeeded" || completion.Data.Sequence != 4 || events != 4 {
+						t.Errorf("checkpoints=%+v, heads by sequence=%q/%q/%q, completion=%+v, requests=%d", publishedCheckpoints, stored[2].HeadSHA, stored[3].HeadSHA, stored[4].HeadSHA, completion, events)
+					}
+					for _, sequence := range []int64{3, 4} {
+						files := stored[sequence].Files
+						if len(files) != 1 || files[0].Path != "other.go" {
+							t.Errorf("sequence %d stored files %+v, want other.go", sequence, files)
+						}
+					}
+					return
+				}
 				execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("d"), "other.go"))
 				if err := execution.FlushRuntime(ctx); err != nil {
 					t.Fatal(err)
 				}
-				if !stored || events != 1 || len(attempts) != 2 || !reflect.DeepEqual(attempts[0], attempts[1]) || attempts[1].HeadSHA != checkpoint.HeadSHA ||
+				if len(stored) != 1 || events != 1 || len(attempts) != 2 || !reflect.DeepEqual(attempts[0], attempts[1]) || attempts[1].HeadSHA != checkpoint.HeadSHA ||
 					attempts[1].Generation.Seq != 2 || published.Type != "run.checkpointed" || published.Data.Sequence != 2 ||
 					published.Data.Handoff == nil || *published.Data.Handoff != checkpoint {
 					t.Fatalf("recovered checkpoint = %s %+v, diff attempts = %+v", published.Type, published.Data.Handoff, attempts)
