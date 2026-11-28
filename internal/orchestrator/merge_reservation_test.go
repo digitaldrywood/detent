@@ -778,22 +778,22 @@ type mergeTrainConnector struct {
 	pending map[string]int
 }
 
-func (c *mergeTrainConnector) MergePullRequest(ctx context.Context, repository string, number int, headSHA, method string) error {
+func (c *mergeTrainConnector) MergePullRequestToBase(ctx context.Context, target connector.PullRequestMergeTarget, method string) error {
 	for _, issue := range c.stateIssues {
-		if pullRequestNumber(issue) != number {
+		if pullRequestNumber(issue) != target.Number {
 			continue
 		}
-		if issue.PullRequest.HeadSHA != headSHA || !mergeWorkerCIGreen(issue.PullRequest.CIStatus) || len(issue.PullRequest.RequiredCheckFailures) > 0 {
+		if issue.PullRequest.HeadSHA != target.HeadSHA || !mergeWorkerCIGreen(issue.PullRequest.CIStatus) || len(issue.PullRequest.RequiredCheckFailures) > 0 {
 			return errors.New("unsafe merge attempted")
 		}
 		if c.strict && issue.PullRequest.BaseSHA != c.base {
 			return connector.ErrPullRequestBaseOutOfDate
 		}
-		if err := c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, headSHA, method); err != nil {
+		if err := c.autoPromoteTickMergeConnector.MergePullRequestToBase(ctx, target, method); err != nil {
 			return err
 		}
-		c.merged = append(c.merged, number)
-		c.base = fmt.Sprintf("merged-%d", number)
+		c.merged = append(c.merged, target.Number)
+		c.base = fmt.Sprintf("merged-%d", target.Number)
 		return nil
 	}
 	return errors.New("pull request missing")

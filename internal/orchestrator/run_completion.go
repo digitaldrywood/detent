@@ -1016,7 +1016,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
 		return true
 	}
-	if revisionBound && mergeWorkerIssue(refreshedIssue) && pullRequestMerged(refreshedIssue.PullRequest) {
+	if revisionBound && (mergeWorkerIssue(refreshedIssue) || normalizeState(refreshedIssue.State) == normalizeState(doneStateName(o.cfg.TerminalStates))) && pullRequestMerged(refreshedIssue.PullRequest) {
 		if !sameMergeRevision(event.Request.Issue, refreshedIssue) {
 			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, refreshedIssue)
 			return true
@@ -1171,21 +1171,16 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 	}
-	merger, ok := o.connector.(connector.PullRequestMerger)
-	if !ok {
-		return false
-	}
-	repository := pullRequestRepository(issue)
-	number := pullRequestNumber(issue)
-	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
 	if ctx.Err() != nil || running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
-	if !o.dispatchPlanner().allowsDirectPullRequestMerge() || running.WorkAttemptID != 0 || event.Request.WorkAttemptID != 0 {
-		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "leased_landing_requires_native_change", errors.New("leased landing requires a native Change"))
+	merger, supported := o.connector.(connector.PullRequestMerger)
+	target, valid := pullRequestMergeTarget(issue)
+	if !supported || !valid || !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "native_landing_required", errors.New(nativeMergeRequired))
 		return true
 	}
-	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
+	if err := merger.MergePullRequestToBase(ctx, target, o.cfg.MergeMethod); err != nil {
 		if ctx.Err() != nil {
 			return true
 		}
@@ -1230,14 +1225,20 @@ func (o *Orchestrator) finishProgrammaticMergeWorkerResult(ctx context.Context, 
 	issueID := strings.TrimSpace(event.IssueID)
 	targetState := doneStateName(o.cfg.TerminalStates)
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
-	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
-		if running.mergeRevisionBound() {
-			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-		} else {
-			running.Issue = mergedIssue
-			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+	if normalizeState(issue.State) != normalizeState(targetState) {
+		if !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
+			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "native_landing_required", errors.New(nativeMergeRequired))
+			return true
 		}
-		return true
+		if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
+			if running.mergeRevisionBound() {
+				o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			} else {
+				running.Issue = mergedIssue
+				o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+			}
+			return true
+		}
 	}
 
 	updatedAt := deliveredAt
@@ -2281,7 +2282,8 @@ func (o *Orchestrator) completeTerminalRunning(
 	issue := running.Issue
 	mergeDone := running.mergeRevisionBound() && pullRequestMerged(issue.PullRequest) &&
 		normalizeState(issue.State) == normalizeState(doneStateName(o.cfg.TerminalStates))
-	if !mergeDone {
+	legacyMerge := !o.nativeWorkflow() && (running.mergeRevisionBound() || mergeWorkerIssue(issue))
+	if !mergeDone && (!legacyMerge || o.allowsLegacyMergeLaneWrite(running, 0)) {
 		issue = o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, issue, completedAt)
 	}
 	finalState := strings.TrimSpace(issue.State)

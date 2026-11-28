@@ -156,6 +156,7 @@ func mergingSecurityAuditFixture() (*Orchestrator, *mergingSecurityAuditConnecto
 	issue.PullRequest.State = "OPEN"
 	issue.PullRequest.CIStatus = "success"
 	issue.PullRequest.MergeableState = "clean"
+	issue.PullRequest.BaseRef = "main"
 	issue.PullRequest.URL = "https://github.test/digitaldrywood/detent/pull/2006"
 	tracker := &mergingSecurityAuditConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
 	o.connector = tracker

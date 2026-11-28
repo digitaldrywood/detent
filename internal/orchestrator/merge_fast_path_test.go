@@ -45,6 +45,7 @@ func TestMergingFastPathCurrentReadyPreservesCheckedHead(t *testing.T) {
 		MergeableState: "clean",
 		CIStatus:       "success",
 		HeadSHA:        "head-fast-path",
+		BaseRef:        "main",
 	})
 	issue.State = "Merging"
 	issue.Identifier = "digitaldrywood/detent#860"
@@ -1053,6 +1054,7 @@ func TestMergeWorkerCurrentHeadCIRetryBound(t *testing.T) {
 				MergeableState:        tt.mergeable,
 				CIStatus:              tt.ciStatus,
 				HeadSHA:               "29869e149edf099f34e92136199c5ee45056fddf",
+				BaseRef:               "main",
 				RunningChecks:         append([]string(nil), tt.runningChecks...),
 				RequiredCheckFailures: append([]connector.PullRequestCheck(nil), tt.failures...),
 			})

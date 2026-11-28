@@ -28,6 +28,11 @@ func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
 	planner.nativeWorkflow = o.nativeWorkflow()
 	planner.boundedAdmission = o.scheduling != nil
 	planner.durableWorkAttempts = o.workAttempts != nil
+	_, headOnly := o.connector.(interface {
+		MergePullRequest(context.Context, string, int, string, string) error
+	})
+	_, targetBound := o.connector.(connector.PullRequestMerger)
+	planner.headOnlyMerge = headOnly && !targetBound
 	return planner
 }
 
@@ -630,7 +635,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
 	}
 	if planner := o.dispatchPlanner(); !planner.nativeWorkflow && mergeWorkerIssue(issue) && mergeWorkerProgrammaticMergeReady(issue, o.cfg) && !planner.allowsDirectPullRequestMerge() {
-		return dispatchIssueOutcome{reason: dispatchSkipAwaitingGate, waitReason: "leased landing requires a native Change"}
+		return dispatchIssueOutcome{reason: dispatchSkipAwaitingGate, waitReason: nativeMergeRequired}
 	}
 	if !o.localIntakeAllows(state, issue) {
 		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}

@@ -169,7 +169,15 @@ type PullRequestCommenter interface {
 }
 
 type PullRequestMerger interface {
-	MergePullRequest(context.Context, string, int, string, string) error
+	MergePullRequestToBase(context.Context, PullRequestMergeTarget, string) error
+}
+
+type PullRequestMergeTarget struct {
+	Repository     string
+	Number         int
+	HeadSHA        string
+	BaseRepository string
+	BaseRef        string
 }
 
 type PullRequestMergeQueue interface {

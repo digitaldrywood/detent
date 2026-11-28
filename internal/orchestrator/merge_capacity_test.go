@@ -88,6 +88,7 @@ func TestMergeControlCompletion(t *testing.T) {
 		wait           time.Duration
 		cancel         bool
 		laneRetry      bool
+		receiptRetry   bool
 		lostResponse   bool
 		staleTracker   bool
 		attemptTTL     time.Duration
@@ -98,7 +99,7 @@ func TestMergeControlCompletion(t *testing.T) {
 		{name: "lane write retried after merge", wait: 11 * time.Second, laneRetry: true, wantMerge: true},
 		{name: "committed merge response lost", wait: 70 * time.Second, lostResponse: true, wantMerge: true},
 		{name: "committed merge visible only on forge refresh", wait: 70 * time.Second, lostResponse: true, staleTracker: true, wantMerge: true},
-		{name: "retained receipt lane write retried", wait: 11 * time.Second, laneRetry: true, attemptTTL: time.Minute, wantMerge: true},
+		{name: "retained receipt read retried", wait: 11 * time.Second, receiptRetry: true, attemptTTL: time.Minute, wantMerge: true},
 		{name: "caller canceled", wait: time.Second, cancel: true},
 		{name: "attempt expires during pre-merge read", wait: 2 * time.Minute, attemptTTL: time.Minute, heartbeatError: errors.New("attempt heartbeat unavailable")},
 		{name: "attempt retired before expiry", wait: 25 * time.Second, attemptTTL: time.Minute, heartbeatError: store.ErrNotFound},
@@ -129,6 +130,14 @@ func TestMergeControlCompletion(t *testing.T) {
 						autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{current}},
 					},
 					hideMergedInTracker: tt.staleTracker || durableReceipt,
+				}
+				if durableReceipt {
+					observed := cloneIssue(current)
+					observed.State = "Done"
+					tracker.hydratedIssues = []connector.Issue{observed}
+				}
+				if tt.receiptRetry {
+					tracker.hydrateErr = errors.New("temporary merge receipt read failure")
 				}
 				if tt.lostResponse {
 					tracker.mergeResponseError = io.ErrUnexpectedEOF
@@ -211,13 +220,14 @@ func TestMergeControlCompletion(t *testing.T) {
 				if tt.wantMerge && !durableReceipt {
 					wantMergeCalls = 1
 				}
-				if tt.laneRetry || tt.lostResponse {
+				if tt.laneRetry || tt.lostResponse || tt.receiptRetry {
 					retry, ok := state.Retry[issue.ID]
 					if !ok || !retry.CompletionDeferred || len(tracker.merges) != wantMergeCalls || tracker.stateIssues[0].State != "Merging" {
 						t.Fatal("completion retry did not retain the already-merged PR")
 					}
 					tracker.mu.Lock()
 					tracker.updateErr = nil
+					tracker.hydrateErr = nil
 					tracker.mu.Unlock()
 					if tt.lostResponse && len(tracker.updates) != 0 {
 						t.Fatalf("pending merge completion changed lanes: updates=%v", tracker.updates)
@@ -238,13 +248,16 @@ func TestMergeControlCompletion(t *testing.T) {
 				cancel()
 				<-managerDone
 				if tt.wantMerge {
-					if len(tracker.merges) != wantMergeCalls || tracker.stateIssues[0].State != "Done" || len(state.Completed) != 1 {
+					if len(tracker.merges) != wantMergeCalls || state.Completed[issue.ID].FinalState != "Done" || len(state.Completed) != 1 {
 						t.Fatalf("merges=%v lane=%s completed=%d, want Done and %d forge writes", tracker.merges, tracker.stateIssues[0].State, len(state.Completed), wantMergeCalls)
 					}
 					if tt.lostResponse && len(tracker.updates) != 1 {
 						t.Fatalf("lost response produced %d lane writes, want one", len(tracker.updates))
 					}
 					if durableReceipt {
+						if len(tracker.updates) != 0 {
+							t.Fatalf("observing Done wrote a lane: %v", tracker.updates)
+						}
 						settled, err := attempts.WorkAttempt(t.Context(), running.WorkAttemptID)
 						if err != nil || settled.TerminalState != store.WorkAttemptTerminalSuccess {
 							t.Fatalf("original attempt did not complete successfully: state=%s error=%v", settled.TerminalState, err)
@@ -443,6 +456,87 @@ func TestLeaseBoundCompletionCannotStartDirectForgeMerge(t *testing.T) {
 	})
 }
 
+func TestLegacyMergeRejectsUnfencedMutations(t *testing.T) {
+	for _, operation := range []string{"retargeted merge", "successor lane"} {
+		t.Run(operation, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				now := time.Now()
+				issue := readyMergeCapacityIssue("ready", 1)
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
+				started, release := make(chan struct{}), make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(release) })
+				defer unblock()
+				current := cloneIssue(issue)
+				if operation == "successor lane" {
+					current.PullRequest.State = "merged"
+				}
+				tracker := &unfencedMergeMutationConnector{current: current, started: started, release: release}
+				tracker.Connector = &autoPromoteTickConnector{stateIssues: []connector.Issue{current}}
+				orch := &Orchestrator{cfg: cfg, connector: tracker, now: time.Now}
+				state := newState(cfg)
+				running := Running{Issue: issue, Mode: runpkg.RunModeMerge, legacyDeferredMerge: true}
+				if operation == "successor lane" {
+					running.WorkAttemptID = 17
+					orch.heartbeats = newHeartbeatManager(cfg, tracker, nil, time.Now, nil)
+					orch.heartbeats.upsert(heartbeatTarget{
+						issueID: issue.ID, attemptDeadline: now.Add(time.Minute),
+						workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID},
+					})
+				}
+				event := runpkg.Completion{
+					IssueID: issue.ID, Request: runpkg.RunRequest{Issue: issue, WorkAttemptID: running.WorkAttemptID, Mode: runpkg.RunModeMerge},
+					CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+				}
+				done := make(chan bool, 1)
+				go func() { done <- orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) }()
+				synctest.Wait()
+				select {
+				case <-started:
+					<-time.After(time.Minute)
+					tracker.current.State = "In Progress"
+					tracker.current.PullRequest.BaseRef = "release"
+					unblock()
+					<-done
+					t.Fatalf("unfenced mutation reached the receiver: lane=%s merged base=%s", tracker.current.State, tracker.mergedBase)
+				default:
+				}
+				if !<-done || len(state.Completed) != 0 {
+					t.Fatalf("unfenced result was not refused: completed=%v", state.Completed)
+				}
+			})
+		})
+	}
+}
+
+type unfencedMergeMutationConnector struct {
+	connector.Connector
+	current    connector.Issue
+	started    chan struct{}
+	release    chan struct{}
+	mergedBase string
+}
+
+func (c *unfencedMergeMutationConnector) HydratePullRequest(context.Context, connector.Issue) (connector.Issue, error) {
+	return cloneIssue(c.current), nil
+}
+
+func (c *unfencedMergeMutationConnector) MergePullRequest(context.Context, string, int, string, string) error {
+	close(c.started)
+	<-c.release
+	c.mergedBase = c.current.PullRequest.BaseRef
+	c.current.PullRequest.State = "merged"
+	return nil
+}
+
+func (c *unfencedMergeMutationConnector) UpdateIssueState(_ context.Context, _ string, state string) error {
+	if c.mergedBase == "" {
+		close(c.started)
+		<-c.release
+	}
+	c.current.State = state
+	return nil
+}
+
 func TestTrackerCompletionCannotWriteAcrossClaimHandoff(t *testing.T) {
 	for _, operation := range []string{"merge", "release"} {
 		t.Run(operation, func(t *testing.T) {
@@ -536,13 +630,13 @@ func (c *mergeControlClaimConnector) SetField(ctx context.Context, id, field, va
 	return c.autoPromoteTickMergeConnector.SetField(ctx, id, field, value)
 }
 
-func (c *mergeControlClaimConnector) MergePullRequest(ctx context.Context, repository string, number int, head, method string) error {
+func (c *mergeControlClaimConnector) MergePullRequestToBase(ctx context.Context, target connector.PullRequestMergeTarget, method string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.beforeWrite != nil {
 		c.beforeWrite()
 	}
-	if err := c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method); err != nil {
+	if err := c.autoPromoteTickMergeConnector.MergePullRequestToBase(ctx, target, method); err != nil {
 		return err
 	}
 	return c.mergeResponseError
@@ -851,14 +945,14 @@ type contextCheckedMergeConnector struct {
 	*autoPromoteTickMergeConnector
 }
 
-func (c *contextCheckedMergeConnector) MergePullRequest(ctx context.Context, repository string, number int, head, method string) error {
+func (c *contextCheckedMergeConnector) MergePullRequestToBase(ctx context.Context, target connector.PullRequestMergeTarget, method string) error {
 	c.workerLimit.Expire()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(40 * time.Second):
 	}
-	return c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method)
+	return c.autoPromoteTickMergeConnector.MergePullRequestToBase(ctx, target, method)
 }
 
 func TestReadyMergeControlBoundsIndependentRepositories(t *testing.T) {

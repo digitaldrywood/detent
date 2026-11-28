@@ -462,6 +462,29 @@ func (c *Connector) MergePullRequest(_ context.Context, repository string, numbe
 	return nil
 }
 
+func (c *Connector) MergePullRequestToBase(_ context.Context, target connector.PullRequestMergeTarget, _ string) error {
+	merged := false
+	c.applyPullRequest(target.Repository, target.Number, func(issue *connector.Issue, now time.Time) {
+		pr := issue.PullRequest
+		baseRepository := pr.BaseRepository
+		if baseRepository == "" {
+			baseRepository = fakehubPullRequestRepository(*issue)
+		}
+		if pr.HeadSHA != target.HeadSHA || !strings.EqualFold(baseRepository, target.BaseRepository) || pr.BaseRef != target.BaseRef || target.BaseRef == "" {
+			return
+		}
+		pr.State = "MERGED"
+		pr.ActivityAt = &now
+		issue.UpdatedAt = &now
+		merged = true
+	})
+	if !merged {
+		return connector.ErrPullRequestMergeRejected
+	}
+	c.send(Event{Kind: EventKindPullRequestMerge, Repository: target.Repository, PRNumber: target.Number, Body: target.HeadSHA})
+	return nil
+}
+
 func (c *Connector) FetchIssueEvents(_ context.Context, issue connector.Issue) ([]connector.IssueEvent, error) {
 	c.eventMu.RLock()
 	defer c.eventMu.RUnlock()

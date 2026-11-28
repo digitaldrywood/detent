@@ -26,6 +26,7 @@ type dispatchPlanner struct {
 	nativeWorkflow       bool
 	boundedAdmission     bool
 	durableWorkAttempts  bool
+	headOnlyMerge        bool
 	workerHostAvailable  func(string) bool
 	operatorRejectedHead func(connector.Issue) (bool, error)
 	recordedBlockers     func(connector.Issue, *State, time.Time) (recordedBlockerEvaluation, error)
@@ -764,7 +765,7 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipTerminalState}
 	}
 	if !p.nativeWorkflow && mergeWorkerIssue(issue) && mergeWorkerProgrammaticMergeReady(issue, p.cfg) && !p.allowsDirectPullRequestMerge() {
-		return dispatchableDecision{reason: dispatchSkipAwaitingGate, detail: "leased landing requires a native Change"}
+		return dispatchableDecision{reason: dispatchSkipAwaitingGate, detail: nativeMergeRequired}
 	}
 	if activeTrackerUnavailable(state) && trackerDependentDispatch(issue) {
 		return dispatchableDecision{reason: dispatchSkipTrackerUnavailable}

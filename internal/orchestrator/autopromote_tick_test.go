@@ -3987,6 +3987,7 @@ func TestTickDraftPullRequestDoesNotBlockReadyPeerMerge(t *testing.T) {
 		MergeableState: "clean",
 		CIStatus:       "success",
 		HeadSHA:        "ready-head",
+		BaseRef:        "main",
 	})
 	ready.Identifier = "digitaldrywood/video-studio#50"
 	cfg := normalizeConfig(Config{
@@ -5379,20 +5380,14 @@ func TestHandleRunResultRecordsObservedMergeDeliveryTime(t *testing.T) {
 				cfg:             cfg,
 				now:             func() time.Time { return clock },
 				workflowMetrics: backend,
-				workAttempts:    backend,
 				efficiency:      receipts,
 				connector:       tracker,
 				logger:          slog.New(slog.NewTextHandler(&logs, nil)),
 			}
 			state := newState(cfg)
 			state.MergeTimings[issue.ID] = MergeTiming{EnteredMergingAt: now.Add(-time.Minute), MergeStartedAt: now.Add(-time.Minute)}
-			attemptID, err := backend.StartWorkAttempt(t.Context(), store.WorkAttemptStart{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID, WorkerType: "codex", Lane: "Merging", AttemptNumber: 1, StartedAt: now.Add(-time.Minute), LeaseExpiresAt: now.Add(time.Hour)})
-			if err != nil {
-				t.Fatal(err)
-			}
 			state.Running[issue.ID] = Running{
 				legacyDeferredMerge: true,
-				WorkAttemptID:       attemptID,
 				Issue:               cloneIssue(issue),
 				Attempt:             1,
 				StartedAt:           now.Add(-time.Minute),
@@ -5408,7 +5403,7 @@ func TestHandleRunResultRecordsObservedMergeDeliveryTime(t *testing.T) {
 			orch.handleRunResult(context.Background(), &state, runpkg.Completion{
 				IssueID:     issue.ID,
 				CompletedAt: now,
-				Request:     runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeMerge, WorkAttemptID: attemptID},
+				Request:     runpkg.RunRequest{Issue: issue, Mode: runpkg.RunModeMerge},
 				Result: runpkg.RunResult{
 					FinalState: runpkg.FinalStateCompleted,
 					Output:     "validated current-head CI and updated the Workpad",
@@ -5456,10 +5451,6 @@ func TestHandleRunResultRecordsObservedMergeDeliveryTime(t *testing.T) {
 				t.Fatalf("logs %q contain terminal_state_missing", logs.String())
 			}
 
-			attempt, err := backend.WorkAttempt(t.Context(), attemptID)
-			if err != nil || !attempt.CompletedAt.Equal(now) {
-				t.Fatalf("worker completed=%s err=%v, want %s", attempt.CompletedAt, err, now)
-			}
 			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: defaultWorkflowMetricsProjectID, IssueID: issue.ID})
 			if err != nil {
 				t.Fatal(err)
@@ -6201,6 +6192,20 @@ func (c *autoPromoteTickMergeConnector) MergePullRequest(_ context.Context, repo
 		return nil
 	}
 	return nil
+}
+
+func (c *autoPromoteTickMergeConnector) MergePullRequestToBase(ctx context.Context, target connector.PullRequestMergeTarget, method string) error {
+	for _, issue := range c.stateIssues {
+		current, ok := pullRequestMergeTarget(issue)
+		if !ok || current.Number != target.Number || !strings.EqualFold(current.Repository, target.Repository) {
+			continue
+		}
+		if current.HeadSHA != target.HeadSHA || current.BaseRef != target.BaseRef || !strings.EqualFold(current.BaseRepository, target.BaseRepository) {
+			return connector.ErrPullRequestMergeRejected
+		}
+		return c.MergePullRequest(ctx, target.Repository, target.Number, target.HeadSHA, method)
+	}
+	return connector.ErrPullRequestMergeRejected
 }
 
 type autoPromoteTickValidator struct {

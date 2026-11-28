@@ -76,6 +76,10 @@ func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, stat
 			if !operatorMergeWedgedCandidate(issue, state, o.cfg, now) {
 				continue
 			}
+			target, valid := pullRequestMergeTarget(issue)
+			if !valid {
+				continue
+			}
 			if hasQueueInspector {
 				status, err := queueInspector.InspectPullRequestMergeQueue(ctx, issue)
 				if err != nil {
@@ -88,7 +92,7 @@ func (o *Orchestrator) operatorMergeWedgedPullRequests(ctx context.Context, stat
 					continue
 				}
 			}
-			if err := merger.MergePullRequest(ctx, pullRequestRepository(issue), pullRequestNumber(issue), strings.TrimSpace(issue.PullRequest.HeadSHA), o.cfg.MergeMethod); err != nil {
+			if err := merger.MergePullRequestToBase(ctx, target, o.cfg.MergeMethod); err != nil {
 				if o.logger != nil {
 					o.logger.Warn("operator_merge_when_wedged_failed", mergeWorkerLogAttrs(issue, "error", err)...)
 				}
