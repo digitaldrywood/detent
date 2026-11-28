@@ -213,8 +213,8 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	if err != nil {
 		return err
 	}
-	authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-	matchingFence := authority.scope == c.base() && authority.lease.WorkItemID == item &&
+	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	matchingFence := hasAuthority && authority.scope == c.base() && authority.lease.WorkItemID == item &&
 		request.LeaseID != "" && request.LeaseID == authority.lease.ID &&
 		request.FencingToken > 0 && request.FencingToken == authority.lease.FencingToken
 	ownedRetry := matchingFence && authority.publications && authority.retry != nil && request.IdempotencyKey != ""
@@ -242,7 +242,7 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	headers.Set(attachment.ArchiveLeaseHeader, string(request.LeaseID))
 	headers.Set(attachment.ArchiveFenceHeader, strconv.FormatInt(int64(request.FencingToken), 10))
 	uploadCtx := ctx
-	if authority.scope != "" {
+	if hasAuthority {
 		uploadCtx = authority.fenceRequest(ctx)
 	}
 	uploadPath := c.AttachmentPath("/work-items/" + url.PathEscape(string(item)) + "/archives")
