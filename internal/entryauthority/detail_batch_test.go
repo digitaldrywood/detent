@@ -37,7 +37,8 @@ func TestDetailBatchAuthorityBoundsScopeAndDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	const budget = time.Second
-	parent, err := Start(t.Context(), binding, budget, nil, Archives{Details: store})
+	const requestBudget = 30 * time.Second
+	parent, err := Start(t.Context(), binding, budget, requestBudget, nil, Archives{Details: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +53,14 @@ func TestDetailBatchAuthorityBoundsScopeAndDeadline(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	deadline := time.Now().Add(time.Hour)
+	before := time.Now()
+	deadline := before.Add(time.Hour)
 	rows, err := callAuthority[[]attachment.DetailReadResult](t.Context(), client, "ReadDetails", DetailBatchRequest{Organization: binding.Organization, References: []attachment.ArchiveReference{ref, ref}, Deadline: deadline})
 	if err != nil || len(rows) != 2 {
 		t.Fatalf("batch: %v", err)
 	}
-	if store.calls.Load() != 1 || !store.deadline.Equal(deadline) {
-		t.Fatal("authority changed the request deadline or allocation count")
+	if store.calls.Load() != 1 || store.deadline.Before(before.Add(requestBudget)) || store.deadline.After(time.Now().Add(requestBudget)) {
+		t.Fatal("authority missed the parent deadline or changed the allocation count")
 	}
 	data, err := rows[0].Bytes()
 	if err != nil || !bytes.Equal(data, store.data) {

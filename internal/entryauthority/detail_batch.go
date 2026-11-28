@@ -9,16 +9,27 @@ import (
 )
 
 type DetailBatchRequest struct {
+	ReadControl
 	Organization string
 	References   []attachment.ArchiveReference
 	Deadline     time.Time
 }
 
+func (r DetailBatchRequest) readDeadline() time.Time { return r.Deadline }
+
 func (s *authorityServer) ReadDetails(request DetailBatchRequest, result *[]attachment.DetailReadResult) error {
+	ctx, cancel := request.start()
+	defer cancel()
 	if s.readDetails == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || attachment.ValidateDetailBatch(s.binding.Organization, request.References) != nil {
 		return attachment.ErrInvalid
 	}
-	rows, err := s.readDetails(request)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rows, err := s.readDetails(ctx, request)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
 		return artifactDetailError()
 	}
@@ -46,7 +57,8 @@ func (c *Client) ReadDetails(ctx context.Context, organization string, refs []at
 	ctx, cancel := c.readContext(ctx)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	rows, err := callAuthorityContext[[]attachment.DetailReadResult](ctx, c.client, "ReadDetails", DetailBatchRequest{Organization: organization, References: refs, Deadline: deadline})
+	id := c.readID.Add(1)
+	rows, err := callAuthorityRPC[[]attachment.DetailReadResult](ctx, c.client, "ReadDetails", DetailBatchRequest{ReadControl: ReadControl{ReadID: id}, Organization: organization, References: refs, Deadline: deadline}, id)
 	if err != nil {
 		return nil, contentClientError(err)
 	}

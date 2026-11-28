@@ -237,7 +237,7 @@ func (l *ExecLauncher) supervise(ctx context.Context, spec TenantSpec, token str
 		var authority *entryauthority.Parent
 		var err error
 		if spec.ResolveKey != nil {
-			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, CallTimeout, spec.ResolveKey, entryauthority.Archives{Reader: spec.ReadArchive, Contents: spec.ArchiveContents, Content: spec.Content, Details: spec.RunDetails, Icons: spec.Icons})
+			authority, err = entryauthority.Start(attempt, entryauthority.Binding{Issuer: spec.Issuer, Organization: spec.Organization.ID, Generation: spec.Organization.Generation}, CallTimeout, spec.RequestBudget, spec.ResolveKey, entryauthority.Archives{Reader: spec.ReadArchive, Contents: spec.ArchiveContents, Content: spec.Content, Details: spec.RunDetails, Icons: spec.Icons})
 			if err == nil {
 				cmd.ExtraFiles = authority.Files
 				cmd.Env = append(cmd.Env, entryauthority.BootstrapEnvironment+"="+entryauthority.BootstrapVersion)

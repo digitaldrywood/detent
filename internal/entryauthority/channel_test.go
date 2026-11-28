@@ -52,7 +52,7 @@ func TestIconAuthorityChannel(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
 			store := iconChannelStore{calls: make(chan IconRequest, 1)}
-			parent, err := Start(t.Context(), binding, time.Second, nil, Archives{Icons: store})
+			parent, err := Start(t.Context(), binding, time.Second, DefaultTenantRequestBudget, nil, Archives{Icons: store})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,7 +102,7 @@ func TestArchiveAuthorityChannel(t *testing.T) {
 				t.Fatal(err)
 			}
 			var reads atomic.Int32
-			parent, err := Start(t.Context(), binding, time.Second, nil, Archives{Contents: &authorityContents{content: map[string][]byte{}}, Reader: func(_ context.Context, got attachment.ArchiveReference, presign bool) (ArchiveResponse, error) {
+			parent, err := Start(t.Context(), binding, time.Second, DefaultTenantRequestBudget, nil, Archives{Contents: &authorityContents{content: map[string][]byte{}}, Reader: func(_ context.Context, got attachment.ArchiveReference, presign bool) (ArchiveResponse, error) {
 				reads.Add(1)
 				if got != ref {
 					t.Error("archive reference changed in transit")
@@ -231,7 +231,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 			}
 			entered := make(chan struct{}, 1)
 			details := &channelDetailStore{fail: scenario == "detail owner unavailable"}
-			parent, err := Start(t.Context(), binding, time.Second, func(ctx context.Context, origin Origin) (cloudassert.Claims, error) {
+			parent, err := Start(t.Context(), binding, time.Second, DefaultTenantRequestBudget, func(ctx context.Context, origin Origin) (cloudassert.Claims, error) {
 				if scenario == "shutdown pending lookup" {
 					entered <- struct{}{}
 					<-ctx.Done()
@@ -451,7 +451,7 @@ func TestResolvePreservesErrorClass(t *testing.T) {
 	for _, cause := range []error{cloudassert.ErrInvalid, context.DeadlineExceeded, context.Canceled, errors.New("database unavailable")} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 1}
-			parent, err := Start(t.Context(), binding, time.Second, func(context.Context, Origin) (cloudassert.Claims, error) { return cloudassert.Claims{}, cause })
+			parent, err := Start(t.Context(), binding, time.Second, DefaultTenantRequestBudget, func(context.Context, Origin) (cloudassert.Claims, error) { return cloudassert.Claims{}, cause })
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -29,6 +29,7 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	const budget = 3 * time.Second
+	const requestBudget = 30 * time.Second
 	reads := []struct {
 		name     string
 		duration time.Duration
@@ -38,7 +39,7 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 		{"Content", 20 * time.Second, compressed, func(ctx context.Context, c *Client) ([]byte, error) {
 			return c.Content(ctx, ContentRequest{Organization: binding.Organization, Reference: ref})
 		}},
-		{"ReadArchive", 4 * time.Second, compressed, func(ctx context.Context, c *Client) ([]byte, error) {
+		{"ReadArchive", 20 * time.Second, compressed, func(ctx context.Context, c *Client) ([]byte, error) {
 			response, err := c.ReadArchive(ctx, ref, false)
 			return response.Data, err
 		}},
@@ -61,11 +62,13 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 	}
 	for _, read := range reads {
 		for _, tc := range []struct {
-			name                     string
-			caller, cancelAt, finish time.Duration
-			wantErr                  error
+			name                           string
+			caller, cancelAt, finish, work time.Duration
+			wantErr                        error
 		}{
 			{name: "long read", caller: 30 * time.Second, finish: read.duration},
+			{name: "parent caps the supplied deadline", caller: time.Hour, finish: read.duration},
+			{name: "parent deadline interrupts storage", caller: time.Hour, finish: requestBudget, work: time.Minute, wantErr: context.DeadlineExceeded},
 			{name: "in-flight cancellation", caller: 30 * time.Second, cancelAt: time.Second, finish: time.Second, wantErr: context.Canceled},
 			{name: "short caller deadline", caller: 2 * time.Second, finish: 2 * time.Second, wantErr: context.DeadlineExceeded},
 			{name: "negotiated fallback", finish: budget, wantErr: context.DeadlineExceeded},
@@ -83,6 +86,7 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 						defer stopDeadline()
 					}
 					received := make(chan time.Time, 1)
+					stopped := make(chan error, 1)
 					waitForRead := func(ctx context.Context) error {
 						deadline, _ := ctx.Deadline()
 						received <- deadline
@@ -90,11 +94,14 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 							timer := time.AfterFunc(tc.cancelAt, cancel)
 							defer timer.Stop()
 						}
-						timer := time.NewTimer(read.duration)
+						timer := time.NewTimer(max(read.duration, tc.work))
 						defer timer.Stop()
 						select {
 						case <-ctx.Done():
-							<-serverCtx.Done()
+							stopped <- ctx.Err()
+							if tc.cancelAt == 0 && tc.work == 0 {
+								<-serverCtx.Done()
+							}
 							return ctx.Err()
 						case <-timer.C:
 							return nil
@@ -120,7 +127,7 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 					serverDone := make(chan struct{})
 					go func() {
 						defer close(serverDone)
-						server.ServeConn(serverConn)
+						serveAuthority(serverCtx, server, serverConn, requestBudget)
 					}()
 					client := &Client{client: rpc.NewClient(clientConn), budget: budget, organization: binding.Organization}
 					defer func() {
@@ -137,9 +144,20 @@ func TestHostedContentUsesCallerDeadline(t *testing.T) {
 					if elapsed := time.Since(started); elapsed != tc.finish {
 						t.Errorf("read took %v, want %v", elapsed, tc.finish)
 					}
+					if tc.cancelAt > 0 || tc.work > 0 {
+						synctest.Wait()
+						select {
+						case err := <-stopped:
+							if !errors.Is(err, tc.wantErr) || time.Since(started) != tc.finish {
+								t.Errorf("storage stopped at %v with %v, want %v at %v", time.Since(started), err, tc.wantErr, tc.finish)
+							}
+						default:
+							t.Error("the running storage read did not stop")
+						}
+					}
 					select {
 					case got := <-received:
-						want := tc.caller
+						want := min(tc.caller, requestBudget)
 						if want == 0 {
 							want = budget
 						}
@@ -276,7 +294,7 @@ func TestContentFailureReasonAndLog(t *testing.T) {
 						return storage.Open(ctx, ref.Key)
 					}
 				}
-				parent, err := Start(t.Context(), binding, time.Second, nil, Archives{
+				parent, err := Start(t.Context(), binding, time.Second, DefaultTenantRequestBudget, nil, Archives{
 					Details:  store,
 					Contents: attachment.ArchiveContents{Storage: store},
 					Content: func(ctx context.Context, request ContentRequest) ([]byte, error) {
