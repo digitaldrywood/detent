@@ -1463,38 +1463,26 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 	return max(r.afterRunTimeout, workBudget, validatorTimeout)
 }
 
-func noChangeWorkspaceHead(ctx context.Context, req RunRequest, input NativeValidation) string {
-	if input.NoChange == nil || input.Version == nil || req.retainedReview == nil || req.retainedReview.info.Path == "" {
-		return ""
+func prepareNoChangeReviewWorkspace(ctx context.Context, req RunRequest, input NativeValidation) (*retainedReviewWorkspace, func() error, error) {
+	noop := func() error { return nil }
+	if input.NoChange == nil || input.Version == nil || req.retainedReview == nil {
+		return req.retainedReview, noop, nil
 	}
-	expected := strings.TrimSpace(input.Version.HeadSHA)
-	if expected == "" {
-		return ""
-	}
-	provider, ok := req.retainedReview.backend.(workspace.HeadProvider)
+	preparer, ok := req.retainedReview.backend.(workspace.NoChangeReviewPreparer)
 	if !ok {
-		return ""
+		return req.retainedReview, noop, nil
 	}
-	checkedOut, err := provider.Head(ctx, req.retainedReview.info, req.retainedReview.issue)
+	reviewInfo, reviewIssue, cleanup, err := preparer.PrepareNoChangeReview(ctx, req.retainedReview.info, req.retainedReview.issue, input.Version.HeadSHA)
 	if err != nil {
-		return ""
+		return nil, noop, err
 	}
-	checkedOut = strings.TrimSpace(checkedOut)
-	if checkedOut == "" || checkedOut == expected {
-		return ""
+	if reviewInfo.Path == req.retainedReview.info.Path {
+		return req.retainedReview, cleanup, nil
 	}
-	checkedOutTree, err := gitexec.Run(ctx, req.retainedReview.info.Path, "rev-parse", "--verify", checkedOut+"^{tree}")
-	if err != nil {
-		return ""
-	}
-	expectedTree, err := gitexec.Run(ctx, req.retainedReview.info.Path, "rev-parse", "--verify", expected+"^{tree}")
-	if err != nil {
-		return ""
-	}
-	if strings.TrimSpace(checkedOutTree) != "" && strings.TrimSpace(checkedOutTree) == strings.TrimSpace(expectedTree) {
-		return checkedOut
-	}
-	return ""
+	cloned := *req.retainedReview
+	cloned.info = reviewInfo
+	cloned.issue = reviewIssue
+	return &cloned, cleanup, nil
 }
 
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err error) {
@@ -1535,7 +1523,12 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, expectedWorkspaceHead: noChangeWorkspaceHead(ctx, req, input), SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	reviewWorkspace, cleanupReview, err := prepareNoChangeReviewWorkspace(ctx, req, input)
+	if err != nil {
+		return fmt.Errorf("%w: acceptance workspace: %w", ErrValidatorInfrastructure, err)
+	}
+	defer func() { err = errors.Join(err, cleanupReview()) }()
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: reviewWorkspace, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -1601,7 +1594,12 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, expectedWorkspaceHead: noChangeWorkspaceHead(ctx, req, input), implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	reviewWorkspace, cleanupReview, err := prepareNoChangeReviewWorkspace(ctx, req, input)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errors.Join(err, cleanupReview()) }()
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: reviewWorkspace, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

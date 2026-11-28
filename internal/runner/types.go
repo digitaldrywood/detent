@@ -750,9 +750,8 @@ type retainedReviewWorkspace struct {
 }
 
 type ValidatorRequest struct {
-	retainedReview        *retainedReviewWorkspace
-	expectedWorkspaceHead string
-	usageExecution        Execution
+	retainedReview       *retainedReviewWorkspace
+	usageExecution       Execution
 	observationPeer      *SSHPeer
 	complete             func(context.Context, gate.ValidatorResult, *sessionmodel.Finalization) (gate.ValidatorResult, error)
 	SecurityAudit        *NativeSecurityAuditEvidence

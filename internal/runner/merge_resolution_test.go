@@ -149,7 +149,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 		{name: "budget refusal preserves landing without a provider turn", budgetDenied: true},
 		{name: "legacy pending conflict asks a typed question when unresolved", failed: true, needsHuman: true},
 		{name: "failed configured gate returns to implementation", content: "first\ninvalid\nbase\n", failed: true, gateFailure: true},
-		{name: "unrelated edits publish for review", content: "first\nreviewed\nbase\n", outside: true, changed: true},
+		{name: "unrelated edits return to implementation", content: "first\nreviewed\nbase\n", outside: true, failed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := initRunnerSourceRepo(t)

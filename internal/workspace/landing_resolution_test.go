@@ -203,3 +203,114 @@ func TestLandingMergeResolutionRejectsDifferentPatch(t *testing.T) {
 		})
 	}
 }
+
+func TestLandingResolutionScopeRejectsNonconflictingChanges(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		conflicts []string
+		mut       func(t *testing.T, source string)
+		allow     bool
+	}{
+		{
+			name:      "conflicted file edit allowed",
+			conflicts: []string{"gen.go"},
+			allow:     true,
+			mut: func(t *testing.T, source string) {
+				if err := os.WriteFile(filepath.Join(source, "gen.go"), []byte("package example\nvar V = 2\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "gen.go")
+			},
+		},
+		{
+			name: "nonconflicting content change rejected",
+			mut: func(t *testing.T, source string) {
+				if err := os.WriteFile(filepath.Join(source, "gen.go"), []byte("package example\nvar V = 2\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, source, "add", "gen.go")
+			},
+		},
+		{
+			name: "mode change rejected",
+			mut: func(t *testing.T, source string) {
+				runGit(t, source, "update-index", "--chmod=+x", "gen.go")
+			},
+		},
+		{
+			name: "deletion rejected",
+			mut: func(t *testing.T, source string) {
+				runGit(t, source, "rm", "-f", "gen.go")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			if err := os.WriteFile(filepath.Join(source, "gen.go"), []byte("package example\nvar V = 1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, source, "add", "gen.go")
+			before := runGit(t, source, "ls-files", "--stage", "-z")
+			tc.mut(t, source)
+			after := runGit(t, source, "ls-files", "--stage", "-z")
+			if got := landingResolutionScope(before, after, tc.conflicts); got != tc.allow {
+				t.Fatalf("landingResolutionScope() = %v, want %v", got, tc.allow)
+			}
+		})
+	}
+}
+
+func TestRollbackNoChangeReviewWorktree(t *testing.T) {
+	t.Parallel()
+	addSentinel := errors.New("worktree add interrupted")
+	rmSentinel := errors.New("worktree remove refused")
+	for _, tc := range []struct {
+		name           string
+		failRemove     bool
+		wantScratchDir bool
+	}{
+		{name: "successful rollback removes registration and scratch"},
+		{name: "failed remove preserves scratch and joins both errors", failRemove: true, wantScratchDir: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newLandingFixture(t)
+			scratch, err := os.MkdirTemp(fixture.backend.root, "nochange-review-*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			basePath := filepath.Join(scratch, filepath.Base(fixture.info.Path))
+			runGit(t, fixture.source, "worktree", "add", "--detach", basePath, "HEAD")
+			rmFn := func(ctx context.Context, path string) error {
+				if tc.failRemove {
+					return rmSentinel
+				}
+				return fixture.backend.removeLandingWorktree(ctx, fixture.source, path)
+			}
+			gotErr := rollbackNoChangeReviewWorktree(t.Context(), basePath, scratch, addSentinel, rmFn)
+			if !errors.Is(gotErr, addSentinel) {
+				t.Fatalf("error = %v, want addSentinel", gotErr)
+			}
+			if tc.failRemove && !errors.Is(gotErr, rmSentinel) {
+				t.Fatalf("error = %v, want rmSentinel", gotErr)
+			}
+			_, statErr := os.Stat(scratch)
+			if tc.wantScratchDir {
+				if statErr != nil {
+					t.Fatalf("scratch should be preserved on remove failure: %v", statErr)
+				}
+				_ = fixture.backend.removeLandingWorktree(t.Context(), fixture.source, basePath)
+				_ = os.Remove(scratch)
+				return
+			}
+			if !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("scratch should be removed after rollback: %v", statErr)
+			}
+			if list := runGit(t, fixture.source, "worktree", "list", "--porcelain"); strings.Contains(list, basePath) {
+				t.Fatalf("worktree registration survived rollback: %s", list)
+			}
+		})
+	}
+}
