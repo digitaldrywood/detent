@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
@@ -211,13 +213,22 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	if err != nil {
 		return err
 	}
+	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+	matchingFence := hasAuthority && authority.scope == c.base() && authority.lease.WorkItemID == item &&
+		request.LeaseID != "" && request.LeaseID == authority.lease.ID &&
+		request.FencingToken > 0 && request.FencingToken == authority.lease.FencingToken
+	ownedRetry := matchingFence && authority.publications && authority.retry != nil && request.IdempotencyKey != ""
+	var owner mutationAuthorityOwner
+	if matchingFence {
+		owner = authority.owner
+	}
+	result := func(err error, reconcile bool) error {
+		return c.validatorPublicationResult(ctx, item, id, version, request.IdempotencyKey, raw, err, reconcile, owner)
+	}
 	if len(raw) <= maxResponseBytes {
 		_, err = c.ReviewChange(ctx, item, id, version, request)
 		var oversized *responseSizeError
-		if errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300 {
-			return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)
-		}
-		return err
+		return result(err, ClaimLost(err) || errors.As(err, &oversized) && oversized.status >= 200 && oversized.status < 300)
 	}
 	content, err := json.Marshal(changerequest.ValidatorArchive{OrganizationID: c.organization, ProjectID: c.project, WorkItemID: item, ChangeID: id, VersionID: version, Review: request})
 	if err != nil {
@@ -228,8 +239,24 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 	}
 	var stored attachment.ArchiveReference
 	headers := http.Header{"X-Detent-Archive-Schema": {"1"}, "Content-Type": {"application/json"}}
-	if err := c.client.requestWithHeaders(ctx, http.MethodPost, c.AttachmentPath("/work-items/"+url.PathEscape(string(item))+"/archives"), headers, bytes.NewReader(content), &stored); err != nil {
-		return err
+	headers.Set(attachment.ArchiveLeaseHeader, string(request.LeaseID))
+	headers.Set(attachment.ArchiveFenceHeader, strconv.FormatInt(int64(request.FencingToken), 10))
+	uploadCtx := ctx
+	if hasAuthority {
+		uploadCtx = authority.fenceRequest(ctx)
+	}
+	uploadPath := c.AttachmentPath("/work-items/" + url.PathEscape(string(item)) + "/archives")
+	upload := func() error {
+		stored = attachment.ArchiveReference{}
+		return c.client.requestWithHeaders(uploadCtx, http.MethodPost, uploadPath, headers, bytes.NewReader(content), &stored)
+	}
+	if ownedRetry {
+		err = authority.retry(ctx, upload)
+	} else {
+		err = upload()
+	}
+	if err != nil {
+		return result(err, ClaimLost(err))
 	}
 	if stored.Validate(string(c.organization)) != nil || stored.SchemaVersion != 1 || stored.UncompressedSize != int64(len(content)) {
 		return errors.New("validator archive upload returned a different object")
@@ -250,13 +277,30 @@ func (c *NativeClient) PublishValidator(ctx context.Context, item tracker.Native
 		return nil
 	}
 	err = send()
-	if NativeTransportUnavailable(err) && ctx.Err() == nil {
+	if !ownedRetry && NativeTransportUnavailable(err) && ctx.Err() == nil {
 		err = send()
 	}
-	if ctx.Err() != nil || !NativeTransportUnavailable(err) && !ClaimLost(err) {
-		return err
+	return result(err, NativeTransportUnavailable(err) || ClaimLost(err))
+}
+
+func (c *NativeClient) validatorPublicationResult(ctx context.Context, item tracker.NativeWorkItemID, id, version, key string, raw []byte, publicationErr error, reconcile bool, owner mutationAuthorityOwner) error {
+	readAllowed := reconcile && ctx.Err() == nil
+	if owner != nil && NativeAuthorityLost(publicationErr) {
+		publicationErr = owner.RejectMutationAuthority(ctx, publicationErr)
+		if readAllowed {
+			deadline := time.Now().Add(10 * time.Second)
+			if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+				deadline = limit
+			}
+			readCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+			defer cancel()
+			ctx = WithRequestFence(WithPublicationRetry(readCtx, nil), nil, nil)
+		}
 	}
-	return c.reconcileValidatorReceipt(ctx, item, id, version, request.IdempotencyKey, raw, err)
+	if !readAllowed {
+		return publicationErr
+	}
+	return c.reconcileValidatorReceipt(ctx, item, id, version, key, raw, publicationErr)
 }
 
 func (c *NativeClient) reconcileValidatorReceipt(ctx context.Context, item tracker.NativeWorkItemID, id, version, key string, raw []byte, publicationErr error) error {

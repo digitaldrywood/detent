@@ -131,7 +131,13 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 			}
 			sessions := NewRunnerSessions(native)
 			lease := tracker.NativeLease{ID: "lease_example", FencingToken: 1}
-			ctx := WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+			var execution *sessionMutationExecution
+			bind := func() context.Context {
+				execution = &sessionMutationExecution{sessionLeaseExecution: sessionLeaseExecution{lease: lease}}
+				ctx := WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				return sessions.BindExecution(ctx, execution)
+			}
+			ctx := bind()
 			id, err := sessions.StartSession(ctx, store.SessionStart{})
 			if err != nil {
 				t.Fatal(err)
@@ -143,11 +149,11 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 			}
 			if tc.newLease {
 				lease.ID = "lease_other"
-				ctx = WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				ctx = bind()
 			}
 			if tc.newFence {
 				lease.FencingToken++
-				ctx = WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				ctx = bind()
 			}
 			err = sessions.UpdateSessionResumeState(ctx, id, store.SessionResumeState{})
 			wantError := tc.status != 0 || tc.uncertain || tc.conflicts > 1 || tc.cancelRefresh
@@ -171,6 +177,14 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("authority refusal lost classification: %v", err)
 				}
+				errorEnabled = false
+				if err := sessions.FinishSession(context.WithoutCancel(ctx), id, store.SessionFinish{}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Errorf("session finish after refusal = %v", err)
+				}
+				if HubErrorCode(execution.rejected) != tc.code || reads != tc.wantReads || writes != wantWrites {
+					t.Fatalf("refusal=%v reads=%d writes=%d", execution.rejected, reads, writes)
+				}
+				return
 			}
 			if wantError && !tc.cancelRefresh {
 				errorEnabled = false
@@ -197,6 +211,18 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 	}
 }
 
+type sessionMutationExecution struct {
+	sessionLeaseExecution
+	rejected error
+}
+
+func (e *sessionMutationExecution) ExecutionAuthorityError() error { return e.rejected }
+
+func (e *sessionMutationExecution) RejectMutationAuthority(_ context.Context, err error) error {
+	e.rejected = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	return e.rejected
+}
+
 type sessionLeaseExecution struct {
 	runner.Execution
 	lease tracker.NativeLease
@@ -215,49 +241,108 @@ func (e sessionLeaseExecution) RetryPhasePublication(ctx context.Context, send f
 }
 
 func TestDetachedSessionFinalizationSendsUnderLiveFence(t *testing.T) {
-	for _, revoked := range []bool{false, true} {
-		t.Run(fmt.Sprintf("revoked=%t", revoked), func(t *testing.T) {
-			lease := tracker.NativeLease{ID: "lease_review", FencingToken: 17}
-			finalization := &sessionmodel.Finalization{SessionID: 42, Phase: &workflowmetrics.PhaseEvent{}}
-			writes := 0
-			client, err := New(Config{URL: "http://hub.test", TokenSource: func() string { return "token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
-				response := httptest.NewRecorder()
-				if req.Method == http.MethodGet {
-					if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 1}); err != nil {
-						t.Fatal(err)
-					}
-					return response.Result(), nil
-				}
-				writes++
-				var mutation runnersession.Mutation
-				if err := json.NewDecoder(req.Body).Decode(&mutation); err != nil || mutation.LeaseID != lease.ID || mutation.FencingToken != lease.FencingToken || mutation.Finalization == nil || !mutation.Finalization.Equal(*finalization) {
-					t.Fatalf("finalization = %+v, %v", mutation, err)
-				}
-				if revoked {
-					response.WriteHeader(http.StatusConflict)
-					response.WriteString(`{"code":"stale_fencing_token"}`)
-				} else {
-					if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 2,
-						Finalization: &runnersession.Finalization{Input: *finalization, Finished: true, UsageRecorded: true, PhaseRecorded: true}}); err != nil {
-						t.Fatal(err)
-					}
-				}
-				return response.Result(), nil
-			})}})
-			if err != nil {
+	for _, tc := range []struct {
+		name, boundary string
+		expires        bool
+		hubRejects     bool
+	}{
+		{name: "ordinary parent timeout"},
+		{name: "Hub rejects stale fence", hubRejects: true},
+		{name: "expires during token resolution", boundary: "token", expires: true},
+		{name: "revoked during token resolution", boundary: "token"},
+		{name: "expires during budget wait", boundary: "budget", expires: true},
+		{name: "revoked during budget wait", boundary: "budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				testDetachedSessionFinalization(t, tc.boundary, tc.expires, tc.hubRejects)
+			})
+		})
+	}
+}
+
+func testDetachedSessionFinalization(t *testing.T, boundary string, expires, hubRejects bool) {
+	t.Helper()
+	lease := tracker.NativeLease{ID: "lease_review", FencingToken: 17}
+	finalization := &sessionmodel.Finalization{SessionID: 42, Phase: &workflowmetrics.PhaseEvent{}}
+	parent, stop := context.WithCancelCause(t.Context())
+	defer stop(nil)
+	if expires {
+		var cancel context.CancelFunc
+		parent, cancel = context.WithTimeoutCause(parent, time.Second, runner.ErrExecutionAuthorityUnavailable)
+		defer cancel()
+	}
+	writes, tokens := 0, 0
+	var deferBudget func(string, time.Time)
+	client, err := New(Config{URL: "http://hub.test", TokenSource: func() string {
+		tokens++
+		if boundary == "token" && tokens == 2 {
+			if expires {
+				<-parent.Done()
+			} else {
+				stop(runner.ErrExecutionAuthorityUnavailable)
+			}
+		}
+		return "token"
+	}, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+		response := httptest.NewRecorder()
+		if req.Method == http.MethodGet {
+			if boundary == "budget" {
+				deferBudget(strings.TrimSuffix(req.URL.Path, "/42"), time.Now().Add(5*time.Second))
+			}
+			if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 1}); err != nil {
 				t.Fatal(err)
 			}
-			sessions := NewRunnerSessions(&NativeClient{client: client, organization: "org_example", project: "prj_example"})
-			parent, stop := context.WithCancelCause(t.Context())
-			bound := sessions.BindExecution(parent, sessionLeaseExecution{lease: lease})
-			stop(context.DeadlineExceeded)
-			detached, cancel := context.WithTimeout(context.WithoutCancel(bound), 10*time.Second)
-			defer cancel()
-			err = sessions.ReconcileSessionFinalization(detached, finalization.SessionID, finalization)
-			if writes != 1 || (!revoked && err != nil) || (revoked && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable)) {
-				t.Fatalf("finalization sent %d POSTs, result = %v", writes, err)
+			return response.Result(), nil
+		}
+		writes++
+		var mutation runnersession.Mutation
+		if err := json.NewDecoder(req.Body).Decode(&mutation); err != nil || mutation.LeaseID != lease.ID || mutation.FencingToken != lease.FencingToken || mutation.Finalization == nil || !mutation.Finalization.Equal(*finalization) {
+			t.Fatalf("finalization = %+v, %v", mutation, err)
+		}
+		if hubRejects {
+			response.WriteHeader(http.StatusConflict)
+			response.WriteString(`{"code":"stale_fencing_token"}`)
+		} else {
+			if err := json.NewEncoder(response).Encode(runnersession.Snapshot{ID: 42, Revision: 2,
+				Finalization: &runnersession.Finalization{Input: *finalization, Finished: true, UsageRecorded: true, PhaseRecorded: true}}); err != nil {
+				t.Fatal(err)
 			}
-		})
+		}
+		return response.Result(), nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferBudget = client.DeferRequestBudget
+	sessions := NewRunnerSessions(&NativeClient{client: client, organization: "org_example", project: "prj_example"})
+	bound := sessions.BindExecution(parent, sessionLeaseExecution{lease: lease})
+	switch {
+	case boundary == "":
+		stop(context.DeadlineExceeded)
+	case boundary == "budget" && !expires:
+		timer := time.AfterFunc(time.Second, func() { stop(runner.ErrExecutionAuthorityUnavailable) })
+		defer timer.Stop()
+	}
+	detached, cancel := context.WithTimeout(context.WithoutCancel(bound), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = sessions.ReconcileSessionFinalization(detached, finalization.SessionID, finalization)
+	if boundary != "" {
+		wantTokens, wantElapsed := 2, time.Duration(0)
+		if expires || boundary == "budget" {
+			wantElapsed = time.Second
+		}
+		if boundary == "budget" {
+			wantTokens = 1
+		}
+		if writes != 0 || tokens != wantTokens || time.Since(start) != wantElapsed || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+			t.Fatalf("sent %d POSTs, resolved %d tokens in %v, error = %v", writes, tokens, time.Since(start), err)
+		}
+		return
+	}
+	if writes != 1 || (!hubRejects && err != nil) || (hubRejects && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable)) {
+		t.Fatalf("finalization sent %d POSTs, result = %v", writes, err)
 	}
 }
 

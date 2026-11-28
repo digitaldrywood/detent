@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/runner/runworkspace"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -133,7 +133,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		if update.Type == AgentUpdateToolStarted || update.Type == AgentUpdateToolOutput || update.Type == AgentUpdateToolCompleted {
 			return ErrSecurityAuditToolUse
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, path); err != nil {
+		if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, path)); err != nil {
 			return err
 		}
 		r.persistSessionProviderIdentity(updateCtx, sessionID, update)
@@ -142,7 +142,7 @@ func (r *Runner) runTriage(ctx context.Context, req RunRequest) (result RunResul
 		}
 		applyAgentUpdate(&result, update)
 		if req.OnUsageUpdate != nil {
-			if err := req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity, RateLimits: result.RateLimits}); err != nil {
+			if err := turnObservationError(updateCtx, req.OnUsageUpdate(UsageUpdate{DetentSessionID: sessionID, SessionID: update.ProviderSessionID, WorkerProcess: update.WorkerProcess, WorkspacePath: path, LastEventAt: r.now().UTC(), LastEvent: string(update.Type), TurnCount: turnCount, Tokens: result.Tokens, RuntimeIdentity: result.RuntimeIdentity, RateLimits: result.RateLimits})); err != nil {
 				return err
 			}
 		}

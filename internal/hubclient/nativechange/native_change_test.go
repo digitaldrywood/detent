@@ -810,8 +810,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 			}
 			if test.outage {
 				offline.Store(true)
-				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(2*time.Minute))
-				testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
+				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(time.Minute))
 			} else if test.ackLost {
 				var drop atomic.Bool
 				drop.Store(true)
@@ -871,7 +870,7 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				guarded = t.Context()
 			}
 			if test.outage {
-				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(2*time.Minute))
+				fixtureSetNow(h.scheduler, h.scheduler.Now().Add(3*time.Minute))
 				testsupport.NativeChangeExpireLease(t, h.config, execution.claim.lease.ID)
 				if guarded.Err() != nil {
 					t.Fatalf("outage canceled worker: %v", context.Cause(guarded))

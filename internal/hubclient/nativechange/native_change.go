@@ -156,7 +156,8 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			e.settled = true
 			return nil
 		}
-		if !e.claimActive() || nativeLeaseLost(err) {
+		err = e.executionError(ctx, err)
+		if !e.claimActive() || errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 			break
 		}
 	}

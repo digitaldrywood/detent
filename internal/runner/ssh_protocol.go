@@ -58,7 +58,7 @@ func NewSSHPeer(ctx context.Context, input io.Reader, output io.Writer, handle f
 		decoder: json.NewDecoder(input), encoder: json.NewEncoder(output),
 		writer: make(chan struct{}, 1), pending: make(map[uint64]chan sshMessage), handle: handle,
 	}
-	go p.read()
+	go p.read(ctx)
 	return p
 }
 
@@ -123,7 +123,7 @@ func (p *SSHPeer) Call(ctx context.Context, method string, result any, args ...a
 	}
 }
 
-func (p *SSHPeer) read() {
+func (p *SSHPeer) read(ctx context.Context) {
 	defer p.cancel()
 	for {
 		var message sshMessage
@@ -141,8 +141,8 @@ func (p *SSHPeer) read() {
 		}
 		// Callbacks may issue another call in the opposite direction. A separate
 		// handler keeps the read loop available for that nested response.
-		go func() {
-			ctx := p.ctx
+		go func(peerCtx context.Context) {
+			ctx := peerCtx
 			if !message.Deadline.IsZero() {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithDeadline(ctx, message.Deadline)
@@ -162,10 +162,10 @@ func (p *SSHPeer) read() {
 				response.Result, err = json.Marshal(result)
 				response.Error = encodeSSHError(err)
 			}
-			if p.send(p.ctx, response) != nil {
+			if p.send(peerCtx, response) != nil {
 				p.cancel()
 			}
-		}()
+		}(ctx)
 	}
 }
 
@@ -249,8 +249,8 @@ func sshSentinels() []error {
 		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrProviderSessionUnretired, ErrLandingNotReviewed, ErrValidatorInfrastructure,
-		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired, ErrWorkerSessionStartUncertain,
-		ErrChangeSourceVersionSuperseded, progresscheck.ErrRoundVerdictRejected, progresscheck.ErrChecklistSuperseded}
+		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrHubUnavailable, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired, ErrWorkerSessionStartUncertain,
+		ErrChangeSourceVersionSuperseded, ErrPhaseReceiptsUnsupported, progresscheck.ErrRoundVerdictRejected, progresscheck.ErrChecklistSuperseded}
 }
 
 func encodeSSHError(err error) *sshError {

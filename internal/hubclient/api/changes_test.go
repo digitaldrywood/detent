@@ -71,6 +71,9 @@ func TestValidatorPublicationTransfersLargeResultOnce(t *testing.T) {
 				}
 				if strings.HasSuffix(r.URL.Path, "/archives") {
 					uploads++
+					if r.Header.Get(attachment.ArchiveLeaseHeader) != string(lease.ID) || r.Header.Get(attachment.ArchiveFenceHeader) != strconv.FormatInt(int64(lease.FencingToken), 10) {
+						t.Fatal("archive request omitted the review fence")
+					}
 					var data changerequest.ValidatorArchive
 					if json.Unmarshal(raw, &data) != nil || data.OrganizationID != "org_example" || data.ProjectID != "prj_example" || data.WorkItemID != lease.WorkItemID || data.ChangeID != "change_example" || data.VersionID != request.ExpectedVersionID || data.Review.LeaseID != lease.ID || data.Review.FencingToken != lease.FencingToken || data.Review.Validator == nil || !reflect.DeepEqual(data.Review.Validator, request.Validator) {
 						t.Fatal("archive omitted fenced validator output")

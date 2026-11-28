@@ -374,32 +374,33 @@ type ArtifactUploadAuthorization struct {
 }
 
 type Attachment struct {
-	OrganizationID    tracker.OrganizationID
-	ProjectID         tracker.ProjectID
-	ID                string
-	Uploader          string
-	Name              string
-	ContentType       string
-	Size              int64
-	Sha256            string
-	Width             int32
-	Height            int32
-	CreatedAt         time.Time
-	WorkItemID        *string
-	CommentID         *string
-	EvidenceAttemptID *string
-	EvidenceCaption   string
-	Kind              string
-	RetentionClass    string
-	ObjectKey         string
-	UncompressedSize  int64
-	Codec             string
-	SchemaVersion     int64
-	StorageBindingID  string
-	CustomerOwned     bool
-	PendingContent    []byte
-	DeletedAt         *time.Time
-	ObjectDeletedAt   *time.Time
+	OrganizationID         tracker.OrganizationID
+	ProjectID              tracker.ProjectID
+	ID                     string
+	Uploader               string
+	Name                   string
+	ContentType            string
+	Size                   int64
+	Sha256                 string
+	Width                  int32
+	Height                 int32
+	CreatedAt              time.Time
+	WorkItemID             *string
+	CommentID              *string
+	EvidenceAttemptID      *string
+	EvidenceCaption        string
+	Kind                   string
+	RetentionClass         string
+	ObjectKey              string
+	UncompressedSize       int64
+	Codec                  string
+	SchemaVersion          int64
+	StorageBindingID       string
+	CustomerOwned          bool
+	PendingContent         []byte
+	DeletedAt              *time.Time
+	ObjectDeletedAt        *time.Time
+	ArchiveUploadExpiresAt *time.Time
 }
 
 type AttachmentArchiveReference struct {

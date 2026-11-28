@@ -128,14 +128,26 @@ func verifyItemPhaseCheckout(ctx context.Context, backend workspace.Backend, inf
 	return nil
 }
 
+func (req RunRequest) verifyPhaseAuthority(ctx context.Context) error {
+	execution, ok := req.Execution.(PhaseReceiptExecution)
+	if !ok {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return execution.VerifyPhaseAuthority(ctx)
+}
+
 func publishItemPhase(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, phase, input string) error {
 	if !req.phaseReceipts {
 		return nil
 	}
+	execution, ok := req.Execution.(PhaseReceiptExecution)
+	if !ok {
+		return failedStep("publication", ErrExecutionAuthorityUnavailable)
+	}
 	if issue.ExpectedPhaseRemoteHead == "" && req.publishedPhaseSource != nil {
 		issue.ExpectedPhaseRemoteHead = req.publishedPhaseSource.HeadSHA
 	}
-	source, err := runworkspace.PublishPhase(ctx, req.Execution.(PhaseReceiptExecution), backend, info, issue, req.phaseContinuation, phase, input)
+	source, err := runworkspace.PublishPhase(ctx, execution, backend, info, issue, req.phaseContinuation, phase, input)
 	if req.publishedPhaseSource != nil && source.HeadSHA != "" {
 		*req.publishedPhaseSource = source
 	}

@@ -18,6 +18,7 @@ import (
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/runnersession"
 	"github.com/digitaldrywood/detent/internal/skills"
@@ -29,7 +30,7 @@ const maxResponseBytes = 1 << 20
 
 var (
 	ErrNoClaimableWork = errors.New("no Hub work is claimable")
-	ErrUnavailable     = errors.New("hub unavailable")
+	ErrUnavailable     = runner.ErrHubUnavailable
 )
 
 type responseSizeError struct {
@@ -274,11 +275,29 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 	}
 	replayPublication := method == http.MethodPost && publication.IdempotencyKey != "" && publication.LeaseID != "" &&
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
-	authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-	var guard context.Context
+	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	if replayPublication {
-		guard = authority.guard
 		fenced = publication
+	}
+	sessionPath := authority.scope + "/runner-sessions"
+	matchingFence := hasAuthority && fenced.LeaseID != "" && fenced.LeaseID == authority.lease.ID &&
+		fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken
+	fencedSession := method == http.MethodPost && replayMutation && target == sessionPath && matchingFence
+	guard := requestFence(ctx)
+	sendCtx := ctx
+	if replayPublication || fencedSession {
+		explicit := guard
+		sendCtx = WithRequestFence(ctx, authority.guard.done, func() error {
+			if err := nativeEffectError(ctx); err != nil {
+				return err
+			}
+			return explicit.err()
+		})
+		if fencedSession {
+			guard = requestFence(sendCtx)
+		} else {
+			guard = authority.guard
+		}
 	}
 	send := func() error {
 		return c.withinRequestBudget(ctx, guard, method, path, replayPublication || replayMutation && method == http.MethodPost, func() error {
@@ -287,17 +306,15 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 					return err
 				}
 			}
-			return c.requestOnce(ctx, timeout, method, path, headers, input, output)
+			return c.requestOnce(sendCtx, timeout, method, path, headers, input, output)
 		})
 	}
-	sessionPath := authority.scope + "/runner-sessions"
 	sessionRequest := target == sessionPath || strings.HasPrefix(target, sessionPath+"/")
 	itemPath := authority.scope + "/work-items/" + url.PathEscape(string(authority.lease.WorkItemID)) + "/"
 	publicationRequest := authority.publications && strings.HasPrefix(target, itemPath)
-	if authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
+	if hasAuthority && authority.retry != nil && authority.lease.ID != "" && (sessionRequest || publicationRequest) {
 		if method == http.MethodGet || method == http.MethodHead ||
-			method == http.MethodPost && fenced.IdempotencyKey != "" && fenced.LeaseID == authority.lease.ID &&
-				fenced.FencingToken > 0 && fenced.FencingToken == authority.lease.FencingToken {
+			method == http.MethodPost && fenced.IdempotencyKey != "" && matchingFence {
 			return authority.retry(ctx, send)
 		}
 	}
@@ -370,6 +387,9 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	request.Header.Set("Accept", "application/json")
 	if input != nil && !streaming {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	if err := requestFence(ctx).err(); err != nil {
+		return err
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -486,7 +506,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, nil, http.MethodGet, target, false, func() error {
+	err := c.withinRequestBudget(ctx, requestFence(ctx), http.MethodGet, target, false, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err
@@ -508,6 +528,9 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 		return nil, "", err
 	}
 	request.Header.Set("Authorization", token)
+	if err := requestFence(ctx).err(); err != nil {
+		return nil, "", err
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -515,22 +538,27 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: read download: %w", ErrUnavailable, err)
-	}
-	if int64(len(payload)) > limit {
-		return nil, "", fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
+		err = fmt.Errorf("%w: read download: %w", ErrUnavailable, err)
+	} else if int64(len(payload)) > limit {
+		err = fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
+		if err != nil {
+			return nil, "", errors.Join(apiErr, err)
+		}
 		if len(payload) > 0 && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
-				return nil, "", fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
+				return nil, "", errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
 			}
 		}
 		if response.StatusCode >= 500 {
 			return nil, "", errors.Join(ErrUnavailable, apiErr)
 		}
 		return nil, "", apiErr
+	}
+	if err != nil {
+		return nil, "", err
 	}
 	return payload, response.Header.Get("Content-Type"), nil
 }

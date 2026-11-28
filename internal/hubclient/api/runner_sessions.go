@@ -89,11 +89,15 @@ func (s *RunnerSessions) BindExecution(ctx context.Context, execution runner.Exe
 		return ctx
 	}
 	lease, scope := execution.Recovery().Lease, s.base()
-	authority := nativeMutationAuthority{scope: scope, lease: lease, cancellation: func() error { return context.Cause(ctx) }, guard: ctx}
+	authority := executionMutationAuthority(ctx, scope, lease, execution)
 	if inherited, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority); ok &&
 		inherited.scope == scope && inherited.lease.WorkItemID == lease.WorkItemID &&
 		inherited.lease.ID == lease.ID && inherited.lease.FencingToken == lease.FencingToken {
 		authority.guard = inherited.guard
+		authority.cancellation = inherited.cancellation
+		if authority.owner == nil {
+			authority.owner = inherited.owner
+		}
 		authority.retry = inherited.retry
 		authority.publications = inherited.publications
 	}
@@ -111,6 +115,22 @@ func sessionReadError(err error) error {
 		return errors.Join(store.ErrNotFound, err)
 	}
 	return err
+}
+
+func (authority nativeMutationAuthority) sessionMutationError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	policyRefused := HubErrorCode(err) == "policy_mismatch"
+	if !NativeAuthorityLost(err) && !policyRefused {
+		return err
+	}
+	var refusal *APIError
+	sessionMissing := errors.As(err, &refusal) && refusal != nil && refusal.Status == http.StatusNotFound && !NativeLeaseLost(err) && !policyRefused
+	if authority.owner != nil && !sessionMissing {
+		return authority.owner.RejectMutationAuthority(ctx, err)
+	}
+	return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 }
 
 func (s *RunnerSessions) snapshot(ctx context.Context, id int64) (runnersession.Snapshot, error) {
@@ -194,7 +214,7 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 			current, err := s.snapshot(ctx, request.SessionID)
 			if err != nil {
 				s.forgetRevision(request.SessionID)
-				return current, err
+				return current, authority.sessionMutationError(ctx, err)
 			}
 			request.ExpectedRevision = current.Revision
 		}
@@ -219,6 +239,7 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 			err = send()
 		}
 	}
+	err = authority.sessionMutationError(ctx, err)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err == nil {
@@ -230,9 +251,6 @@ func (s *RunnerSessions) mutate(ctx context.Context, request runnersession.Mutat
 	var api *APIError
 	if err != nil && (!errors.As(err, &api) || api == nil || api.Status < 400 || api.Status >= 500) {
 		delete(s.acknowledged, request.SessionID)
-	}
-	if errors.As(err, &api) && (api.Status == http.StatusUnauthorized || api.Status == http.StatusForbidden || api.Code == "stale_fencing_token" || api.Code == "policy_mismatch") {
-		err = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 	}
 	if err == nil && request.SessionID > 0 {
 		if request.Finish != nil || request.Reaped != nil {
@@ -277,8 +295,8 @@ func (s *RunnerSessions) StartSession(ctx context.Context, start store.SessionSt
 			return value.ID, err
 		}
 		err = errors.Join(runner.ErrWorkerSessionStartUncertain, err)
-		authority, _ := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-		if ctx.Err() != nil || authority.retry != nil {
+		authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
+		if ctx.Err() != nil || hasAuthority && authority.retry != nil {
 			return 0, err
 		}
 		var reconcileErr error

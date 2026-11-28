@@ -330,17 +330,6 @@ func TestSSHNativePublication(t *testing.T) {
 			fixtureArtifactConfiguration(t, h.scheduler, binding.ServiceID, 4<<20)
 			remote, disconnect := nativeSSHExecution(t, ctx, e, root)
 			remote.(runner.RepositoryExecution).SetRepository(nativeChangeRepository)
-			remote.(runner.DiffExecution).SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
-				diff, err := workspace.GitFileDiffs(ctx, checkout, base, tracker.MaxDiffBytes)
-				if err != nil {
-					return tracker.AttemptDiffRequest{}, false
-				}
-				request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA}
-				for _, f := range diff.Files {
-					request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
-				}
-				return request, true
-			})
 			if err := remote.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
@@ -354,6 +343,25 @@ func TestSSHNativePublication(t *testing.T) {
 			git("add", "README.md")
 			git("-c", "commit.gpgsign=false", "commit", "-m", "remote")
 			head := git("rev-parse", "HEAD")
+			setCommitDiff := func(remote runner.Execution) {
+				t.Helper()
+				source, ok := remote.(runner.DiffExecution)
+				if !ok {
+					t.Fatal("worker cannot supply a diff")
+				}
+				source.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+					diff, err := workspace.GitCommitFileDiffs(ctx, checkout, base, head, tracker.MaxDiffBytes)
+					if err != nil {
+						return tracker.AttemptDiffRequest{}, false
+					}
+					request := tracker.AttemptDiffRequest{BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, CommitBound: true}
+					for _, f := range diff.Files {
+						request.Files = append(request.Files, tracker.AttemptDiffFile{Path: f.Path, Status: f.Status, Additions: f.Additions, Deletions: f.Deletions, Patch: f.Patch})
+					}
+					return request, true
+				})
+			}
+			setCommitDiff(remote)
 			if strings.HasPrefix(scenario, "spool ") {
 				if err := e.SpoolArtifactLog(ctx, "remote log 🌲\n"); err != nil {
 					t.Fatal(err)
@@ -376,6 +384,7 @@ func TestSSHNativePublication(t *testing.T) {
 					t.Fatal("central journal written remotely")
 				}
 				remote, _ = nativeSSHExecution(t, ctx, e, root)
+				setCommitDiff(remote)
 				artifacts = remote.(runner.ArtifactExecution)
 				if err := artifacts.PrepareArtifacts(ctx, checkout); err != nil {
 					t.Fatal(err)

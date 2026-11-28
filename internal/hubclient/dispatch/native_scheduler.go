@@ -284,9 +284,6 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		return err
 	}
 
-	if reportErr != nil {
-		return reportErr
-	}
 	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
@@ -345,7 +342,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 		s.machine.Capacity = min(appliedCapacity.RuntimeLimit, appliedCapacity.ClientLimit, appliedCapacity.LocalLimit)
 	}
 	s.nativeHeartbeats[project] = s.now()
-	return nil
+	return reportErr
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
@@ -861,6 +858,12 @@ func (s *Scheduler) applyNativeLeaseRenewal(issueID string, started time.Time, e
 		return claimed, true
 	}
 	if current.lease.ID != lease.ID || current.lease.FencingToken != lease.FencingToken {
+		return orchestrator.Claimed{}, false
+	}
+	if !current.deadline.IsZero() && !s.now().Before(current.deadline) {
+		current.lost = true
+		current.signalLeaseChange()
+		s.nativeClaims[issueID] = current
 		return orchestrator.Claimed{}, false
 	}
 	if current.lease.RenewedAt.After(lease.RenewedAt) {

@@ -30,7 +30,8 @@ func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow conf
 	var admission RunResult
 	plan, wait, err := planphase.Run(ctx, planphase.Request{
 		Execution: execution, Continuation: req.phaseContinuation, Backend: backend, Info: info, Issue: issue,
-		Description: req.Issue.Description, HumanReview: review != gate.PlanReviewAutomated, AutomatedReview: review != gate.PlanReviewHuman, Now: r.now,
+		PublishedSource: req.publishedPhaseSource,
+		Description:     req.Issue.Description, HumanReview: review != gate.PlanReviewAutomated, AutomatedReview: review != gate.PlanReviewHuman, Now: r.now,
 		Prompt: func() (string, error) {
 			return buildRunPrompt(workflow, &req, RunModePlan, PromptOptions{PlanOnly: true, WorkspacePath: info.Path, Branch: info.Branch}, workspace.MergePrepareResult{})
 		},
@@ -42,6 +43,14 @@ func (r *Runner) runPlanPhase(ctx context.Context, req RunRequest, workflow conf
 		},
 	})
 	return plan, wait, admission, err
+}
+
+func (req RunRequest) setPhaseProvider(ctx context.Context, requirement providercapacity.Requirement) error {
+	execution, ok := req.Execution.(phasedProviderExecution)
+	if !ok {
+		return ErrExecutionAuthorityUnavailable
+	}
+	return execution.SetPhaseProvider(ctx, requirement)
 }
 
 func (r *Runner) planPhaseAgent(ctx context.Context, req RunRequest, workflow config.Workflow, runtime agentRuntime, info workspace.Info, checker BudgetChecker, estimator DispatchEstimator) (func(context.Context, string) (string, error), RunResult, error) {
@@ -81,7 +90,7 @@ func (r *Runner) planPhaseAgent(ctx context.Context, req RunRequest, workflow co
 		}
 		projection = admission.budgetProjection
 	}
-	if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, requirement); err != nil {
+	if err := req.setPhaseProvider(ctx, requirement); err != nil {
 		return nil, RunResult{}, err
 	}
 	agentConfig := workflow.Config.EffectiveModelSelection().SessionAgent(workflow.Config.Agent, selected.Selection.Level)

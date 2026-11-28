@@ -1,6 +1,7 @@
 package cloudentry
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func (s *Service) uploadArchive(c echo.Context) error {
@@ -22,8 +24,19 @@ func (s *Service) uploadArchive(c echo.Context) error {
 	if err != nil || !safeID(c.Param("item")) {
 		return attachmentNotFound(c)
 	}
+	var check attachment.ArchiveCheck
+	lease := c.Request().Header.Get(attachment.ArchiveLeaseHeader)
+	token := c.Request().Header.Get(attachment.ArchiveFenceHeader)
+	if lease != "" || token != "" {
+		value, err := strconv.ParseInt(token, 10, 64)
+		fence := attachment.ArchiveFence{LeaseID: tracker.LeaseID(lease), FencingToken: tracker.FencingToken(value)}
+		if err != nil || !fence.Valid() {
+			return attachmentError(c, http.StatusBadRequest, "invalid_archive", "Invalid archive execution fence")
+		}
+		check.Fence = &fence
+	}
 	suffix := "/archives/" + c.Param("item")
-	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, suffix+"/check", struct{}{})
+	status, raw, err := s.attachmentCall(c, organization, http.MethodPost, suffix+"/check", check)
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
@@ -53,24 +66,33 @@ func (s *Service) uploadArchive(c echo.Context) error {
 		return attachmentError(c, http.StatusServiceUnavailable, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
 	ref.BindingID, ref.CustomerOwned = binding.ID, binding.Backend == "s3"
+	ctx := c.Request().Context()
+	if check.Fence != nil {
+		ref.Key, err = check.Fence.Key(organization.ID, c.Param("project"), c.Param("item"), ref.BindingID, ref.SHA256)
+		if err != nil {
+			return attachmentUploadError(c, err)
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, attachment.ArchiveUploadTimeout)
+		defer cancel()
+		c.SetRequest(c.Request().WithContext(ctx))
+	}
 	storage, err := s.bindingStorage(c.Request().Context(), binding)
 	if err != nil {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix+"/check", struct {
-		Reference attachment.ArchiveReference `json:"reference"`
-	}{ref})
+	check.Reference = &ref
+	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix+"/check", check)
 	if err != nil || status != http.StatusOK {
 		return attachmentCallError(c, status, raw, err, false)
 	}
-	ctx := c.Request().Context()
 	if err := s.auth.audit(ctx, authorized.Principal, organization.ID, "archive_uploaded"); err != nil {
 		return attachmentError(c, http.StatusServiceUnavailable, "audit_unavailable", "Archive audit is unavailable")
 	}
 	if err := attachment.StoreArchive(ctx, storage, organization.ID, ref, data); err != nil {
 		return attachmentError(c, http.StatusBadGateway, "archive_storage_unavailable", "Archive storage is unavailable")
 	}
-	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix, ref)
+	status, raw, err = s.attachmentCall(c, organization, http.MethodPost, suffix, attachment.ArchivePublication{ArchiveReference: ref, Fence: check.Fence})
 	if err != nil || status != http.StatusCreated {
 		return attachmentCallError(c, status, raw, err, false)
 	}

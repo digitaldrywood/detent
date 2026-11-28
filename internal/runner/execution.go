@@ -30,8 +30,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspace/gitexec"
 )
 
+var ErrHubUnavailable = errors.New("hub unavailable")
+
 var ErrExecutionAuthorityUnavailable = errors.New("execution authority unavailable")
 var ErrNativeRecoveryRequired = errors.New("native checkpoint requires recovery")
+var ErrPhaseReceiptsUnsupported = errors.New("hub does not support phase receipts")
 var ErrChangeSourceVersionSuperseded = errors.New("the transferred version differs from the current Change; re-read source recovery and reconcile the selected version before transfer")
 
 type Execution interface {
@@ -375,14 +378,20 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 	mode := runworkspace.NormalizeRunMode(req.Mode)
 	legacyPublishedSource := false
 	if phase, ok := req.Execution.(PhaseReceiptExecution); ok && gitPhases && req.Admission == nil && (mode == RunModeImplement || mode == RunModeMerge) {
-		req.phaseContinuation, err = phase.PhaseReceipts(guarded, gate.Effective(workflow.Config.Gate).Run)
-		if err != nil {
+		command := gate.Effective(workflow.Config.Gate).Run
+		req.phaseContinuation, err = phase.PhaseReceipts(guarded, command)
+		if err != nil && !errors.Is(err, ErrPhaseReceiptsUnsupported) {
 			return RunResult{}, failedStep("publication", err)
 		}
-		legacyPublishedSource = mode == RunModeImplement && req.NativeLandingRework == nil &&
-			requiresPublishedChangeRecovery(req.Execution.Recovery(), req.phaseContinuation)
+		if mode == RunModeImplement && req.NativeLandingRework == nil && req.phaseContinuation != nil {
+			recovery := req.Execution.Recovery()
+			legacyPublishedSource = requiresPublishedChangeRecovery(recovery, req.phaseContinuation)
+			if plan := req.phaseContinuation.Plan; !legacyPublishedSource && (plan == nil || plan.Accepted) {
+				legacyPublishedSource = nativeReviewResumeAttempt(recovery, command) != nil
+			}
+		}
 		req.phaseReceipts = req.phaseContinuation != nil && !legacyPublishedSource && (mode == RunModeImplement || req.RetainItemWorkspace)
-		if req.phaseReceipts {
+		if req.phaseReceipts || legacyPublishedSource {
 			req.publishedPhaseSource = &workspace.PhaseSource{}
 		}
 	}
@@ -486,7 +495,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			r.logWorkerEvent(req.Issue, "worker_native_landing_setup_retry", "error", runErr)
 			err := retries.Wait(guarded, retryDelay)
 			if err == nil {
-				err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(guarded)
+				err = req.verifyPhaseAuthority(guarded)
 			}
 			if err != nil {
 				runErr = errors.Join(runErr, err)
@@ -674,7 +683,10 @@ func (r *Runner) existingReviewWorkspace(ctx context.Context, req RunRequest, ba
 	if !ok {
 		return nil, noWorkspace
 	}
-	owner, _ := req.Execution.(runworkspace.AttemptOwner)
+	var owner runworkspace.AttemptOwner
+	if execution, ok := req.Execution.(runworkspace.AttemptOwner); ok {
+		owner = execution
+	}
 	attempt, valid := runworkspace.ResolveAttempt(ctx, req.AttemptWorkspace, owner, req.Issue)
 	lease, phase := req.Execution.Recovery().Lease, req.phaseContinuation.LastPushed
 	if !valid || attempt.Key() == "" || phase.AttemptID != attempt.Attempt || phase.LeaseID != lease.ID || phase.FencingToken != lease.FencingToken || phase.PolicyID != lease.PolicyID || phase.HeadSHA != req.NativeReviewContinuation.Source.HeadSHA {
@@ -768,9 +780,13 @@ func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend wor
 
 func (r *Runner) finishExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, cleanup bool) error {
 	if spool := req.artifactSpool; spool != nil && spool.directory != "" {
+		writer, ok := req.Execution.(spooledArtifactExecution)
+		if !ok {
+			return errors.New("execution cannot finalize spooled artifacts")
+		}
 		artifactCtx, cancel := r.artifactCompletionContext(ctx, req.Execution)
 		defer cancel()
-		if err := req.Execution.(spooledArtifactExecution).FinalizeArtifactsWithSpoolCount(artifactCtx, spool.directory, spool.chunks); err != nil {
+		if err := writer.FinalizeArtifactsWithSpoolCount(artifactCtx, spool.directory, spool.chunks); err != nil {
 			return fmt.Errorf("finalize artifacts: %w", err)
 		}
 		spool.directory = ""
@@ -903,6 +919,11 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			}
 		}
 	}
+	if !req.phaseReceipts && issue.Source != nil && req.phaseContinuation != nil {
+		if phase := req.phaseContinuation.LastPushed; phase != nil && phase.Branch == info.PublishBranch() {
+			req.phaseReceipts = true
+		}
+	}
 	phaseCompleted := finalizationErr == nil && req.phaseReceipts && req.retainedReview != nil && completedSourceDisposition(req.retainedReview.message)
 	if phaseCompleted {
 		verifier, ok := backend.(workspace.ReviewTreeVerifier)
@@ -919,7 +940,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		}
 		if previous.HeadSHA != "" && (issue.NativeRework || issue.NoChangeNeeded || req.Execution.Recovery().SourceVersionID != "") {
 			if publisher, ok := backend.(itemPhaseWorkspace); ok {
-				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority)
+				expected, err := publisher.PreserveItemPhaseHistory(ctx, info, issue, previous, req.verifyPhaseAuthority)
 				publicationIssue.ExpectedPhaseRemoteHead = expected
 				finalizationErr = failedStep("publication", err)
 			}
@@ -1039,6 +1060,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			diffErr = failedStep("publication", fmt.Errorf("capture finalized diff: %w", err))
 		} else {
 			request := attemptDiffRequest(finalDiff)
+			request.CommitBound = true
 			var superseded atomic.Pointer[string]
 			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 				if head := superseded.Load(); head != nil {

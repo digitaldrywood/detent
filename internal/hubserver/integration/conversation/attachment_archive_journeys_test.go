@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
@@ -223,7 +224,7 @@ func (f attachmentArchiveJourney) requireRetention(t *testing.T, ref attachment.
 				t.Fatalf("deleted source %s still has a reference, error %v", item, err)
 			}
 		}
-		candidates, err := reader.(attachmentstore.ExpiryReader).AttachmentDeletionCandidates(ctx, cutoff, 100)
+		candidates, err := reader.(attachmentstore.ExpiryReader).AttachmentDeletionCandidates(ctx, cutoff, time.Time{}, 100)
 		if err != nil {
 			return err
 		}

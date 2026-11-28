@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -139,6 +140,46 @@ func TestHeartbeatManagerSchedulesFromRemainingLeaseLifetime(t *testing.T) {
 	}, now)
 	if got := manager.targets["expired"].nextDue.Sub(now); got != 0 {
 		t.Fatalf("expired lease first due = %v, want 0", got)
+	}
+}
+
+func TestHeartbeatRetryUsesRemainingLease(t *testing.T) {
+	now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{Claiming: ClaimingConfig{HeartbeatInterval: 20 * time.Second, LeaseTTL: time.Minute}})
+	manager := newHeartbeatManager(cfg, nil, nil, func() time.Time { return now }, nil)
+	deadline := now.Add(25 * time.Second)
+	manager.upsert(heartbeatTarget{issueID: "example", localLeaseDeadline: deadline})
+	now = manager.targets["example"].nextDue
+	for _, limit := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
+		due := manager.due(now)
+		if len(due) != 1 {
+			t.Fatalf("no renewal due at %v: %v", now, due)
+		}
+		manager.finish(due[0], heartbeatResult{issueID: "example", sequence: due[0].sequence, claimError: errors.New("hub unavailable")})
+		current := manager.targets["example"]
+		if delay := current.nextDue.Sub(now); delay <= 0 || delay > limit || !current.nextDue.Before(deadline) || !current.localLeaseDeadline.Equal(deadline) {
+			t.Fatalf("failed heartbeat retry delay=%v deadline=%v, want retry within %v under %v", delay, current.localLeaseDeadline, limit, deadline)
+		}
+		now = current.nextDue
+	}
+	due := manager.due(now)
+	if len(due) != 1 {
+		t.Fatalf("no renewal due before the late response: %v", due)
+	}
+	now = deadline.Add(-900 * time.Millisecond)
+	manager.finish(due[0], heartbeatResult{issueID: "example", sequence: due[0].sequence, claimError: errors.New("hub unavailable")})
+	if delay := manager.nextDelay(now); delay < 100*time.Millisecond || delay > 450*time.Millisecond {
+		t.Fatalf("last-second retry delay = %v, want a retry after Hub recovery and within half the remaining lease", delay)
+	}
+	now = now.Add(manager.nextDelay(now))
+	due = manager.due(now)
+	if len(due) != 1 {
+		t.Fatalf("no renewal due after Hub recovery: %v", due)
+	}
+	renewed := now.Add(time.Minute)
+	manager.finish(due[0], heartbeatResult{issueID: "example", sequence: due[0].sequence, claimRenewed: true, claim: Claimed{LocalLeaseDeadline: renewed}})
+	if got := manager.targets["example"]; !got.localLeaseDeadline.Equal(renewed) || got.nextDue.Sub(now) != 20*time.Second {
+		t.Fatalf("heartbeat schedule after recovery: %+v", got)
 	}
 }
 

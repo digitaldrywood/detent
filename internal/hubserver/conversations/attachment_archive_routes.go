@@ -2,11 +2,13 @@ package conversations
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/corestore"
 	"github.com/digitaldrywood/detent/internal/hubserver/hostedplans"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubapi"
 	"github.com/digitaldrywood/detent/internal/hubserver/hubscope"
@@ -21,14 +23,12 @@ import (
 )
 
 func (s AttachmentArchiveHTTP) CheckAttachmentArchive(c echo.Context) error {
-	var input struct {
-		Reference *attachment.ArchiveReference `json:"reference,omitempty"`
-	}
+	var input attachment.ArchiveCheck
 	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.deps.InvalidRequest(c, err)
 	}
-	if input.Reference != nil {
-		return s.writeAttachmentArchive(c, *input.Reference, false)
+	if input.Reference != nil || input.Fence != nil || hubscope.NativeRequestScope(c).Credential.Scope == hubapi.APIScopeWorker {
+		return s.writeAttachmentArchive(c, input.Reference, input.Fence, false)
 	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
 	defer cancel()
@@ -44,66 +44,67 @@ func (s AttachmentArchiveHTTP) CheckAttachmentArchive(c echo.Context) error {
 }
 
 func (s AttachmentArchiveHTTP) RecordAttachmentArchive(c echo.Context) error {
-	var ref attachment.ArchiveReference
-	if err := hubapi.DecodeAPIJSON(c, &ref); err != nil {
+	var input attachment.ArchivePublication
+	if err := hubapi.DecodeAPIJSON(c, &input); err != nil {
 		return s.deps.InvalidRequest(c, err)
 	}
-	return s.writeAttachmentArchive(c, ref, true)
+	return s.writeAttachmentArchive(c, &input.ArchiveReference, input.Fence, true)
 }
 
-func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref attachment.ArchiveReference, publish bool) error {
+func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref *attachment.ArchiveReference, fence *attachment.ArchiveFence, publish bool) error {
 	scope := hubscope.NativeRequestScope(c)
-	if ref.Validate(string(scope.Organization)) != nil {
-		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
+	if (scope.Credential.Scope == hubapi.APIScopeWorker) != (fence != nil) || fence != nil && !fence.Valid() {
+		return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive execution fence"))
 	}
-	ctx := c.Request().Context()
+	item := tracker.NativeWorkItemID(c.Param("item"))
+	var record attachmentstore.ArchiveRecord
+	if ref != nil {
+		organization := string(scope.Organization)
+		if ref.Validate(organization) != nil || (fence != nil) != ref.ExecutionScoped(organization) {
+			return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
+		}
+		if fence != nil {
+			key, err := fence.Key(organization, string(scope.Project), string(item), ref.BindingID, ref.SHA256)
+			if err != nil || ref.Key != key {
+				return s.deps.APIError(c, hubapi.NativePublicInvalid("Invalid archive reference"))
+			}
+		}
+		identity := ref.Key
+		if ref.BindingID != "" {
+			identity = ref.BindingID + "\n" + identity
+		}
+		record = attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(organization + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.deps.Now(), Reference: *ref}
+	}
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubapi.ReadTimeout)
+	defer cancel()
 	scope.Action = operatortool.UploadAttachment
-	identity := ref.Key
-	if ref.BindingID != "" {
-		identity = ref.BindingID + "\n" + identity
+	checkFence := func(ctx context.Context, w tenantstore.Writer, row corestore.WorkItem) error {
+		if fence == nil {
+			return nil
+		}
+		return s.deps.AuthorizeFence(ctx, w, scope, row, tracker.Mutation{LeaseID: fence.LeaseID, FencingToken: fence.FencingToken})
 	}
-	record := attachmentstore.ArchiveRecord{OrganizationID: scope.Organization, ProjectID: scope.Project, ID: "att_" + artifact.Digest([]byte(string(scope.Organization) + "\n" + identity))[:32], Uploader: scope.Credential.ID, CreatedAt: s.deps.Now(), Reference: ref}
 	err := s.deps.WriteTenant(ctx, scope.Organization, func(w tenantstore.Writer) error {
-		if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
-			return err
-		}
-		if _, err := s.deps.WriteAuthority(ctx, w, scope, nil); err != nil {
-			return err
-		}
-		row, err := w.LockWorkItem(ctx, scope.Project, tracker.NativeWorkItemID(c.Param("item")))
+		row, err := s.lockArchiveItem(ctx, w, scope, item)
 		if err != nil {
 			return err
 		}
-		if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
-			return hubapi.NativeNotFound()
-		}
-		if err := s.deps.RequireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)}); err != nil {
+		if err := checkFence(ctx, w, row); err != nil || ref == nil {
 			return err
 		}
-		if publish {
-			return w.PublishAttachmentArchive(ctx, record, row.NativeID)
+		if fence != nil && !publish {
+			expiresAt := s.deps.Now().UTC().Add(attachment.ArchiveUploadTimeout)
+			record.UploadExpiresAt = &expiresAt
 		}
-		created, err := w.PrepareAttachmentArchive(ctx, record)
-		if err != nil || !created {
-			return err
-		}
-		limit, err := s.deps.QuotaLimit(ctx, w)
+		err = s.persistArchive(ctx, w, record, row.NativeID, publish)
 		if err != nil {
 			return err
 		}
-		delta := ref.CompressedSize
-		if ref.CustomerOwned {
-			delta = 0
-		}
-		usage, err := w.AdjustCollaborationBytes(ctx, delta, limit)
-		if err != nil {
-			return err
-		}
-		if !usage.Allowed {
-			return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
-		}
-		return nil
+		return checkFence(ctx, w, row)
 	})
+	if publish && fence != nil && errors.Is(err, tracker.ErrStaleFencingToken) {
+		return s.deps.APIError(c, &hubapi.NativeError{Code: "stale_fencing_token", Message: "Lease fencing token is stale", Status: http.StatusConflict, PublicMessage: true})
+	}
 	if err != nil {
 		return s.deps.APIError(c, hubapi.ProjectRecordError(err))
 	}
@@ -112,6 +113,49 @@ func (s AttachmentArchiveHTTP) writeAttachmentArchive(c echo.Context, ref attach
 		return c.JSON(http.StatusOK, map[string]string{"principal_id": scope.Credential.ID})
 	}
 	return c.JSON(http.StatusCreated, ref)
+}
+
+func (s AttachmentArchiveHTTP) lockArchiveItem(ctx context.Context, w tenantstore.Writer, scope hubscope.NativeScope, item tracker.NativeWorkItemID) (corestore.WorkItem, error) {
+	if err := w.LockWorkItemProject(ctx, scope.Project); err != nil {
+		return corestore.WorkItem{}, err
+	}
+	if _, err := s.deps.WriteAuthority(ctx, w, scope, nil); err != nil {
+		return corestore.WorkItem{}, err
+	}
+	row, err := w.LockWorkItem(ctx, scope.Project, item)
+	if err != nil {
+		return row, err
+	}
+	if !scope.ReporterOwns(tracker.Actor{PrincipalID: hubapi.StringValue(row.ActorPrincipalID)}) {
+		return row, hubapi.NativeNotFound()
+	}
+	return row, s.deps.RequireReporterTriage(scope, tracker.NativeIssue{State: hubapi.StringValue(row.WorkflowStateName)})
+}
+
+func (s AttachmentArchiveHTTP) persistArchive(ctx context.Context, w tenantstore.Writer, record attachmentstore.ArchiveRecord, item tracker.NativeWorkItemID, publish bool) error {
+	if publish {
+		return w.PublishAttachmentArchive(ctx, record, item)
+	}
+	created, err := w.PrepareAttachmentArchive(ctx, record)
+	if err != nil || !created {
+		return err
+	}
+	limit, err := s.deps.QuotaLimit(ctx, w)
+	if err != nil {
+		return err
+	}
+	delta := record.Reference.CompressedSize
+	if record.Reference.CustomerOwned {
+		delta = 0
+	}
+	usage, err := w.AdjustCollaborationBytes(ctx, delta, limit)
+	if err != nil {
+		return err
+	}
+	if !usage.Allowed {
+		return &hostedplans.LimitError{Resource: "collaboration_bytes", Allowance: limit, Consumption: usage.Used}
+	}
+	return nil
 }
 
 func (s AttachmentArchiveHTTP) ReadAttachmentArchive(c echo.Context) error {

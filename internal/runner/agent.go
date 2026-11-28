@@ -989,6 +989,9 @@ func runAgentBackendTurnWithToolsUsingLimitPreservingScratch(
 			boundedUpdateHandler = func(update AgentUpdate) error {
 				updateMu.Lock()
 				defer updateMu.Unlock()
+				if cause := context.Cause(turnCtx); cause != nil {
+					return cause
+				}
 				update.workerScratchPath = request.TempDir
 				if onUpdate != nil {
 					if err := onUpdate(turnCtx, update); err != nil {
@@ -1236,17 +1239,17 @@ func (r *Runner) runAgentTurn(
 	var observe func(func(context.Context) error)
 	var finishObservations func() error
 	updates := runRequest
-	artifactWriter, _ := runRequest.Execution.(spooledArtifactExecution)
+	artifactWriter, spoolsArtifacts := runRequest.Execution.(spooledArtifactExecution)
 	if runRequest.Execution != nil && backendKind == config.AgentBackendCodex {
 		turnCtx, observe, finishObservations = runobserve.Start(ctx, ErrExecutionAuthorityUnavailable, func(err error) {
 			r.logger.Warn("turn observation deferred", "issue_id", runRequest.Issue.ID, "error", err)
 		})
 	}
 	var interventions []tracker.ExecutionLoopIntervention
-	loopOwner, _ := runRequest.Execution.(interface {
+	loopOwner, recordsLoops := runRequest.Execution.(interface {
 		RecordLoopIntervention(context.Context, tracker.ExecutionLoopIntervention) error
 	})
-	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && loopOwner != nil {
+	if turnRequest.DetectToolLoops && runRequest.checklistRevision != "" && recordsLoops {
 		turnRequest.RecordLoopIntervention = func(event tracker.ExecutionLoopIntervention) {
 			event.Revision = runRequest.checklistRevision
 			if len(interventions) == progresscheck.ToolLoopWindow {
@@ -1316,14 +1319,14 @@ func (r *Runner) runAgentTurn(
 		}
 		r.logAgentUpdate(runRequest, detentSessionID, update)
 		if artifacts, ok := runRequest.Execution.(ArtifactExecution); ok && update.Delta != "" {
-			if observe != nil && artifactWriter != nil && runRequest.artifactSpool != nil {
+			if observe != nil && spoolsArtifacts && runRequest.artifactSpool != nil {
 				runRequest.artifactSpool.chunks++
 				observe(func(ctx context.Context) error { return artifactWriter.SpoolArtifactLog(ctx, update.Delta) })
 			} else if err := artifacts.ArtifactLog(updateCtx, update.Delta); err != nil {
 				r.logger.Warn("artifact log upload deferred", "issue_id", runRequest.Issue.ID)
 			}
 		}
-		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
+		if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath)); err != nil {
 			return err
 		}
 		if !update.AuxiliaryTurn {
@@ -1337,14 +1340,14 @@ func (r *Runner) runAgentTurn(
 		if runRequest.Execution == nil {
 			r.persistSessionProviderIdentity(updateCtx, detentSessionID, update)
 		}
-		if err := publishAgentActivity(updates, detentSessionID, update, eventAt); err != nil {
+		if err := turnObservationError(updateCtx, publishAgentActivity(updates, detentSessionID, update, eventAt)); err != nil {
 			return err
 		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
 			if runRequest.Execution == nil {
-				if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
+				if err := turnObservationError(updateCtx, r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity)); err != nil {
 					return err
 				}
 			}
@@ -1366,7 +1369,7 @@ func (r *Runner) runAgentTurn(
 			}
 			activity = false
 		}
-		if err := r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity, isCompletedAgentTurn(update)); err != nil {
+		if err := turnObservationError(updateCtx, r.publishRunUpdate(updateCtx, updates, info, workspaceIssue, progress, result, eventAt, runStartedAt, detentSessionID, activity, isCompletedAgentTurn(update))); err != nil {
 			return err
 		}
 		ceilingUpdate := update
@@ -1773,7 +1776,7 @@ func (r *Runner) resumeRunCheckpoint(ctx context.Context, req *RunRequest, runti
 	return nil
 }
 
-func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runWorkspace workspace.Backend, info *workspace.Info, issue *workspace.Issue) {
+func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runWorkspace workspace.Backend, info *workspace.Info, issue *workspace.Issue, gates gate.Config) {
 	if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
 		evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
 	}
@@ -1783,7 +1786,8 @@ func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runW
 	if repository, ok := req.Execution.(RepositoryExecution); ok {
 		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
 	}
-	if source, ok := req.Execution.(ChangeSourceExecution); ok && !req.phaseReceipts {
+	needsReviewSource := gates.Validator.Enabled || gates.AutomatedReview == gate.AutomatedReviewRequired || gates.SecurityAudit.Enabled
+	if source, ok := req.Execution.(ChangeSourceExecution); ok && (!req.phaseReceipts || needsReviewSource) {
 		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
 		})
@@ -2394,7 +2398,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			}
 			start = phased.StartPhased
 		}
-		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
+		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue, gate.Effective(workflow.Config.Gate))
 		if _, binds := req.Execution.(ConversationExecution); binds {
 			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
 				preStartBinding = false
@@ -2515,11 +2519,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			afterRunPending = false
 			return admission, err
 		}
-		if err := req.Execution.(phasedProviderExecution).SetPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
+		if err := req.setPhaseProvider(ctx, providercapacity.Requirement{Role: role, Backend: selection.BackendID, Model: effectiveModel("", sessionModel, "provider_default")}); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
-		if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+		if err := req.verifyPhaseAuthority(ctx); err != nil {
 			afterRunPending = false
 			return RunResult{}, err
 		}
@@ -2527,6 +2531,81 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	var restoredSourceCorrection string
 	reworkPrecheck := workspace.MergePrepareResult{}
+	var reworkSourceChanged bool
+	var resolutionStarted time.Time
+	defer func() {
+		if resolutionStarted.IsZero() {
+			return
+		}
+		outcome := "agent-resolved"
+		if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
+			outcome = "rework"
+		}
+		r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
+	}()
+	prepareRework := func() error {
+		if err := req.Execution.Validate(ctx); err != nil {
+			return err
+		}
+		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
+			started := r.now()
+			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
+			r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(precheck.Status, err))
+			outcome := reworkPreparationOutcome(precheck.Status, err)
+			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
+			if precheck.Status == workspace.MergePrepareStatusConflict {
+				resolutionStarted = r.now()
+			}
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
+			}
+			resumeSource := recoveryState
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return ErrNativeRecoveryRequired
+			}
+			reworkSourceChanged = resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && reworkSourceChanged {
+				resumeState = store.AgentResumeState{}
+				req.ResumeState = store.AgentResumeState{}
+				req.RetryMode = RetryModeFresh
+				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
+				if runtime, ok := req.Execution.(RuntimeExecution); ok {
+					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
+						return err
+					}
+				}
+			}
+			if diffs, ok := req.Execution.(DiffExecution); ok {
+				diffIssue := workspaceIssue
+				if precheck.BaseSHA != "" {
+					diffIssue.BaseRef = precheck.BaseSHA
+				}
+				r.setAttemptDiffSource(ctx, &req, diffs, info, diffIssue)
+			}
+			evidenceIssue := workspaceIssue
+			evidenceIssue.BaseRef = recoveryState.HeadSHA
+			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
+			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
+			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
+				checkpoint.Resume = "resume_session"
+			}
+			if err := recordExecutionCheckpoint(ctx, req.Execution, checkpoint); err != nil {
+				return err
+			}
+			reworkPrecheck = precheck
+			promptOptions.RecoveryState = recoveryState
+		}
+		return nil
+	}
+	if req.phaseReceipts && workspaceIssue.NativeRework && (publicationRecovery || turnRecovery != nil) {
+		if err := prepareRework(); err != nil {
+			return RunResult{}, err
+		}
+		if reworkPrecheck.Status == workspace.MergePrepareStatusConflict || reworkSourceChanged {
+			publicationRecovery, turnRecovery = false, nil
+		}
+	}
 	if publicationRecovery || reviewRecovery != nil || turnRecovery != nil {
 		reviewSource := req.reviewSource
 		req.reviewSource = nil
@@ -2579,8 +2658,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if reviewRecovery != nil || turnRecovery != nil {
 			sessionErr = r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, r.now(), result, sessionModel, backendConfig.Kind, 0, AgentTurnResult{}, 0)
 		}
-		repair, needsRepair := err.(*sourceRepair)
-		if !needsRepair || sessionErr != nil {
+		var repair *sourceRepair
+		if !errors.As(err, &repair) || sessionErr != nil {
 			return result, errors.Join(err, sessionErr)
 		}
 		if err := errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx)); err != nil {
@@ -2588,7 +2667,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		if repair.incomplete != nil {
 			if req.phaseReceipts {
-				if err := req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx); err != nil {
+				if err := req.verifyPhaseAuthority(ctx); err != nil {
 					return result, errors.Join(repair, err)
 				}
 			}
@@ -2616,64 +2695,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		afterRunPending = true
 	}
 	if workspaceIssue.NativeRework && reworkPrecheck.Status == "" {
-		if err := req.Execution.Validate(ctx); err != nil {
+		if err := prepareRework(); err != nil {
 			return RunResult{}, err
-		}
-		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
-			started := r.now()
-			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
-			r.logWorkerEvent(req.Issue, "worker_rework_preparation_finished", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "reason", reworkPreparationReason(precheck.Status, err))
-			outcome := reworkPreparationOutcome(precheck.Status, err)
-			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
-			if precheck.Status == workspace.MergePrepareStatusConflict {
-				resolutionStarted := r.now()
-				defer func() {
-					outcome := "agent-resolved"
-					if returnErr != nil || returnValue.FinalState != FinalStateCompleted {
-						outcome = "rework"
-					}
-					r.recordPipeline(req, gate.Interval("conflict_resolution", resolutionStarted, r.now(), outcome))
-				}()
-			}
-			if err != nil {
-				return RunResult{}, fmt.Errorf("%w: %w", ErrWorkspacePreparation, nativeGitError("prepare native rework", err))
-			}
-			resumeSource := recoveryState
-			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
-			if recoveryState == nil {
-				return RunResult{}, ErrNativeRecoveryRequired
-			}
-			sourceChanged := resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
-			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && sourceChanged {
-				resumeState = store.AgentResumeState{}
-				req.ResumeState = store.AgentResumeState{}
-				req.RetryMode = RetryModeFresh
-				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
-				if runtime, ok := req.Execution.(RuntimeExecution); ok {
-					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
-						return RunResult{}, err
-					}
-				}
-			}
-			if diffs, ok := req.Execution.(DiffExecution); ok {
-				diffIssue := workspaceIssue
-				if precheck.BaseSHA != "" {
-					diffIssue.BaseRef = precheck.BaseSHA
-				}
-				r.setAttemptDiffSource(ctx, &req, diffs, info, diffIssue)
-			}
-			evidenceIssue := workspaceIssue
-			evidenceIssue.BaseRef = recoveryState.HeadSHA
-			req.validationEvidenceSource = r.attemptDiffSource(ctx, info, evidenceIssue)
-			checkpoint := executionCheckpointPreservingPublication(req.Execution, recoveryState)
-			if !agentResumeEmpty(agentResumeFromState(resumeState)) {
-				checkpoint.Resume = "resume_session"
-			}
-			if err := recordExecutionCheckpoint(ctx, req.Execution, checkpoint); err != nil {
-				return RunResult{}, err
-			}
-			reworkPrecheck = precheck
-			promptOptions.RecoveryState = recoveryState
 		}
 	}
 	prompt, err := buildRunPrompt(workflow, &req, mode, promptOptions, reworkPrecheck)
@@ -2895,7 +2918,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			r.logWorkerEvent(req.Issue, "worker_round_deadline", "phase", "implement", "provider_timeout", providerTimeout)
 			retry := r.roundRetry(sessionCtx, req, "implement", providerTimeout, &deadlines, retryDelay)
 			validate := func(ctx context.Context) error {
-				return progresscheck.AwaitRoundAuthority(ctx, req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority, retry)
+				return progresscheck.AwaitRoundAuthority(ctx, req.verifyPhaseAuthority, retry)
 			}
 			assessment, verdictErr := r.decideRound(sessionCtx, req, runWorkspace, info, workspaceIssue, "implement", deadlines.Evidence(), execution.result, execution.err, false, retry)
 			if verdictErr != nil {
@@ -3168,8 +3191,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			var err error
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
 			cleanupWorkspace, err = r.prepareExecutionCompletion(afterRunCtx, req, runWorkspace, info, workspaceIssue, resume, result.TurnStarted)
-			repair, needsRepair := err.(*sourceRepair)
-			if turnErr == nil && needsRepair && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
+			var repair *sourceRepair
+			if turnErr == nil && errors.As(err, &repair) && (repair.incomplete == nil || sourceBudgetRemaining(ctx) != 0 && !agentResumeEmpty(resume)) {
 				err = errors.Join(executionCancellation(req), context.Cause(ctx), req.Execution.Validate(ctx))
 				if err == nil {
 					err = verifyAgentResume(ctx, backend, processRequest, resume)
@@ -3186,7 +3209,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 				if err == nil && repair.incomplete != nil {
 					if req.phaseReceipts {
-						err = req.Execution.(PhaseReceiptExecution).VerifyPhaseAuthority(ctx)
+						err = req.verifyPhaseAuthority(ctx)
 					}
 					correctionPrompt = sourceFinalizationPrompt(repair.incomplete.Status)
 				}
@@ -4487,13 +4510,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			update.RuntimeIdentity = update.RuntimeIdentity.ObserveAt(eventAt)
 		}
 		r.logAgentUpdate(runReq, sessionID, update)
-		if err := r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath); err != nil {
+		if err := turnObservationError(updateCtx, r.persistSessionWorkerProcess(updateCtx, worker, update.WorkerProcess, update.workerScratchPath)); err != nil {
 			return err
 		}
 		if req.NativeVersion == nil {
 			r.persistSessionProviderIdentity(updateCtx, sessionID, update)
 		}
-		if err := publishAgentActivity(runReq, sessionID, update, eventAt); err != nil {
+		if err := turnObservationError(updateCtx, publishAgentActivity(runReq, sessionID, update, eventAt)); err != nil {
 			return err
 		}
 		if update.Type == AgentUpdateMessageDelta {
@@ -4506,7 +4529,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			if req.NativeVersion == nil {
-				if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
+				if err := turnObservationError(updateCtx, r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity)); err != nil {
 					return err
 				}
 			}
@@ -4515,7 +4538,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			}
 		}
 		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update), isCompletedAgentTurn(update)); err != nil {
+		if err := turnObservationError(updateCtx, r.publishRunUpdate(updateCtx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt, sessionID, providerUpdateIsActivity(update), isCompletedAgentTurn(update))); err != nil {
 			return err
 		}
 		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, update); err != nil {
@@ -6622,6 +6645,16 @@ func ObserveProviderActivity(lifetime *sessiontimeout.Session, update AgentUpdat
 		}
 	}
 	return false
+}
+
+func turnObservationError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return errors.Join(cause, err)
+	}
+	if errors.Is(err, ErrHubUnavailable) && !errors.Is(err, ErrExecutionAuthorityUnavailable) && !errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func publishAgentActivity(req RunRequest, detentSessionID int64, update AgentUpdate, at time.Time) error {

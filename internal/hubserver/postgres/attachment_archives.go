@@ -2,6 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/hubserver/attachmentstore"
@@ -13,6 +17,22 @@ func archiveReference(row attachmentstore.Record) attachment.ArchiveReference {
 	return attachment.ArchiveReference{Key: row.ObjectKey, SHA256: row.Metadata.SHA256, CompressedSize: row.Metadata.Size, UncompressedSize: row.UncompressedSize, Codec: row.Codec, SchemaVersion: int(row.SchemaVersion), Kind: row.Kind, Retention: row.Retention, BindingID: row.StorageBindingID, CustomerOwned: row.CustomerOwned}
 }
 
+func (s *session) ExpireArchiveReservation(ctx context.Context, id string, at time.Time) (bool, error) {
+	var locked string
+	err := s.db.QueryRow(ctx, `SELECT id FROM attachments WHERE organization_id=$1 AND id=$2 AND `+expiringArchivePredicate+` AND archive_upload_expires_at<=$3 FOR UPDATE`, s.organization, id, at).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, mapError(ctx, err)
+	}
+	result, err := s.db.Exec(ctx, `UPDATE attachments SET deleted_at=$3 WHERE organization_id=$1 AND id=$2
+ AND NOT EXISTS (SELECT 1 FROM attachment_archive_references WHERE organization_id=$1 AND attachment_id=$2)`, s.organization, locked, at)
+	return err == nil && result.RowsAffected() == 1, mapError(ctx, err)
+}
+
+const expiringArchivePredicate = rejectedArchivePredicate + ` AND deleted_at IS NULL AND object_deleted_at IS NULL AND archive_upload_expires_at IS NOT NULL`
+
 func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstore.ArchiveRecord) (bool, error) {
 	if err := s.checkOrganization(r.OrganizationID); err != nil {
 		return false, err
@@ -21,8 +41,11 @@ func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstor
 	if ref.Validate(string(s.organization)) != nil || r.ID == "" || r.ProjectID == "" || r.Uploader == "" || r.CreatedAt.IsZero() {
 		return false, attachment.ErrInvalid
 	}
-	result, err := s.db.Exec(ctx, `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned)
- VALUES ($1,$2,$3,$4,'archive.gz','application/gzip',$5,$6,$7,'archive',$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (organization_id,id) DO NOTHING`, s.organization, r.ProjectID, r.ID, r.Uploader, ref.CompressedSize, ref.SHA256, r.CreatedAt, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.BindingID, ref.CustomerOwned)
+	if r.UploadExpiresAt != nil && (!ref.ExecutionScoped(string(s.organization)) || !r.CreatedAt.Before(*r.UploadExpiresAt)) {
+		return false, attachment.ErrInvalid
+	}
+	result, err := s.db.Exec(ctx, `INSERT INTO attachments (organization_id,project_id,id,uploader,name,content_type,size,sha256,created_at,kind,retention_class,object_key,uncompressed_size,codec,schema_version,storage_binding_id,customer_owned,archive_upload_expires_at)
+ VALUES ($1,$2,$3,$4,'archive.gz','application/gzip',$5,$6,$7,'archive',$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (organization_id,id) DO NOTHING`, s.organization, r.ProjectID, r.ID, r.Uploader, ref.CompressedSize, ref.SHA256, r.CreatedAt, ref.Retention, ref.Key, ref.UncompressedSize, ref.Codec, ref.SchemaVersion, ref.BindingID, ref.CustomerOwned, r.UploadExpiresAt)
 	if err != nil {
 		return false, mapError(ctx, err)
 	}
@@ -33,6 +56,13 @@ func (s *session) PrepareAttachmentArchive(ctx context.Context, r attachmentstor
 	}
 	if archiveReference(row) != ref || row.Metadata.DeletedAt != nil || row.ObjectDeletedAt != nil {
 		return false, corestore.ErrRevisionConflict
+	}
+	if n == 0 && r.UploadExpiresAt != nil {
+		_, err := s.db.Exec(ctx, `UPDATE attachments SET archive_upload_expires_at=$3 WHERE organization_id=$1 AND id=$2 AND archive_upload_expires_at<$3`,
+			s.organization, r.ID, r.UploadExpiresAt)
+		if err != nil {
+			return false, mapError(ctx, err)
+		}
 	}
 	return n == 1, nil
 }
@@ -55,6 +85,9 @@ func (s *session) PublishAttachmentArchive(ctx context.Context, r attachmentstor
 		return corestore.ErrRevisionConflict
 	}
 	_, err = s.db.Exec(ctx, `INSERT INTO attachment_archive_references (organization_id,project_id,work_item_id,attachment_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, s.organization, r.ProjectID, item, r.ID)
+	if err == nil && r.Reference.ExecutionScoped(string(s.organization)) {
+		_, err = s.db.Exec(ctx, `UPDATE attachments SET archive_upload_expires_at=NULL WHERE organization_id=$1 AND id=$2 AND archive_upload_expires_at IS NOT NULL`, s.organization, r.ID)
+	}
 	return mapError(ctx, err)
 }
 

@@ -381,6 +381,7 @@ func (s *Service) attachmentArchiveHTTP() conversations.AttachmentArchiveHTTP {
 		ReadWorkItem:          s.readWorkItemRecord,
 		RequireReporterTriage: requireReporterTriage,
 		WriteAuthority:        s.attachmentWriteAuthority,
+		AuthorizeFence:        s.authorizeAttachmentCommentLease,
 		QuotaLimit:            s.attachmentQuotaLimit,
 		ReadConversation:      s.readPGConversation,
 		Authorize:             s.authorizeAccessScope,

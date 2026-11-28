@@ -25,7 +25,11 @@ func (s *spaces) PutArchive(ctx context.Context, ref ArchiveReference, data []by
 	if !validArchiveKey(ref) || int64(len(data)) != ref.CompressedSize || artifact.Digest(data) != ref.SHA256 {
 		return ErrInvalid
 	}
-	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + ref.Key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))), ContentType: aws.String("application/gzip"), CacheControl: aws.String("private, no-store")})
+	input := &s3.PutObjectInput{Bucket: aws.String(s.config.Bucket), Key: aws.String(s.prefix + ref.Key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))), ContentType: aws.String("application/gzip"), CacheControl: aws.String("private, no-store")}
+	if ref.ExecutionScoped(strings.SplitN(ref.Key, "/", 3)[1]) {
+		input.IfNoneMatch = aws.String("*")
+	}
+	_, err := s.client.PutObject(ctx, input)
 	if err != nil {
 		return artifact.ErrStorage
 	}

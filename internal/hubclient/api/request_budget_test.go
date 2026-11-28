@@ -153,6 +153,69 @@ func TestClientRequestBudgetContinuesAfterRepeatedRefusals(t *testing.T) {
 	})
 }
 
+func TestFencedRequestRechecksAuthorityAfterTokenResolution(t *testing.T) {
+	client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) {
+		response.WriteHeader(http.StatusNoContent)
+	})
+	var fenceErr error
+	client.tokenSource = func() string {
+		fenceErr = runner.ErrExecutionAuthorityUnavailable
+		return "token"
+	}
+	ctx := WithRequestFence(t.Context(), nil, func() error { return fenceErr })
+	if err := client.request(ctx, http.MethodPost, "/attempts/attempt_example/diff", nil, nil); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || *calls != 0 {
+		t.Fatalf("request reached transport %d times, error = %v", *calls, err)
+	}
+}
+
+func TestDetachedPublicationRechecksAuthorityAfterTokenResolution(t *testing.T) {
+	for _, route := range []string{"phases", "progress"} {
+		for _, loss := range []string{"expiry", "revocation"} {
+			t.Run(route+"/"+loss, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					client, calls := budgetClient(t, func(_ int, response *httptest.ResponseRecorder) {
+						response.WriteHeader(http.StatusNoContent)
+					})
+					item := tracker.NativeWorkItemID("wi_example")
+					lease := tracker.NativeLease{ID: "lease", FencingToken: 1, WorkItemID: item}
+					mutation := tracker.Mutation{IdempotencyKey: "example", LeaseID: lease.ID, FencingToken: lease.FencingToken}
+					native, err := client.Native("org_example", "prj_example")
+					if err != nil {
+						t.Fatal(err)
+					}
+					live, revoke := context.WithCancelCause(t.Context())
+					defer revoke(nil)
+					deadline := time.Now().Add(time.Second)
+					resolved := false
+					client.tokenSource = func() string {
+						resolved = true
+						if loss == "expiry" {
+							<-time.After(time.Until(deadline))
+						} else {
+							revoke(runner.ErrExecutionAuthorityUnavailable)
+						}
+						return "fixture"
+					}
+					ctx := context.WithoutCancel(WithMutationAuthority(live, native.Scope(), lease, func() error {
+						if !time.Now().Before(deadline) {
+							return runner.ErrExecutionAuthorityUnavailable
+						}
+						return context.Cause(live)
+					}))
+					if route == "phases" {
+						_, err = native.PublishPhaseReceipt(ctx, item, tracker.NativePhaseReceipt{Mutation: mutation})
+					} else {
+						_, err = native.PublishRoundVerdict(ctx, item, progresscheck.Publication{Mutation: mutation})
+					}
+					if !resolved || ctx.Err() != nil || !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || *calls != 0 {
+						t.Fatalf("token resolved = %t, request reached transport %d times, error = %v", resolved, *calls, err)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestFencedPublicationRequestBudget(t *testing.T) {
 	for _, route := range []string{"phases", "progress", "changes", "versions", "landing"} {
 		for _, scenario := range []struct {
@@ -418,21 +481,32 @@ func TestClientRequestBudgetExemptions(t *testing.T) {
 
 func TestValidatorReviewBudgetWaitStopsOnLeaseLoss(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		bytes int
+		name        string
+		bytes       int
+		archiveWait bool
+		tokenLookup bool
+		expire      bool
+		wantArchive int
+		wantReview  int
 	}{
-		{name: "inline", bytes: 1024},
-		{name: "archived", bytes: maxResponseBytes + 1024},
+		{name: "inline review wait", bytes: 1024, wantReview: 1},
+		{name: "archived review wait", bytes: maxResponseBytes + 1024, wantArchive: 1, wantReview: 1},
+		{name: "archive budget wait expires", bytes: maxResponseBytes + 1024, archiveWait: true, expire: true},
+		{name: "archive budget wait revoked", bytes: maxResponseBytes + 1024, archiveWait: true},
+		{name: "archive token lookup expires", bytes: maxResponseBytes + 1024, tokenLookup: true, expire: true},
+		{name: "archive token lookup revoked", bytes: maxResponseBytes + 1024, tokenLookup: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
+				const lossAfter = 10 * time.Second
 				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 7}
 				lost := errors.Join(runner.ErrExecutionAuthorityUnavailable, errors.New("revoked"))
-				reviewPosts := 0
+				archivePosts, reviewPosts := 0, 0
 				transport := executionRoundTrip(func(req *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
 					switch {
 					case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/archives"):
+						archivePosts++
 						raw, err := io.ReadAll(req.Body)
 						if err != nil {
 							t.Fatal(err)
@@ -460,10 +534,30 @@ func TestValidatorReviewBudgetWaitStopsOnLeaseLoss(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				guard, cancelGuard := context.WithCancelCause(t.Context())
-				defer cancelGuard(nil)
-				timer := time.AfterFunc(10*time.Second, func() { cancelGuard(lost) })
-				defer timer.Stop()
+				var guard context.Context
+				if test.expire {
+					lost = errors.Join(runner.ErrExecutionAuthorityUnavailable, errors.New("expired"))
+					var cancelExpiry context.CancelFunc
+					guard, cancelExpiry = context.WithTimeoutCause(t.Context(), lossAfter, lost)
+					defer cancelExpiry()
+				} else {
+					var revoke context.CancelCauseFunc
+					guard, revoke = context.WithCancelCause(t.Context())
+					defer revoke(nil)
+					timer := time.AfterFunc(lossAfter, func() { revoke(lost) })
+					defer timer.Stop()
+				}
+				if test.archiveWait {
+					client.DeferRequestBudget("/archives", time.Now().Add(time.Minute))
+				}
+				tokenLookupStarted := false
+				if test.tokenLookup {
+					client.tokenSource = func() string {
+						tokenLookupStarted = true
+						<-guard.Done()
+						return "token"
+					}
+				}
 				guarded := WithMutationAuthority(guard, native.base(), lease, nil)
 				finalization, cancelFinalization := context.WithTimeout(context.WithoutCancel(guarded), 3*time.Minute)
 				defer cancelFinalization()
@@ -475,8 +569,11 @@ func TestValidatorReviewBudgetWaitStopsOnLeaseLoss(t *testing.T) {
 					Decision:          "approved",
 					Validator:         payload,
 				})
-				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !errors.Is(err, lost) || reviewPosts != 1 || time.Since(start) != 10*time.Second || finalization.Err() != nil {
-					t.Fatalf("PublishValidator returned %v after %s and %d review POSTs (finalization err=%v)", err, time.Since(start), reviewPosts, finalization.Err())
+				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || !errors.Is(err, lost) ||
+					archivePosts != test.wantArchive || reviewPosts != test.wantReview || tokenLookupStarted != test.tokenLookup ||
+					time.Since(start) != lossAfter || finalization.Err() != nil {
+					t.Fatalf("PublishValidator returned %v after %s, archive POSTs=%d, review POSTs=%d, token lookup=%t, finalization error=%v",
+						err, time.Since(start), archivePosts, reviewPosts, tokenLookupStarted, finalization.Err())
 				}
 			})
 		})
