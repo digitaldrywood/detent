@@ -259,21 +259,26 @@ const rejectedArchivePredicate = `kind='archive' AND pending_content IS NULL`
 const orphanAttachmentPredicate = `deleted_at IS NULL AND object_deleted_at IS NULL AND retention_class IN ('','expiring') AND work_item_id IS NULL AND created_at<=$2`
 const attachmentHasReferences = `EXISTS(SELECT 1 FROM attachment_item_references r WHERE r.organization_id=attachments.organization_id AND r.attachment_id=attachments.id)`
 
-func (s *session) AttachmentDeletionCandidates(ctx context.Context, cutoff, archiveCutoff time.Time, limit int) ([]attachmentstore.Record, error) {
+func (s *session) AttachmentDeletionCandidates(ctx context.Context, cutoff, archiveAsOf time.Time, limit int) ([]attachmentstore.Record, error) {
 	if cutoff.IsZero() || limit < 1 || limit > 100 {
 		return nil, corestore.ErrInvalidPage
 	}
-	var rejectedBefore *time.Time
-	if !archiveCutoff.IsZero() {
-		rejectedBefore = &archiveCutoff
+	var reservedBefore, rejectedBefore *time.Time
+	if !archiveAsOf.IsZero() {
+		reservedBefore = &archiveAsOf
+		cutoff := archiveAsOf.Add(-attachment.ArchiveUploadTimeout)
+		rejectedBefore = &cutoff
 	}
 	rows, err := s.db.Query(ctx, `SELECT * FROM (
  (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND deleted_at IS NOT NULL AND object_deleted_at IS NULL ORDER BY created_at,id LIMIT $3)
  UNION ALL
  (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+managedAttachmentPredicate+` AND `+orphanAttachmentPredicate+` ORDER BY created_at,id LIMIT $3)
  UNION ALL
- (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+rejectedArchivePredicate+` AND deleted_at IS NOT NULL AND deleted_at<=$4 AND object_deleted_at IS NULL ORDER BY deleted_at,id LIMIT $3)
- ) candidates ORDER BY created_at,id LIMIT $3`, s.organization, cutoff, limit, rejectedBefore)
+ (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+rejectedArchivePredicate+` AND deleted_at IS NOT NULL AND deleted_at<=$5
+  AND (archive_upload_expires_at IS NOT NULL OR deleted_at<=$4) AND object_deleted_at IS NULL ORDER BY deleted_at,id LIMIT $3)
+ UNION ALL
+ (SELECT `+attachmentRecordColumns+` FROM attachments WHERE organization_id=$1 AND `+expiringArchivePredicate+` AND archive_upload_expires_at<=$5 ORDER BY archive_upload_expires_at,id LIMIT $3)
+ ) candidates ORDER BY created_at,id LIMIT $3`, s.organization, cutoff, limit, rejectedBefore, reservedBefore)
 	if err != nil {
 		return nil, mapError(ctx, err)
 	}

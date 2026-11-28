@@ -26,7 +26,7 @@ func (f ArchiveFence) Key(organization, project, item, binding, digest string) (
 	if binding != "" && !validOrganization(binding) {
 		return "", ErrInvalid
 	}
-	return f.key(organization, project, item, digest, binding)
+	return f.key(organization, project, item, digest, binding, "upload-reservation")
 }
 
 func (f ArchiveFence) MatchesPublished(organization, project, item string, ref ArchiveReference) bool {
@@ -35,6 +35,10 @@ func (f ArchiveFence) MatchesPublished(organization, project, item string, ref A
 		return false
 	}
 	if key == ref.Key {
+		return true
+	}
+	previous, err := f.key(organization, project, item, ref.SHA256, ref.BindingID)
+	if err == nil && previous == ref.Key {
 		return true
 	}
 	legacy, err := f.key(organization, project, item, ref.SHA256)

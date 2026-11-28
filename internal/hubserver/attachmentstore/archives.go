@@ -23,12 +23,13 @@ type ArchiveQuery struct {
 }
 
 type ArchiveRecord struct {
-	OrganizationID tracker.OrganizationID
-	ProjectID      tracker.ProjectID
-	ID             string
-	Uploader       string
-	CreatedAt      time.Time
-	Reference      attachment.ArchiveReference
+	OrganizationID  tracker.OrganizationID
+	ProjectID       tracker.ProjectID
+	ID              string
+	Uploader        string
+	CreatedAt       time.Time
+	Reference       attachment.ArchiveReference
+	UploadExpiresAt *time.Time
 }
 
 type ArchiveReader interface {
@@ -39,7 +40,6 @@ type ArchiveWriter interface {
 	ArchiveReader
 	PrepareAttachmentArchive(context.Context, ArchiveRecord) (bool, error)
 	PublishAttachmentArchive(context.Context, ArchiveRecord, tracker.NativeWorkItemID) error
-	RejectAttachmentArchive(context.Context, ArchiveRecord, tracker.NativeWorkItemID, time.Time) error
 }
 
 type StorageArchiveCursor struct {

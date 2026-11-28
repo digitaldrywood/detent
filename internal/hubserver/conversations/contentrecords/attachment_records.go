@@ -814,9 +814,9 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 	organization := tracker.OrganizationID(claims.Audience)
 	now := s.deps.Now().UTC()
 	cutoff := now.Add(-attachment.OrphanTTL)
-	var archiveCutoff time.Time
+	var archiveAsOf time.Time
 	if input.Archives {
-		archiveCutoff = now.Add(-attachment.ArchiveUploadTimeout)
+		archiveAsOf = now
 	}
 	var candidates []attachmentstore.Record
 	err := s.deps.ReadTenant(ctx, organization, corestore.Background, func(r tenantstore.Reader) error {
@@ -825,7 +825,7 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 			return hubapi.NativeWorkItemStorageUnavailable()
 		}
 		var err error
-		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, archiveCutoff, 100)
+		candidates, err = owner.AttachmentDeletionCandidates(ctx, cutoff, archiveAsOf, 100)
 		return err
 	})
 	if err != nil {
@@ -838,13 +838,16 @@ func (s AttachmentRecords) ExpiredCloudAttachmentsTenant(c echo.Context) error {
 		if metadata.DeletedAt == nil {
 			expired := false
 			err = s.deps.WriteTenant(ctx, organization, corestore.Background, func(w tenantstore.Writer) error {
-				project := tracker.ProjectID(metadata.ProjectID)
 				owner, ok := w.(attachmentstore.ExpiryWriter)
 				if !ok {
 					return hubapi.NativeWorkItemStorageUnavailable()
 				}
 				var err error
-				expired, err = owner.ExpireAttachment(ctx, project, metadata.ID, cutoff, now)
+				if candidate.Kind == "archive" {
+					expired, err = owner.ExpireArchiveReservation(ctx, metadata.ID, now)
+				} else {
+					expired, err = owner.ExpireAttachment(ctx, tracker.ProjectID(metadata.ProjectID), metadata.ID, cutoff, now)
+				}
 				return err
 			})
 			if err != nil {

@@ -66,4 +66,5 @@ type ExpiryReader interface {
 
 type ExpiryWriter interface {
 	ExpireAttachment(context.Context, tracker.ProjectID, string, time.Time, time.Time) (bool, error)
+	ExpireArchiveReservation(context.Context, string, time.Time) (bool, error)
 }

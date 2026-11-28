@@ -28,17 +28,27 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 	for _, tc := range []struct {
 		name                                                  string
 		revoke, atReserve, deleteFails, rotation, lostRefusal bool
+		failedPut, lostPublication                            bool
 	}{
 		{name: "expires before quota reservation", atReserve: true},
 		{name: "expires during object upload"},
 		{name: "revoked during object upload", revoke: true},
 		{name: "failed object deletion keeps quota charged", deleteFails: true},
 		{name: "lost publication refusal keeps cleanup pending", lostRefusal: true},
+		{name: "abandoned reservation before object storage", failedPut: true},
+		{name: "abandoned reservation after object storage", lostPublication: true},
 		{name: "expired replay after binding rotation preserves published archive", rotation: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			abandoned := tc.failedPut || tc.lostPublication
 			var advance atomic.Int64
-			now := func() time.Time { return time.Now().Add(time.Duration(advance.Load())) }
+			var clockStart atomic.Pointer[time.Time]
+			now := func() time.Time {
+				if start := clockStart.Load(); start != nil {
+					return start.Add(time.Duration(advance.Load()))
+				}
+				return time.Now()
+			}
 			f := newEntryFixtureOn(t, nil, slog.New(slog.DiscardHandler), nil, func(cfg *hubserver.Config) {
 				cfg.Clock = now
 			})
@@ -86,7 +96,12 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				}
 				if req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/blobs/sha256/") {
 					puts++
-					if armed && !ended && !tc.atReserve && !tc.rotation {
+					if armed && tc.failedPut {
+						response := httptest.NewRecorder()
+						response.WriteHeader(http.StatusForbidden)
+						return response.Result(), nil
+					}
+					if armed && !ended && !tc.atReserve && !tc.rotation && !abandoned {
 						if err := endLease(); err != nil {
 							return nil, err
 						}
@@ -94,13 +109,16 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				}
 				return store.Transport.RoundTrip(req)
 			})
-			if tc.atReserve || tc.rotation || tc.lostRefusal {
+			if tc.atReserve || tc.rotation || tc.lostRefusal || tc.lostPublication {
 				original := f.service.config.Transport
 				checks := 0
 				path := "/api/v2/organizations/" + tenant.ID + "/projects/prj_runner/attachment-metadata/archives/" + string(lease.WorkItemID)
 				f.service.config.Transport = func(organization Organization) (http.RoundTripper, error) {
 					next, err := original(organization)
 					return runtimeTransport(func(req *http.Request) (*http.Response, error) {
+						if armed && tc.lostPublication && req.Method == http.MethodPost && req.URL.Path == path {
+							return nil, io.ErrUnexpectedEOF
+						}
 						if armed && !ended && req.Method == http.MethodPost {
 							if tc.atReserve && req.URL.Path == path+"/check" {
 								checks++
@@ -147,6 +165,8 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				f.service.Handler().ServeHTTP(response, req)
 				return response
 			}
+			start := time.Now()
+			clockStart.Store(&start)
 			otherItem := leased.Leases[1].WorkItemID
 			accepted := upload(1, otherItem, "accepted", true)
 			hubfixture.RequireStatus(t, accepted, http.StatusCreated)
@@ -192,15 +212,17 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 			before := usage()
 			armed = true
 			rejected := upload(0, lease.WorkItemID, "interrupted", true)
-			if !ended {
-				t.Fatalf("upload did not reach the lease-loss boundary: %d %s", rejected.Code, rejected.Body.String())
+			if ended == abandoned {
+				t.Fatalf("unexpected lease state after interrupted upload: ended=%t, status=%d %s", ended, rejected.Code, rejected.Body.String())
 			}
-			if tc.lostRefusal {
+			if tc.lostRefusal || abandoned {
 				hubfixture.RequireStatus(t, rejected, http.StatusBadGateway)
 			} else {
 				hubfixture.RequireCode(t, rejected, http.StatusConflict, "stale_fencing_token")
 			}
-			hubfixture.RequireCode(t, upload(0, lease.WorkItemID, "retry", true), http.StatusConflict, "stale_fencing_token")
+			if !abandoned {
+				hubfixture.RequireCode(t, upload(0, lease.WorkItemID, "retry", true), http.StatusConflict, "stale_fencing_token")
+			}
 			if response := upload(0, lease.WorkItemID, "missing-fence", false); response.Code < 400 || response.Code >= 500 {
 				t.Fatalf("worker upload without a fence = %d %s", response.Code, response.Body.String())
 			}
@@ -225,10 +247,31 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 			if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
 				t.Fatal(err)
 			}
-			if got := usage(); !tc.atReserve && got <= before {
-				t.Errorf("quota refunded before pending writes drained: %d", got)
+			charged := usage()
+			if !tc.atReserve && charged <= before {
+				t.Errorf("quota refunded before pending writes drained: %d", charged)
+			}
+			if tc.lostPublication {
+				advance.Store(int64(45 * time.Second))
+				hubfixture.RequireStatus(t, upload(0, lease.WorkItemID, "interrupted", true), http.StatusBadGateway)
+				if got := usage(); puts != wantPuts || got != charged {
+					t.Errorf("retry did not reuse its reserved object and charge: puts=%d, quota=%d, initial quota=%d", puts, got, before)
+				}
+				advance.Store(int64(75 * time.Second))
+				if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err != nil {
+					t.Fatal(err)
+				}
+				if got := usage(); got <= before {
+					t.Errorf("sweep refunded a refreshed reservation: %d", got)
+				}
 			}
 			advance.Store(int64(2 * time.Minute))
+			if tc.lostPublication {
+				advance.Store(int64(105 * time.Second))
+			}
+			if tc.failedPut {
+				advance.Store(int64(time.Minute))
+			}
 			if tc.deleteFails {
 				if err := f.service.sweepOrganizationAttachments(t.Context(), organization); err == nil {
 					t.Error("deletion failure was not reported")
@@ -244,6 +287,12 @@ func TestValidatorArchiveUploadChecksLeaseAtPublication(t *testing.T) {
 				}
 				if got := usage(); got != before {
 					t.Errorf("quota after object deletion = %d, want %d", got, before)
+				}
+			}
+			if abandoned {
+				hubfixture.RequireStatus(t, upload(0, lease.WorkItemID, "interrupted", true), http.StatusConflict)
+				if puts != wantPuts || usage() != before {
+					t.Error("a cleaned reservation regained storage or quota")
 				}
 			}
 			var links int
