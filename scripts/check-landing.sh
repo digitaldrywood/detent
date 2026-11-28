@@ -207,6 +207,8 @@ exit "$status"
     return 1
 }
 
+stage='asset selection'
+trap 'status=$?; printf "Error: landing %s exited with status %s\n" "$stage" "$status" >&2' ERR
 needs_assets=$(python3 - "$base" "$head" <<'PY'
 import os
 import subprocess
@@ -240,10 +242,23 @@ if any(
 PY
 )
 if [ "$needs_assets" = "yes" ]; then
-    make -j1 assets generate-docs TEST_PROCS="$procs"
+    stage='asset generation'
+    (
+        asset_log=$(mktemp "${TMPDIR:-/tmp}/detent-landing-assets.XXXXXX")
+        trap 'rm -f "$asset_log"' EXIT
+        if make -j1 assets generate-docs TEST_PROCS="$procs" >"$asset_log" 2>&1; then
+            printf 'Landing assets and config docs generated.\n'
+        else
+            status=$?
+            tail -n 20 "$asset_log" >&2
+            exit "$status"
+        fi
+    )
 fi
+stage='Go build'
 go build -p "$procs" ./...
 
+stage='package selection'
 selection=$(python3 - "$base" "$head" <<'PY'
 import json
 from pathlib import Path
@@ -318,10 +333,14 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     done < <(printf '%s\n' "${test_packages[@]}" | sort -u)
     test_packages=("${sorted_packages[@]}")
     printf 'Landing test packages: %s\n' "${test_packages[*]}"
+    stage='PostgreSQL setup'
     start_landing_postgres
+    stage='short tests'
     env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=30m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
+    stage='linter setup'
     make -j1 "$linter" TEST_PROCS="$procs"
+    stage='lint'
     env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
