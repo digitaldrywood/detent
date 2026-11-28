@@ -239,7 +239,7 @@ func (e *nativeExecution) localAuthorityLoss() error {
 	return nil
 }
 
-func (e *nativeExecution) executionAuthorityError() error {
+func (e *nativeExecution) ExecutionAuthorityError() error {
 	if err := e.localAuthorityLoss(); err != nil {
 		return err
 	}
@@ -249,12 +249,16 @@ func (e *nativeExecution) executionAuthorityError() error {
 	return nil
 }
 
+func (e *nativeExecution) RejectMutationAuthority(ctx context.Context, err error) error {
+	return e.unavailable(e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
+}
+
 func (e *nativeExecution) fenceRunPublication(ctx context.Context) context.Context {
 	e.cancelMu.Lock()
 	done := e.supervisorDone
 	e.cancelMu.Unlock()
 	return api.WithRequestFence(ctx, done, func() error {
-		if err := e.executionAuthorityError(); err != nil {
+		if err := e.ExecutionAuthorityError(); err != nil {
 			return err
 		}
 		if err := api.MutationEffectError(ctx); errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
@@ -275,15 +279,7 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 		e.cancelMu.Unlock()
 		cancelLive(cause)
 	}
-	guarded := api.WithMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, func() error {
-		cause := context.Cause(live)
-		if !errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
-			if err := e.executionAuthorityError(); err != nil {
-				return errors.Join(err, cause)
-			}
-		}
-		return cause
-	})
+	guarded := api.WithExecutionMutationAuthority(live, e.claim.source.NativeClient().Scope(), e.claim.lease, e)
 	e.cancelMu.Lock()
 	if e.unretiredProvider {
 		e.cancelMu.Unlock()
@@ -669,7 +665,7 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 
 func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) error {
 	if e.data.Outcome == "" {
-		if err := e.executionAuthorityError(); err != nil {
+		if err := e.ExecutionAuthorityError(); err != nil {
 			return err
 		}
 		ctx = e.fenceRunPublication(ctx)

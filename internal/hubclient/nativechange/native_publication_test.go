@@ -509,12 +509,15 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 		name, outcome  string
 		expire, revoke bool
 		refuseDiff     bool
+		refuseSession  string
 	}{
 		{name: "successful diff", outcome: "succeeded"},
 		{name: "failed turn diff", outcome: "failed"},
 		{name: "expired before renewal acknowledgement", outcome: "succeeded", expire: true},
 		{name: "revoked on reconnect", outcome: "succeeded", revoke: true},
 		{name: "revoked during failed turn diff", outcome: "failed", refuseDiff: true},
+		{name: "revoked during guarded session progress", outcome: "failed", refuseSession: "guarded"},
+		{name: "revoked during rebound session progress", outcome: "failed", refuseSession: "rebound"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -527,6 +530,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				var diff tracker.AttemptDiffRequest
 				var finished tracker.NativeRunEvent
 				diffWrites, completionRequests, completions := 0, 0, 0
+				sessionReads, sessionWrites := 0, 0
 				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
 					switch {
@@ -550,6 +554,17 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 						if err := json.NewEncoder(response).Encode(renewed); err != nil {
 							return nil, err
 						}
+					case strings.HasSuffix(request.URL.Path, "/runner-sessions/42"):
+						sessionReads++
+						io.WriteString(response, `{"id":42,"revision":1}`)
+					case strings.HasSuffix(request.URL.Path, "/runner-sessions"):
+						sessionWrites++
+						if sessionWrites == 2 {
+							response.WriteHeader(http.StatusConflict)
+							io.WriteString(response, `{"code":"stale_fencing_token"}`)
+							return response.Result(), nil
+						}
+						io.WriteString(response, `{"id":42,"revision":1}`)
 					case strings.HasSuffix(request.URL.Path, "/diff"):
 						diffWrites++
 						if offline {
@@ -617,6 +632,36 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 					t.Fatalf("published without final diff: error=%v completions=%d diff writes=%d", err, completions, diffWrites)
 				}
 				offline = false
+				if tc.refuseSession != "" {
+					sessions := api.NewRunnerSessions(native)
+					id, err := sessions.StartSession(guarded, store.SessionStart{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx := guarded
+					if tc.refuseSession == "rebound" {
+						ctx = sessions.BindExecution(t.Context(), execution)
+					}
+					if err := sessions.SaveSessionProgress(ctx, id, store.SessionProgress{}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("session refusal = %v", err)
+					}
+					var cause *runner.CancellationCause
+					if !errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
+						t.Errorf("guard cancellation cause = %v", context.Cause(guarded))
+					}
+					for _, ctx := range []context.Context{detached, sessions.BindExecution(t.Context(), execution)} {
+						if err := sessions.FinishSession(ctx, id, store.SessionFinish{}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+							t.Errorf("detached session finish = %v", err)
+						}
+						if err := execution.Finish(ctx, tc.outcome); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+							t.Errorf("native finish = %v", err)
+						}
+					}
+					if sessionReads != 0 || sessionWrites != 2 || diffWrites != 1 || completionRequests != 0 {
+						t.Errorf("writes after session refusal: session reads=%d session writes=%d diff writes=%d completion requests=%d", sessionReads, sessionWrites, diffWrites, completionRequests)
+					}
+					return
+				}
 				if tc.expire || tc.revoke {
 					renewal := make(chan error, 1)
 					go func() {

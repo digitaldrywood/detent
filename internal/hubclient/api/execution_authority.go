@@ -13,6 +13,22 @@ func WithMutationAuthority(ctx context.Context, scope string, lease tracker.Nati
 		guard: requestGuard{done: ctx.Done(), check: func() error { return context.Cause(ctx) }}})
 }
 
+type mutationAuthorityOwner interface {
+	ExecutionAuthorityError() error
+	RejectMutationAuthority(context.Context, error) error
+}
+
+func WithExecutionMutationAuthority(ctx context.Context, scope string, lease tracker.NativeLease, execution runner.Execution) context.Context {
+	return context.WithValue(ctx, nativeMutationAuthorityKey{}, executionMutationAuthority(ctx, scope, lease, execution))
+}
+
+func executionMutationAuthority(ctx context.Context, scope string, lease tracker.NativeLease, execution runner.Execution) nativeMutationAuthority {
+	cause := func() error { return context.Cause(ctx) }
+	authority := nativeMutationAuthority{scope: scope, lease: lease, cancellation: cause, guard: requestGuard{done: ctx.Done(), check: cause}}
+	authority.owner, _ = execution.(mutationAuthorityOwner)
+	return authority
+}
+
 type requestFenceKey struct{}
 
 func WithRequestFence(ctx context.Context, done <-chan struct{}, check func() error) context.Context {

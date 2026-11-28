@@ -34,6 +34,7 @@ type nativeMutationAuthority struct {
 	lease        tracker.NativeLease
 	cancellation func() error
 	guard        requestGuard
+	owner        mutationAuthorityOwner
 	retry        func(context.Context, func() error) error
 	publications bool
 }
@@ -43,12 +44,18 @@ func nativeEffectError(ctx context.Context) error {
 		return errors.Join(err, context.Cause(ctx))
 	}
 	authority, ok := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
-	if !ok || authority.cancellation == nil {
+	if !ok {
 		return nil
 	}
-	cause := authority.cancellation()
+	var cause error
+	if authority.cancellation != nil {
+		cause = authority.cancellation()
+	}
 	if errors.Is(cause, runner.ErrOperatorStopped) || errors.Is(cause, runner.ErrExecutionAuthorityUnavailable) {
 		return cause
+	}
+	if authority.owner != nil {
+		return authority.owner.ExecutionAuthorityError()
 	}
 	return nil
 }

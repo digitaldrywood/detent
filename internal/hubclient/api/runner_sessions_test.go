@@ -131,7 +131,13 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 			}
 			sessions := NewRunnerSessions(native)
 			lease := tracker.NativeLease{ID: "lease_example", FencingToken: 1}
-			ctx := WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+			var execution *sessionMutationExecution
+			bind := func() context.Context {
+				execution = &sessionMutationExecution{sessionLeaseExecution: sessionLeaseExecution{lease: lease}}
+				ctx := WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				return sessions.BindExecution(ctx, execution)
+			}
+			ctx := bind()
 			id, err := sessions.StartSession(ctx, store.SessionStart{})
 			if err != nil {
 				t.Fatal(err)
@@ -143,11 +149,11 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 			}
 			if tc.newLease {
 				lease.ID = "lease_other"
-				ctx = WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				ctx = bind()
 			}
 			if tc.newFence {
 				lease.FencingToken++
-				ctx = WithMutationAuthority(t.Context(), native.base(), lease, func() error { return cancellation })
+				ctx = bind()
 			}
 			err = sessions.UpdateSessionResumeState(ctx, id, store.SessionResumeState{})
 			wantError := tc.status != 0 || tc.uncertain || tc.conflicts > 1 || tc.cancelRefresh
@@ -171,6 +177,14 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 				if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					t.Fatalf("authority refusal lost classification: %v", err)
 				}
+				errorEnabled = false
+				if err := sessions.FinishSession(context.WithoutCancel(ctx), id, store.SessionFinish{}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+					t.Errorf("session finish after refusal = %v", err)
+				}
+				if HubErrorCode(execution.rejected) != tc.code || reads != tc.wantReads || writes != wantWrites {
+					t.Fatalf("refusal=%v reads=%d writes=%d", execution.rejected, reads, writes)
+				}
+				return
 			}
 			if wantError && !tc.cancelRefresh {
 				errorEnabled = false
@@ -195,6 +209,18 @@ func TestRunnerSessionsUseAcknowledgedRevision(t *testing.T) {
 			}
 		})
 	}
+}
+
+type sessionMutationExecution struct {
+	sessionLeaseExecution
+	rejected error
+}
+
+func (e *sessionMutationExecution) ExecutionAuthorityError() error { return e.rejected }
+
+func (e *sessionMutationExecution) RejectMutationAuthority(_ context.Context, err error) error {
+	e.rejected = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	return e.rejected
 }
 
 type sessionLeaseExecution struct {
