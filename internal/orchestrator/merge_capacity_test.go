@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -120,8 +121,12 @@ func TestMergeControlCompletion(t *testing.T) {
 					default:
 					}
 				}
-				manager := newHeartbeatManager(cfg, tracker, nil, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
-				orch := &Orchestrator{cfg: cfg, connector: tracker, heartbeats: manager, now: time.Now, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), logger: manager.logger}
+				var attempts store.WorkAttemptStore
+				if tt.laneRetry {
+					attempts = &completionAttemptRecorder{}
+				}
+				manager := newHeartbeatManager(cfg, tracker, attempts, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+				orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, heartbeats: manager, now: time.Now, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), logger: manager.logger}
 				state := newState(cfg)
 				managerDone, dispatchDone := make(chan struct{}), make(chan struct{})
 				go func() {
@@ -160,6 +165,12 @@ func TestMergeControlCompletion(t *testing.T) {
 					tracker.mu.Lock()
 					tracker.updateErr = nil
 					tracker.mu.Unlock()
+					attempt, err := attempts.WorkAttempt(ctx, state.deferredCompletions[issue.ID].Running.WorkAttemptID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state = newState(cfg)
+					orch.recoverDeferredCompletions(ctx, &state, []store.WorkAttempt{attempt}, time.Now())
 					<-time.NewTimer(time.Until(retry.DueAt)).C
 					if !orch.retryDeferredCompletion(ctx, &state, issue.ID, time.Now()) {
 						t.Fatal("completion owner did not finish the retained lane write")
@@ -206,11 +217,11 @@ func TestTrackerCompletionCannotWriteAcrossClaimHandoff(t *testing.T) {
 			o := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
 			state := newState(cfg)
 			state.Claimed[issue.ID] = Claimed{Issue: issue, Owner: "alpha"}
-			running := Running{Issue: issue}
+			running := Running{Issue: issue, mergeControl: true}
 			state.Running[issue.ID] = running
 			if operation == "merge" {
 				event := runpkg.Completion{IssueID: issue.ID, Request: runpkg.RunRequest{Issue: issue}, CompletedAt: now,
-					Result: runpkg.RunResult{Output: mergeControlCheckedHeadOutput}}
+					Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted}}
 				if !o.completeLatestTerminalMergeWorkerResult(t.Context(), &state, event, running) {
 					t.Fatal("stale completion was not consumed")
 				}

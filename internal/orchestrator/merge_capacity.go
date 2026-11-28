@@ -6,7 +6,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
-const mergeControlCheckedHeadOutput = "merge_control_checked_head"
+const mergeControlCheckedHeadReason = "merge_control_checked_head"
 
 func (p dispatchPlanner) allowsDirectPullRequestMerge() bool {
 	return !p.nativeWorkflow && !p.boundedAdmission && !p.cfg.Claiming.Enabled

@@ -39,9 +39,11 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		retired       bool
 		rejected      bool
 		canonicalRead bool
+		workerOutput  string
 	}{
 		{name: "canonical lane read unavailable", fenceErr: errors.New("canonical lane history unavailable"), canonicalRead: true},
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
+		{name: "worker output matching merge control marker", fenceErr: completionDeferralAvailabilityError(), workerOutput: "merge_control_checked_head"},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
 		{name: "primary rate limit", fenceErr: &github.StatusError{StatusCode: 429, Err: github.ErrRateLimited}},
 		{name: "secondary rate limit", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrRateLimited, RateLimitKind: "secondary"}},
@@ -68,6 +70,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			}
 			runtimeStore := &completionAttemptRecorder{}
 			cfg := completionDeferralConfig()
+			if tt.workerOutput != "" {
+				cfg.Claiming.Enabled = true
+			}
 			var source connector.Connector = tracker
 			if tt.canonicalRead {
 				tracker.firstErr = nil
@@ -79,7 +84,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
-			orch.handleQueuedRunResults(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			event := completionDeferralEvent(issue, attemptID, now)
+			event.Result.Output = firstNonBlank(tt.workerOutput, event.Result.Output)
+			orch.handleQueuedRunResults(t.Context(), &state, event)
 			if tt.rejected {
 				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
 					t.Fatal("rejected completion retained live state")
@@ -132,7 +139,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if !strings.Contains(record.Availability.Message, tt.fenceErr.Error()) {
 				t.Fatalf("fence error = %q, want original error %v", record.Availability.Message, tt.fenceErr)
 			}
-			if record.Result.Output != "validated completion" || record.Result.Tokens.TotalTokens != 37 {
+			if record.Result.Output != event.Result.Output || record.Result.Tokens.TotalTokens != 37 {
 				t.Fatalf("preserved result = %#v", record.Result)
 			}
 			snapshot := state.Snapshot(now)
@@ -484,10 +491,11 @@ func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
 		humanReview bool
 		runFailed   bool
 		retryRead   bool
+		output      string
 	}{
 		{name: "failed worker release", humanReview: true, runFailed: true},
 		{name: "failed worker retry handoff", runFailed: true, retryRead: true},
-		{name: "no product retry handoff", retryRead: true},
+		{name: "no product retry handoff with worker output matching merge control marker", retryRead: true, output: "merge_control_checked_head"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 23, 5, 49, 19, 0, time.UTC)
@@ -530,6 +538,7 @@ func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
 			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
 			state.Claimed[issue.ID] = Claimed{Issue: issue}
 			event := completionDeferralEvent(issue, attemptID, now)
+			event.Result.Output = firstNonBlank(tt.output, event.Result.Output)
 			event.Result.TurnStarted = true
 			if tt.runFailed {
 				event.Err = errors.New("native worker interrupted")

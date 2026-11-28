@@ -31,6 +31,7 @@ type deferredCompletion struct {
 	FailureDecision        *tracker.FailureAttribution    `json:"failure_decision,omitempty"`
 	Schema                 int                            `json:"schema"`
 	Running                Running                        `json:"running"`
+	MergeControl           bool                           `json:"merge_control,omitempty"`
 	Request                deferredCompletionRequest      `json:"request"`
 	Result                 runpkg.RunResult               `json:"result"`
 	Error                  string                         `json:"error,omitempty"`
@@ -121,6 +122,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
 		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
 		Running:                running,
+		MergeControl:           running.mergeControl,
 		Request:                deferredCompletionRequestFromRun(event.Request),
 		Result:                 event.Result,
 		Error:                  errorString(event.Err),
@@ -278,7 +280,7 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	running Running,
 	fenceErr error,
 ) {
-	if event.Result.Output == mergeControlCheckedHeadOutput && ctx.Err() != nil {
+	if running.mergeControl && ctx.Err() != nil {
 		return
 	}
 	// A retired native lease is an obsolete completion, not a tracker outage.
@@ -500,6 +502,7 @@ func decodeDeferredCompletion(attempt store.WorkAttempt) (deferredCompletion, er
 		return deferredCompletion{}, fmt.Errorf("deferred completion attempt_id = %d, want %d", record.Running.WorkAttemptID, attempt.ID)
 	}
 	record.Running.CompletionOwnershipReleased = true
+	record.Running.mergeControl = record.MergeControl
 	record.Persisted = true
 	return record, nil
 }

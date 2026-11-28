@@ -776,7 +776,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		}
 	}()
 	if mergeControl {
-		decision.Reason = mergeControlCheckedHeadOutput
+		decision.Reason = mergeControlCheckedHeadReason
 	}
 	mergeTiming := o.markMergeWorkerSlotAcquired(state, issue, now)
 	o.logSchedulerSlotDecision(issue, "acquired", decision, projectStats)
@@ -980,6 +980,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		ClaimPolicy:            o.cfg.Policy,
 		Generation:             generation,
 		Mode:                   runMode,
+		mergeControl:           mergeControl,
 		DispatchSourceState:    dispatchStartSourceState,
 		DispatchTargetState:    dispatchStartTargetState,
 		DispatchWorkpadHash:    dispatchWorkpadHash,
@@ -1069,7 +1070,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 	if mergeControl {
 		o.handleRunResult(ctx, state, runpkg.Completion{
 			IssueID: issue.ID, Request: request, CompletedAt: now,
-			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
+			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 		})
 		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
 	}

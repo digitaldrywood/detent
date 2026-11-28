@@ -116,7 +116,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
-	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
+	mergeControl := running.mergeControl
 	if mergeControl {
 		if !o.dispatchPlanner().allowsDirectPullRequestMerge() {
 			o.releaseClaim(state, event.IssueID)
@@ -731,7 +731,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.cleanupDrainedRun(ctx, state, event.IssueID)
 		return
 	}
-	if repairRun && mergeFastPathResult(event) && terminalState == store.WorkAttemptTerminalSuccess && !completionRejected && !progress.DependencyDeferral {
+	if repairRun && mergeFastPathResult(event, running) && terminalState == store.WorkAttemptTerminalSuccess && !completionRejected && !progress.DependencyDeferral {
 		o.releaseCompletedAttemptClaim(ctx, state, running.Issue)
 		return
 	}
@@ -916,11 +916,11 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return false
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
-	if event.Result.Output == mergeControlCheckedHeadOutput && ctx.Err() != nil {
+	if running.mergeControl && ctx.Err() != nil {
 		return true
 	}
 	if err != nil {
-		if event.Result.Output == mergeControlCheckedHeadOutput {
+		if running.mergeControl {
 			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 			return true
 		}
@@ -942,7 +942,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
-		if event.Result.Output == mergeControlCheckedHeadOutput {
+		if running.mergeControl {
 			if mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
 				target := doneStateName(o.cfg.TerminalStates)
 				if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), "merge_worker_programmatic_merge"); err != nil {
@@ -1030,7 +1030,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 	}
-	if event.Result.Output == mergeControlCheckedHeadOutput && !sameMergeControlRevision(event.Request.Issue, issue) {
+	if running.mergeControl && !sameMergeControlRevision(event.Request.Issue, issue) {
 		running.Issue = issue
 		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 		return true
@@ -1083,15 +1083,15 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerRequiredChecksMissingReason, missingChecks, "")
 			return true
 		}
-		if mergeFastPathResult(event) && mergeWorkerMergeabilityPending(issue) {
+		if mergeFastPathResult(event, running) && mergeWorkerMergeabilityPending(issue) {
 			o.waitForMergeWorkerMergeability(ctx, state, event, running, issue)
 			return true
 		}
-		if mergeFastPathResult(event) && mergeWorkerProgrammaticMergeWaiting(issue) {
+		if mergeFastPathResult(event, running) && mergeWorkerProgrammaticMergeWaiting(issue) {
 			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 			return true
 		}
-		if mergeFastPathResult(event) {
+		if mergeFastPathResult(event, running) {
 			o.reworkMergeWorkerResult(ctx, state, event, running, issue, mergeWorkerFastPathNotReadyReason, nil, "")
 			return true
 		}
@@ -1157,7 +1157,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	repository := pullRequestRepository(issue)
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
-	mergeControl := event.Result.Output == mergeControlCheckedHeadOutput
 	if ctx.Err() != nil {
 		return true
 	}
@@ -1180,7 +1179,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	targetState := doneStateName(o.cfg.TerminalStates)
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
 	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
-		if mergeControl {
+		if running.mergeControl {
 			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		} else {
 			running.Issue = mergedIssue
@@ -1580,12 +1579,15 @@ func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
 	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
 }
 
-func mergeFastPathResult(event runpkg.Completion) bool {
+func mergeFastPathResult(event runpkg.Completion, running Running) bool {
 	if event.Request.Mode != runpkg.RunModeMerge {
 		return false
 	}
+	if running.mergeControl {
+		return true
+	}
 	switch strings.TrimSpace(event.Result.Output) {
-	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved, mergeControlCheckedHeadOutput:
+	case runpkg.RunOutputMergeFastPathClean, runpkg.RunOutputMergeFastPathCheckedHead, runpkg.RunOutputMergeFallbackResolved:
 		return true
 	default:
 		return false
