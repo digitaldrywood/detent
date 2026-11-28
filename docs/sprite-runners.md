@@ -382,13 +382,24 @@ Playwright CLI is on PATH, so `npx playwright` can use the installed version
 from a checkout without a project-specific Playwright dependency. A checkout
 with its own Playwright version may require that version's browsers.
 
-Docker installation first checks root mount, network and PID namespaces and
-writable cgroups. If those capabilities are unavailable, the closing summary
-explains why Docker was skipped. When installed and no accessible daemon is
-running, a Sprite Service named `detent-docker` starts the daemon with persistent
-data under `~/.local/share/detent-runner/docker` and a socket accessible to the
-Sprite user's primary group. Docker runtime support still needs verification
-on the target Sprite with `docker info` and a project container.
+Fresh managed Docker setup requires root mount, network and PID namespaces,
+writable cgroups, and an ext4 mount at `/var/lib/docker`. The `detent-docker`
+Sprite Service starts Docker with that data root, the Sprite user's primary
+group for socket access, and the daemon's `--init` default. The bootstrap
+checks the running container's actual OverlayFS upperdir on ext4. The init
+default keeps root `docker-init` as PID 1 while the PostgreSQL entrypoint runs
+the database as its unprivileged user.
+
+For a responsive local Docker daemon, the bootstrap starts an isolated
+PostgreSQL 17 probe with temporary storage and no published ports. It verifies
+readiness through Docker exec, checks for a clean stop, and removes the probe.
+Reruns against the bootstrap-managed service also recheck the effective
+snapshot storage and root `docker-init` as PID 1.
+Mount and OCI exec failures are reported before runner enrollment or restart.
+Docker capability checks leave existing services, packages and data roots in
+place. Adopting the managed defaults on an existing installation is a separate
+operator action. Checkpoint coverage of Docker storage needs separate
+verification.
 
 Re-running the bootstrap with empty input upgrades tools to these pins and
 skips downloads and package installs for current tools. It repeats the local
