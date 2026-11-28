@@ -1463,6 +1463,40 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 	return max(r.afterRunTimeout, workBudget, validatorTimeout)
 }
 
+func noChangeWorkspaceHead(ctx context.Context, req RunRequest, input NativeValidation) string {
+	if input.NoChange == nil || input.Version == nil || req.retainedReview == nil || req.retainedReview.info.Path == "" {
+		return ""
+	}
+	expected := strings.TrimSpace(input.Version.HeadSHA)
+	if expected == "" {
+		return ""
+	}
+	provider, ok := req.retainedReview.backend.(workspace.HeadProvider)
+	if !ok {
+		return ""
+	}
+	checkedOut, err := provider.Head(ctx, req.retainedReview.info, req.retainedReview.issue)
+	if err != nil {
+		return ""
+	}
+	checkedOut = strings.TrimSpace(checkedOut)
+	if checkedOut == "" || checkedOut == expected {
+		return ""
+	}
+	checkedOutTree, err := gitexec.Run(ctx, req.retainedReview.info.Path, "rev-parse", "--verify", checkedOut+"^{tree}")
+	if err != nil {
+		return ""
+	}
+	expectedTree, err := gitexec.Run(ctx, req.retainedReview.info.Path, "rev-parse", "--verify", expected+"^{tree}")
+	if err != nil {
+		return ""
+	}
+	if strings.TrimSpace(checkedOutTree) != "" && strings.TrimSpace(checkedOutTree) == strings.TrimSpace(expectedTree) {
+		return checkedOut
+	}
+	return ""
+}
+
 func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err error) {
 	defer func() { err = failedStep("validator", err) }()
 	if approved, err := r.auditNativeChange(ctx, req); err != nil || !approved {
@@ -1501,7 +1535,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err 
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, expectedWorkspaceHead: noChangeWorkspaceHead(ctx, req, input), SecurityAudit: input.SecurityAudit, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		tools, handler := source.AgentTools()
 		request.EvidenceTools = tools
@@ -1567,7 +1601,7 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approv
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, observationPeer: req.observationPeer, retainedReview: req.retainedReview, expectedWorkspaceHead: noChangeWorkspaceHead(ctx, req, input), implementationReview: true, Discussion: input.Discussion, Issue: noChangeReviewIssue(req.Issue, input.NoChange), NativeVersion: input.Version, Diff: input.Diff, EvidenceContinuation: input.EvidenceContinuation, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}

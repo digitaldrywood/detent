@@ -107,6 +107,12 @@ func (d HeartbeatDeps) ReadRunnerCleanupCandidates(ctx context.Context, r tenant
 			if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, artifact.ErrIntegrity) {
 				return nil, err
 			}
+			if errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, artifact.ErrIntegrity) && value.Attempt.ID != "" && !value.Attempt.WorkerOutstanding {
+				value.Event.WorkItemID = ""
+				value.Payload = nil
+				values = append(values, value)
+				continue
+			}
 			if d.Logger != nil {
 				d.Logger.Warn("runner cleanup proof unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "attempt_id", candidate.AttemptID, "error", err)
 			}
@@ -119,6 +125,14 @@ func (d HeartbeatDeps) ReadRunnerCleanupCandidates(ctx context.Context, r tenant
 
 func (d HeartbeatDeps) ResolveRunnerCleanupCandidates(ctx context.Context, scope hubscope.NativeScope, runner string, candidates []hubrecords.TenantAttemptSnapshot, state *runnerauth.ClaimState) error {
 	for _, candidate := range candidates {
+		if candidate.Event.WorkItemID == "" && candidate.Attempt.ID != "" && !candidate.Attempt.WorkerOutstanding {
+			if err := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
+				return w.SetAttemptRuntimeHeartbeat(ctx, candidate.Attempt.ID, candidate.Attempt.Sequence, nil, false)
+			}); err != nil {
+				return err
+			}
+			continue
+		}
 		run, err := d.ReadAttemptRun(ctx, candidate)
 		if err == nil && (!d.AttemptRunMatches(candidate, run) || run.RunnerID != runner || run.MachineID != scope.Credential.Runner.MachineID) {
 			err = artifact.ErrIntegrity
@@ -129,6 +143,14 @@ func (d HeartbeatDeps) ResolveRunnerCleanupCandidates(ctx context.Context, scope
 		if err != nil {
 			if !errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, artifact.ErrIntegrity) {
 				return err
+			}
+			if errors.Is(err, corestore.ErrNotFound) && !errors.Is(err, artifact.ErrIntegrity) && !candidate.Attempt.WorkerOutstanding {
+				if writeErr := d.Repository.WriteTenant(ctx, scope.Organization, corestore.Background, func(w tenantstore.Writer) error {
+					return w.SetAttemptRuntimeHeartbeat(ctx, candidate.Attempt.ID, candidate.Attempt.Sequence, nil, false)
+				}); writeErr != nil {
+					return writeErr
+				}
+				continue
 			}
 			if d.Logger != nil {
 				d.Logger.Warn("runner cleanup proof unavailable", "organization_id", scope.Organization, "project_id", scope.Project, "attempt_id", candidate.Attempt.ID, "error", err)

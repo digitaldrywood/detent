@@ -4217,6 +4217,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native validation requires a clean review tree", ErrValidatorInfrastructure)
 		}
 		workspaceIssue.PullRequestHeadSHA = req.NativeVersion.HeadSHA
+		if req.expectedWorkspaceHead != "" {
+			workspaceIssue.PullRequestHeadSHA = req.expectedWorkspaceHead
+		}
 		if req.retainedReview == nil {
 			return gate.ValidatorResult{}, fmt.Errorf("%w: native review requires the held item workspace", ErrValidatorInfrastructure)
 		}
@@ -4701,6 +4704,13 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	if commands != nil {
 		if err := commands.apply(&validation); err != nil {
 			return gate.ValidatorResult{}, err
+		}
+		if req.expectedWorkspaceHead != "" && req.Diff != nil && req.Diff.HeadSHA != "" {
+			for i := range validation.Commands {
+				if validation.Commands[i].HeadSHA == req.expectedWorkspaceHead {
+					validation.Commands[i].HeadSHA = req.Diff.HeadSHA
+				}
+			}
 		}
 	}
 	if req.NativeVersion != nil {

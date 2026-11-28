@@ -203,6 +203,21 @@ func TestRegistrationClaimStateVerifiesArchivedWorkerLaunch(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			f.service.config.RunDetails = joinedIntegrityNotFoundArchive{DetailStore: original}
+			err = readSnapshot()
+			f.service.config.RunDetails = original
+			if err != nil || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+				t.Fatalf("integrity+notfound cleanup was offered: error=%v claims=%+v", err, snapshot.ClaimState)
+			}
+			if err := f.service.config.TenantRepository.ReadTenant(t.Context(), scope.Organization, corestore.Serving, func(r tenantstore.Reader) error {
+				current, err := r.Attempt(t.Context(), data.AttemptID)
+				if err == nil && current.WorkerCleanupRequired != nil {
+					t.Fatalf("integrity+notfound proof was retired: %+v", current)
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if err := readSnapshot(); err != nil {
 				t.Fatal(err)
 			}
@@ -456,6 +471,14 @@ func TestReleasedCleanupAcknowledgesPreUpgradeAttempts(t *testing.T) {
 			})
 		}
 	}
+}
+
+type joinedIntegrityNotFoundArchive struct {
+	attachment.DetailStore
+}
+
+func (joinedIntegrityNotFoundArchive) ReadDetail(context.Context, string, attachment.ArchiveReference) ([]byte, error) {
+	return nil, errors.Join(artifact.ErrIntegrity, corestore.ErrNotFound)
 }
 
 func TestReleasedCleanupRejectsUnprovenTermination(t *testing.T) {
