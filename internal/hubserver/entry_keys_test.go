@@ -507,14 +507,15 @@ func TestEntryKeyAuditPreservesHandlerErrors(t *testing.T) {
 			request.Header.Set(cloudassert.Header, assertion)
 			recorder := httptest.NewRecorder()
 			c := echo.New().NewContext(request, recorder)
-			result := f.service.hostedSharedEntry(func(c echo.Context) error {
+			handler := func(c echo.Context) error {
 				if test.committed {
 					if err := c.JSON(http.StatusForbidden, hubapi.APIErrorResponse{Code: "handler_refused", Message: "Handler refused"}); err != nil {
 						return err
 					}
 				}
 				return test.err
-			})(c)
+			}
+			result := f.service.hostedSharedEntry(f.service.hostedSharedAccess(handler))(c)
 			if !errors.Is(result, test.err) {
 				t.Fatalf("handler error=%v want=%v", result, test.err)
 			}

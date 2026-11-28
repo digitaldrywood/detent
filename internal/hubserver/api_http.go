@@ -34,6 +34,7 @@ func (s *Service) registerPostgresRoutes(e *echo.Echo) {
 	if s.config.Hosted != nil {
 		if s.config.Hosted.SharedEntry != nil {
 			e.Pre(s.hostedSharedEntry)
+			e.Use(s.hostedSharedAccess)
 		}
 		e.Use(s.hostedBoundary)
 	}

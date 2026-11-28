@@ -350,7 +350,7 @@ func testPostgresSharedHealthWithSaturatedWorkloads(t *testing.T, config postgre
 			service.ready.Store(true)
 			handler := echo.New()
 			handler.Pre(service.hostedSharedEntry)
-			handler.Use(service.hostedBoundary)
+			handler.Use(service.hostedSharedAccess, service.hostedBoundary)
 			handler.POST("/internal/v1/health", service.hostedSharedHealth)
 			for _, test := range []struct {
 				name   string

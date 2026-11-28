@@ -186,8 +186,8 @@ func TestPostgresConfiguredCreateAndDuplicateChallenge(t *testing.T) {
 			service.ready.Store(true)
 			service.registerNativeRoutes(service.echo)
 			service.operatorChat = chat.NewService(nil, nil, hostedOperatorExecutor{service}, chat.WithClock(service.config.Clock))
-			service.echo.POST("/internal/v1/keys/catalog", service.entryKeyCatalog, service.hostedSharedEntry, service.operatorAuthority)
-			service.echo.POST("/internal/v1/keys/call", service.entryKeyCall, service.hostedSharedEntry, service.operatorAuthority)
+			service.echo.POST("/internal/v1/keys/catalog", service.entryKeyCatalog, service.hostedSharedEntry, service.hostedSharedAccess, service.operatorAuthority)
+			service.echo.POST("/internal/v1/keys/call", service.entryKeyCall, service.hostedSharedEntry, service.hostedSharedAccess, service.operatorAuthority)
 			if err := hubapi.FromFeatureError(service.database.plansService().ConfigurePlans(t.Context(), hostedplans.PlansInput(&hostedplans.HostedConfig{OrganizationID: string(org), Plans: &plans}))); err != nil {
 				t.Fatal(err)
 			}

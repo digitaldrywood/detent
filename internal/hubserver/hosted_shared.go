@@ -116,17 +116,8 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 		if internal != (claims.Kind == cloudassert.KindService || keyInternal) {
 			return s.nativeAPIError(c, hubapi.NativeNotFound())
 		}
-		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
-		if !healthProbe {
-			if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
-				return s.nativeAPIError(c, err)
-			}
-		}
 		c.Set(hostedSharedClaimsKey, claims)
-		if claims.Kind == cloudassert.KindKey {
-			if claims.Key == nil || bearer {
-				return c.NoContent(http.StatusUnauthorized)
-			}
+		if claims.Kind == cloudassert.KindKey && claims.Key != nil && !bearer {
 			audit := &hubscope.EntryKeyAudit{Claims: claims, Operation: request.Method + " " + c.Path(), Project: c.Param("project"), Resource: c.Param("item")}
 			if keyInternal {
 				audit.Operation = request.Method + " " + path
@@ -134,8 +125,31 @@ func (s *Service) hostedSharedEntry(next echo.HandlerFunc) echo.HandlerFunc {
 			if audit.Resource == "" {
 				audit.Resource = audit.Project
 			}
-			request = request.WithContext(context.WithValue(request.Context(), hubscope.EntryKeyAuditContext{}, audit))
-			c.SetRequest(request)
+			c.SetRequest(request.WithContext(context.WithValue(request.Context(), hubscope.EntryKeyAuditContext{}, audit)))
+		}
+		return next(c)
+	}
+}
+
+func (s *Service) hostedSharedAccess(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		claims, ok := hostedSharedClaims(c)
+		if !ok {
+			return s.nativeAPIError(c, hubapi.NativeNotFound())
+		}
+		request := c.Request()
+		path := request.URL.Path
+		healthProbe := claims.Kind == cloudassert.KindService && request.Method == http.MethodPost && path == "/internal/v1/health"
+		if !healthProbe {
+			if err := s.syncOrganizationSlug(request.Context(), claims.OrganizationSlug); err != nil {
+				return s.nativeAPIError(c, err)
+			}
+		}
+		if claims.Kind == cloudassert.KindKey {
+			audit := hubscope.EntryKeyAuditFrom(request.Context())
+			if audit == nil {
+				return c.NoContent(http.StatusUnauthorized)
+			}
 			if path != "/internal/v1/keys/call" {
 				if err := s.recordEntryAccessKeyAudit(request.Context(), audit, 0); err != nil {
 					return s.internalAPIError(c, "audit_unavailable", "Key audit is unavailable", err)
