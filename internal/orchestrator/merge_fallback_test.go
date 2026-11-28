@@ -107,7 +107,7 @@ func TestMergeFallbackRoutesBoundedOutcomesToRework(t *testing.T) {
 					HeadSHA:        "conflicted-head",
 				},
 			}
-			tracker := &autoPromoteTickMergeConnector{
+			tracker := &nativeWorkflowConnector{
 				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
 			}
 			cfg := normalizeConfig(Config{
@@ -211,7 +211,12 @@ func TestMergeFallbackResolvedHeadHandoff(t *testing.T) {
 			attempts := &recordingWorkAttemptStore{history: []store.WorkAttempt{implementProgressHistoryAttempt(1, previous, store.WorkAttemptTerminalSuccess)}}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			state := newState(cfg)
-			state.Running[issue.ID] = Running{Issue: dispatched, WorkAttemptID: 2, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-21 * time.Minute)}
+			running := Running{Issue: dispatched, WorkAttemptID: 2, Attempt: 1, Mode: runpkg.RunModeMerge, StartedAt: now.Add(-21 * time.Minute)}
+			if tt.wantRework {
+				orch.workAttempts = nil
+				running.WorkAttemptID = 0
+			}
+			state.Running[issue.ID] = running
 			state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now.Add(-21 * time.Minute)}
 			orch.handleRunResult(t.Context(), &state, runpkg.Completion{
 				IssueID: issue.ID, CompletedAt: now, Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge},

@@ -1176,7 +1176,11 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	}
 	merger, supported := o.connector.(connector.PullRequestMerger)
 	target, valid := pullRequestMergeTarget(issue)
-	if !supported || !valid || !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
+	if !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
+		o.rejectUnavailableCompletion(ctx, state, event, running, runpkg.ErrExecutionAuthorityUnavailable, false)
+		return true
+	}
+	if !supported || !valid {
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "native_landing_required", errors.New(nativeMergeRequired))
 		return true
 	}
@@ -1227,7 +1231,7 @@ func (o *Orchestrator) finishProgrammaticMergeWorkerResult(ctx context.Context, 
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
 	if normalizeState(issue.State) != normalizeState(targetState) {
 		if !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
-			o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "native_landing_required", errors.New(nativeMergeRequired))
+			o.rejectUnavailableCompletion(ctx, state, event, running, runpkg.ErrExecutionAuthorityUnavailable, false)
 			return true
 		}
 		if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
@@ -2048,6 +2052,18 @@ func (o *Orchestrator) reworkMergeWorkerResult(
 	missingChecks []string,
 	findings string,
 ) {
+	if ctx.Err() != nil {
+		return
+	}
+	if running.mergeRevisionBound() || !o.nativeWorkflow() {
+		if running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
+			return
+		}
+		if !o.allowsLegacyMergeLaneWrite(running, event.Request.WorkAttemptID) {
+			o.rejectUnavailableCompletion(ctx, state, event, running, runpkg.ErrExecutionAuthorityUnavailable, false)
+			return
+		}
+	}
 	issueID := strings.TrimSpace(event.IssueID)
 	running.Issue = issue
 	metadata := workflowLaneMetadata{}

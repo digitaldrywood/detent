@@ -457,11 +457,14 @@ func TestLeaseBoundCompletionCannotStartDirectForgeMerge(t *testing.T) {
 }
 
 func TestLegacyMergeRejectsUnfencedMutations(t *testing.T) {
-	for _, operation := range []string{"retargeted merge", "successor lane"} {
+	for _, operation := range []string{"retargeted merge", "successor lane", "successor lane with missing checks"} {
 		t.Run(operation, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				now := time.Now()
 				issue := readyMergeCapacityIssue("ready", 1)
+				issue.Identifier = "example-org/example-project#1"
+				issue.PRRepository = "example-org/example-project"
+				issue.PullRequest.URL = "https://github.test/example-org/example-project/pull/1"
 				cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
 				started, release := make(chan struct{}), make(chan struct{})
 				unblock := sync.OnceFunc(func() { close(release) })
@@ -470,38 +473,58 @@ func TestLegacyMergeRejectsUnfencedMutations(t *testing.T) {
 				if operation == "successor lane" {
 					current.PullRequest.State = "merged"
 				}
+				if operation == "successor lane with missing checks" {
+					cfg.AutoPromote.Gate.RequiredStatusChecks = []string{"verify"}
+					current.PullRequest.CIStatus = "failure"
+					current.PullRequest.RequiredCheckFailures = []connector.PullRequestCheck{{Name: "verify", Status: "missing"}}
+				}
 				tracker := &unfencedMergeMutationConnector{current: current, started: started, release: release}
 				tracker.Connector = &autoPromoteTickConnector{stateIssues: []connector.Issue{current}}
 				orch := &Orchestrator{cfg: cfg, connector: tracker, now: time.Now}
 				state := newState(cfg)
-				running := Running{Issue: issue, Mode: runpkg.RunModeMerge, legacyDeferredMerge: true}
-				if operation == "successor lane" {
+				running := Running{Issue: issue, Mode: runpkg.RunModeMerge, Attempt: 2, legacyDeferredMerge: true}
+				if operation != "retargeted merge" {
 					running.WorkAttemptID = 17
 					orch.heartbeats = newHeartbeatManager(cfg, tracker, nil, time.Now, nil)
 					orch.heartbeats.upsert(heartbeatTarget{
-						issueID: issue.ID, attemptDeadline: now.Add(time.Minute),
-						workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID},
+						issueID:              issue.ID,
+						workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID, LeaseExpiresAt: now.Add(time.Minute)},
 					})
 				}
 				event := runpkg.Completion{
 					IssueID: issue.ID, Request: runpkg.RunRequest{Issue: issue, WorkAttemptID: running.WorkAttemptID, Mode: runpkg.RunModeMerge},
 					CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
 				}
+				ctx, unbind := orch.heartbeats.bindCompletion(t.Context(), issue.ID, running.WorkAttemptID)
+				defer unbind()
 				done := make(chan bool, 1)
-				go func() { done <- orch.completeProgrammaticMergeWorkerResult(t.Context(), &state, event, running, issue) }()
+				go func() { done <- orch.completeProgrammaticMergeWorkerResult(ctx, &state, event, running, issue) }()
 				synctest.Wait()
+				requestAccepted := false
 				select {
 				case <-started:
-					<-time.After(time.Minute)
-					tracker.current.State = "In Progress"
-					tracker.current.PullRequest.BaseRef = "release"
-					unblock()
-					<-done
-					t.Fatalf("unfenced mutation reached the receiver: lane=%s merged base=%s", tracker.current.State, tracker.mergedBase)
+					requestAccepted = true
 				default:
 				}
+				<-time.After(time.Minute)
+				if orch.heartbeats != nil {
+					orch.heartbeats.upsert(heartbeatTarget{
+						issueID:              issue.ID,
+						workAttemptHeartbeat: store.WorkAttemptHeartbeat{AttemptID: running.WorkAttemptID + 1, LeaseExpiresAt: time.Now().Add(time.Minute)},
+					})
+					tracker.current.State = "In Progress"
+				} else {
+					tracker.current.PullRequest.BaseRef = "release"
+				}
+				unblock()
 				if !<-done || len(state.Completed) != 0 {
 					t.Fatalf("unfenced result was not refused: completed=%v", state.Completed)
+				}
+				if requestAccepted {
+					t.Fatalf("unfenced mutation reached the receiver: lane=%s merged base=%s completion cancellation=%v", tracker.current.State, tracker.mergedBase, context.Cause(ctx))
+				}
+				if orch.heartbeats != nil && tracker.current.State != "In Progress" {
+					t.Fatalf("successor lane changed to %s", tracker.current.State)
 				}
 			})
 		})
@@ -858,8 +881,16 @@ func TestReadyMergeCapacitySafety(t *testing.T) {
 
 func TestReadyMergeAllowsNonStrictBaseAdvancement(t *testing.T) {
 	t.Parallel()
-	for _, base := range []string{"main", "release"} {
-		t.Run(base, func(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		observedBase   string
+		retargetOnSend bool
+	}{
+		{name: "same base ref", observedBase: "main"},
+		{name: "receipt reports another base", observedBase: "release"},
+		{name: "retarget during merge", observedBase: "release", retargetOnSend: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 30, 15, 0, 0, 0, time.UTC)
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 1, MergeFastPathEnabled: true,
 				ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}})
@@ -867,22 +898,35 @@ func TestReadyMergeAllowsNonStrictBaseAdvancement(t *testing.T) {
 			issue := readyMergeCapacityIssue("ready", 2371)
 			fresh := cloneIssue(issue)
 			fresh.PullRequest.BaseSHA = "advanced-base"
-			tracker := &autoPromoteTickMergeConnector{
-				autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
-				hydratedIssues:           []connector.Issue{fresh},
+			tracker := &mergeControlClaimConnector{
+				autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{cloneIssue(issue)}},
+					hydratedIssues:           []connector.Issue{fresh},
+				},
+				hydrate: func(context.Context) {},
+			}
+			if tt.retargetOnSend {
+				tracker.beforeWrite = func() { tracker.stateIssues[0].PullRequest.BaseRef = tt.observedBase }
 			}
 			tracker.afterMerge = func() {
 				tracker.hydratedIssues[0].PullRequest.State = "merged"
-				tracker.hydratedIssues[0].PullRequest.BaseRef = base
+				tracker.hydratedIssues[0].PullRequest.BaseRef = tt.observedBase
 			}
 			orch := &Orchestrator{cfg: cfg, connector: tracker,
 				supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), runResults: make(chan runpkg.Completion, 1),
 				logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if tt.retargetOnSend {
+				if len(tracker.merges) != 0 || len(tracker.updates) != 0 ||
+					tracker.stateIssues[0].PullRequest.BaseRef != tt.observedBase || pullRequestMerged(tracker.stateIssues[0].PullRequest) {
+					t.Fatalf("retargeted merge changed the forge or lane: merges=%v updates=%v", tracker.merges, tracker.updates)
+				}
+				return
+			}
 			if len(tracker.merges) != 1 || tracker.merges[0].headSHA != issue.PullRequest.HeadSHA || len(state.Running) != 0 {
 				t.Fatalf("merges=%v running=%d, want one merge of the checked head and no workspace worker", tracker.merges, len(state.Running))
 			}
-			if base == "main" {
+			if tt.observedBase == "main" {
 				if len(state.Retry) != 0 || tracker.stateIssues[0].State != "Done" {
 					t.Fatalf("retries=%d lane=%s, want immediate completion at the original target", len(state.Retry), tracker.stateIssues[0].State)
 				}
