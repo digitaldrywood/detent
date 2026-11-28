@@ -4,14 +4,19 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+type noopValidationProcess struct{}
+
+func (noopValidationProcess) Started(context.Context, procgroup.Identity) error           { return nil }
+func (noopValidationProcess) Finished(context.Context, gate.CommandResult, error) error { return nil }
 
 type noChangeLandingExecution struct {
 	testExecution
@@ -44,26 +49,42 @@ func (*noChangeLandingExecution) RecordValidator(context.Context, gate.Validator
 	return nil
 }
 
-func TestNoChangeWorkspaceHeadAcceptsSameTreeHistoryCommit(t *testing.T) {
+func TestPrepareNoChangeReviewWorkspaceChecksOutPinnedBase(t *testing.T) {
 	t.Parallel()
-	repo := initRunnerSourceRepo(t)
-	base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-	runRunnerGit(t, repo, "checkout", "-b", "other")
-	runRunnerGit(t, repo, "commit", "--allow-empty", "-m", "prior phase")
-	prior := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-	runRunnerGit(t, repo, "checkout", base)
-	runRunnerGit(t, repo, "merge", "--no-ff", "-s", "ours", "-m", "retain phase history", prior)
-	retained := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
+	source := initRunnerSourceRepo(t)
+	base := strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
+		ProcessSource: emptyProcessSource,
+		Root:          t.TempDir(),
+		SourceRoot:    source,
+		AutoBranch:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := workspace.Issue{
+		ID:               "wi_nochange",
+		Identifier:       "example-project#1",
+		AttemptWorkspace: workspace.AttemptWorkspace{Organization: "org_example", Project: "prj_example", Attempt: "attempt_11111111111111111111111111111111"},
+	}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runRunnerGit(t, info.Path, "checkout", "-b", "other")
+	runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "prior phase")
+	prior := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+	runRunnerGit(t, info.Path, "checkout", info.Branch)
+	runRunnerGit(t, info.Path, "merge", "--no-ff", "-s", "ours", "-m", "retain phase history", prior)
+	retained := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
 
 	for _, tc := range []struct {
-		name     string
-		head     string
-		noChange bool
-		want     string
+		name      string
+		noChange  bool
+		wantClone bool
 	}{
-		{name: "same tree retained history commit", head: retained, noChange: true, want: retained},
-		{name: "exact base head needs no override", head: base, noChange: true, want: ""},
-		{name: "non-no-change never overrides", head: retained, noChange: false, want: ""},
+		{name: "same tree retained history commit clones pinned base for LocalGit", noChange: true, wantClone: true},
+		{name: "non-no-change never clones", noChange: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -73,72 +94,43 @@ func TestNoChangeWorkspaceHeadAcceptsSameTreeHistoryCommit(t *testing.T) {
 			if tc.noChange {
 				input.NoChange = &tracker.NativeNoChangeCompletion{VerifiedSHA: base}
 			}
-			req := RunRequest{
-				retainedReview: &retainedReviewWorkspace{
-					backend: &noChangeRetainedReviewBackend{head: tc.head},
-					info:    workspace.Info{Path: repo},
-				},
+			original := &retainedReviewWorkspace{backend: backend, info: info, issue: issue}
+			got, cleanup, err := prepareNoChangeReviewWorkspace(t.Context(), RunRequest{retainedReview: original}, input)
+			if err != nil {
+				t.Fatalf("prepareNoChangeReviewWorkspace() error = %v", err)
 			}
-			if got := noChangeWorkspaceHead(t.Context(), req, input); got != tc.want {
-				t.Fatalf("noChangeWorkspaceHead() = %q, want %q", got, tc.want)
+			defer func() {
+				if cleanupErr := cleanup(); cleanupErr != nil {
+					t.Fatalf("cleanup() error = %v", cleanupErr)
+				}
+			}()
+			if tc.wantClone {
+				if got.info.Path == info.Path {
+					t.Fatalf("expected detached base clone, got original path %q", got.info.Path)
+				}
+				gotHead, err := backend.Head(t.Context(), got.info, got.issue)
+				if err != nil || strings.TrimSpace(gotHead) != base {
+					t.Fatalf("LocalGit.Head() = %q, %v; want %q", gotHead, err, base)
+				}
+				if err := backend.VerifyReviewTree(t.Context(), got.info, got.issue); err != nil {
+					t.Fatalf("LocalGit.VerifyReviewTree() error = %v", err)
+				}
+				cmdIssue := got.issue
+				cmdIssue.PullRequestHeadSHA = base
+				cmdCtx := workspace.WithValidationProcessOwner(t.Context(), func(context.Context, workspace.Info, workspace.Issue, string) (workspace.ValidationProcess, error) {
+					return noopValidationProcess{}, nil
+				})
+				receipt, err := backend.RunReviewCommand(cmdCtx, got.info, cmdIssue, "git rev-parse HEAD")
+				if err != nil || receipt.ExitCode != 0 || receipt.HeadSHA != base {
+					t.Fatalf("LocalGit.RunReviewCommand() = %+v, %v; want exit 0 at %q", receipt, err, base)
+				}
+				if retainedHead := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD")); retainedHead != retained {
+					t.Fatalf("retained workspace HEAD mutated to %q, want %q", retainedHead, retained)
+				}
+			} else if got != original {
+				t.Fatalf("expected original workspace, got clone %q", got.info.Path)
 			}
 		})
-	}
-}
-
-func TestNoChangeRetainedHistoryCommandReceiptValidatesCriterion(t *testing.T) {
-	t.Parallel()
-	repo := initRunnerSourceRepo(t)
-	base := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-	tree := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD^{tree}"))
-	runRunnerGit(t, repo, "checkout", "-b", "other")
-	runRunnerGit(t, repo, "commit", "--allow-empty", "-m", "prior phase")
-	prior := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-	runRunnerGit(t, repo, "checkout", base)
-	runRunnerGit(t, repo, "merge", "--no-ff", "-s", "ours", "-m", "retain phase history", prior)
-	retained := strings.TrimSpace(runRunnerGit(t, repo, "rev-parse", "HEAD"))
-
-	payload := `{"verdict":"pass","score":1.0,"summary":"verified on retained tree","findings":[],"criteria_evidence":[{"criterion":"base check","kind":"receipt","reference":"make check","behavior":"command succeeds on retained tree","head_sha":"` + base + `","tree_sha":"` + tree + `"}]}`
-	agent := &spoofedResolutionAgent{
-		spoofedOutput:     payload,
-		validatorResponse: payload,
-	}
-	r, err := NewRunner(Dependencies{
-		ProcessSource: emptyProcessSource,
-		Workflow:      config.Workflow{Config: config.Config{Gate: gate.Config{Validator: gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}}}},
-		Workspace:     &fakeWorkspaceBackend{},
-		AgentBackend:  agent,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend := &noChangeRetainedReviewBackend{head: retained, tree: tree}
-	cmdReceipt := gate.CommandResult{ReceiptID: "cmd_1", Command: "echo ok", ExitCode: 0, HeadSHA: retained, TreeSHA: tree, StartedAt: time.Unix(1, 0).UTC()}
-	version := &tracker.ChangeVersion{
-		ID:                 "version_nochange",
-		ChangeVersionInput: tracker.ChangeVersionInput{Repository: "example-org/example-project", BaseSHA: base, HeadSHA: base, Validation: &cmdReceipt},
-	}
-	version.Policy.Gates.Validator = true
-	res, err := r.Validate(t.Context(), ValidatorRequest{
-		retainedReview:        &retainedReviewWorkspace{backend: backend, info: workspace.Info{Path: repo}},
-		expectedWorkspaceHead: retained,
-		NativeVersion:         version,
-		Issue:                 connector.Issue{ID: "wi_1", Identifier: "example-project#1", Title: "no change check", Description: "## Acceptance criteria\n- base check\n"},
-		Diff:                  &connector.ValidationDiff{Repository: "example-org/example-project", BaseSHA: base, HeadSHA: base, Digest: "digest"},
-		Commands:              []gate.CommandResult{cmdReceipt},
-	})
-	if err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if res.HeadSHA != base {
-		t.Fatalf("Validate() HeadSHA = %q, want %q", res.HeadSHA, base)
-	}
-	if len(res.Commands) == 0 || res.Commands[0].HeadSHA != base {
-		t.Fatalf("Validate() Commands = %+v, want HeadSHA normalized to %q", res.Commands, base)
-	}
-	gate.ApplyCriterionPolicy(gate.ValidatorConfig{Enabled: true, UnverifiedCriteria: gate.UnverifiedCriteriaRework}, &res)
-	if res.Verdict != gate.ValidatorVerdictPass {
-		t.Fatalf("ApplyCriterionPolicy verdict = %q, not_verified = %+v, evidence = %+v, commands = %+v", res.Verdict, res.NotVerified, res.CriteriaEvidence, res.Commands)
 	}
 }
 

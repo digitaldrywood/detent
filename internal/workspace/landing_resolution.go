@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -180,6 +181,10 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 	if mergeErr != nil && len(result.ConflictFiles) == 0 {
 		return result, mergeErr
 	}
+	before, err := runGitAt(ctx, path, "ls-files", "--stage", "-z")
+	if err != nil {
+		return result, err
+	}
 	release()
 	release = nil
 	if len(result.ConflictFiles) > 0 {
@@ -211,6 +216,13 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 	if untracked != "" {
 		return result, fmt.Errorf("%w: resolution left untracked source", ErrMergeResolutionInvalid)
 	}
+	after, err := runGitAt(ctx, path, "ls-files", "--stage", "-z")
+	if err != nil {
+		return result, err
+	}
+	if !landingResolutionScope(before, after, result.ConflictFiles) {
+		return result, fmt.Errorf("%w: resolution changed nonconflicting files", ErrMergeResolutionInvalid)
+	}
 	if opts.PreserveSourceHistory {
 		tree, err := runGitAt(ctx, path, "write-tree")
 		if err != nil {
@@ -223,7 +235,7 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 		if _, err := runGitAt(ctx, path, "update-ref", "HEAD", strings.TrimSpace(resolved), result.BaseSHA); err != nil {
 			return result, err
 		}
-	} else if _, err := l.runCommit(ctx, path, nil, "commit", "-m", opts.Message); err != nil {
+	} else if _, err := l.runCommit(ctx, path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", opts.Message); err != nil {
 		return result, err
 	}
 	resolved, err := runGitAt(ctx, path, "rev-parse", "HEAD")
@@ -287,6 +299,33 @@ func nonemptyLandingPaths(value string) []string {
 		}
 	}
 	return paths
+}
+
+func landingResolutionScope(before, after string, conflicts []string) bool {
+	allowed := make(map[string]bool, len(conflicts))
+	for _, name := range conflicts {
+		allowed[name] = true
+	}
+	entries := func(value string) map[string]string {
+		out := make(map[string]string)
+		for _, entry := range strings.Split(value, "\x00") {
+			metadata, name, ok := strings.Cut(entry, "\t")
+			if ok && !allowed[name] {
+				out[name] += metadata
+			}
+		}
+		return out
+	}
+	original, resolved := entries(before), entries(after)
+	if len(original) != len(resolved) {
+		return false
+	}
+	for name, value := range resolved {
+		if orig, existed := original[name]; !existed || orig != value {
+			return false
+		}
+	}
+	return true
 }
 
 type landingDiffHunk struct{ oldStart, oldLines, newStart, newLines int }
