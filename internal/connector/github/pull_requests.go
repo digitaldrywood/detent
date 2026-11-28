@@ -392,7 +392,7 @@ func (c *Connector) cachePullRequestDiffFingerprint(key pullRequestDiffFingerpri
 func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string, mergeMethod string) error {
 	repo, ok := pullRequestRepoFromName(repository)
 	if !ok || number <= 0 {
-		return fmt.Errorf("merge github pull request: invalid pull request %s#%d", strings.TrimSpace(repository), number)
+		return fmt.Errorf("merge github pull request: %w: invalid pull request", connector.ErrPullRequestMergeRejected)
 	}
 	mergeMethod = strings.ToLower(strings.TrimSpace(mergeMethod))
 	if mergeMethod == "" {
@@ -401,7 +401,7 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	switch mergeMethod {
 	case "squash", "merge", "rebase":
 	default:
-		return errors.New("merge github pull request: merge method must be one of squash, merge, rebase")
+		return fmt.Errorf("merge github pull request: %w: merge method must be one of squash, merge, rebase", connector.ErrPullRequestMergeRejected)
 	}
 	body := map[string]string{
 		"merge_method": mergeMethod,
@@ -444,12 +444,15 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 		}
 		return fmt.Errorf("merge github pull request: %w", err)
 	}
-	if !response.Merged {
+	if response.Merged == nil {
+		return fmt.Errorf("merge github pull request: %w", ErrInvalidResponse)
+	}
+	if !*response.Merged {
 		message := strings.TrimSpace(response.Message)
 		if message == "" {
 			message = "github did not merge pull request"
 		}
-		return fmt.Errorf("merge github pull request: %s", message)
+		return fmt.Errorf("merge github pull request: %w: %s", connector.ErrPullRequestMergeRejected, message)
 	}
 	return nil
 }

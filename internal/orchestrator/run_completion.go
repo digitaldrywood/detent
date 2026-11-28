@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -921,7 +922,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return true
 	}
 	if err != nil {
-		if running.mergeControl {
+		if revisionBound {
 			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 			return true
 		}
@@ -941,25 +942,17 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		}
 		issue := mergeIssueTrackerFields(running.Issue, current)
 		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+			if revisionBound && current.PullRequest != nil {
+				issue.PRRepository = current.PRRepository
+			}
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
-		if revisionBound && mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) &&
-			!sameMergeRevision(event.Request.Issue, current) {
-			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, current)
-			return true
-		}
-		if running.mergeControl {
-			if !o.mergeControlCompletionActive(ctx, running) {
+		if revisionBound && mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
+			if !sameMergeRevision(event.Request.Issue, current) {
+				o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, current)
 				return true
 			}
-			if mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
-				target := doneStateName(o.cfg.TerminalStates)
-				if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), "merge_worker_programmatic_merge"); err != nil {
-					o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
-					return true
-				}
-				issue.State = target
-			}
+			return o.finishProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
 		tokens := event.Result.Tokens
 		if tokens == (TokenTotals{}) {
@@ -975,6 +968,10 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		if event.Result.RateLimits != nil {
 			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 		}
+		return true
+	}
+	if revisionBound {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("merge completion issue is unavailable"))
 		return true
 	}
 	return false
@@ -1006,12 +1003,28 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return false
 	}
 	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
-	if ctx.Err() != nil || running.mergeRevisionBound() && mergeWorkerIssue(running.Issue) && !o.mergeControlCompletionActive(ctx, running) {
+	revisionBound := running.mergeRevisionBound() && mergeWorkerIssue(running.Issue)
+	if ctx.Err() != nil || revisionBound && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 	if err != nil {
+		if revisionBound {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
+		return true
+	}
+	if revisionBound && mergeWorkerIssue(refreshedIssue) && pullRequestMerged(refreshedIssue.PullRequest) {
+		if !sameMergeRevision(event.Request.Issue, refreshedIssue) {
+			o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, refreshedIssue)
+			return true
+		}
+		return o.finishProgrammaticMergeWorkerResult(ctx, state, event, running, refreshedIssue)
+	}
+	if revisionBound && pullRequestHydrationBlocksProgress(refreshedIssue.PullRequest) {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("merge completion pull request is unavailable"))
 		return true
 	}
 	issue, err = o.postValidatedGateStatus(ctx, hydrator, event, refreshedIssue)
@@ -1039,8 +1052,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 	}
-	if running.mergeRevisionBound() && !sameMergeRevision(event.Request.Issue, issue) ||
-		running.mergeControl && issue.PullRequest.BaseBranchStrict {
+	if revisionBound && (!sameMergeRevision(event.Request.Issue, issue) || issue.PullRequest.BaseBranchStrict) {
 		running.Issue = issue
 		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 		return true
@@ -1163,7 +1175,6 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	if !ok {
 		return false
 	}
-	issueID := strings.TrimSpace(event.IssueID)
 	repository := pullRequestRepository(issue)
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
@@ -1178,18 +1189,26 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			o.refreshMergeWorkerBase(ctx, state, event, running, issue, "merge_api_rejected_out_of_date_base")
 			return true
 		}
+		if revisionBound && !pullRequestMergeRejected(err) {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
 		running.Issue = issue
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true
 	}
+	return o.finishProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
+}
+
+func (o *Orchestrator) finishProgrammaticMergeWorkerResult(ctx context.Context, state *State, event runpkg.Completion, running Running, issue connector.Issue) bool {
 	if ctx.Err() != nil || running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
-
+	issueID := strings.TrimSpace(event.IssueID)
 	targetState := doneStateName(o.cfg.TerminalStates)
 	mergedIssue, deliveredAt := o.programmaticMergeDelivery(issue)
 	if err := o.updateIssueStateByID(ctx, state, issueID, mergedIssue, targetState, deliveredAt, "merge_worker_programmatic_merge"); err != nil {
-		if running.mergeControl {
+		if running.mergeRevisionBound() {
 			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		} else {
 			running.Issue = mergedIssue
@@ -1232,6 +1251,18 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	return true
+}
+
+func pullRequestMergeRejected(err error) bool {
+	if errors.Is(err, connector.ErrPullRequestMergeRejected) || errors.Is(err, connector.ErrPullRequestMergeQueueRequired) {
+		return true
+	}
+	var status interface{ HTTPStatus() int }
+	if !errors.As(err, &status) {
+		return false
+	}
+	code := status.HTTPStatus()
+	return code >= http.StatusBadRequest && code < http.StatusInternalServerError && code != http.StatusRequestTimeout
 }
 
 func (o *Orchestrator) waitForMergeWorkerCurrentHeadCI(
@@ -2224,7 +2255,12 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.BudgetRefusals, issueID)
 	delete(state.PriorAttempts, issueID)
 
-	issue := o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, running.Issue, completedAt)
+	issue := running.Issue
+	mergeDone := running.mergeRevisionBound() && pullRequestMerged(issue.PullRequest) &&
+		normalizeState(issue.State) == normalizeState(doneStateName(o.cfg.TerminalStates))
+	if !mergeDone {
+		issue = o.ensureClosedCompletedRunningIssueDone(ctx, state, issueID, issue, completedAt)
+	}
 	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
 		finalState = FinalStateCompleted

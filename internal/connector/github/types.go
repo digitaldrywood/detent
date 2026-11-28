@@ -175,7 +175,7 @@ type restPullRequestFile struct {
 
 type restPullRequestMergeResponse struct {
 	SHA     string `json:"sha"`
-	Merged  bool   `json:"merged"`
+	Merged  *bool  `json:"merged"`
 	Message string `json:"message"`
 }
 

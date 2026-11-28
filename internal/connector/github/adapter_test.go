@@ -1280,6 +1280,7 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 		want    bool
 		body    string
 		quota   bool
+		outcome error
 	}{
 		{name: "strict protection", status: 405, message: "Head branch is out of date. Review and try the merge again.", want: true},
 		{name: "base race", status: 405, message: "Base branch was modified. Review and try the merge again.", want: true},
@@ -1294,6 +1295,8 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 		{name: "closure mentioning base refusal", status: 405, message: "Pull Request is closed. Base branch was modified."},
 		{name: "malformed JSON cannot supply base refusal", status: 405, body: `{"message":"Base branch was modified"`},
 		{name: "quota precedes base refusal", status: 403, message: "Base branch was modified", quota: true},
+		{name: "explicit rejection", status: 200, body: `{"merged":false}`, outcome: connector.ErrPullRequestMergeRejected},
+		{name: "missing outcome", status: 200, body: `{}`, outcome: ErrInvalidResponse},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -1320,6 +1323,12 @@ func TestConnectorMergePullRequestClassifiesBaseRefusal(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = c.MergePullRequest(t.Context(), "example/repo", 42, "checked-head", "squash")
+			if tt.outcome != nil {
+				if !errors.Is(err, tt.outcome) {
+					t.Fatalf("merge error = %v, want %v", err, tt.outcome)
+				}
+				return
+			}
 			if errors.Is(err, connector.ErrPullRequestBaseOutOfDate) != tt.want {
 				t.Fatalf("error = %v, want base refusal %t", err, tt.want)
 			}

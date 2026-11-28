@@ -88,12 +88,16 @@ func TestMergeControlCompletion(t *testing.T) {
 		wait           time.Duration
 		cancel         bool
 		laneRetry      bool
+		lostResponse   bool
+		staleTracker   bool
 		attemptTTL     time.Duration
 		heartbeatError error
 		wantMerge      bool
 	}{
 		{name: "slow completion", wait: 70 * time.Second, wantMerge: true},
 		{name: "lane write retried after merge", wait: 11 * time.Second, laneRetry: true, wantMerge: true},
+		{name: "committed merge response lost", wait: 70 * time.Second, lostResponse: true, attemptTTL: 2 * time.Minute, wantMerge: true},
+		{name: "committed merge visible only on forge refresh", wait: 70 * time.Second, lostResponse: true, staleTracker: true, attemptTTL: 2 * time.Minute, wantMerge: true},
 		{name: "caller canceled", wait: time.Second, cancel: true},
 		{name: "attempt expires during pre-merge read", wait: 2 * time.Minute, attemptTTL: time.Minute, heartbeatError: errors.New("attempt heartbeat unavailable")},
 		{name: "attempt retired before expiry", wait: 25 * time.Second, attemptTTL: time.Minute, heartbeatError: store.ErrNotFound},
@@ -118,6 +122,16 @@ func TestMergeControlCompletion(t *testing.T) {
 					autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{
 						autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}},
 					},
+					hideMergedInTracker: tt.staleTracker,
+				}
+				if tt.lostResponse {
+					tracker.mergeResponseError = io.ErrUnexpectedEOF
+					if !tt.staleTracker {
+						tracker.afterMerge = func() {
+							tracker.stateIssues[0].Closed = true
+							tracker.stateIssues[0].ClosedReason = "completed"
+						}
+					}
 				}
 				readStarted, releaseRead := make(chan context.Context, 1), make(chan struct{})
 				tracker.hydrate = func(ctx context.Context) {
@@ -170,10 +184,10 @@ func TestMergeControlCompletion(t *testing.T) {
 				if tt.heartbeatError != nil && !errors.Is(context.Cause(readCtx), ErrSchedulingClaimLost) {
 					t.Fatalf("pre-merge read cancellation = %v, want claim lost", context.Cause(readCtx))
 				}
-				if tt.laneRetry {
+				if tt.laneRetry || tt.lostResponse {
 					retry, ok := state.Retry[issue.ID]
 					if !ok || !retry.CompletionDeferred || len(tracker.merges) != 1 || tracker.stateIssues[0].State != "Merging" {
-						t.Fatal("failed lane write did not retain the already-merged completion")
+						t.Fatal("completion retry did not retain the already-merged PR")
 					}
 					tracker.mu.Lock()
 					tracker.updateErr = nil
@@ -182,11 +196,18 @@ func TestMergeControlCompletion(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					if attempt.Status != store.WorkAttemptStatusActive || tt.lostResponse && len(tracker.updates) != 0 {
+						t.Fatalf("pending merge completion settled early: attempt=%s updates=%v", attempt.Status, tracker.updates)
+					}
 					state = newState(cfg)
 					orch.recoverDeferredCompletions(ctx, &state, []store.WorkAttempt{attempt}, time.Now())
 					<-time.NewTimer(time.Until(retry.DueAt)).C
 					if !orch.retryDeferredCompletion(ctx, &state, issue.ID, time.Now()) {
 						t.Fatal("completion owner did not finish the retained lane write")
+					}
+					settled, err := attempts.WorkAttempt(ctx, attempt.ID)
+					if err != nil || settled.TerminalState != store.WorkAttemptTerminalSuccess {
+						t.Fatalf("original attempt did not complete successfully: state=%s error=%v", settled.TerminalState, err)
 					}
 				}
 				cancel()
@@ -194,6 +215,9 @@ func TestMergeControlCompletion(t *testing.T) {
 				if tt.wantMerge {
 					if len(tracker.merges) != 1 || tracker.stateIssues[0].State != "Done" || len(state.Completed) != 1 {
 						t.Fatalf("merges=%v lane=%s completed=%d, want one completed merge", tracker.merges, tracker.stateIssues[0].State, len(state.Completed))
+					}
+					if tt.lostResponse && len(tracker.updates) != 1 {
+						t.Fatalf("lost response produced %d lane writes, want one", len(tracker.updates))
 					}
 				} else if len(tracker.merges) != 0 || len(tracker.updates) != 0 {
 					t.Fatalf("writes after completion lost authority: merges=%v lanes=%v", tracker.merges, tracker.updates)
@@ -285,7 +309,7 @@ func TestDelayedTerminalMergeCompletionChecksOriginalRevision(t *testing.T) {
 }
 
 func TestLegacyDeferredMergeChecksOriginalRevision(t *testing.T) {
-	for _, change := range []string{"unchanged", "head", "repository", "number"} {
+	for _, change := range []string{"unchanged", "head", "repository", "number", "strict base"} {
 		t.Run(change, func(t *testing.T) {
 			now := time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC)
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true})
@@ -301,6 +325,8 @@ func TestLegacyDeferredMergeChecksOriginalRevision(t *testing.T) {
 				current.PRRepository = "example-org/other-project"
 			case "number":
 				current.PullRequest.Number++
+			case "strict base":
+				current.PullRequest.BaseBranchStrict = true
 			}
 			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{current}}}
 			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
@@ -380,10 +406,12 @@ func TestTrackerCompletionCannotWriteAcrossClaimHandoff(t *testing.T) {
 
 type mergeControlClaimConnector struct {
 	*autoPromoteTickMergeConnector
-	mu          sync.Mutex
-	hydrate     func(context.Context)
-	beforeRead  func()
-	beforeWrite func()
+	mu                  sync.Mutex
+	hydrate             func(context.Context)
+	beforeRead          func()
+	beforeWrite         func()
+	mergeResponseError  error
+	hideMergedInTracker bool
 }
 
 func (c *mergeControlClaimConnector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
@@ -400,7 +428,15 @@ func (c *mergeControlClaimConnector) FetchIssueStatesByIDs(ctx context.Context, 
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.autoPromoteTickMergeConnector.FetchIssueStatesByIDs(ctx, ids)
+	issues, err := c.autoPromoteTickMergeConnector.FetchIssueStatesByIDs(ctx, ids)
+	if c.hideMergedInTracker {
+		for index := range issues {
+			if pullRequestMerged(issues[index].PullRequest) {
+				issues[index].PullRequest.State = "open"
+			}
+		}
+	}
+	return issues, err
 }
 
 func (c *mergeControlClaimConnector) SetField(ctx context.Context, id, field, value string) error {
@@ -418,7 +454,10 @@ func (c *mergeControlClaimConnector) MergePullRequest(ctx context.Context, repos
 	if c.beforeWrite != nil {
 		c.beforeWrite()
 	}
-	return c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method)
+	if err := c.autoPromoteTickMergeConnector.MergePullRequest(ctx, repository, number, head, method); err != nil {
+		return err
+	}
+	return c.mergeResponseError
 }
 
 func (c *mergeControlClaimConnector) UpdateIssueState(ctx context.Context, id, state string) error {

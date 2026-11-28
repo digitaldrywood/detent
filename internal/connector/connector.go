@@ -63,6 +63,7 @@ var (
 	ErrStateUpdateBlocked            = errors.New("issue state update blocked")
 	ErrPullRequestMergeQueueRequired = errors.New("pull request must use the merge queue")
 	ErrPullRequestBaseOutOfDate      = errors.New("pull request base is out of date")
+	ErrPullRequestMergeRejected      = errors.New("pull request merge was rejected")
 )
 
 type retryableError struct {
