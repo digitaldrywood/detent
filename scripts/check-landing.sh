@@ -301,6 +301,10 @@ while raw.strip():
     packages[package["ImportPath"]] = package
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
+validation_recipes = {"Makefile", "scripts/check-landing.sh"}
+module = next((name for name, package in packages.items() if Path(package["Dir"]) == root), "")
+embedded_recipes = validation_recipes.intersection(packages.get(module, {}).get("EmbedFiles", []))
+changed_recipes = embedded_recipes.intersection(changed)
 direct = set()
 propagated = set()
 lint = set()
@@ -309,6 +313,8 @@ for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
     prefix = "" if directory == "." else directory + "/"
     prefixes[name] = prefix
+    if changed_recipes and directory == "internal/workspace/validationcmd":
+        direct.add(name)
     for path in changed:
         if path and path.startswith(prefix):
             relative = path[len(prefix):]
@@ -319,7 +325,8 @@ for name, package in packages.items():
                     propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-                propagated.add(name)
+                if prefix or relative not in changed_recipes:
+                    propagated.add(name)
 for path in changed:
     if path and not path.endswith(".go"):
         owner = max((name for name, prefix in prefixes.items() if path.startswith(prefix)), key=lambda name: len(prefixes[name]), default=None)
