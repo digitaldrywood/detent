@@ -15,6 +15,7 @@ type State struct {
 	Data                     tracker.NativeRunData          `json:"data"`
 	Rejected                 *tracker.NativeRunEvent        `json:"rejected,omitempty"`
 	Pending                  *tracker.NativeRunEvent        `json:"pending,omitempty"`
+	PendingCheckpointDiff    *tracker.AttemptDiffRequest    `json:"pending_checkpoint_diff,omitempty"`
 	Diff                     *tracker.AttemptDiffRequest    `json:"diff,omitempty"`
 	StoredSeq                int64                          `json:"stored_seq"`
 	WorktreeState            string                         `json:"worktree_state"`

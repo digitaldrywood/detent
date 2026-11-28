@@ -277,7 +277,15 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 		publication.FencingToken > 0 && strings.Contains(target, "/work-items/")
 	authority, hasAuthority := ctx.Value(nativeMutationAuthorityKey{}).(nativeMutationAuthority)
 	guard := requestFence(ctx)
+	sendCtx := ctx
 	if replayPublication {
+		explicit := guard
+		sendCtx = WithRequestFence(ctx, authority.guard.done, func() error {
+			if err := nativeEffectError(ctx); err != nil {
+				return err
+			}
+			return explicit.err()
+		})
 		guard = authority.guard
 		fenced = publication
 	}
@@ -288,7 +296,7 @@ func (c *Client) requestWithDeadline(ctx context.Context, timeout time.Duration,
 					return err
 				}
 			}
-			return c.requestOnce(ctx, timeout, method, path, headers, input, output)
+			return c.requestOnce(sendCtx, timeout, method, path, headers, input, output)
 		})
 	}
 	sessionPath := authority.scope + "/runner-sessions"

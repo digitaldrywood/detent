@@ -305,62 +305,95 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 	}
 }
 
-func TestCheckpointPublishesWhenAttemptDiffStalls(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		start := time.Now()
-		descriptor := clientTestPolicy()
-		lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
-		checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
-		var diffTimedOut bool
-		var published tracker.NativeRunEvent
-		client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
-			response := httptest.NewRecorder()
-			switch {
-			case strings.HasSuffix(request.URL.Path, "/validate"):
-				io.WriteString(response, "{}")
-			case strings.HasSuffix(request.URL.Path, "/diff"):
-				<-request.Context().Done()
-				diffTimedOut = errors.Is(request.Context().Err(), context.DeadlineExceeded)
-				return nil, request.Context().Err()
-			case strings.HasSuffix(request.URL.Path, "/events"):
-				if err := request.Context().Err(); err != nil {
-					return nil, err
-				}
-				if err := json.NewDecoder(request.Body).Decode(&published); err != nil {
+func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
+	for _, scenario := range []string{"stalled", "unavailable"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				descriptor := clientTestPolicy()
+				lease := tracker.NativeLease{WorkItemID: "wi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ID: "lease", FencingToken: 17, PolicyID: descriptor.ID}
+				checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
+				var attempts []tracker.AttemptDiffRequest
+				var stored bool
+				events := 0
+				var published tracker.NativeRunEvent
+				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					response := httptest.NewRecorder()
+					switch {
+					case strings.HasSuffix(request.URL.Path, "/validate"):
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(request.URL.Path, "/diff"):
+						var diff tracker.AttemptDiffRequest
+						if err := json.NewDecoder(request.Body).Decode(&diff); err != nil {
+							return nil, err
+						}
+						attempts = append(attempts, diff)
+						if len(attempts) == 1 {
+							if scenario == "stalled" {
+								<-request.Context().Done()
+								return nil, request.Context().Err()
+							}
+							return nil, io.ErrUnexpectedEOF
+						}
+						stored = true
+						io.WriteString(response, "{}")
+					case strings.HasSuffix(request.URL.Path, "/events"):
+						events++
+						if !stored {
+							t.Error("checkpoint event reached the Hub before its diff")
+						}
+						if err := request.Context().Err(); err != nil {
+							return nil, err
+						}
+						if err := json.NewDecoder(request.Body).Decode(&published); err != nil {
+							t.Fatal(err)
+						}
+						response.WriteHeader(http.StatusNoContent)
+					default:
+						t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
+					}
+					return response.Result(), nil
+				})}})
+				if err != nil {
 					t.Fatal(err)
 				}
-				response.WriteHeader(http.StatusNoContent)
-			default:
-				t.Fatalf("unexpected request: %s %s", request.Method, request.URL.Path)
-			}
-			return response.Result(), nil
-		})}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		native, err := client.Native("org_example", "prj_example")
-		if err != nil {
-			t.Fatal(err)
-		}
-		scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: 5 * time.Second, LeaseTTL: 5 * time.Minute, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := fixtureConnector(native)
-		fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(5 * time.Minute)}, descriptor, "project")
-		execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
-		execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
-		execution.data.Sequence = 1
-		execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-		defer cancel()
-		if err := execution.Checkpoint(ctx, checkpoint); err != nil {
-			t.Fatal(err)
-		}
-		if !diffTimedOut || ctx.Err() != nil || published.Type != "run.checkpointed" || published.Data.Handoff == nil || *published.Data.Handoff != checkpoint {
-			t.Fatalf("checkpoint after stalled diff = %s %+v, diff timed out = %t, checkpoint context = %v", published.Type, published.Data.Handoff, diffTimedOut, ctx.Err())
-		}
-	})
+				native, err := client.Native("org_example", "prj_example")
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduler, err := newTestScheduler(client, SchedulerConfig{Now: time.Now, HeartbeatInterval: 5 * time.Second, LeaseTTL: 5 * time.Minute, Machine: Machine{ID: "machine", Hostname: "host", Version: "test", Capacity: 1}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				source := fixtureConnector(native)
+				fixtureInstallClaim(t, scheduler, nativeClaim{source: source, lease: lease, deadline: start.Add(5 * time.Minute)}, descriptor, "project")
+				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
+				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
+				execution.data.Sequence = 1
+				execution.SetDiffSource(nativeChangeDiff(checkpoint.HeadSHA, "README.md"))
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				if err := execution.Checkpoint(ctx, checkpoint); err != nil {
+					t.Fatal(err)
+				}
+				if ctx.Err() != nil || len(attempts) != 1 || published.Type != "" {
+					t.Fatalf("checkpoint advanced before storing its diff: event=%s, diff attempts=%d, context=%v", published.Type, len(attempts), ctx.Err())
+				}
+				if scenario == "stalled" && time.Since(start) != checkpointDiffTimeout {
+					t.Fatalf("stalled checkpoint took %v, want %v", time.Since(start), checkpointDiffTimeout)
+				}
+				execution.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("d"), "other.go"))
+				if err := execution.FlushRuntime(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if !stored || events != 1 || len(attempts) != 2 || !reflect.DeepEqual(attempts[0], attempts[1]) || attempts[1].HeadSHA != checkpoint.HeadSHA ||
+					attempts[1].Generation.Seq != 2 || published.Type != "run.checkpointed" || published.Data.Sequence != 2 ||
+					published.Data.Handoff == nil || *published.Data.Handoff != checkpoint {
+					t.Fatalf("recovered checkpoint = %s %+v, diff attempts = %+v", published.Type, published.Data.Handoff, attempts)
+				}
+			})
+		})
+	}
 }
 
 func TestRunnerSessionStartSurvivesHubOutageWithSameFence(t *testing.T) {
