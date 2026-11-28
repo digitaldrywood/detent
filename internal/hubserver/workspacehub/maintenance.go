@@ -2,8 +2,9 @@ package workspacehub
 
 import (
 	"context"
+	"crypto/rand"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"time"
 )
 
@@ -22,11 +23,16 @@ type SweepDeps struct {
 func Maintain(ctx context.Context, stop <-chan struct{}, stopped chan<- struct{}, interval func() time.Duration, newTimer func(time.Duration) *time.Timer, sweep func(context.Context)) {
 	defer close(stopped)
 	next := func() time.Duration {
-		spread := interval() / 2
+		cadence := interval()
+		spread := cadence / 2
 		if spread <= 0 {
-			return interval()
+			return cadence
 		}
-		return interval() - spread/2 + time.Duration(rand.Int64N(int64(spread)))
+		offset, err := rand.Int(rand.Reader, big.NewInt(int64(spread)))
+		if err != nil {
+			return cadence
+		}
+		return cadence - spread/2 + time.Duration(offset.Int64())
 	}
 	timer := newTimer(next())
 	defer timer.Stop()
