@@ -74,11 +74,11 @@ func (s *startupHealth) serveStandaloneHealth(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Hub is starting", http.StatusServiceUnavailable)
 		return
 	}
-	c := echo.New().NewContext(r, w)
-	c.SetPath("/health")
-	cancel := service.applyRequestDeadline(c, service.config.RequestBudget)
+	ctx, cancel := service.requestContext(r.Context(), service.config.RequestBudget)
 	defer cancel()
-	credential, status, err := service.authenticateAPIRequest(c)
+	c := echo.New().NewContext(r.WithContext(ctx), w)
+	c.SetPath("/health")
+	credential, status, err := service.authenticateAPIRequestContext(ctx, c)
 	if err != nil {
 		http.Error(w, "Unauthorized", status)
 		return

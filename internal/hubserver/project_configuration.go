@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver/policystore"
 	"github.com/digitaldrywood/detent/internal/hubserver/postgres"
 	"github.com/digitaldrywood/detent/internal/hubserver/receiptstore"
+	"github.com/digitaldrywood/detent/internal/hubserver/runnerfleet"
 	"github.com/digitaldrywood/detent/internal/hubserver/runnerstore"
 	"github.com/digitaldrywood/detent/internal/hubserver/tenantstore"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -586,7 +587,7 @@ type configurationHeartbeat struct {
 
 func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential hubapi.APICredential, projectID tracker.ProjectID, reported *runnerauth.ProjectConfiguration) (*configurationHeartbeat, error) {
 	if projectID == "" {
-		return nil, nil
+		return nil, runnerfleet.ErrNoHeartbeatConfiguration
 	}
 	p := &configurationHeartbeat{reported: reported}
 	assigned := false
@@ -638,12 +639,12 @@ func (s *Service) prepareConfigurationHeartbeat(ctx context.Context, credential 
 		return nil, err
 	}
 	if !assigned {
-		return nil, nil
+		return nil, runnerfleet.ErrNoHeartbeatConfiguration
 	}
 	org := credential.Runner.OrganizationID
 	if p.initialize {
 		if reported == nil {
-			return nil, nil
+			return nil, runnerfleet.ErrNoHeartbeatConfiguration
 		}
 		approval, err := s.readTenantProjectPolicy(ctx, org, projectID)
 		if err != nil {

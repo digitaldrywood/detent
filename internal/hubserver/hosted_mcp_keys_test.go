@@ -52,7 +52,7 @@ func newHostedKeyMCPFixture(t *testing.T, deployment, role string) (hostedKeyMCP
 	}
 	contexts := make(chan context.Context, 1)
 	f.service.echo.POST("/key-mcp-test", func(c echo.Context) error {
-		contexts <- operatortool.BindConnection(c.Request().Context(), "key-connection", "test")
+		contexts <- operatortool.BindConnection(context.WithoutCancel(c.Request().Context()), "key-connection", "test")
 		return c.NoContent(http.StatusOK)
 	}, f.service.operatorAuthority)
 	var response *httptest.ResponseRecorder

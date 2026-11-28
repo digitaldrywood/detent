@@ -29,12 +29,8 @@ func (s *Service) releaseFeed() *releasefeed.Service {
 	}
 	return releasefeed.New(releasefeed.Deps{
 		Builds: s.releaseNotes, Version: s.config.Version, Accounts: accounts, Organization: s.accessOrganization(), Now: s.config.Clock,
-		Viewer: func(c echo.Context) (releasefeed.Viewer, error) {
-			credential, _, err := s.appCredential(c)
-			return releaseNotesViewer(credential), err
-		},
-		CredentialError: s.hostedAPIError, AppOrganization: s.appOrganizationID,
-		Error: func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
+		AppOrganization: s.appOrganizationID,
+		Error:           func(c echo.Context, err error) error { return s.nativeAPIError(c, hubapi.FromFeatureError(err)) },
 	})
 }
 
@@ -42,10 +38,18 @@ func (s *Service) releaseSeenTime(ctx context.Context, credential hubapi.APICred
 	return s.releaseFeed().SeenTime(ctx, releaseNotesViewer(credential))
 }
 
-func (s *Service) releasesUnread(seen time.Time) bool { return s.releaseFeed().Unread(seen) }
+func (s *Service) releasesUnread(seen time.Time) bool {
+	return s.releaseFeed().Unread(seen)
+}
 
 func (s *Service) readReleaseNotes(ctx context.Context, credential hubapi.APICredential, request operatortool.ReleaseNotesArguments) (releaseNotesPage, error) {
 	return s.releaseFeed().Read(ctx, releaseNotesViewer(credential), request)
 }
 
-func (s *Service) releaseNotesAPI(c echo.Context) error { return s.releaseFeed().API(c) }
+func (s *Service) releaseNotesAPI(c echo.Context) error {
+	credential, _, err := s.appCredential(c)
+	if err != nil {
+		return s.hostedAPIError(c, err)
+	}
+	return s.releaseFeed().API(c, releaseNotesViewer(credential))
+}

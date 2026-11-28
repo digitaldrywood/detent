@@ -147,7 +147,7 @@ func TestReleaseNotesMCP(t *testing.T) {
 				var ctx context.Context
 				const route = "/api/v2/organizations/:organization/release-mcp-admission"
 				capture := func(c echo.Context) error {
-					contexts <- operatortool.BindConnection(c.Request().Context(), "release-admission", "test")
+					contexts <- operatortool.BindConnection(context.WithoutCancel(c.Request().Context()), "release-admission", "test")
 					return c.NoContent(http.StatusOK)
 				}
 				switch test.name {

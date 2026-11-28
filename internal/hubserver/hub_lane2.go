@@ -775,10 +775,6 @@ func nativeStaleLease(err error, message string) error {
 	return executionapi.NativeStaleLease(err, message)
 }
 
-func validCheckpointRef(ref string) bool {
-	return executionapi.ValidCheckpointRef(ref)
-}
-
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
 	return executionapi.ValidateNativeExecution(nativeRejection, nativeTerminationData, data, eventType)
 }
@@ -852,10 +848,6 @@ func nativeAttemptRunMatches(snapshot hubrecords.TenantAttemptSnapshot, run trac
 
 func (s *Service) readNativeAttemptRunTenant(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot) (tracker.NativeRunData, error) {
 	return s.runnerAttemptDeps().ReadNativeAttemptRunTenant(ctx, snapshot)
-}
-
-func (s *Service) readAttemptCheckpointDetail(ctx context.Context, snapshot hubrecords.TenantAttemptSnapshot, detail *hubrecords.RunDetailReference) ([]byte, error) {
-	return s.runnerAttemptDeps().ReadAttemptCheckpointDetail(ctx, snapshot, detail)
 }
 
 func (s *Service) populateCheckpointSource(ctx context.Context, organization tracker.OrganizationID, after string) (string, error) {
@@ -1024,7 +1016,7 @@ func (s *Service) runnerHeartbeatCapabilitiesDigest(c echo.Context) (string, boo
 
 func (s *Service) prepareRunnerHeartbeatConfiguration(ctx context.Context, credential hubapi.APICredential, project tracker.ProjectID, view *runnerauth.ProjectConfiguration) (runnerfleet.ApplyHeartbeatConfiguration, error) {
 	prepared, err := s.prepareConfigurationHeartbeat(ctx, credential, project, view)
-	if prepared == nil || err != nil {
+	if err != nil {
 		return nil, err
 	}
 	return func(ctx context.Context, w tenantstore.Writer, identity runnerstore.Identity, snapshot *runnerauth.RoutingSnapshot) error {

@@ -85,7 +85,10 @@ func TestSelectedProjectPolicyRoundTrip(t *testing.T) {
 			}
 			post()
 			contexts := make(chan context.Context, 1)
-			f.service.echo.GET("/api/v2/organizations/:organization/policy-round-trip-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			f.service.echo.GET("/api/v2/organizations/:organization/policy-round-trip-test", func(c echo.Context) error {
+				contexts <- context.WithoutCancel(c.Request().Context())
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/policy-round-trip-test", testHubAdminToken, nil), http.StatusOK)
 			ctx := operatortool.BindConnection(<-contexts, "policy-round-trip", "policy fixture")
 			executor := hubProjectExecutor{f.service}
@@ -271,7 +274,10 @@ func TestCloudProjectConfigurationOwner(t *testing.T) {
 				t.Fatalf("unchanged heartbeat wrote configuration objects: %d -> %d", writes, got)
 			}
 			contexts := make(chan context.Context, 1)
-			f.service.echo.GET("/api/v2/organizations/:organization/configuration-context-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+			f.service.echo.GET("/api/v2/organizations/:organization/configuration-context-test", func(c echo.Context) error {
+				contexts <- context.WithoutCancel(c.Request().Context())
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-context-test", testHubAdminToken, nil), http.StatusOK)
 			ctx := <-contexts
 			var entryClaims cloudassert.Claims
@@ -987,7 +993,10 @@ func TestConfigurationPayloadsCountWithoutExhaustingStorage(t *testing.T) {
 		t.Fatalf("unchanged observation replay charged %d -> %d", observed, replayed)
 	}
 	contexts := make(chan context.Context, 1)
-	f.service.echo.GET("/api/v2/organizations/:organization/configuration-storage-test", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	f.service.echo.GET("/api/v2/organizations/:organization/configuration-storage-test", func(c echo.Context) error {
+		contexts <- context.WithoutCancel(c.Request().Context())
+		return c.NoContent(http.StatusOK)
+	}, f.service.operatorAuthority)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, r.base+"/configuration-storage-test", testHubAdminToken, nil), http.StatusOK)
 	ctx := <-contexts
 	executor := hubProjectExecutor{f.service}

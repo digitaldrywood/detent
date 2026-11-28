@@ -17,21 +17,20 @@ func (s *Service) requestDeadline(next echo.HandlerFunc) echo.HandlerFunc {
 		if c.Path() == hubapi.NativeBase+"/claims/wait" {
 			budget = max(budget, tracker.NativeDispatchWaitRequestBudget)
 		}
-		cancel := s.applyRequestDeadline(c, budget)
+		request := c.Request()
+		ctx, cancel := s.requestContext(request.Context(), budget)
 		defer cancel()
+		c.SetRequest(request.WithContext(ctx))
 		return next(c)
 	}
 }
 
-func (s *Service) applyRequestDeadline(c echo.Context, budget time.Duration) context.CancelFunc {
-	request := c.Request()
-	parent := request.Context()
+func (s *Service) requestContext(parent context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
 	if _, ok := parent.Deadline(); ok {
-		return func() {}
+		return parent, func() {}
 	}
 	ctx, cancel := s.requestTimeout(parent, budget)
-	c.SetRequest(request.WithContext(hubapi.WithRequestParent(ctx, parent)))
-	return cancel
+	return hubapi.WithRequestParent(ctx, parent), cancel
 }
 
 func (d *database) readTimeoutAttributes(err error) []any {

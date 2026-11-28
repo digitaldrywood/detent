@@ -34,6 +34,8 @@ import (
 
 type ApplyHeartbeatConfiguration func(context.Context, tenantstore.Writer, runnerstore.Identity, *runnerauth.RoutingSnapshot) error
 
+var ErrNoHeartbeatConfiguration = errors.New("no project configuration heartbeat to apply")
+
 type CleanupCursorKey struct {
 	Organization tracker.OrganizationID
 	Project      tracker.ProjectID
@@ -175,7 +177,7 @@ func (d HeartbeatDeps) HeartbeatNativeMachineTenant(c echo.Context, request Nati
 		}
 	}
 	configuration, err := d.PrepareConfiguration(ctx, credential, projectID, request.ProjectConfiguration)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNoHeartbeatConfiguration) {
 		if !errors.Is(err, d.ErrConfigurationUnavailable) {
 			return d.HTTPError(c, err)
 		}
