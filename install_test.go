@@ -26,6 +26,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent"
@@ -667,30 +668,13 @@ func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 
 	tmp := t.TempDir()
 	root = isolatedInstallCheckout(t, root, filepath.Join(tmp, "checkout"))
-	assets := detent.StaticFS()
-	if err := fs.WalkDir(assets, ".", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(root, "static", filepath.FromSlash(path))
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		content, err := fs.ReadFile(assets, path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, content, 0o644)
-	}); err != nil {
-		t.Fatal(err)
-	}
 	version, versionOK := gitOutput(t, root, "describe", "--tags", "--always")
 	commit, commitOK := gitOutput(t, root, "rev-parse", "HEAD")
 	if !versionOK || !commitOK {
 		t.Fatal("prepared checkout lacks build identity")
 	}
 	flags := fmt.Sprintf("-X main.version=%s -X main.commit=%s -X main.date=2000-01-01T00:00:00Z", version, commit)
-	if err := os.WriteFile(filepath.Join(root, "BUILD_LDFLAGS"), []byte(flags), 0o600); err != nil {
+	if err := writeInstallFixture(root, detent.StaticFS(), flags); err != nil {
 		t.Fatal(err)
 	}
 	installDir := filepath.Join(tmp, "bin")
@@ -719,6 +703,94 @@ func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 	)
 
 	assertInstalledEnrollmentCommand(t, binary, tmp, serverEnv)
+}
+
+func writeInstallFixture(checkout string, assets fs.FS, flags string) error {
+	root, err := os.OpenRoot(checkout)
+	if err != nil {
+		return fmt.Errorf("open install checkout: %w", err)
+	}
+	defer root.Close()
+
+	file, err := root.OpenFile("BUILD_LDFLAGS", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create build flags: %w", err)
+	}
+	_, writeErr := file.WriteString(flags)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return fmt.Errorf("write build flags: %w", err)
+	}
+
+	if err := fs.WalkDir(assets, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		target := filepath.Join("static", filepath.FromSlash(path))
+		if entry.IsDir() {
+			return root.MkdirAll(target, 0o755)
+		}
+		content, err := fs.ReadFile(assets, path)
+		if err != nil {
+			return err
+		}
+		return root.WriteFile(target, content, 0o644)
+	}); err != nil {
+		return fmt.Errorf("populate static assets: %w", err)
+	}
+	return nil
+}
+
+func TestWriteInstallFixtureContainsGeneratedFiles(t *testing.T) {
+	assets := fstest.MapFS{"app/index.html": {Data: []byte("fixture page")}}
+
+	for _, tt := range []struct {
+		name string
+		link bool
+	}{
+		{name: "existing build flags"},
+		{name: "linked build flags", link: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checkout := t.TempDir()
+			name := "BUILD_LDFLAGS"
+			if tt.link {
+				name = "existing-flags"
+				if err := os.Symlink(name, filepath.Join(checkout, "BUILD_LDFLAGS")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			flags := filepath.Join(checkout, name)
+			if err := os.WriteFile(flags, []byte("existing flags"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeInstallFixture(checkout, assets, "new flags"); !errors.Is(err, fs.ErrExist) {
+				t.Fatalf("writeInstallFixture error = %v, want already exists", err)
+			}
+			content, err := os.ReadFile(flags)
+			if err != nil || string(content) != "existing flags" {
+				t.Fatalf("build flags = %q, error = %v", content, err)
+			}
+		})
+	}
+
+	t.Run("linked asset directory", func(t *testing.T) {
+		checkout := t.TempDir()
+		neighbor := t.TempDir()
+		static := filepath.Join(checkout, "static")
+		if err := os.Mkdir(static, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(neighbor, filepath.Join(static, "app")); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeInstallFixture(checkout, assets, "fixture flags"); err == nil {
+			t.Fatal("writeInstallFixture accepted a linked asset directory outside its root")
+		}
+		entries, err := os.ReadDir(neighbor)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("neighbor directory entries = %v, error = %v", entries, err)
+		}
+	})
 }
 
 func isolatedInstallCheckout(t *testing.T, source string, checkout string) string {
