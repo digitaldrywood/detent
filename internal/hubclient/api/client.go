@@ -538,22 +538,27 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: read download: %w", ErrUnavailable, err)
-	}
-	if int64(len(payload)) > limit {
-		return nil, "", fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
+		err = fmt.Errorf("%w: read download: %w", ErrUnavailable, err)
+	} else if int64(len(payload)) > limit {
+		err = fmt.Errorf("%w: download exceeds %d bytes", ErrUnavailable, limit)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
+		if err != nil {
+			return nil, "", errors.Join(apiErr, err)
+		}
 		if len(payload) > 0 && strings.HasPrefix(response.Header.Get("Content-Type"), "application/json") {
 			if err := json.Unmarshal(payload, apiErr); err != nil {
-				return nil, "", fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err)
+				return nil, "", errors.Join(apiErr, fmt.Errorf("%w: decode error response: %w", ErrUnavailable, err))
 			}
 		}
 		if response.StatusCode >= 500 {
 			return nil, "", errors.Join(ErrUnavailable, apiErr)
 		}
 		return nil, "", apiErr
+	}
+	if err != nil {
+		return nil, "", err
 	}
 	return payload, response.Header.Get("Content-Type"), nil
 }

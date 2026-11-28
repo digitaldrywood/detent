@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"testing/synctest"
 	"time"
 
@@ -310,7 +311,8 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 	for _, test := range []struct {
 		name         string
 		readStatus   int
-		readCode     string
+		readBody     string
+		readErr      error
 		lostFinalAck bool
 		invalidPatch bool
 	}{
@@ -320,8 +322,10 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 		{name: "restored overlapping checkpoints"},
 		{name: "committed final diff loses acknowledgement", lostFinalAck: true},
 		{name: "committed final diff with malformed UTF-8 loses acknowledgement", lostFinalAck: true, invalidPatch: true},
-		{name: "checkpoint read-back unauthorized", readStatus: http.StatusUnauthorized, readCode: "unauthorized"},
-		{name: "checkpoint read-back forbidden", readStatus: http.StatusForbidden, readCode: "insufficient_scope"},
+		{name: "checkpoint read-back unauthorized", readStatus: http.StatusUnauthorized, readBody: `{"code":"unauthorized"}`},
+		{name: "checkpoint read-back forbidden", readStatus: http.StatusForbidden, readBody: `{"code":"insufficient_scope"}`},
+		{name: "checkpoint read-back forbidden with truncated JSON", readStatus: http.StatusForbidden, readBody: `{"code":`},
+		{name: "checkpoint read-back unauthorized with interrupted body", readStatus: http.StatusUnauthorized, readErr: io.ErrUnexpectedEOF},
 	} {
 		scenario := test.name
 		t.Run(scenario, func(t *testing.T) {
@@ -356,8 +360,12 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 								}
 								response.Header().Set("Content-Type", "application/json")
 								response.WriteHeader(test.readStatus)
-								io.WriteString(response, `{"code":"`+test.readCode+`"}`)
-								return response.Result(), nil
+								io.WriteString(response, test.readBody)
+								result := response.Result()
+								if test.readErr != nil {
+									result.Body = io.NopCloser(iotest.ErrReader(test.readErr))
+								}
+								return result, nil
 							}
 							if !lostDiffAck || request.URL.Query().Get("at") != "4" || finalDiffCommits != 1 {
 								t.Fatalf("unexpected diff read: %s", request.URL)
