@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hubclient/api"
+	checkpointstate "github.com/digitaldrywood/detent/internal/hubclient/checkpoint"
 	executioncontract "github.com/digitaldrywood/detent/internal/hubclient/execution"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -306,7 +307,7 @@ func TestReviewCheckpointRetriesItsRunDataFence(t *testing.T) {
 }
 
 func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
-	for _, scenario := range []string{"stalled", "unavailable", "overlapping checkpoints"} {
+	for _, scenario := range []string{"stalled", "unavailable", "overlapping checkpoints", "restored overlapping checkpoints", "committed final diff loses acknowledgement"} {
 		t.Run(scenario, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				start := time.Now()
@@ -315,19 +316,33 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				checkpoint := tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: nativeChangeFixtureHead("c"), ExternalEffect: "none", EffectState: "none"}
 				second := checkpoint
 				second.HeadSHA = nativeChangeFixtureHead("d")
-				offline := scenario == "overlapping checkpoints"
+				restore := scenario == "restored overlapping checkpoints"
+				lostDiffAck := scenario == "committed final diff loses acknowledgement"
+				offline := scenario == "overlapping checkpoints" || restore || lostDiffAck
 				var attempts []tracker.AttemptDiffRequest
 				stored := make(map[int64]tracker.AttemptDiffRequest)
 				events := 0
 				var published tracker.NativeRunEvent
 				var publishedCheckpoints []tracker.NativeRunEvent
 				var completion *tracker.NativeRunEvent
+				finalDiffCommits, diffReads := 0, 0
 				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
 					switch {
 					case strings.HasSuffix(request.URL.Path, "/validate"):
 						io.WriteString(response, "{}")
 					case strings.HasSuffix(request.URL.Path, "/diff"):
+						if request.Method == http.MethodGet {
+							diffReads++
+							if !lostDiffAck || request.URL.Query().Get("at") != "4" || finalDiffCommits != 1 {
+								t.Fatalf("unexpected diff read: %s", request.URL)
+							}
+							stored := stored[4]
+							if err := json.NewEncoder(response).Encode(tracker.AttemptDiff{ID: "diff_final", AttemptID: stored.Producer.ID, Producer: stored.Producer, Generation: stored.Generation, BaseSHA: stored.BaseSHA, HeadSHA: stored.HeadSHA, Files: stored.Files, FileCount: len(stored.Files)}); err != nil {
+								return nil, err
+							}
+							return response.Result(), nil
+						}
 						var diff tracker.AttemptDiffRequest
 						if err := json.NewDecoder(request.Body).Decode(&diff); err != nil {
 							return nil, err
@@ -342,6 +357,17 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 								return nil, request.Context().Err()
 							}
 							return nil, io.ErrUnexpectedEOF
+						}
+						if lostDiffAck && diff.Generation.Seq == 4 {
+							if finalDiffCommits == 0 {
+								stored[4] = diff
+								finalDiffCommits++
+								return nil, io.ErrUnexpectedEOF
+							}
+							response.Header().Set("Content-Type", "application/json")
+							response.WriteHeader(http.StatusConflict)
+							io.WriteString(response, `{"code":"stale_generation"}`)
+							return response.Result(), nil
 						}
 						stored[diff.Generation.Seq] = diff
 						io.WriteString(response, "{}")
@@ -392,9 +418,10 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 				execution := NewExecution(scheduler, executioncontract.ExecutionClaim{Source: source, Lease: lease}).(*nativeExecution)
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}
 				execution.data.Sequence = 1
-				if offline {
+				if offline && !lostDiffAck {
 					execution.data.Identity.Role = "triage"
 				}
+				execution.settled = lostDiffAck
 				liveHead := checkpoint.HeadSHA
 				execution.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
 					if liveHead == "" {
@@ -428,6 +455,22 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 						t.Fatalf("published %d events during the outage", events)
 					}
 					liveHead, offline = "", false
+					if restore {
+						var state checkpointstate.State
+						if err := json.Unmarshal(execution.CompletionState(), &state); err != nil {
+							t.Fatal(err)
+						}
+						recovered, err := NewRecoveredExecution(scheduler, ctx, executioncontract.ExecutionClaim{Source: source, Lease: lease}, state)
+						if err != nil {
+							t.Fatal(err)
+						}
+						execution = recovered.(*nativeExecution)
+					}
+					if lostDiffAck {
+						if err := execution.Finish(ctx, "succeeded"); !api.NativePublicationUnavailable(err) || completion != nil || finalDiffCommits != 1 {
+							t.Fatalf("lost diff acknowledgement = %v, commits=%d, completion=%v", err, finalDiffCommits, completion)
+						}
+					}
 					if err := execution.Finish(ctx, "succeeded"); !api.NativePublicationUnavailable(err) {
 						t.Errorf("first completion should lose its acknowledgement: %v", err)
 					}
@@ -448,6 +491,9 @@ func TestCheckpointDiffRecoversBeforeItsEventIsPublished(t *testing.T) {
 						if len(files) != 1 || files[0].Path != "other.go" {
 							t.Errorf("sequence %d stored files %+v, want other.go", sequence, files)
 						}
+					}
+					if lostDiffAck && (diffReads != 1 || finalDiffCommits != 1) {
+						t.Errorf("diff reconciliation read %d times and committed %d times", diffReads, finalDiffCommits)
 					}
 					return
 				}

@@ -2,8 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -31,12 +36,49 @@ func (c *NativeClient) PostAttemptDiff(ctx context.Context, attemptID string, re
 	}
 	request.Files, _ = tracker.NormalizeDiffFiles(request.Files)
 	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
-	if err == nil || !attemptDiffTooLarge(err) {
-		return receipt, err
+	if attemptDiffTooLarge(err) {
+		request.Files = tracker.StripDiffPatches(request.Files)
+		err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
 	}
-	request.Files = tracker.StripDiffPatches(request.Files)
-	err = c.client.request(ctx, http.MethodPost, c.base()+path, request, &receipt)
+	var refusal *APIError
+	if request.Generation.Source == tracker.DiffSourceAttempt && errors.As(err, &refusal) && refusal != nil && refusal.Status == http.StatusConflict && refusal.Code == "stale_generation" {
+		return c.reconcileAttemptDiff(ctx, path, attemptID, request, err)
+	}
 	return receipt, err
+}
+
+func (c *NativeClient) reconcileAttemptDiff(ctx context.Context, path, attemptID string, request tracker.AttemptDiffRequest, refusal error) (tracker.AttemptDiffReceipt, error) {
+	var receipt tracker.AttemptDiffReceipt
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	raw, _, err := c.client.download(ctx, c.base()+path+"?at="+strconv.FormatInt(request.Generation.Seq, 10), 6*tracker.MaxDiffBytes+(8<<20))
+	if lost := requestFence(ctx).err(); lost != nil {
+		return receipt, lost
+	}
+	if err != nil {
+		if NativePublicationUnavailable(err) {
+			return receipt, fmt.Errorf("read stored attempt diff: %w", err)
+		}
+		return receipt, refusal
+	}
+	var stored tracker.AttemptDiff
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return receipt, fmt.Errorf("%w: decode stored attempt diff: %w", ErrUnavailable, err)
+	}
+	producer := request.Producer
+	if producer.ID == "" {
+		producer.ID = attemptID
+	}
+	if producer.RunnerID == "" {
+		producer.RunnerID = stored.Producer.RunnerID
+	}
+	if stored.ID == "" || stored.AttemptID != attemptID || stored.Producer != producer || stored.Generation != request.Generation ||
+		stored.BaseSHA != request.BaseSHA || stored.HeadSHA != request.HeadSHA || stored.FileCount != len(request.Files) ||
+		!slices.EqualFunc(stored.Files, request.Files, func(stored, intended tracker.AttemptDiffFile) bool { return reflect.DeepEqual(stored, intended) }) {
+		return receipt, refusal
+	}
+	return tracker.AttemptDiffReceipt{Accepted: true, DiffID: stored.ID, Generation: stored.Generation, FileCount: stored.FileCount, PatchBytes: stored.PatchBytes, Truncated: stored.Truncated}, nil
 }
 
 // attemptDiffTooLarge reports whether err is the hub refusing the diff for its

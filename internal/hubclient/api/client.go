@@ -506,7 +506,7 @@ func (c *Client) download(ctx context.Context, target string, limit int64) ([]by
 	}
 	var payload []byte
 	var contentType string
-	err := c.withinRequestBudget(ctx, requestGuard{}, http.MethodGet, target, false, func() error {
+	err := c.withinRequestBudget(ctx, requestFence(ctx), http.MethodGet, target, false, func() error {
 		var err error
 		payload, contentType, err = c.downloadOnce(ctx, target, limit)
 		return err
@@ -528,6 +528,9 @@ func (c *Client) downloadOnce(ctx context.Context, target string, limit int64) (
 		return nil, "", err
 	}
 	request.Header.Set("Authorization", token)
+	if err := requestFence(ctx).err(); err != nil {
+		return nil, "", err
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: %w", ErrUnavailable, err)

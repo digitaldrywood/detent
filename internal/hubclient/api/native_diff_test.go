@@ -20,6 +20,8 @@ const testAttemptID = "attempt_00000000000000000000000000000001"
 type diffHub struct {
 	posts    []tracker.AttemptDiffRequest
 	statuses []int
+	stored   *tracker.AttemptDiff
+	reads    []string
 	// tooLargeCode is the code a 413 answers with; empty means diff_too_large.
 	tooLargeCode string
 }
@@ -29,6 +31,17 @@ func newDiffClient(t *testing.T, hub *diffHub) *NativeClient {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v2/organizations/org_test/projects/prj_test/attempts/"+testAttemptID+"/diff" {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodGet {
+			hub.reads = append(hub.reads, r.URL.Query().Get("at"))
+			if hub.stored == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(hub.stored); err != nil {
+				t.Error(err)
+			}
 			return
 		}
 		var request tracker.AttemptDiffRequest
@@ -158,6 +171,53 @@ func TestPostAttemptDiffReportsOtherFailures(t *testing.T) {
 			}
 			if len(hub.posts) != 1 {
 				t.Fatalf("posts = %d, want 1", len(hub.posts))
+			}
+		})
+	}
+}
+
+func TestPostAttemptDiffReconcilesOnlyMatchingGeneration(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		alter func(*tracker.AttemptDiff)
+		strip bool
+	}{
+		{name: "same diff"},
+		{name: "same diff after size refusal", strip: true},
+		{name: "other attempt", alter: func(diff *tracker.AttemptDiff) { diff.AttemptID = "attempt_other" }},
+		{name: "other fence", alter: func(diff *tracker.AttemptDiff) { diff.Producer.FencingToken++ }},
+		{name: "other generation", alter: func(diff *tracker.AttemptDiff) { diff.Generation.Seq++ }},
+		{name: "other source", alter: func(diff *tracker.AttemptDiff) { diff.HeadSHA = "other-head" }},
+		{name: "different patch at the same head", alter: func(diff *tracker.AttemptDiff) { diff.Files[0].Patch = "+other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := diffRequest(tracker.AttemptDiffFile{Path: "a.go", Status: tracker.DiffStatusModified, Additions: 1, Patch: "+first"})
+			files := append([]tracker.AttemptDiffFile(nil), request.Files...)
+			statuses := []int{http.StatusConflict}
+			if tc.strip {
+				statuses = append([]int{http.StatusRequestEntityTooLarge}, statuses...)
+				files[0].Patch, files[0].Truncated = "", true
+			}
+			stored := tracker.AttemptDiff{ID: "diff_original", AttemptID: testAttemptID, Producer: request.Producer, Generation: request.Generation,
+				BaseSHA: request.BaseSHA, HeadSHA: request.HeadSHA, Files: files, FileCount: 1}
+			stored.Producer.ID = testAttemptID
+			stored.Producer.RunnerID = "runner_example"
+			if tc.alter != nil {
+				tc.alter(&stored)
+			}
+			hub := &diffHub{statuses: statuses, stored: &stored}
+			got, err := newDiffClient(t, hub).PostAttemptDiff(t.Context(), testAttemptID, request)
+			if tc.alter == nil {
+				if err != nil || !got.Accepted || got.DiffID != "diff_original" || got.Generation != request.Generation {
+					t.Fatalf("reconciled receipt = %+v, error = %v", got, err)
+				}
+			} else if got.Accepted || HubErrorCode(err) != "stale_generation" {
+				t.Fatalf("accepted a different diff: %+v, error = %v", got, err)
+			}
+			if len(hub.reads) != 1 || hub.reads[0] != "2" || len(hub.posts) != len(statuses) {
+				t.Fatalf("diff read generations = %v, POST attempts = %d", hub.reads, len(hub.posts))
 			}
 		})
 	}
