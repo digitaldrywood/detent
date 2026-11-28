@@ -35,15 +35,16 @@ type trackerClaimLeaseRenewer interface {
 }
 
 type heartbeatManager struct {
-	mu           sync.Mutex
-	settings     heartbeatSettings
-	targets      map[string]heartbeatTarget
-	nextSequence uint64
-	wake         chan struct{}
-	results      chan heartbeatResult
-	running      atomic.Bool
-	now          func() time.Time
-	logger       *slog.Logger
+	mu                 sync.Mutex
+	settings           heartbeatSettings
+	targets            map[string]heartbeatTarget
+	pendingClaimLosses map[string]heartbeatResult
+	nextSequence       uint64
+	wake               chan struct{}
+	results            chan heartbeatResult
+	running            atomic.Bool
+	now                func() time.Time
+	logger             *slog.Logger
 }
 
 type heartbeatSettings struct {
@@ -200,6 +201,7 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		target.workerChecked = current.workerChecked
 		target.livenessError = current.livenessError
 	} else {
+		delete(m.pendingClaimLosses, target.issueID)
 		if current.completionCancel != nil {
 			current.completionCancel(ErrSchedulingClaimLost)
 		}
@@ -262,10 +264,8 @@ func (m *heartbeatManager) completionActive(issueID string, attemptID int64) boo
 		return false
 	}
 	lost := target.completionLeaseLost(m.now())
-	if target.completionCancel != nil && lost {
-		target.completionCancel(ErrSchedulingClaimLost)
-		target.claimLost = true
-		m.targets[issueID] = target
+	if target.completionCancel != nil && lost && !target.claimLost {
+		m.retireClaimLocked(target, heartbeatResult{})
 	}
 	return !lost
 }
@@ -302,8 +302,10 @@ func (m *heartbeatManager) remove(issueID string) {
 		return
 	}
 	m.mu.Lock()
-	target := m.targets[strings.TrimSpace(issueID)]
-	delete(m.targets, strings.TrimSpace(issueID))
+	issueID = strings.TrimSpace(issueID)
+	target := m.targets[issueID]
+	delete(m.targets, issueID)
+	delete(m.pendingClaimLosses, issueID)
 	m.mu.Unlock()
 	m.notify()
 	target.progress.close()
@@ -396,12 +398,14 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 	defer m.mu.Unlock()
 	due := make([]heartbeatTarget, 0, len(m.targets))
 	for issueID, target := range m.targets {
-		if target.completionCancel != nil && target.completionLeaseLost(now) {
-			target.completionCancel(ErrSchedulingClaimLost)
-			target.claimLost = true
-			m.targets[issueID] = target
+		if target.claimLost {
+			continue
 		}
-		if target.claimLost || target.inFlight || now.Before(target.nextDue) {
+		if target.completionCancel != nil && target.completionLeaseLost(now) {
+			m.retireClaimLocked(target, heartbeatResult{})
+			continue
+		}
+		if target.inFlight || now.Before(target.nextDue) {
 			continue
 		}
 		target.inFlight = true
@@ -561,28 +565,24 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		return
 	}
 	if current.claimLost || result.claimOwnerLost || workAttemptHeartbeatRetired(result.workAttemptError) {
-		current.claimLost = true
-		result.claimOwnerLost = true
-		result.claimRenewed = false
-		if current.completionCancel != nil {
-			current.completionCancel(ErrSchedulingClaimLost)
-		}
+		current.inFlight = false
+		m.retireClaimLocked(current, result)
+		m.mu.Unlock()
+		return
 	}
 	if result.workAttemptRenewed {
 		current.attemptDeadline = result.heartbeat.LeaseExpiresAt
 	}
 	now := m.now()
 	delay := m.settings.interval
-	retry := !result.claimOwnerLost && (result.claimError != nil || result.workAttemptError != nil &&
-		!errors.Is(result.workAttemptError, context.Canceled))
+	retry := result.claimError != nil || result.workAttemptError != nil &&
+		!errors.Is(result.workAttemptError, context.Canceled)
 	if retry {
 		current.failures++
 		delay = min(delay, schedulingBackoffInterval(time.Second, current.failures-1))
 	}
-	if !result.claimOwnerLost {
-		if remaining := current.renewalDelay(now, delay); remaining > 0 {
-			delay = remaining
-		}
+	if remaining := current.renewalDelay(now, delay); remaining > 0 {
+		delay = remaining
 	}
 	if retry {
 		delay = runpkg.JitteredFailureRetryDelay(delay)
@@ -591,7 +591,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	}
 	current.nextDue = now.Add(delay)
 	current.inFlight = false
-	if result.claimError == nil && !result.claimOwnerLost {
+	if result.claimError == nil {
 		current.workerAlive = result.workerAlive
 		current.workerChecked = result.workerChecked
 		current.livenessError = result.livenessError
@@ -602,7 +602,7 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	current.workspaceAdvanced = result.workspaceAdvanced
 	m.targets[target.issueID] = current
 	m.mu.Unlock()
-	if result.workAttemptError != nil && !workAttemptHeartbeatRetired(result.workAttemptError) {
+	if result.workAttemptError != nil {
 		m.logger.Warn("dedicated work attempt heartbeat failed", "attempt_id", result.heartbeat.AttemptID, "issue_id", result.issueID, "error", result.workAttemptError)
 	}
 	if result.claimError != nil {
@@ -616,6 +616,38 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 	default:
 	}
 	m.notify()
+}
+
+func (m *heartbeatManager) retireClaimLocked(target heartbeatTarget, result heartbeatResult) {
+	target.claimLost = true
+	m.targets[target.issueID] = target
+	if target.completionCancel != nil {
+		target.completionCancel(ErrSchedulingClaimLost)
+	}
+	m.notify()
+	if target.inFlight {
+		return
+	}
+	result.issueID = target.issueID
+	result.sequence = target.sequence
+	result.claimOwnerLost = true
+	result.claimRenewed = false
+	select {
+	case m.results <- result:
+	default:
+		if m.pendingClaimLosses == nil {
+			m.pendingClaimLosses = make(map[string]heartbeatResult)
+		}
+		m.pendingClaimLosses[target.issueID] = result
+	}
+}
+
+func (m *heartbeatManager) takePendingClaimLosses() map[string]heartbeatResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pending := m.pendingClaimLosses
+	m.pendingClaimLosses = nil
+	return pending
 }
 
 func workAttemptHeartbeatRetired(err error) bool {
@@ -810,7 +842,17 @@ func (o *Orchestrator) trackRunningHeartbeat(state *State, running Running, clai
 }
 
 func (o *Orchestrator) handleHeartbeatResult(state *State, result heartbeatResult) {
-	if o == nil || state == nil || o.heartbeats == nil || !o.heartbeats.current(result.issueID, result.sequence) {
+	if o == nil || state == nil || o.heartbeats == nil {
+		return
+	}
+	for _, loss := range o.heartbeats.takePendingClaimLosses() {
+		o.applyHeartbeatResult(state, loss)
+	}
+	o.applyHeartbeatResult(state, result)
+}
+
+func (o *Orchestrator) applyHeartbeatResult(state *State, result heartbeatResult) {
+	if !o.heartbeats.current(result.issueID, result.sequence) {
 		return
 	}
 	running, active := state.Running[result.issueID]

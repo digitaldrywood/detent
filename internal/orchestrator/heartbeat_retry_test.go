@@ -37,14 +37,16 @@ func (s *retryClaimHeartbeat) RenewClaimHeartbeat(_ context.Context, _ string, n
 
 func TestHeartbeatWriteRetryErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		err      error
-		failures int
-		expires  bool
-		retired  bool
+		name      string
+		err       error
+		failures  int
+		expires   bool
+		retired   bool
+		saturated bool
 	}{
 		{name: "transient persistence failure", err: errors.New("temporarily unavailable"), failures: 7},
 		{name: "expired before retry", err: context.DeadlineExceeded, failures: 1, expires: true},
+		{name: "expired with full results channel", err: context.DeadlineExceeded, failures: 1, expires: true, saturated: true},
 		{name: "retired attempt", err: store.ErrNotFound, failures: 1, retired: true},
 		{name: "terminal attempt", err: store.ErrWorkAttemptTerminal, failures: 1, retired: true},
 	} {
@@ -64,7 +66,7 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 			state.Running[issue.ID] = Running{Issue: issue, WorkAttemptID: 6004, cancel: func() { cancelled = true }}
 			state.Claimed[issue.ID] = Claimed{Issue: issue, LocalLeaseDeadline: target.localLeaseDeadline}
 			orch := &Orchestrator{cfg: cfg, scheduling: source, heartbeats: manager}
-			checkRetired := func(result heartbeatResult) {
+			checkNoMoreRenewals := func() {
 				t.Helper()
 				manager.upsert(target)
 				now = now.Add(interval)
@@ -74,14 +76,23 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 				if source.renewals != tc.failures || backend.calls != tc.failures {
 					t.Fatalf("retired attempt: claim renewals=%d attempt writes=%d, want %d of each", source.renewals, backend.calls, tc.failures)
 				}
+			}
+			checkReleased := func() {
+				t.Helper()
+				if !cancelled || len(state.Claimed) != 0 || len(state.Running) != 0 ||
+					len(source.forgotten) != 1 || source.forgotten[0] != issue.ID ||
+					knownDispatchWaitReason(issue, &state, nil, nil) != "" {
+					t.Fatalf("retired attempt kept local dispatch ownership: canceled=%t claims=%d running=%d forgotten=%v", cancelled, len(state.Claimed), len(state.Running), source.forgotten)
+				}
+			}
+			checkRetired := func(result heartbeatResult) {
+				t.Helper()
+				checkNoMoreRenewals()
 				if !result.claimOwnerLost || result.claimRenewed {
 					t.Fatalf("retirement result: lost=%t renewed=%t", result.claimOwnerLost, result.claimRenewed)
 				}
 				orch.handleHeartbeatResult(&state, result)
-				if !cancelled || len(source.forgotten) != 1 || source.forgotten[0] != issue.ID ||
-					knownDispatchWaitReason(issue, &state, nil, nil) != "" {
-					t.Fatalf("retired attempt kept local dispatch ownership: canceled=%t claims=%d running=%d forgotten=%v", cancelled, len(state.Claimed), len(state.Running), source.forgotten)
-				}
+				checkReleased()
 			}
 			now = now.Add(interval)
 			for i := range tc.failures {
@@ -107,12 +118,25 @@ func TestHeartbeatWriteRetryErrors(t *testing.T) {
 				now = now.Add(delay)
 			}
 			if tc.expires {
+				if tc.saturated {
+					for range cap(manager.results) {
+						manager.results <- heartbeatResult{issueID: "other"}
+					}
+				}
 				now = expires
 				due := manager.due(now)
 				if len(due) != 1 {
 					t.Fatalf("due=%v", due)
 				}
 				manager.execute(t.Context(), due[0])
+				if tc.saturated {
+					checkNoMoreRenewals()
+					for len(manager.results) > 0 {
+						orch.handleHeartbeatResult(&state, <-manager.results)
+					}
+					checkReleased()
+					return
+				}
 				result := <-manager.results
 				if !errors.Is(result.workAttemptError, store.ErrNotFound) {
 					t.Fatalf("expired attempt: calls=%d write error=%v", backend.calls, result.workAttemptError)
