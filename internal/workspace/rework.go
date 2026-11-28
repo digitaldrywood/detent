@@ -1903,22 +1903,22 @@ func verifyReplayedCommit(ctx context.Context, path, prev, src, dst string) erro
 	if err != nil || strings.TrimSpace(parent) != prev {
 		return fmt.Errorf("%w: paused rebase replayed commit parent does not match active target", ErrMergeResolutionInvalid)
 	}
-	srcMeta, err := gitexec.ReadPublicationSource(ctx, path, "show", "-s", "--format=%an%x00%ae%x00%at%x00%s", src)
-	if err != nil {
-		return err
-	}
-	dstMeta, err := gitexec.ReadPublicationSource(ctx, path, "show", "-s", "--format=%an%x00%ae%x00%at%x00%s", dst)
-	if err != nil {
-		return err
-	}
-	if srcMeta != dstMeta {
-		return fmt.Errorf("%w: paused rebase replayed commit metadata does not match assigned source", ErrMergeResolutionInvalid)
-	}
 	srcParent, pErr := gitexec.ReadPublicationSource(ctx, path, "rev-parse", "--verify", "--quiet", src+"^")
 	if pErr != nil {
 		return fmt.Errorf("%w: paused rebase source commit parent is unavailable", ErrMergeResolutionInvalid)
 	}
 	return gitexec.IsolatedMergeTree(ctx, path, strings.TrimSpace(srcParent), prev, src, func(read func(...string) (string, error), merged string, mErr error) error {
+		srcMeta, err := read("show", "-s", "--format=%an%x00%ae%x00%at%x00%s", src)
+		if err != nil {
+			return err
+		}
+		dstMeta, err := read("show", "-s", "--format=%an%x00%ae%x00%at%x00%s", dst)
+		if err != nil {
+			return err
+		}
+		if srcMeta != dstMeta {
+			return fmt.Errorf("%w: paused rebase replayed commit metadata does not match assigned source", ErrMergeResolutionInvalid)
+		}
 		if mErr == nil {
 			mergedTree, _, _ := strings.Cut(merged, "\x00")
 			dstTree, tErr := read("rev-parse", "--verify", dst+"^{tree}")

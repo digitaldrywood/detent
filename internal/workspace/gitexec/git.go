@@ -237,16 +237,26 @@ func IsLocalGitCommand(cmd *exec.Cmd) bool {
 			}
 			switch a {
 			case "--count", "--reverse", "--first-parent", "--topo-order",
-				"--no-merges", "--left-right", "--ancestry-path", "--parents", "-n":
+				"--no-merges", "--left-right", "--ancestry-path", "--parents", "-n", "--not":
 				continue
 			default:
-				if strings.HasPrefix(a, "--max-count=") {
+				if strings.HasPrefix(a, "--max-count=") ||
+					strings.HasPrefix(a, "--exclude=") ||
+					strings.HasPrefix(a, "--glob=") {
 					continue
 				}
 				return false
 			}
 		}
 		return len(rest) > 0
+	case "remote":
+		if len(rest) == 2 && rest[0] == "get-url" && !strings.HasPrefix(rest[1], "-") {
+			return true
+		}
+		if len(rest) == 3 && rest[0] == "get-url" && rest[1] == "--all" && !strings.HasPrefix(rest[2], "-") {
+			return true
+		}
+		return false
 	case "diff-tree":
 		for _, a := range rest {
 			if !strings.HasPrefix(a, "-") {
