@@ -696,6 +696,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 		name, outcome  string
 		expire, revoke bool
 		refuseDiff     bool
+		refuseChange   bool
 		refuseSession  string
 	}{
 		{name: "successful diff", outcome: "succeeded"},
@@ -703,6 +704,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 		{name: "expired before renewal acknowledgement", outcome: "succeeded", expire: true},
 		{name: "revoked on reconnect", outcome: "succeeded", revoke: true},
 		{name: "revoked during failed turn diff", outcome: "failed", refuseDiff: true},
+		{name: "refused while opening a Change", outcome: "succeeded", refuseChange: true},
 		{name: "revoked during guarded session progress", outcome: "failed", refuseSession: "guarded"},
 		{name: "revoked during rebound session progress", outcome: "failed", refuseSession: "rebound"},
 	} {
@@ -717,6 +719,7 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				var diff tracker.AttemptDiffRequest
 				var finished tracker.NativeRunEvent
 				diffWrites, completionRequests, completions := 0, 0, 0
+				changeCreates, versionWrites := 0, 0
 				sessionReads, sessionWrites := 0, 0
 				client, err := newTestClient(t, Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					response := httptest.NewRecorder()
@@ -766,6 +769,16 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 							return nil, err
 						}
 						io.WriteString(response, "{}")
+					case tc.refuseChange && strings.HasSuffix(request.URL.Path, "/changes") && request.Method == http.MethodGet:
+						io.WriteString(response, "[]")
+					case tc.refuseChange && strings.HasSuffix(request.URL.Path, "/changes") && request.Method == http.MethodPost:
+						changeCreates++
+						response.Header().Set("Content-Type", "application/json")
+						response.WriteHeader(http.StatusForbidden)
+						io.WriteString(response, `{"code":"insufficient_scope"}`)
+					case tc.refuseChange && strings.HasSuffix(request.URL.Path, "/versions") && request.Method == http.MethodPost:
+						versionWrites++
+						response.WriteHeader(http.StatusForbidden)
 					case strings.HasSuffix(request.URL.Path, "/events"):
 						var event tracker.NativeRunEvent
 						if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
@@ -805,6 +818,10 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				execution.data.Identity = &tracker.NativeExecutionIdentity{Role: "triage", Backend: "codex", Model: "example"}
 				head := nativeChangeFixtureHead("c")
 				execution.SetDiffSource(nativeChangeDiff(head, "README.md"))
+				if tc.refuseChange {
+					execution.data.Identity.Role = runner.RoleCode
+					execution.worktreeState, execution.worktreeHead = "unpushed", head
+				}
 				guarded, stop, err := execution.Guard(t.Context())
 				if err != nil {
 					t.Fatal(err)
@@ -875,6 +892,22 @@ func TestFinalDiffAndCompletionSurviveHubOutage(t *testing.T) {
 				}
 				if _, err := scheduler.RenewClaimHeartbeat(t.Context(), string(lease.WorkItemID), time.Now()); err != nil {
 					t.Fatal(err)
+				}
+				if tc.refuseChange {
+					at := time.Now()
+					for _, ctx := range []context.Context{detached, t.Context()} {
+						err := execution.Finish(ctx, tc.outcome)
+						var cause *runner.CancellationCause
+						if !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) ||
+							!errors.As(context.Cause(guarded), &cause) || cause.Reason != "execution_authority_unavailable" {
+							t.Fatalf("Change creation refusal did not cancel the lease guard: error=%v cause=%v", err, context.Cause(guarded))
+						}
+					}
+					if changeCreates != 1 || versionWrites != 0 || completionRequests != 0 || diffWrites != 2 || !time.Now().Equal(at) {
+						t.Fatalf("publication after Change refusal: creates=%d versions=%d completions=%d diffs=%d elapsed=%v",
+							changeCreates, versionWrites, completionRequests, diffWrites, time.Since(at))
+					}
+					return
 				}
 				if tc.refuseDiff {
 					for range 2 {
