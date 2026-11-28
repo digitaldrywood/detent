@@ -1338,7 +1338,7 @@ func testLocalGitPrepareMergeValidatesResolvedHead(t *testing.T, tests []mergeRe
 				directory := t.TempDir()
 				failure := "case \"$*\" in *" + shellQuote(" "+tt.gitFailure+" ") + "*) exit 29;; esac\n"
 				if tt.gitFailure == "merge-base" {
-					failure = "if [ \"$3\" = \"merge-base\" ] && [ \"$4\" != \"--is-ancestor\" ]; then exit 29; fi\n"
+					failure = "case \" $* \" in *\" merge-base --is-ancestor \"*) ;; *\" merge-base \"*) exit 29;; esac\n"
 				}
 				script := "#!/bin/sh\n" + failure + "exec " + shellQuote(realGit) + " \"$@\"\n"
 				if err := os.WriteFile(filepath.Join(directory, "git"), []byte(script), 0o700); err != nil {
