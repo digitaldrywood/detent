@@ -25,35 +25,24 @@ if name == "go" and args[:1] == ["env"]:
     print("fixture")
     sys.exit(0)
 with Path(".git/trace").open("a") as stream:
-    stream.write(json.dumps({
-        "tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"),
-        "token": "DETENT_API_TOKEN" in os.environ, "postgres": os.environ.get("DETENT_TEST_POSTGRES"),
-        "tmpdir": os.environ.get("TMPDIR"), "git_protocols": os.environ.get("GIT_ALLOW_PROTOCOL"),
-        "inline_makefile": sys.stdin.read() if name == "make" and "-" in args else None,
-    }) + "\n")
+    stream.write(json.dumps({"tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"), "token": "DETENT_API_TOKEN" in os.environ, "postgres": os.environ.get("DETENT_TEST_POSTGRES"), "tmpdir": os.environ.get("TMPDIR")}) + "\n")
 if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "golangci-lint" and os.environ.get("FAIL_STAGE") == "lint"):
     sys.exit(17)
 if name == "go" and args[:1] == ["list"]:
-    embeds = {
-        "lib": ["data.txt"],
-        ".": ["Makefile", "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py"],
-    }
     for directory, imports, test_imports in (
         ("lib", [], []),
-        ("app", ["example.test/lib", "example.test"], []),
+        ("app", ["example.test/lib"], []),
         ("integration", [], ["example.test/app"]),
         ("consumer", ["example.test/integration"], []),
         ("dual", ["example.test/lib"], ["example.test/app"]),
         ("dualconsumer", ["example.test/dual"], []),
         ("unrelated", [], []),
         ("removed", [], []),
-        ("internal/runner", ["example.test/internal/workspace/validationcmd"], []),
-        ("internal/workspace/validationcmd", ["example.test"], []),
         (".", [], []),
     ):
         if not list(Path(directory).glob("*.go")):
             continue
-        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test" if directory == "." else "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": embeds.get(directory, [])}))
+        print(json.dumps({"Dir": str(Path(directory).resolve()), "ImportPath": "example.test" if directory == "." else "example.test/" + directory, "Imports": imports, "TestImports": test_imports, "EmbedFiles": ["data.txt"] if directory == "lib" else []}))
     for directory in sorted(Path("many").glob("*/source.go")):
         print(json.dumps({"Dir": str(directory.parent.resolve()), "ImportPath": "example.test/" + directory.parent.as_posix()}))
 if name == "go" and args[:1] == ["test"]:
@@ -110,6 +99,7 @@ class ShortLandingGateTest(unittest.TestCase):
             tool.chmod(0o755)
         self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token")
         self.linter = str(binaries / "golangci-lint")
+        self.required_packages = []
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, text=True, stderr=subprocess.STDOUT)
@@ -171,59 +161,6 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.assertIn("-timeout=30m", test["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
-
-    def test_linter_build_preserves_explicit_git_transport_policy(self):
-        (self.root / ".custom-gcl.yml").write_text("version: v2.14.0\n")
-        (self.root / "lib/source_test.go").write_text("package lib\n")
-        self.commit()
-        for policy in (None, "", "file"):
-            with self.subTest(policy=policy):
-                if policy is None:
-                    self.env.pop("GIT_ALLOW_PROTOCOL", None)
-                else:
-                    self.env["GIT_ALLOW_PROTOCOL"] = policy
-                result = self.run_gate()
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                trace = self.trace()
-                build = next(call for call in trace if call["tool"] == "make" and "landing-linter" in call["args"])
-                self.assertIn("LANDING_LINTER=" + self.linter, build["args"])
-                self.assertIn("bash scripts/check-landing.sh --build-custom-linter", build["inline_makefile"])
-                for call in trace:
-                    self.assertEqual(call["git_protocols"], policy, call)
-
-    def test_landing_recipe_changes_select_its_consumers(self):
-        consumers = ["internal/runner", "internal/workspace/validationcmd"]
-        for consumer in consumers:
-            directory = self.root / consumer
-            directory.mkdir(parents=True)
-            (directory / "source.go").write_text(f"package {directory.name}\n")
-        (self.root / "embed.go").write_text("package fixture\n")
-        (self.root / "Makefile").write_text("TEST_PROCS ?= 4\n")
-        self.commit()
-        for path, regular, focused in (
-            ("scripts/check-landing.sh", [".", "./internal/workspace/validationcmd"], True),
-            ("scripts/check-evidence.sh", [".", "./internal/workspace/validationcmd"], True),
-            ("scripts/check-landing.py", [".", "./internal/workspace/validationcmd"], True),
-            ("embed.go", [".", "./app", "./internal/workspace/validationcmd"], False),
-            ("Makefile", [".", "./app", "./internal/workspace/validationcmd"], False),
-            ("internal/runner/source.go", ["./internal/runner"], False),
-        ):
-            with self.subTest(path=path):
-                self.git("update-ref", "refs/remotes/origin/develop", "HEAD")
-                with (self.root / path).open("a") as stream:
-                    stream.write("\n")
-                self.commit()
-                result = self.run_gate()
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                tests = [call["args"] for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test"]
-                selected = [arg for arg in tests[0] if arg == "." or arg.startswith("./")]
-                self.assertEqual(selected, sorted(regular))
-                if focused:
-                    self.assertEqual(tests[1:], [["test", "-p", "2", "-short", "-timeout=120s", "-run",
-                                                  "^TestNativeImplementationReviewPrecedesAcceptanceValidator$",
-                                                  "./internal/runner"]])
-                else:
-                    self.assertEqual(len(tests), 1)
 
     def test_test_imports_select_one_hop_without_transitive_explosion(self):
         for name in ("consumer", "dual", "dualconsumer"):
@@ -426,11 +363,11 @@ func TestGateLifetime(t *testing.T) {
         for name, cancel in (("failure", None), ("SIGTERM", signal.SIGTERM), ("SIGINT", signal.SIGINT)):
             with self.subTest(name=name), tempfile.TemporaryDirectory(dir=ROOT / "tmp", prefix="gate-lifetime-") as directory:
                 base = Path(directory)
-                long = base / "postgres"
+                long = base
                 while len(str(long)) < 300:
-                    long /= "x" * min(80, 300 - len(str(long)))
+                    long /= "x" * min(80, 299 - len(str(long)))
                 long.mkdir(parents=True)
-                self.assertGreaterEqual(len(str(long)), 300)
+                self.assertEqual(len(str(long)), 300)
                 control = base / "control"
                 os.mkfifo(control)
                 descriptor = os.open(control, os.O_RDWR)

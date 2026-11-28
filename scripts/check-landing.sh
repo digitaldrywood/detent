@@ -1,54 +1,5 @@
 set -euo pipefail
 
-if [ "${1:-}" = --build-custom-linter ]; then
-    shift
-    linter_version=${1:?linter version required}
-    heft_version=${2:?Heft version required}
-    output=${3:?output path required}
-    procs=${4:?process budget required}
-    [[ $output == /* ]]
-
-    output_dir=$(dirname "$output")
-    mkdir -p "$output_dir"
-    build_dir=$(mktemp -d "${TMPDIR:?job scratch required}/detent-linter.XXXXXX")
-    staged_binary=
-    trap 'rm -rf -- "$build_dir"; rm -f -- "$staged_binary"' EXIT
-    staged_binary=$(mktemp "$output_dir/.golangci-lint.XXXXXX")
-    cd "$build_dir"
-    export GOWORK=off
-
-    go mod init example.test/detent-linter
-    go mod edit -require="github.com/golangci/golangci-lint/v2@$linter_version" \
-        -require="github.com/digitaldrywood/heft@$heft_version"
-    cat > main.go <<'EOF'
-package main
-
-import (
-	"fmt"
-	"os"
-	"runtime"
-
-	_ "github.com/digitaldrywood/heft/plugin"
-	"github.com/golangci/golangci-lint/v2/pkg/commands"
-	"github.com/golangci/golangci-lint/v2/pkg/exitcodes"
-)
-
-var version string
-
-func main() {
-	if err := commands.Execute(commands.BuildInfo{Version: version, GoVersion: runtime.Version()}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(exitcodes.Failure)
-	}
-}
-EOF
-    go build -mod=mod -buildvcs=false -p "$procs" -ldflags "-X main.version=${linter_version#v}" -o "$staged_binary" .
-    [[ $(go list -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2) == "$linter_version" ]]
-    [[ $(go list -m -f '{{.Version}}' github.com/digitaldrywood/heft) == "$heft_version" ]]
-    mv -f -- "$staged_binary" "$output"
-    exit
-fi
-
 if [ "${1:-}" != --supervised ]; then
     exec python3 scripts/check-landing.py supervise "$0" "$@"
 fi
@@ -182,23 +133,14 @@ while raw.strip():
     packages[package["ImportPath"]] = package
 root = Path.cwd()
 wide = any(path in ("go.mod", "go.sum") for path in changed)
-landing_recipe_scripts = {
-    "scripts/check-landing.sh", "scripts/check-evidence.sh", "scripts/check-landing.py",
-}
-landing_recipe_changed = bool(landing_recipe_scripts.intersection(changed))
 direct = set()
 propagated = set()
 lint = set()
 prefixes = {}
-runner_package = None
 for name, package in packages.items():
     directory = Path(package["Dir"]).relative_to(root).as_posix()
     prefix = "" if directory == "." else directory + "/"
     prefixes[name] = prefix
-    if directory == "internal/runner":
-        runner_package = name
-    if landing_recipe_changed and directory == "internal/workspace/validationcmd":
-        direct.add(name)
     for path in changed:
         if path and path.startswith(prefix):
             relative = path[len(prefix):]
@@ -209,8 +151,7 @@ for name, package in packages.items():
                     propagated.add(name)
             if relative.startswith("testdata/") or relative in package.get("EmbedFiles", []) + package.get("TestEmbedFiles", []) + package.get("XTestEmbedFiles", []):
                 direct.add(name)
-                if prefix or relative not in landing_recipe_scripts:
-                    propagated.add(name)
+                propagated.add(name)
 for path in changed:
     if path and not path.endswith(".go"):
         owner = max((name for name, prefix in prefixes.items() if path.startswith(prefix)), key=lambda name: len(prefixes[name]), default=None)
@@ -223,8 +164,6 @@ dependents = {
 selected = set(packages) if wide else direct | propagated | dependents
 if wide:
     print("wide\t./...")
-if landing_recipe_changed and runner_package and runner_package not in selected:
-    print("recipe-test\t./internal/runner")
 for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
     for name in sorted(names):
         directory = Path(packages[name]["Dir"]).relative_to(root).as_posix()
@@ -234,12 +173,10 @@ PY
 test_packages=()
 lint_packages=()
 lint_scope=(--new-from-rev="$base" --whole-files)
-recipe_test_package=
 while IFS=$'\t' read -r scope package; do
     case "$scope" in
         test) test_packages+=("$package") ;;
         lint) lint_packages+=("$package") ;;
-        recipe-test) recipe_test_package=$package ;;
         wide) lint_scope=() ;;
     esac
 done <<< "$selection"
@@ -253,22 +190,8 @@ if [ "${#test_packages[@]}" -gt 0 ]; then
     package_digest=$(python3 scripts/check-landing.py digest "${test_packages[@]}")
     DETENT_LANDING_PACKAGES=$(printf '%s\n' "${test_packages[@]}") check_with_evidence unit-short python3 scripts/check-landing.py tests --package-count="${#test_packages[@]}" --package-sha256="$package_digest" -p "$procs" -short -timeout=30m
 fi
-if [ -n "$recipe_test_package" ]; then
-    check_with_evidence unit-landing-recipe go test -p "$procs" -short -timeout=120s \
-        -run '^TestNativeImplementationReviewPrecedesAcceptanceValidator$' "$recipe_test_package"
-fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
-    if [ -f .custom-gcl.yml ]; then
-        make -j1 -f Makefile -f - landing-linter LANDING_LINTER="$linter" TEST_PROCS="$procs" <<'MAKE'
-.PHONY: landing-linter
-landing-linter:
-	@test "$(LANDING_LINTER)" = "$(GOLANGCI_LINT_RUN)"
-	@grep -Fqx 'version: $(GOLANGCI_LINT_VERSION)' .custom-gcl.yml
-	GOTOOLCHAIN="$(GOLANGCI_LINT_TOOLCHAIN)" bash scripts/check-landing.sh --build-custom-linter "$(GOLANGCI_LINT_VERSION)" "$(HEFT_VERSION)" "$(LANDING_LINTER)" "$(TEST_PROCS)"
-MAKE
-    else
-        make -j1 "$linter" TEST_PROCS="$procs"
-    fi
+    make -j1 "$linter" TEST_PROCS="$procs"
     check_with_evidence lint env GOMAXPROCS="$procs" "$linter" run --allow-parallel-runners --concurrency="$procs" --timeout=5m ${lint_scope[@]+"${lint_scope[@]}"} "${lint_packages[@]}"
 fi
 if [ "$(git rev-parse --verify 'HEAD^{commit}')" != "$head" ]; then
