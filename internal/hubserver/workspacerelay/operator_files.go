@@ -22,6 +22,11 @@ func (w *HTTP) ReadOperatorFiles(ctx context.Context, scope hubscope.NativeScope
 	if err := w.RequireWorkspaces(); err != nil {
 		return nil, err
 	}
+	if _, bounded := ctx.Deadline(); !bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, w.RequestBudget)
+		defer cancel()
+	}
 	record, err := w.ReadOperatorWorkspace(ctx, scope, request.WorkspaceID)
 	if err != nil {
 		return nil, err
@@ -45,8 +50,6 @@ func (w *HTTP) ReadOperatorFiles(ctx context.Context, scope hubscope.NativeScope
 	if runner == nil {
 		return result("unavailable", workspacesession.CodeStaleExecution, nil)
 	}
-	ctx, cancel := context.WithTimeout(ctx, WriteTimeout)
-	defer cancel()
 	identity := operatortool.ConnectionIdentity(ctx)
 	connection := &Connection{
 		ID: hubapi.NewID("relayperson"), WorkspaceID: record.ID,
@@ -98,6 +101,9 @@ func (w *HTTP) ReadOperatorFiles(ctx context.Context, scope hubscope.NativeScope
 	case <-connection.Done:
 		return nil, workspacehub.ErrOperationUnavailable
 	case response := <-connection.Out:
+		if ctx.Err() != nil {
+			return nil, workspacehub.ErrOperationUnavailable
+		}
 		ctx, err = operatortool.AuthorizeCurrent(ctx, workspacehub.OperatorRequirement(name, request, false))
 		if err != nil {
 			return nil, operatortool.ErrAccessDenied
