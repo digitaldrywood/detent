@@ -3054,6 +3054,37 @@ func (c *fakeConnector) SetField(_ context.Context, issueID string, field string
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.setFieldLocked(issueID, field, value)
+	return nil
+}
+
+func (c *fakeConnector) CompareAndRenewClaimLease(ctx context.Context, observed connector.Issue, ownerField, leaseField string, renewedAt, expiresAt time.Time) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if !time.Now().Before(expiresAt) {
+		return false, nil
+	}
+	for _, issue := range c.candidates {
+		if issue.ID != observed.ID {
+			continue
+		}
+		sameOwner := issue.AssigneeID == observed.AssigneeID && slices.Equal(issue.Assignees, observed.Assignees)
+		if ownerField != "" {
+			sameOwner = issue.Fields[ownerField] == observed.Fields[ownerField]
+		}
+		if !sameOwner || issue.Fields[leaseField] != observed.Fields[leaseField] {
+			return false, nil
+		}
+		c.setFieldLocked(issue.ID, leaseField, renewedAt.Format(time.RFC3339Nano))
+		return true, nil
+	}
+	return false, nil
+}
+
+func (c *fakeConnector) setFieldLocked(issueID, field, value string) {
 	c.setFields = append(c.setFields, setFieldCall{issueID: issueID, field: field, value: value})
 	for i := range c.candidates {
 		if c.candidates[i].ID != issueID {
@@ -3073,7 +3104,6 @@ func (c *fakeConnector) SetField(_ context.Context, issueID string, field string
 		}
 		c.stateIssues[i].Fields[field] = value
 	}
-	return nil
 }
 
 func (c *fakeConnector) hasSetField(issueID string, field string, value string) bool {

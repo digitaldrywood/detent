@@ -30,6 +30,10 @@ type claimHeartbeatClock interface {
 	ClaimHeartbeatDeadline(string) time.Time
 }
 
+type trackerClaimLeaseRenewer interface {
+	CompareAndRenewClaimLease(ctx context.Context, observed connector.Issue, ownerField, leaseField string, renewedAt, expiresAt time.Time) (bool, error)
+}
+
 type heartbeatManager struct {
 	mu           sync.Mutex
 	settings     heartbeatSettings
@@ -59,6 +63,7 @@ type heartbeatTarget struct {
 	claimLost            bool
 	completionCancel     context.CancelCauseFunc
 	attemptDeadline      time.Time
+	attemptRetired       bool
 	workAttemptHeartbeat store.WorkAttemptHeartbeat
 	workerProcess        procgroup.Identity
 	workspacePath        string
@@ -182,7 +187,10 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		}
 		target.claimLost = current.claimLost
 		target.completionCancel = current.completionCancel
-		target.attemptDeadline = current.attemptDeadline
+		if current.attemptDeadline.After(target.attemptDeadline) {
+			target.attemptDeadline = current.attemptDeadline
+		}
+		target.attemptRetired = current.attemptRetired
 		target.failures = current.failures
 		target.sequence = current.sequence
 		target.nextDue = current.nextDue
@@ -194,6 +202,9 @@ func (m *heartbeatManager) upsert(target heartbeatTarget) {
 		target.workerChecked = current.workerChecked
 		target.livenessError = current.livenessError
 	} else {
+		if current.completionCancel != nil {
+			current.completionCancel(ErrSchedulingClaimLost)
+		}
 		m.nextSequence++
 		target.sequence = m.nextSequence
 		now := m.now()
@@ -231,19 +242,50 @@ func claimRenewalDeadline(claim Claimed) time.Time {
 	return claim.LeaseExpiresAt
 }
 
-func (m *heartbeatManager) bindCompletion(ctx context.Context, issueID string) (context.Context, func()) {
+func (target heartbeatTarget) completionDeadline() time.Time {
+	attempt := target.progress.leaseExpiry(target.attemptDeadline)
+	if target.localLeaseDeadline.IsZero() || !attempt.IsZero() && attempt.Before(target.localLeaseDeadline) {
+		return attempt
+	}
+	return target.localLeaseDeadline
+}
+
+func (target heartbeatTarget) completionLeaseLost(now time.Time) bool {
+	deadline := target.completionDeadline()
+	return target.claimLost || target.attemptRetired ||
+		!deadline.IsZero() && !now.Before(deadline)
+}
+
+func (m *heartbeatManager) completionActive(issueID string, attemptID int64) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	target, found := m.targets[issueID]
+	if !found || target.workAttemptHeartbeat.AttemptID != attemptID {
+		return false
+	}
+	lost := target.completionLeaseLost(m.now())
+	if target.completionCancel != nil && lost {
+		target.completionCancel(ErrSchedulingClaimLost)
+		target.claimLost = true
+		m.targets[issueID] = target
+	}
+	return !lost
+}
+
+func (m *heartbeatManager) bindCompletion(ctx context.Context, issueID string, attemptID int64) (context.Context, func()) {
 	if m == nil {
 		return ctx, func() {}
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	m.mu.Lock()
 	target, found := m.targets[issueID]
-	if !found || target.claimLost || !target.localLeaseDeadline.IsZero() && !m.now().Before(target.localLeaseDeadline) {
+	if !found || target.workAttemptHeartbeat.AttemptID != attemptID || target.completionLeaseLost(m.now()) {
+		m.mu.Unlock()
 		cancel(ErrSchedulingClaimLost)
-	} else {
-		target.completionCancel = cancel
-		m.targets[issueID] = target
+		return ctx, func() {}
 	}
+	target.completionCancel = cancel
+	m.targets[issueID] = target
 	m.mu.Unlock()
 	m.notify()
 	return ctx, func() {
@@ -338,8 +380,8 @@ func (m *heartbeatManager) nextDelay(now time.Time) time.Duration {
 		if target.claimLost {
 			continue
 		}
-		if target.completionCancel != nil && !target.localLeaseDeadline.IsZero() && (next.IsZero() || target.localLeaseDeadline.Before(next)) {
-			next = target.localLeaseDeadline
+		if deadline := target.completionDeadline(); target.completionCancel != nil && !deadline.IsZero() && (next.IsZero() || deadline.Before(next)) {
+			next = deadline
 		}
 		if !target.inFlight && (next.IsZero() || target.nextDue.Before(next)) {
 			next = target.nextDue
@@ -356,7 +398,7 @@ func (m *heartbeatManager) due(now time.Time) []heartbeatTarget {
 	defer m.mu.Unlock()
 	due := make([]heartbeatTarget, 0, len(m.targets))
 	for issueID, target := range m.targets {
-		if target.completionCancel != nil && !target.localLeaseDeadline.IsZero() && !now.Before(target.localLeaseDeadline) {
+		if target.completionCancel != nil && target.completionLeaseLost(now) {
 			target.completionCancel(ErrSchedulingClaimLost)
 			target.claimLost = true
 			m.targets[issueID] = target
@@ -504,7 +546,10 @@ func (m *heartbeatManager) finish(target heartbeatTarget, result heartbeatResult
 		m.mu.Unlock()
 		return
 	}
-	if result.claimOwnerLost && current.completionCancel != nil {
+	if errors.Is(result.workAttemptError, store.ErrNotFound) {
+		current.attemptRetired = true
+	}
+	if current.completionCancel != nil && (result.claimOwnerLost || current.attemptRetired) {
 		current.completionCancel(ErrSchedulingClaimLost)
 		current.claimLost = true
 	}
@@ -617,8 +662,9 @@ func latestHeartbeatWorkspaceModification(path string) (time.Time, error) {
 }
 
 func renewTrackerClaim(ctx context.Context, settings heartbeatSettings, target heartbeatTarget, now time.Time, clock func() time.Time) (connector.Issue, string, bool, error) {
-	if settings.connector == nil {
-		return connector.Issue{}, "", false, errors.New("connector is unavailable")
+	renewer, ok := settings.connector.(trackerClaimLeaseRenewer)
+	if !ok {
+		return connector.Issue{}, "", true, nil
 	}
 	issues, err := settings.connector.FetchIssueStatesByIDs(ctx, []string{target.issueID})
 	if err != nil {
@@ -632,18 +678,21 @@ func renewTrackerClaim(ctx context.Context, settings heartbeatSettings, target h
 		if !sameClaimOwner(owner, target.claimOwner) {
 			return cloneIssue(issue), owner, true, nil
 		}
-		if !target.localLeaseDeadline.IsZero() {
-			lease, ok := parseClaimTime(issue.Fields[settings.claiming.LeaseField])
-			checkedAt := clock()
-			if !ok || !checkedAt.Before(target.localLeaseDeadline) || !checkedAt.Before(lease.Add(settings.leaseTTL)) {
-				return cloneIssue(issue), owner, true, nil
-			}
+		lease, ok := parseClaimTime(issue.Fields[settings.claiming.LeaseField])
+		expiresAt := lease.Add(settings.leaseTTL)
+		remaining := expiresAt.Sub(clock())
+		if !ok || remaining <= 0 || !target.localLeaseDeadline.IsZero() && !target.localLeaseDeadline.Equal(expiresAt) {
+			return cloneIssue(issue), owner, true, nil
 		}
-		if err := ctx.Err(); err != nil {
-			return connector.Issue{}, owner, false, err
+		ownerField := ""
+		if settings.claiming.OwnershipMode == workflowconfig.IdentityOwnershipField {
+			ownerField = settings.claiming.OwnerField
 		}
-		if err := settings.connector.SetField(ctx, target.issueID, settings.claiming.LeaseField, formatClaimTime(now)); err != nil {
-			return connector.Issue{}, owner, false, err
+		writeCtx, cancel := context.WithTimeout(ctx, remaining)
+		defer cancel()
+		renewed, err := renewer.CompareAndRenewClaimLease(writeCtx, issue, ownerField, settings.claiming.LeaseField, now, expiresAt)
+		if err != nil || !renewed {
+			return cloneIssue(issue), owner, err == nil, err
 		}
 		return issueWithLeaseField(issue, settings.claiming.LeaseField, now), owner, false, nil
 	}

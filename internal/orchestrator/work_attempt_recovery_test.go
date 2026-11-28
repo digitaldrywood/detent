@@ -156,7 +156,7 @@ func TestHandleWorkAttemptRecoveryQueuesResumeRetryWhenEligible(t *testing.T) {
 		t.Fatalf("audit event = %#v, want succeeded resume audit", event)
 	}
 	state = newState(orch.cfg)
-	orch.connector = fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	orch.connector = claimTestConnector{store: newClaimTestStore([]connector.Issue{issue}), login: "operator"}
 	orch.cfg.Claiming.Owner = "operator"
 	orch.refillProjectSlotsExcluding(t.Context(), &state, now, issue.ID)
 	if len(state.Retry) != 0 || len(state.Running) != 0 {

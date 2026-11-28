@@ -208,7 +208,7 @@ func TestHeartbeatManagerSchedulesFromRemainingLeaseLifetime(t *testing.T) {
 }
 
 func TestHeartbeatManagerRenewsWithoutSchedulerLoop(t *testing.T) {
-	initial := time.Now().UTC().Add(-time.Minute)
+	initial := time.Now().UTC().Add(-30 * time.Second)
 	issue := claimTestIssue("issue-dedicated-heartbeat")
 	issue.AssigneeID = "alpha"
 	issue.Assignees = []string{"alpha"}
@@ -238,75 +238,130 @@ func TestHeartbeatManagerRenewsWithoutSchedulerLoop(t *testing.T) {
 	}
 }
 
-func TestCompleteTerminalRunningStopsInFlightHeartbeat(t *testing.T) {
-	now := time.Now().UTC()
-	issue := claimTestIssue("issue-terminal-heartbeat")
-	issue.State = "Done"
-	issue.AssigneeID = "alpha"
-	issue.Assignees = []string{"alpha"}
-	issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-time.Minute))
-	claimStore := newClaimTestStore([]connector.Issue{issue})
-	connectorBackend := &terminalHeartbeatConnector{
-		claimTestConnector: claimTestConnector{store: claimStore, login: "alpha"},
-		renewalStarted:     make(chan struct{}),
-		allowRenewal:       make(chan struct{}),
+func TestTrackerHeartbeatFencesClaimHandoff(t *testing.T) {
+	for _, path := range []string{"dedicated", "tick"} {
+		for _, change := range []string{"owner", "generation", "expiry"} {
+			t.Run(path+"/"+change, func(t *testing.T) {
+				now := time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC)
+				cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+				issue := claimTestIssue("item")
+				issue.AssigneeID = "alpha"
+				stamp := now.Add(-cfg.Claiming.LeaseTTL / 2)
+				issue = issueWithLeaseField(issue, cfg.Claiming.LeaseField, stamp)
+				expires := stamp.Add(cfg.Claiming.LeaseTTL)
+				backend := newClaimTestStore([]connector.Issue{issue})
+				backend.clock = func() time.Time { return now }
+				successorStamp := stamp
+				backend.renewalHook = func() {
+					switch change {
+					case "owner":
+						backend.setAssignee(issue.ID, "beta")
+					case "generation":
+						successorStamp = stamp.Add(time.Second)
+						backend.setField(issue.ID, cfg.Claiming.LeaseField, formatClaimTime(successorStamp))
+					case "expiry":
+						now = expires
+					}
+				}
+				tracker := claimTestConnector{store: backend, login: "alpha"}
+				if path == "tick" {
+					orch := &Orchestrator{cfg: cfg, connector: tracker, now: backend.clock}
+					state := newState(cfg)
+					state.Running[issue.ID] = Running{Issue: issue}
+					state.Claimed[issue.ID] = Claimed{Issue: issue, Owner: "alpha", LeaseRenewedAt: stamp, LeaseExpiresAt: expires}
+					orch.heartbeatRunningClaims(t.Context(), &state, now)
+					if _, owned := state.Claimed[issue.ID]; owned {
+						t.Fatal("tick retained obsolete claim")
+					}
+				} else {
+					manager := newHeartbeatManager(cfg, tracker, nil, backend.clock, nil)
+					manager.upsert(heartbeatTarget{issueID: issue.ID, claimOwner: "alpha", localLeaseDeadline: expires})
+					manager.execute(t.Context(), manager.targets[issue.ID])
+					if result := <-manager.results; !result.claimOwnerLost || result.claimRenewed {
+						t.Fatalf("obsolete renewal proceeded: %+v", result)
+					}
+				}
+				if got := backend.issue(issue.ID).Fields[cfg.Claiming.LeaseField]; got != formatClaimTime(successorStamp) {
+					t.Fatalf("lease timestamp changed: got %s, want %s", got, formatClaimTime(successorStamp))
+				}
+			})
+		}
 	}
-	cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
-	cfg.Claiming.HeartbeatInterval = 5 * time.Millisecond
-	manager := newHeartbeatManager(cfg, connectorBackend, nil, time.Now, nil)
-	orchestrator := &Orchestrator{cfg: cfg, connector: connectorBackend, heartbeats: manager}
-	state := newState(cfg)
-	running := Running{Issue: cloneIssue(issue), StartedAt: now.Add(-time.Minute)}
-	state.Running[issue.ID] = running
-	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), Owner: "alpha"}
-	manager.upsert(heartbeatTarget{issueID: issue.ID, claimOwner: "alpha"})
+}
 
-	ctx, cancel := context.WithCancel(t.Context())
-	managerDone := make(chan struct{})
-	go func() {
-		defer close(managerDone)
-		manager.Run(ctx)
-	}()
-	select {
-	case <-connectorBackend.renewalStarted:
-	case <-time.After(time.Second):
+func TestCompleteTerminalRunningStopsInFlightHeartbeat(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now().UTC()
+		issue := claimTestIssue("issue-terminal-heartbeat")
+		issue.State = "Done"
+		issue.AssigneeID = "alpha"
+		issue.Assignees = []string{"alpha"}
+		issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-30 * time.Second))
+		claimStore := newClaimTestStore([]connector.Issue{issue})
+		connectorBackend := &terminalHeartbeatConnector{
+			claimTestConnector: claimTestConnector{store: claimStore, login: "alpha"},
+			renewalStarted:     make(chan struct{}),
+			allowRenewal:       make(chan struct{}),
+		}
+		cfg := normalizeConfig(claimTestConfig("alpha", "alpha"))
+		cfg.Claiming.HeartbeatInterval = 5 * time.Millisecond
+		manager := newHeartbeatManager(cfg, connectorBackend, nil, time.Now, nil)
+		orchestrator := &Orchestrator{cfg: cfg, connector: connectorBackend, heartbeats: manager}
+		state := newState(cfg)
+		running := Running{Issue: cloneIssue(issue), StartedAt: now.Add(-time.Minute)}
+		state.Running[issue.ID] = running
+		state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), Owner: "alpha"}
+		manager.upsert(heartbeatTarget{issueID: issue.ID, claimOwner: "alpha"})
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		managerDone := make(chan struct{})
+		go func() {
+			defer close(managerDone)
+			manager.Run(ctx)
+		}()
+		select {
+		case <-connectorBackend.renewalStarted:
+		case <-time.After(time.Second):
+			cancel()
+			<-managerDone
+			t.Fatal("timed out waiting for claim heartbeat renewal")
+		}
+
+		completionDone := make(chan struct{})
+		go func() {
+			defer close(completionDone)
+			orchestrator.completeTerminalRunning(t.Context(), &state, issue.ID, running, now, TokenTotals{}, now)
+		}()
+		synctest.Wait()
+		completedBeforeRenewal := false
+		select {
+		case <-completionDone:
+			completedBeforeRenewal = true
+		default:
+		}
+		close(connectorBackend.allowRenewal)
+		select {
+		case <-completionDone:
+		case <-t.Context().Done():
+			t.Fatal("timed out waiting for terminal completion")
+		}
 		cancel()
 		<-managerDone
-		t.Fatal("timed out waiting for claim heartbeat renewal")
-	}
 
-	completionDone := make(chan struct{})
-	go func() {
-		defer close(completionDone)
-		orchestrator.completeTerminalRunning(t.Context(), &state, issue.ID, running, now, TokenTotals{}, now)
-	}()
-	completedBeforeRenewal := false
-	select {
-	case <-completionDone:
-		completedBeforeRenewal = true
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(connectorBackend.allowRenewal)
-	select {
-	case <-completionDone:
-	case <-t.Context().Done():
-		t.Fatal("timed out waiting for terminal completion")
-	}
-	cancel()
-	<-managerDone
-
-	if completedBeforeRenewal {
-		t.Fatal("terminal completion returned before the in-flight heartbeat finished")
-	}
-	if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got == "" {
-		t.Fatal("terminal completion cleared the tracker lease instead of leaving it to expire")
-	}
-	manager.mu.Lock()
-	_, tracked := manager.targets[issue.ID]
-	manager.mu.Unlock()
-	if tracked {
-		t.Fatalf("heartbeat target %q remains after terminal completion", issue.ID)
-	}
+		if completedBeforeRenewal {
+			t.Fatal("terminal completion returned before the in-flight heartbeat finished")
+		}
+		if got := claimStore.issue(issue.ID).Fields["Detent Lease"]; got == "" {
+			t.Fatal("terminal completion cleared the tracker lease instead of leaving it to expire")
+		}
+		manager.mu.Lock()
+		_, tracked := manager.targets[issue.ID]
+		manager.mu.Unlock()
+		if tracked {
+			t.Fatalf("heartbeat target %q remains after terminal completion", issue.ID)
+		}
+	})
 }
 
 func TestHeartbeatManagerReportsProcessLivenessWhileRenewingActiveRun(t *testing.T) {
@@ -563,18 +618,16 @@ type terminalHeartbeatConnector struct {
 	renewalOnce    sync.Once
 }
 
-func (c *terminalHeartbeatConnector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
-	if value != "" {
-		c.renewalOnce.Do(func() {
-			close(c.renewalStarted)
-		})
-		select {
-		case <-c.allowRenewal:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+func (c *terminalHeartbeatConnector) CompareAndRenewClaimLease(ctx context.Context, observed connector.Issue, ownerField, leaseField string, renewedAt, expiresAt time.Time) (bool, error) {
+	c.renewalOnce.Do(func() {
+		close(c.renewalStarted)
+	})
+	select {
+	case <-c.allowRenewal:
+	case <-ctx.Done():
+		return false, ctx.Err()
 	}
-	return c.claimTestConnector.SetField(ctx, issueID, fieldName, value)
+	return c.claimTestConnector.CompareAndRenewClaimLease(ctx, observed, ownerField, leaseField, renewedAt, expiresAt)
 }
 
 type heartbeatProcessStore struct {

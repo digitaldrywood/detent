@@ -172,6 +172,7 @@ type Running struct {
 	TokenUSD                    float64
 	progress                    *workerProgress
 	mergeControl                bool
+	legacyDeferredMerge         bool
 	Policy                      policy.Descriptor
 	ClaimPolicy                 policy.Descriptor
 	Issue                       connector.Issue

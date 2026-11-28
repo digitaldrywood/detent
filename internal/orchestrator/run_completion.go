@@ -117,13 +117,13 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	mergeControl := running.mergeControl
-	if mergeControl {
-		if !o.dispatchPlanner().allowsDirectPullRequestMerge() {
-			o.releaseClaim(state, event.IssueID)
-			return
-		}
+	if mergeControl && !o.dispatchPlanner().allowsDirectPullRequestMerge() {
+		o.releaseClaim(state, event.IssueID)
+		return
+	}
+	if mergeControl || running.legacyDeferredMerge && mergeWorkerIssue(running.Issue) && o.dispatchPlanner().allowsDirectPullRequestMerge() {
 		var unbind func()
-		ctx, unbind = o.heartbeats.bindCompletion(ctx, event.IssueID)
+		ctx, unbind = o.heartbeats.bindCompletion(ctx, event.IssueID, running.WorkAttemptID)
 		defer unbind()
 		defer func() {
 			if ctx.Err() != nil {
@@ -916,7 +916,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return false
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
-	if running.mergeControl && ctx.Err() != nil {
+	if running.mergeRevisionBound() && o.dispatchPlanner().allowsDirectPullRequestMerge() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 	if err != nil {
@@ -943,6 +943,9 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
 		if running.mergeControl {
+			if !o.mergeControlCompletionActive(ctx, running) {
+				return true
+			}
 			if mergeWorkerIssue(issue) && pullRequestMerged(issue.PullRequest) {
 				target := doneStateName(o.cfg.TerminalStates)
 				if err := o.updateIssueStateByID(ctx, state, issueID, issue, target, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), "merge_worker_programmatic_merge"); err != nil {
@@ -997,7 +1000,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		return false
 	}
 	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || running.mergeRevisionBound() && mergeWorkerIssue(running.Issue) && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 	if err != nil {
@@ -1030,7 +1033,8 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 			return true
 		}
 	}
-	if running.mergeControl && !sameMergeControlRevision(event.Request.Issue, issue) {
+	if running.mergeRevisionBound() && !sameMergeRevision(event.Request.Issue, issue) ||
+		running.mergeControl && issue.PullRequest.BaseBranchStrict {
 		running.Issue = issue
 		o.waitForMergeWorkerCurrentHeadCI(ctx, state, event, running, issue)
 		return true
@@ -1157,7 +1161,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	repository := pullRequestRepository(issue)
 	number := pullRequestNumber(issue)
 	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 	if err := merger.MergePullRequest(ctx, repository, number, headSHA, o.cfg.MergeMethod); err != nil {
@@ -1172,7 +1176,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
 		return true
 	}
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || running.mergeRevisionBound() && !o.mergeControlCompletionActive(ctx, running) {
 		return true
 	}
 
@@ -1577,6 +1581,20 @@ func sourceContinuationAttempt(running Running, issue connector.Issue, result ru
 
 func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
 	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
+}
+
+func (o *Orchestrator) mergeControlCompletionActive(ctx context.Context, running Running) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if o.heartbeats == nil {
+		return running.WorkAttemptID == 0
+	}
+	return o.heartbeats.completionActive(running.Issue.ID, running.WorkAttemptID)
+}
+
+func (running Running) mergeRevisionBound() bool {
+	return running.mergeControl || running.legacyDeferredMerge
 }
 
 func mergeFastPathResult(event runpkg.Completion, running Running) bool {

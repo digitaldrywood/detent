@@ -84,15 +84,20 @@ func TestReadyMergeAtWorkerCapacity(t *testing.T) {
 
 func TestMergeControlCompletion(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		wait      time.Duration
-		cancel    bool
-		laneRetry bool
-		wantMerge bool
+		name           string
+		wait           time.Duration
+		cancel         bool
+		laneRetry      bool
+		attemptTTL     time.Duration
+		heartbeatError error
+		wantMerge      bool
 	}{
 		{name: "slow completion", wait: 70 * time.Second, wantMerge: true},
 		{name: "lane write retried after merge", wait: 11 * time.Second, laneRetry: true, wantMerge: true},
 		{name: "caller canceled", wait: time.Second, cancel: true},
+		{name: "attempt expires during pre-merge read", wait: 2 * time.Minute, attemptTTL: time.Minute, heartbeatError: errors.New("attempt heartbeat unavailable")},
+		{name: "attempt retired before expiry", wait: 25 * time.Second, attemptTTL: time.Minute, heartbeatError: store.ErrNotFound},
+		{name: "attempt renewal extends completion authority", wait: 2 * time.Minute, attemptTTL: time.Minute, wantMerge: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -103,6 +108,7 @@ func TestMergeControlCompletion(t *testing.T) {
 				cfg.ActiveStates = []string{"Merging"}
 				cfg.PollInterval = time.Second
 				cfg.MergeFastPathEnabled = true
+				cfg.Claiming.LeaseTTL = tt.attemptTTL
 				cfg = normalizeConfig(cfg)
 				issue := readyMergeCapacityIssue("ready", 1)
 				issue.Identifier = "example-org/example-project#1"
@@ -122,8 +128,11 @@ func TestMergeControlCompletion(t *testing.T) {
 					}
 				}
 				var attempts store.WorkAttemptStore
-				if tt.laneRetry {
+				if tt.laneRetry || tt.attemptTTL > 0 {
 					attempts = &completionAttemptRecorder{}
+				}
+				if tt.heartbeatError != nil {
+					attempts = &unavailableMergeHeartbeat{completionAttemptRecorder: &completionAttemptRecorder{}, err: tt.heartbeatError}
 				}
 				manager := newHeartbeatManager(cfg, tracker, attempts, time.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
 				orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, heartbeats: manager, now: time.Now, supervisor: newTestSupervisor(t, instantMergeRunner{}, cfg), logger: manager.logger}
@@ -138,8 +147,9 @@ func TestMergeControlCompletion(t *testing.T) {
 					orch.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
 				}()
 				synctest.Wait()
+				var readCtx context.Context
 				select {
-				case <-readStarted:
+				case readCtx = <-readStarted:
 				default:
 					close(releaseRead)
 					t.Fatal("merge completion did not reach the pre-merge read")
@@ -157,6 +167,9 @@ func TestMergeControlCompletion(t *testing.T) {
 				synctest.Wait()
 				close(releaseRead)
 				<-dispatchDone
+				if tt.heartbeatError != nil && !errors.Is(context.Cause(readCtx), ErrSchedulingClaimLost) {
+					t.Fatalf("pre-merge read cancellation = %v, want claim lost", context.Cause(readCtx))
+				}
 				if tt.laneRetry {
 					retry, ok := state.Retry[issue.ID]
 					if !ok || !retry.CompletionDeferred || len(tracker.merges) != 1 || tracker.stateIssues[0].State != "Merging" {
@@ -183,9 +196,63 @@ func TestMergeControlCompletion(t *testing.T) {
 						t.Fatalf("merges=%v lane=%s completed=%d, want one completed merge", tracker.merges, tracker.stateIssues[0].State, len(state.Completed))
 					}
 				} else if len(tracker.merges) != 0 || len(tracker.updates) != 0 {
-					t.Fatalf("writes after cancellation: merges=%v lanes=%v", tracker.merges, tracker.updates)
+					t.Fatalf("writes after completion lost authority: merges=%v lanes=%v", tracker.merges, tracker.updates)
 				}
 			})
+		})
+	}
+}
+
+type unavailableMergeHeartbeat struct {
+	*completionAttemptRecorder
+	err error
+}
+
+func (s *unavailableMergeHeartbeat) RecordWorkAttemptHeartbeat(context.Context, store.WorkAttemptHeartbeat) error {
+	return s.err
+}
+
+func TestLegacyDeferredMergeChecksOriginalRevision(t *testing.T) {
+	for _, change := range []string{"unchanged", "head", "repository", "number"} {
+		t.Run(change, func(t *testing.T) {
+			now := time.Date(2026, 11, 28, 1, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Merging"}, TerminalStates: []string{"Done"}, MergeFastPathEnabled: true})
+			original := readyMergeCapacityIssue("ready", 1)
+			original.Identifier = "example-org/example-project#1"
+			original.PRRepository = "example-org/example-project"
+			original.PullRequest.URL = "https://github.test/example-org/example-project/pull/1"
+			current := cloneIssue(original)
+			switch change {
+			case "head":
+				current.PullRequest.HeadSHA = "new-head"
+			case "repository":
+				current.PRRepository = "example-org/other-project"
+			case "number":
+				current.PullRequest.Number++
+			}
+			tracker := &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{current}}}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, now: func() time.Time { return now }}
+			event := runpkg.Completion{
+				IssueID: original.ID, Request: runpkg.RunRequest{Issue: original, Mode: runpkg.RunModeMerge},
+				CompletedAt: now, Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: "merge_control_checked_head"},
+			}
+			record := newDeferredCompletion(event, Running{Issue: original, Mode: runpkg.RunModeMerge}, errors.New("tracker unavailable"), now)
+			record.MergeControl = nil
+			metadata, err := deferredCompletionMetadataJSON(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Minute)
+			state := newState(cfg)
+			orch.recoverDeferredCompletions(t.Context(), &state, []store.WorkAttempt{{Phase: deferredCompletionPhase, WorkerMetadataJSON: metadata}}, now)
+			orch.retryDeferredCompletion(t.Context(), &state, original.ID, now)
+			if change != "unchanged" {
+				if len(tracker.merges) != 0 || state.Retry[original.ID].Wait.Kind != retryWaitCurrentHeadCI {
+					t.Fatalf("changed revision must require a fresh merge decision: merges=%v retry=%+v", tracker.merges, state.Retry[original.ID])
+				}
+			} else if len(tracker.merges) != 1 || tracker.merges[0].headSHA != original.PullRequest.HeadSHA {
+				t.Fatalf("matching revision did not merge once: %v", tracker.merges)
+			}
 		})
 	}
 }
@@ -474,7 +541,7 @@ func TestReadyMergeCapacitySafety(t *testing.T) {
 				t.Fatalf("workers=%d, want unchanged active worker", len(state.Running))
 			}
 			if tt.name == "stale head" {
-				if retry := state.Retry[issue.ID]; retry.Wait.Kind != retryWaitCurrentHeadCI || !sameMergeControlRevision(retry.Issue, fresh) {
+				if retry := state.Retry[issue.ID]; retry.Wait.Kind != retryWaitCurrentHeadCI || !sameMergeRevision(retry.Issue, fresh) {
 					t.Fatalf("retry=%+v, want CI wait for the fresh revision", retry)
 				}
 				tracker.stateIssues = []connector.Issue{fresh}

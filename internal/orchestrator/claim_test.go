@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -159,6 +160,7 @@ func TestClaimingHeartbeatKeepsActiveLeaseFromReclaim(t *testing.T) {
 	receiveClaimRun(t, alphaRunner.started)
 
 	heartbeatAt := now.Add(40 * time.Second)
+	alpha.now = func() time.Time { return heartbeatAt }
 	alpha.tick(ctx, &alphaState, heartbeatAt)
 	got := store.issue(issue.ID)
 	if got.Fields["Detent Lease"] != heartbeatAt.Format(time.RFC3339Nano) {
@@ -290,6 +292,8 @@ type claimTestStore struct {
 	mu           sync.Mutex
 	issues       map[string]connector.Issue
 	assigneeHook func(context.Context, string, string) error
+	renewalHook  func()
+	clock        func() time.Time
 }
 
 func newClaimTestStore(issues []connector.Issue) *claimTestStore {
@@ -411,8 +415,35 @@ func (c claimTestConnector) SetAssignee(ctx context.Context, issueID string, log
 }
 
 func (c claimTestConnector) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	if c.store.renewalHook != nil {
+		c.store.renewalHook()
+	}
 	c.store.setField(issueID, fieldName, value)
 	return nil
+}
+
+func (c claimTestConnector) CompareAndRenewClaimLease(ctx context.Context, observed connector.Issue, ownerField, leaseField string, renewedAt, expiresAt time.Time) (bool, error) {
+	if c.store.renewalHook != nil {
+		c.store.renewalHook()
+	}
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if c.store.clock != nil && !c.store.clock().Before(expiresAt) {
+		return false, nil
+	}
+	current := c.store.issues[observed.ID]
+	sameOwner := current.AssigneeID == observed.AssigneeID && slices.Equal(current.Assignees, observed.Assignees)
+	if ownerField != "" {
+		sameOwner = current.Fields[ownerField] == observed.Fields[ownerField]
+	}
+	if !sameOwner || current.Fields[leaseField] != observed.Fields[leaseField] {
+		return false, nil
+	}
+	c.store.issues[observed.ID] = issueWithLeaseField(current, leaseField, renewedAt)
+	return true, nil
 }
 
 type claimBlockingRunner struct {

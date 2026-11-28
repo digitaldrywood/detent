@@ -22,12 +22,13 @@ func (p dispatchPlanner) readyMergeControlCandidate(state *State, issue connecto
 	return state.mergeReservations[issue.ID].RefreshHeadSHA != issue.PullRequest.HeadSHA
 }
 
-func sameMergeControlRevision(checked, current connector.Issue) bool {
+func sameMergeRevision(checked, current connector.Issue) bool {
+	repository := pullRequestRepository(checked)
+	number := pullRequestNumber(checked)
 	return checked.PullRequest != nil && current.PullRequest != nil &&
-		pullRequestRepository(checked) == pullRequestRepository(current) &&
-		pullRequestNumber(checked) == pullRequestNumber(current) &&
-		checked.PullRequest.HeadSHA == current.PullRequest.HeadSHA &&
-		!current.PullRequest.BaseBranchStrict
+		repository != "" && repository == pullRequestRepository(current) &&
+		number > 0 && number == pullRequestNumber(current) &&
+		checked.PullRequest.HeadSHA != "" && checked.PullRequest.HeadSHA == current.PullRequest.HeadSHA
 }
 
 func (o *Orchestrator) reconcileMergeControlDemand(decisions []dispatchPlanDecision, outcomes map[string]dispatchIssueOutcome) {

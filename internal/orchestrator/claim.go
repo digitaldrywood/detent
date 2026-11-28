@@ -31,6 +31,9 @@ func (o *Orchestrator) claimIssue(ctx context.Context, issue connector.Issue, no
 	if !o.cfg.Claiming.Enabled {
 		return issue, claim, true
 	}
+	if _, ok := o.connector.(trackerClaimLeaseRenewer); !ok {
+		return connector.Issue{}, Claimed{}, false
+	}
 
 	owner := o.claimOwner()
 	if owner == "" || o.cfg.Claiming.LeaseField == "" || o.fieldClaimMissingOwnerField() {
@@ -130,7 +133,7 @@ func (o *Orchestrator) verifiedClaim(issue connector.Issue, owner string) (Claim
 }
 
 func (o *Orchestrator) heartbeatRunningClaims(ctx context.Context, state *State, now time.Time) {
-	if !o.cfg.Claiming.Enabled || o.cfg.Claiming.LeaseField == "" {
+	if o.scheduling != nil || !o.cfg.Claiming.Enabled || o.cfg.Claiming.LeaseField == "" {
 		return
 	}
 	owner := o.claimOwner()
@@ -149,19 +152,17 @@ func (o *Orchestrator) heartbeatRunningClaims(ctx context.Context, state *State,
 		if !o.claimHeartbeatDue(claimed, now) {
 			continue
 		}
-		refreshed, ok := o.refetchClaimedIssue(ctx, claimed.Issue)
-		if !ok {
-			continue
-		}
-		winner := o.claimWinner(refreshed)
-		if !sameClaimOwner(winner, owner) {
+		settings := heartbeatSettings{connector: o.connector, claiming: o.cfg.Claiming, leaseTTL: o.cfg.Claiming.LeaseTTL}
+		deadline := claimRenewalDeadline(claimed)
+		refreshed, winner, lost, err := renewTrackerClaim(ctx, settings, heartbeatTarget{issueID: issueID, claimOwner: owner, localLeaseDeadline: deadline}, now, o.clockNow)
+		if lost {
 			if o.logger != nil {
 				o.logger.Warn("claim heartbeat owner changed", "issue_id", issueID, "owner", owner, "current_owner", winner)
 			}
 			o.releaseClaim(state, issueID)
 			continue
 		}
-		if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, formatClaimTime(now)); err != nil {
+		if err != nil {
 			if o.logger != nil {
 				o.logger.Warn("claim heartbeat failed", "issue_id", issueID, "owner", owner, "error", err)
 			}

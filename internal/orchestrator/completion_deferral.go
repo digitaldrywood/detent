@@ -31,7 +31,7 @@ type deferredCompletion struct {
 	FailureDecision        *tracker.FailureAttribution    `json:"failure_decision,omitempty"`
 	Schema                 int                            `json:"schema"`
 	Running                Running                        `json:"running"`
-	MergeControl           bool                           `json:"merge_control,omitempty"`
+	MergeControl           *bool                          `json:"merge_control,omitempty"`
 	Request                deferredCompletionRequest      `json:"request"`
 	Result                 runpkg.RunResult               `json:"result"`
 	Error                  string                         `json:"error,omitempty"`
@@ -122,7 +122,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
 		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
 		Running:                running,
-		MergeControl:           running.mergeControl,
+		MergeControl:           new(running.mergeControl),
 		Request:                deferredCompletionRequestFromRun(event.Request),
 		Result:                 event.Result,
 		Error:                  errorString(event.Err),
@@ -134,6 +134,9 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 	}
 	if decision, ok := runpkg.FailureDecision(event.Err); ok {
 		record.FailureDecision = &decision
+	}
+	if running.legacyDeferredMerge {
+		record.MergeControl = nil
 	}
 	// Error interfaces do not round-trip through JSON. Retain actual quota
 	// response evidence so completion replay uses the same capacity owner.
@@ -437,17 +440,6 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 		record.Running.progress.mu.Lock()
 		defer record.Running.progress.mu.Unlock()
 	}
-	if o.heartbeats != nil {
-		o.heartbeats.upsert(heartbeatTarget{
-			progress:             record.Running.progress,
-			issueID:              record.Running.Issue.ID,
-			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
-			localLeaseDeadline:   claimRenewalDeadline(state.Claimed[record.Running.Issue.ID]),
-			workAttemptHeartbeat: heartbeat,
-			workerProcess:        record.Running.WorkerProcess,
-			workspacePath:        record.Running.WorkspacePath,
-		})
-	}
 	if err := o.workAttempts.RecordWorkAttemptHeartbeat(ctx, heartbeat); err != nil {
 		if o.logger != nil {
 			o.logger.Error("deferred completion persistence failed", "attempt_id", record.Running.WorkAttemptID, "issue_id", record.Running.Issue.ID, "error", err)
@@ -456,6 +448,18 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 	}
 	if record.Running.progress != nil {
 		record.Running.progress.persisted.Store(&heartbeat)
+	}
+	if o.heartbeats != nil {
+		o.heartbeats.upsert(heartbeatTarget{
+			progress:             record.Running.progress,
+			issueID:              record.Running.Issue.ID,
+			claimOwner:           firstNonBlank(state.Claimed[record.Running.Issue.ID].Owner, o.claimOwner()),
+			localLeaseDeadline:   claimRenewalDeadline(state.Claimed[record.Running.Issue.ID]),
+			attemptDeadline:      heartbeat.LeaseExpiresAt,
+			workAttemptHeartbeat: heartbeat,
+			workerProcess:        record.Running.WorkerProcess,
+			workspacePath:        record.Running.WorkspacePath,
+		})
 	}
 	o.applyWorkAttemptHeartbeatSnapshot(state, record.Running.WorkAttemptID, heartbeat, nil)
 	return true
@@ -502,7 +506,8 @@ func decodeDeferredCompletion(attempt store.WorkAttempt) (deferredCompletion, er
 		return deferredCompletion{}, fmt.Errorf("deferred completion attempt_id = %d, want %d", record.Running.WorkAttemptID, attempt.ID)
 	}
 	record.Running.CompletionOwnershipReleased = true
-	record.Running.mergeControl = record.MergeControl
+	record.Running.mergeControl = record.MergeControl != nil && *record.MergeControl
+	record.Running.legacyDeferredMerge = record.MergeControl == nil && record.Request.Mode == runpkg.RunModeMerge
 	record.Persisted = true
 	return record, nil
 }
